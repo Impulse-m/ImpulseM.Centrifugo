@@ -272,13 +272,12 @@ func TestValidateRateLimit(t *testing.T) {
 			},
 		},
 		{
-			name: "redis user command is not implemented yet",
+			name: "redis user command is implemented",
 			mutate: func(cfg *Config) {
 				cfg.Engine.Type = "redis"
 				cfg.Client.RateLimit.RedisUserCommand.Enabled = true
 				cfg.Client.RateLimit.RedisUserCommand.Redis.ReuseFromEngine = true
 			},
-			wantErr: "redis_user_command: not implemented yet",
 		},
 	}
 	for _, tt := range tests {

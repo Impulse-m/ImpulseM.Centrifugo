@@ -310,10 +310,6 @@ func validateRateLimit(c Config) error {
 	if rl.ClientError.Enabled && !rl.ClientError.Total.Enabled {
 		return fmt.Errorf("client_error: enabled without total bucket has no effect, enable client_error.total")
 	}
-
-	if rc.Enabled {
-		return fmt.Errorf("redis_user_command: not implemented yet")
-	}
 	return nil
 }
 

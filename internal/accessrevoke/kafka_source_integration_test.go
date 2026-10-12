@@ -36,6 +36,24 @@ func createIntegrationTopic(t *testing.T) string {
 	resp, err := adm.CreateTopics(context.Background(), 1, 1, nil, topic)
 	require.NoError(t, err)
 	require.NoError(t, resp[topic].Err)
+	// A new topic may be unknown to the broker for a moment: wait until its partition has a leader,
+	// otherwise the first produce can fail with UNKNOWN_TOPIC_OR_PARTITION.
+	require.Eventually(t, func() bool {
+		topics, err := adm.ListTopics(context.Background(), topic)
+		if err != nil {
+			return false
+		}
+		details, ok := topics[topic]
+		if !ok || details.Err != nil || len(details.Partitions) == 0 {
+			return false
+		}
+		for _, partition := range details.Partitions {
+			if partition.Err != nil || partition.Leader < 0 {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, 50*time.Millisecond)
 	return topic
 }
 

@@ -25,6 +25,7 @@ eto = "eto"
 typ = "typ"
 Wath = "Wath" # @SinimaWath
 flate = "flate"
+nin = "nin" # "not in" comparison of tags filters
 
 [files]
 # Ignore certain files/directories

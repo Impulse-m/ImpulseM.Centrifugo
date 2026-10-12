@@ -186,7 +186,28 @@ func Run(cmd *cobra.Command, configFile string) {
 	accessRevoker := accessrevoke.NewRevoker(accessStore, node.Hub(), accessDisconnectQueue)
 	accessNotifier := accessrevoke.NewNotifier(node, cfg.AccessRevoke.NotifyRate)
 
-	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap, accessStore)
+	// Access revocation source is optional: nil means no source, and nothing gates connections or health.
+	var accessSource accessrevoke.Source
+	var healthReady func() bool
+	if cfg.AccessRevoke.Source.Type == "kafka" {
+		kafkaSource := accessrevoke.NewKafkaSource(cfg.AccessRevoke.Source, cfgContainer, accessRevoker)
+		accessSource = kafkaSource
+		healthReady = kafkaSource.Ready
+		serviceManager.Register(
+			kafkaSource,
+			accessrevoke.NewCatchUpSweeper(
+				kafkaSource.CaughtUpAfterFailOpen(),
+				node.Hub(),
+				accessStore,
+				accessDisconnectQueue,
+				func() accessrevoke.CheckOptions {
+					return accessrevoke.OptionsFromConfig(cfgContainer.Config())
+				},
+			),
+		)
+	}
+
+	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap, accessStore, accessSource)
 	err = clientHandler.Setup()
 	if err != nil {
 		log.Fatal().Err(err).Msg("error setting up client handler")
@@ -311,7 +332,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext)
+	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext, healthReady)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error running HTTP server")
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func newRevokeTestHandler(t *testing.T, cfg config.Config) (*Handler, *accessrev
 	}, cfgContainer)
 	require.NoError(t, err)
 	store := accessrevoke.NewStore(time.Minute)
-	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{}, store)
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{}, store, nil)
 	return h, store, node
 }
 
@@ -317,6 +318,75 @@ func TestAccessRevokeRecheckConnection(t *testing.T) {
 	disconnect, revoked = h.recheckConnection(client)
 	require.True(t, revoked)
 	require.Equal(t, accessrevoke.DisconnectUserBlocked, disconnect)
+}
+
+// fakeAccessSource is an accessrevoke.Source with settable readiness and lag.
+type fakeAccessSource struct {
+	ready   atomic.Bool
+	lagging atomic.Bool
+}
+
+func (s *fakeAccessSource) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *fakeAccessSource) Ready() bool {
+	return s.ready.Load()
+}
+
+func (s *fakeAccessSource) Lagging() bool {
+	return s.lagging.Load()
+}
+
+func TestAccessRevokeConnectSourceNotReady(t *testing.T) {
+	h, _, _ := newRevokeTestHandler(t, config.DefaultConfig())
+	source := &fakeAccessSource{}
+	h.accessSource = source
+	before := rejectsCount(t, "not_ready", "connect")
+
+	// Token is invalid: the gate must answer before token verification.
+	_, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		Token: "invalid",
+	}, nil, false)
+	require.Equal(t, accessrevoke.ErrorNotReady, err)
+	require.Equal(t, before+1, rejectsCount(t, "not_ready", "connect"))
+
+	source.ready.Store(true)
+	_, err = h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42"}),
+	}, nil, false)
+	require.NoError(t, err)
+}
+
+func TestAccessRevokeConnectSourceLaggingRejectsOnlyWhenStrict(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.AccessRevoke.Source.RejectConnectOnLag = false
+	h, _, _ := newRevokeTestHandler(t, cfg)
+	source := &fakeAccessSource{}
+	source.ready.Store(true)
+	source.lagging.Store(true)
+	h.accessSource = source
+	connectEvent := centrifuge.ConnectEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42"}),
+	}
+
+	_, err := h.OnClientConnecting(context.Background(), connectEvent, nil, false)
+	require.NoError(t, err)
+
+	cfg.AccessRevoke.Source.RejectConnectOnLag = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h.cfgContainer = cfgContainer
+	before := rejectsCount(t, "lagging", "connect")
+
+	_, err = h.OnClientConnecting(context.Background(), connectEvent, nil, false)
+	require.Equal(t, accessrevoke.ErrorNotReady, err)
+	require.Equal(t, before+1, rejectsCount(t, "lagging", "connect"))
+
+	source.lagging.Store(false)
+	_, err = h.OnClientConnecting(context.Background(), connectEvent, nil, false)
+	require.NoError(t, err)
 }
 
 func TestAccessRevokeRecheckConnectionLoopGuard(t *testing.T) {

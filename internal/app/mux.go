@@ -111,6 +111,7 @@ func (flags HandlerFlag) String() string {
 // Mux returns a mux including set of default handlers for Centrifugo server.
 func Mux(
 	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, flags HandlerFlag, keepHeadersInContext bool, wtServer *webtransport.Server,
+	healthReady func() bool,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	cfg := cfgContainer.Config()
@@ -308,7 +309,7 @@ func Mux(
 		if healthPrefix == "" {
 			healthPrefix = "/"
 		}
-		mux.Handle(healthPrefix, basicChain.Then(health.NewHandler(n, health.Config{})))
+		mux.Handle(healthPrefix, basicChain.Then(health.NewHandler(n, health.Config{Ready: healthReady})))
 	}
 
 	if flags&HandlerDev != 0 {
@@ -372,6 +373,7 @@ func emulationHandlerConfig(cfg config.Config) centrifuge.EmulationConfig {
 
 func runHTTPServers(
 	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, keepHeadersInContext bool,
+	healthReady func() bool,
 ) ([]*http.Server, error) {
 	cfg := cfgContainer.Config()
 
@@ -516,7 +518,7 @@ func runHTTPServers(
 			}
 		}
 
-		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer)
+		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer, healthReady)
 
 		var h3Server *http3.Server
 		if useHTTP3 {

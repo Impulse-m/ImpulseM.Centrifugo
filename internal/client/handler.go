@@ -22,6 +22,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Reasons of connect rejections by the access revocation source, used as metric label values.
+const (
+	rejectNotReady = "not_ready"
+	rejectLagging  = "lagging"
+)
+
 // RPCExtensionFunc ...
 type RPCExtensionFunc func(c Client, e centrifuge.RPCEvent) (centrifuge.RPCReply, error)
 
@@ -46,6 +52,7 @@ type Handler struct {
 	proxyMap         *ProxyMap
 	rpcExtension     map[string]RPCExtensionFunc
 	accessStore      *accessrevoke.Store
+	accessSource     accessrevoke.Source
 }
 
 // NewHandler creates new Handler.
@@ -56,6 +63,7 @@ func NewHandler(
 	subTokenVerifier *jwtverify.VerifierJWT,
 	proxyMap *ProxyMap,
 	accessStore *accessrevoke.Store,
+	accessSource accessrevoke.Source,
 ) *Handler {
 	return &Handler{
 		node:             node,
@@ -65,6 +73,7 @@ func NewHandler(
 		proxyMap:         proxyMap,
 		rpcExtension:     make(map[string]RPCExtensionFunc),
 		accessStore:      accessStore,
+		accessSource:     accessSource,
 	}
 }
 
@@ -280,6 +289,12 @@ func (h *Handler) OnClientConnecting(
 	connectProxyHandler proxy.ConnectingHandlerFunc,
 	refreshProxyEnabled bool,
 ) (centrifuge.ConnectReply, error) {
+	// The source gate runs first: a node which did not catch up yet must not accept connections,
+	// and checking it before token verification saves signature work during restart storms.
+	if err := h.sourceGate(); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
+
 	var (
 		credentials *centrifuge.Credentials
 		data        []byte
@@ -307,7 +322,7 @@ func (h *Handler) OnClientConnecting(
 		}
 
 		identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
-		result := h.checkAccess(token.UserID, identity, accessRevokeOptions(cfg), "connect")
+		result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "connect")
 		if result.Verdict != accessrevoke.Allowed {
 			return centrifuge.ConnectReply{}, connectRevokeError(e.ClientID, token.UserID, result)
 		}
@@ -546,14 +561,14 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
-	result := h.checkAccess(token.UserID, identity, accessRevokeOptions(h.cfgContainer.Config()), "refresh")
+	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.Config()), "refresh")
 	switch result.Verdict {
 	case accessrevoke.Blocked:
 		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
 	case accessrevoke.Revoked:
 		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
 	case accessrevoke.LoopGuard:
-		logLoopGuard(c.ID(), c.UserID(), result)
+		accessrevoke.LogLoopGuard(c.ID(), c.UserID(), result)
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	if token.Meta != nil {
@@ -566,13 +581,30 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
 }
 
-// accessRevokeOptions returns access revocation checks enabled in config.
-func accessRevokeOptions(cfg config.Config) accessrevoke.CheckOptions {
-	return accessrevoke.CheckOptions{
-		Block:      cfg.UserBlock.Enabled,
-		Session:    cfg.TokenRevoke.Enabled,
-		UserTokens: cfg.UserTokensInvalidate.Enabled,
+// sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
+// lags when reject_connect_on_lag is set. Without a source it passes.
+//
+// The error is temporary, so it is never turned into a terminal close. Bidirectional clients get it as a
+// connect error and retry. Unidirectional transports (WebSocket, gRPC, SSE, HTTP stream) call Core's
+// ProtocolConnect, which turns a non-Disconnect connect error into a close with Disconnect from
+// Core's unidirectional mapping: code 1503 is not in the default mapping, so it becomes DisconnectServerError
+// (3004, reconnect range), unless the operator maps it with connect_code_to_unidirectional_disconnect.
+// SSE and HTTP stream with connect_code_to_http_response enabled answer the connect with the HTTP status
+// from that config instead. So no Disconnect is returned here: a fixed terminal code such as 4503 would
+// stop clients from reconnecting, as codes 4500-4999 are terminal.
+func (h *Handler) sourceGate() error {
+	if h.accessSource == nil {
+		return nil
 	}
+	if !h.accessSource.Ready() {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(rejectNotReady, "connect").Inc()
+		return accessrevoke.ErrorNotReady
+	}
+	if h.cfgContainer.Config().AccessRevoke.Source.RejectConnectOnLag && h.accessSource.Lagging() {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(rejectLagging, "connect").Inc()
+		return accessrevoke.ErrorNotReady
+	}
+	return nil
 }
 
 // checkAccess checks token identity against access revocation store and counts rejections by stage.
@@ -605,22 +637,13 @@ func (h *Handler) isUserBlocked(userID string, stage string) bool {
 // true for a token which has no session, generation and iat claims, which is a deliberate
 // trade-off: the full check at connect time already ran for such a token.
 func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
-	identity := client.TokenIdentity()
-	opts := accessRevokeOptions(h.cfgContainer.Config())
-	if identity == (centrifuge.TokenIdentity{}) {
-		opts = accessrevoke.CheckOptions{Block: opts.Block}
-	}
-	result := h.checkAccess(client.UserID(), identity, opts, "recheck")
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return accessrevoke.DisconnectUserBlocked, true
-	case accessrevoke.Revoked:
-		return centrifuge.DisconnectExpired, true
-	case accessrevoke.LoopGuard:
-		logLoopGuard(client.ID(), client.UserID(), result)
-		return centrifuge.DisconnectInvalidToken, true
-	}
-	return centrifuge.Disconnect{}, false
+	disconnect, _, revoked := accessrevoke.CheckConnection(
+		h.accessStore,
+		client,
+		accessrevoke.OptionsFromConfig(h.cfgContainer.Config()),
+		"recheck",
+	)
+	return disconnect, revoked
 }
 
 // connectRevokeError maps a failed access check made at connect to the error returned from connecting.
@@ -631,18 +654,10 @@ func connectRevokeError(clientID string, userID string, result accessrevoke.Resu
 	case accessrevoke.Revoked:
 		return centrifuge.ErrorTokenExpired
 	case accessrevoke.LoopGuard:
-		logLoopGuard(clientID, userID, result)
+		accessrevoke.LogLoopGuard(clientID, userID, result)
 		return centrifuge.DisconnectInvalidToken
 	}
 	return nil
-}
-
-func logLoopGuard(clientID string, userID string, result accessrevoke.Result) {
-	log.Error().
-		Str("client", clientID).
-		Str("user", userID).
-		Str("reason", string(result.Reason)).
-		Msg("token issued after revocation, auth service and Centrifugo disagree, disconnecting")
 }
 
 // OnRPC ...

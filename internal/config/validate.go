@@ -399,6 +399,42 @@ func validateAccessRevoke(cfg Config) error {
 	if cfg.AccessRevoke.SweepInterval.ToDuration() <= 0 {
 		return fmt.Errorf("access_revoke.sweep_interval must be greater than zero")
 	}
+	return validateAccessRevokeSource(cfg)
+}
+
+var knownAccessRevokeSourceTypes = []string{"", "kafka"}
+
+func validateAccessRevokeSource(cfg Config) error {
+	source := cfg.AccessRevoke.Source
+	if !slices.Contains(knownAccessRevokeSourceTypes, source.Type) {
+		return fmt.Errorf("unknown access_revoke.source.type: \"%s\"", source.Type)
+	}
+	if source.Type == "" {
+		return nil
+	}
+	if source.Window.ToDuration() <= 0 {
+		return fmt.Errorf("access_revoke.source.window must be greater than zero")
+	}
+	if source.StartupTimeout.ToDuration() <= 0 {
+		return fmt.Errorf("access_revoke.source.startup_timeout must be greater than zero")
+	}
+	if source.LagThreshold.ToDuration() <= 0 {
+		return fmt.Errorf("access_revoke.source.lag_threshold must be greater than zero")
+	}
+	if source.Window.ToDuration() < cfg.AccessRevoke.DefaultTTL.ToDuration() {
+		return fmt.Errorf("access_revoke.source.window must be greater or equal to access_revoke.default_ttl")
+	}
+	if source.Type == "kafka" {
+		if len(source.Kafka.Brokers) == 0 {
+			return fmt.Errorf("access_revoke.source.kafka.brokers must be set for kafka source")
+		}
+		if source.Kafka.Topic == "" {
+			return fmt.Errorf("access_revoke.source.kafka.topic must be set for kafka source")
+		}
+		if source.Kafka.FetchMaxWait.ToDuration() <= 0 {
+			return fmt.Errorf("access_revoke.source.kafka.fetch_max_wait must be greater than zero")
+		}
+	}
 	return nil
 }
 

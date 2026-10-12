@@ -10076,6 +10076,232 @@
         "default": "30s",
         "comment": "SweepInterval is how often expired revocation entries are removed from memory.",
         "is_complex_type": false
+      },
+      {
+        "field": "access_revoke.source",
+        "name": "source",
+        "go_name": "Source",
+        "level": 2,
+        "type": "AccessRevokeSource",
+        "default": "",
+        "comment": "Source is a source of access revocation events for this node. Empty type means no source.",
+        "is_complex_type": true,
+        "children": [
+          {
+            "field": "access_revoke.source.type",
+            "name": "type",
+            "go_name": "Type",
+            "level": 3,
+            "type": "string",
+            "default": "",
+            "comment": "Type is a source type. Empty means no source. Known types: kafka.",
+            "is_complex_type": false
+          },
+          {
+            "field": "access_revoke.source.window",
+            "name": "window",
+            "go_name": "Window",
+            "level": 3,
+            "type": "Duration",
+            "default": "30m",
+            "comment": "Window is how far back in time the source is read at start. Events are enforced only within\nthis window of their record timestamp. Must be greater or equal to access_revoke.default_ttl.",
+            "is_complex_type": false
+          },
+          {
+            "field": "access_revoke.source.startup_timeout",
+            "name": "startup_timeout",
+            "go_name": "StartupTimeout",
+            "level": 3,
+            "type": "Duration",
+            "default": "60s",
+            "comment": "StartupTimeout is how long the node waits to catch up with the source before becoming ready anyway.",
+            "is_complex_type": false
+          },
+          {
+            "field": "access_revoke.source.lag_threshold",
+            "name": "lag_threshold",
+            "go_name": "LagThreshold",
+            "level": 3,
+            "type": "Duration",
+            "default": "30s",
+            "comment": "LagThreshold is how long the node may lag behind the source before it is considered lagging.",
+            "is_complex_type": false
+          },
+          {
+            "field": "access_revoke.source.reject_connect_on_lag",
+            "name": "reject_connect_on_lag",
+            "go_name": "RejectConnectOnLag",
+            "level": 3,
+            "type": "bool",
+            "default": "",
+            "comment": "RejectConnectOnLag rejects new connections while lagging. It also disables startup timeout:\nthe node waits for catch up indefinitely. Note that when all nodes lag this is a cluster-wide outage.",
+            "is_complex_type": false
+          },
+          {
+            "field": "access_revoke.source.kafka",
+            "name": "kafka",
+            "go_name": "Kafka",
+            "level": 3,
+            "type": "AccessRevokeKafkaSource",
+            "default": "",
+            "comment": "Kafka is a configuration for the kafka source type.",
+            "is_complex_type": true,
+            "children": [
+              {
+                "field": "access_revoke.source.kafka.brokers",
+                "name": "brokers",
+                "go_name": "Brokers",
+                "level": 4,
+                "type": "[]string",
+                "default": "",
+                "comment": "Brokers is a list of Kafka brokers.",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.topic",
+                "name": "topic",
+                "go_name": "Topic",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "Topic is a Kafka topic with access revocation events. Use cleanup.policy=delete, not compact.",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.method_header",
+                "name": "method_header",
+                "go_name": "MethodHeader",
+                "level": 4,
+                "type": "string",
+                "default": "centrifugo-method",
+                "comment": "MethodHeader is a header name with the access revocation method name, such as block_user.",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.fetch_max_wait",
+                "name": "fetch_max_wait",
+                "go_name": "FetchMaxWait",
+                "level": 4,
+                "type": "Duration",
+                "default": "2s",
+                "comment": "FetchMaxWait is the maximum time to wait for records when polling.",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.tls",
+                "name": "tls",
+                "go_name": "TLS",
+                "level": 4,
+                "type": "TLSConfig",
+                "default": "",
+                "comment": "TLS for the connection to Kafka.",
+                "is_complex_type": true,
+                "children": [
+                  {
+                    "field": "access_revoke.source.kafka.tls.enabled",
+                    "name": "enabled",
+                    "go_name": "Enabled",
+                    "level": 5,
+                    "type": "bool",
+                    "default": "",
+                    "comment": "Enabled turns on using TLS.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.cert_pem",
+                    "name": "cert_pem",
+                    "go_name": "CertPem",
+                    "level": 5,
+                    "type": "PEMData",
+                    "default": "",
+                    "comment": "CertPem is a PEM certificate.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.key_pem",
+                    "name": "key_pem",
+                    "go_name": "KeyPem",
+                    "level": 5,
+                    "type": "PEMData",
+                    "default": "",
+                    "comment": "KeyPem is a path to a file with key in PEM format.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.server_ca_pem",
+                    "name": "server_ca_pem",
+                    "go_name": "ServerCAPem",
+                    "level": 5,
+                    "type": "PEMData",
+                    "default": "",
+                    "comment": "ServerCAPem is a server root CA certificate in PEM format.\nThe client uses this certificate to verify the server's certificate during the TLS handshake.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.client_ca_pem",
+                    "name": "client_ca_pem",
+                    "go_name": "ClientCAPem",
+                    "level": 5,
+                    "type": "PEMData",
+                    "default": "",
+                    "comment": "ClientCAPem is a client CA certificate in PEM format.\nThe server uses this certificate to verify the client's certificate during the TLS handshake.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.insecure_skip_verify",
+                    "name": "insecure_skip_verify",
+                    "go_name": "InsecureSkipVerify",
+                    "level": 5,
+                    "type": "bool",
+                    "default": "",
+                    "comment": "InsecureSkipVerify turns off server certificate verification.",
+                    "is_complex_type": false
+                  },
+                  {
+                    "field": "access_revoke.source.kafka.tls.server_name",
+                    "name": "server_name",
+                    "go_name": "ServerName",
+                    "level": 5,
+                    "type": "string",
+                    "default": "",
+                    "comment": "ServerName is used to verify the hostname on the returned certificates.",
+                    "is_complex_type": false
+                  }
+                ]
+              },
+              {
+                "field": "access_revoke.source.kafka.sasl_mechanism",
+                "name": "sasl_mechanism",
+                "go_name": "SASLMechanism",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "SASLMechanism when not empty enables SASL auth.",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.sasl_user",
+                "name": "sasl_user",
+                "go_name": "SASLUser",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "",
+                "is_complex_type": false
+              },
+              {
+                "field": "access_revoke.source.kafka.sasl_password",
+                "name": "sasl_password",
+                "go_name": "SASLPassword",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "",
+                "is_complex_type": false
+              }
+            ]
+          }
+        ]
       }
     ]
   },

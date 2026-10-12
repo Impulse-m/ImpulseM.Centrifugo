@@ -142,6 +142,45 @@ type AccessRevoke struct {
 	DefaultTTL Duration `mapstructure:"default_ttl" default:"20m" json:"default_ttl" envconfig:"default_ttl" yaml:"default_ttl" toml:"default_ttl"`
 	// SweepInterval is how often expired revocation entries are removed from memory.
 	SweepInterval Duration `mapstructure:"sweep_interval" default:"30s" json:"sweep_interval" envconfig:"sweep_interval" yaml:"sweep_interval" toml:"sweep_interval"`
+	// Source is a source of access revocation events for this node. Empty type means no source.
+	Source AccessRevokeSource `mapstructure:"source" json:"source" envconfig:"source" yaml:"source" toml:"source"`
+}
+
+// AccessRevokeSource is a configuration of a replayable log of access revocation events. Every node
+// reads all events from it, rebuilds its revocation state after restart and gates connects until it caught up.
+type AccessRevokeSource struct {
+	// Type is a source type. Empty means no source. Known types: kafka.
+	Type string `mapstructure:"type" json:"type" envconfig:"type" yaml:"type" toml:"type"`
+	// Window is how far back in time the source is read at start. Events are enforced only within
+	// this window of their record timestamp. Must be greater or equal to access_revoke.default_ttl.
+	Window Duration `mapstructure:"window" default:"30m" json:"window" envconfig:"window" yaml:"window" toml:"window"`
+	// StartupTimeout is how long the node waits to catch up with the source before becoming ready anyway.
+	StartupTimeout Duration `mapstructure:"startup_timeout" default:"60s" json:"startup_timeout" envconfig:"startup_timeout" yaml:"startup_timeout" toml:"startup_timeout"`
+	// LagThreshold is how long the node may lag behind the source before it is considered lagging.
+	LagThreshold Duration `mapstructure:"lag_threshold" default:"30s" json:"lag_threshold" envconfig:"lag_threshold" yaml:"lag_threshold" toml:"lag_threshold"`
+	// RejectConnectOnLag rejects new connections while lagging. It also disables startup timeout:
+	// the node waits for catch up indefinitely. Note that when all nodes lag this is a cluster-wide outage.
+	RejectConnectOnLag bool `mapstructure:"reject_connect_on_lag" json:"reject_connect_on_lag" envconfig:"reject_connect_on_lag" yaml:"reject_connect_on_lag" toml:"reject_connect_on_lag"`
+	// Kafka is a configuration for the kafka source type.
+	Kafka AccessRevokeKafkaSource `mapstructure:"kafka" json:"kafka" envconfig:"kafka" yaml:"kafka" toml:"kafka"`
+}
+
+// AccessRevokeKafkaSource is a configuration for the kafka access revocation source.
+type AccessRevokeKafkaSource struct {
+	// Brokers is a list of Kafka brokers.
+	Brokers []string `mapstructure:"brokers" json:"brokers" envconfig:"brokers" yaml:"brokers" toml:"brokers"`
+	// Topic is a Kafka topic with access revocation events. Use cleanup.policy=delete, not compact.
+	Topic string `mapstructure:"topic" json:"topic" envconfig:"topic" yaml:"topic" toml:"topic"`
+	// MethodHeader is a header name with the access revocation method name, such as block_user.
+	MethodHeader string `mapstructure:"method_header" default:"centrifugo-method" json:"method_header" envconfig:"method_header" yaml:"method_header" toml:"method_header"`
+	// FetchMaxWait is the maximum time to wait for records when polling.
+	FetchMaxWait Duration `mapstructure:"fetch_max_wait" default:"2s" json:"fetch_max_wait" envconfig:"fetch_max_wait" yaml:"fetch_max_wait" toml:"fetch_max_wait"`
+	// TLS for the connection to Kafka.
+	TLS TLSConfig `mapstructure:"tls" json:"tls" envconfig:"tls" yaml:"tls" toml:"tls"`
+	// SASLMechanism when not empty enables SASL auth.
+	SASLMechanism string `mapstructure:"sasl_mechanism" json:"sasl_mechanism" envconfig:"sasl_mechanism" yaml:"sasl_mechanism" toml:"sasl_mechanism"`
+	SASLUser      string `mapstructure:"sasl_user" json:"sasl_user" envconfig:"sasl_user" yaml:"sasl_user" toml:"sasl_user"`
+	SASLPassword  string `mapstructure:"sasl_password" json:"sasl_password" envconfig:"sasl_password" yaml:"sasl_password" toml:"sasl_password"`
 }
 
 // HTTP3 is EXPERIMENTAL.

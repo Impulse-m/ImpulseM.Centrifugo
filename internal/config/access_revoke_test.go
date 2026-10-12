@@ -164,3 +164,153 @@ func TestValidateAccessRevoke(t *testing.T) {
 		})
 	}
 }
+
+func TestAccessRevokeSourceDefaults(t *testing.T) {
+	conf := DefaultConfig()
+
+	require.Empty(t, conf.AccessRevoke.Source.Type)
+	require.Equal(t, configtypes.Duration(30*time.Minute), conf.AccessRevoke.Source.Window)
+	require.Equal(t, configtypes.Duration(60*time.Second), conf.AccessRevoke.Source.StartupTimeout)
+	require.Equal(t, configtypes.Duration(30*time.Second), conf.AccessRevoke.Source.LagThreshold)
+	require.False(t, conf.AccessRevoke.Source.RejectConnectOnLag)
+	require.Equal(t, "centrifugo-method", conf.AccessRevoke.Source.Kafka.MethodHeader)
+	require.Equal(t, configtypes.Duration(2*time.Second), conf.AccessRevoke.Source.Kafka.FetchMaxWait)
+}
+
+func TestAccessRevokeSourceFromFile(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	content := `{
+		"access_revoke": {
+			"source": {
+				"type": "kafka",
+				"window": "40m",
+				"startup_timeout": "90s",
+				"lag_threshold": "10s",
+				"reject_connect_on_lag": true,
+				"kafka": {
+					"brokers": ["localhost:9092"],
+					"topic": "access_revoke",
+					"fetch_max_wait": "1s",
+					"sasl_mechanism": "plain",
+					"sasl_user": "user",
+					"sasl_password": "secret"
+				}
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(configFile, []byte(content), 0600))
+
+	conf, _ := getConfig(t, configFile)
+
+	source := conf.AccessRevoke.Source
+	require.Equal(t, "kafka", source.Type)
+	require.Equal(t, configtypes.Duration(40*time.Minute), source.Window)
+	require.Equal(t, configtypes.Duration(90*time.Second), source.StartupTimeout)
+	require.Equal(t, configtypes.Duration(10*time.Second), source.LagThreshold)
+	require.True(t, source.RejectConnectOnLag)
+	require.Equal(t, []string{"localhost:9092"}, source.Kafka.Brokers)
+	require.Equal(t, "access_revoke", source.Kafka.Topic)
+	require.Equal(t, configtypes.Duration(time.Second), source.Kafka.FetchMaxWait)
+	require.Equal(t, "centrifugo-method", source.Kafka.MethodHeader)
+	require.Equal(t, "plain", source.Kafka.SASLMechanism)
+	require.Equal(t, "user", source.Kafka.SASLUser)
+	require.Equal(t, "secret", source.Kafka.SASLPassword)
+}
+
+func TestValidateAccessRevokeSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr string
+	}{
+		{
+			name:   "no source is valid",
+			modify: func(_ *Config) {},
+		},
+		{
+			name: "empty source type ignores other source fields",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Window = 0
+				c.AccessRevoke.Source.Kafka.Brokers = nil
+			},
+		},
+		{
+			name: "unknown source type is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "nats"
+			},
+			wantErr: "unknown access_revoke.source.type",
+		},
+		{
+			name: "valid kafka source",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.Kafka.Brokers = []string{"localhost:9092"}
+				c.AccessRevoke.Source.Kafka.Topic = "access_revoke"
+			},
+		},
+		{
+			name: "kafka source without brokers is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.Kafka.Topic = "access_revoke"
+			},
+			wantErr: "access_revoke.source.kafka.brokers must be set",
+		},
+		{
+			name: "kafka source without topic is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.Kafka.Brokers = []string{"localhost:9092"}
+			},
+			wantErr: "access_revoke.source.kafka.topic must be set",
+		},
+		{
+			name: "window shorter than default ttl is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.Kafka.Brokers = []string{"localhost:9092"}
+				c.AccessRevoke.Source.Kafka.Topic = "access_revoke"
+				c.AccessRevoke.Source.Window = configtypes.Duration(time.Minute)
+			},
+			wantErr: "access_revoke.source.window must be greater or equal to access_revoke.default_ttl",
+		},
+		{
+			name: "zero window is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.Window = 0
+			},
+			wantErr: "access_revoke.source.window must be greater than zero",
+		},
+		{
+			name: "zero startup timeout is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.StartupTimeout = 0
+			},
+			wantErr: "access_revoke.source.startup_timeout must be greater than zero",
+		},
+		{
+			name: "zero lag threshold is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.Source.Type = "kafka"
+				c.AccessRevoke.Source.LagThreshold = 0
+			},
+			wantErr: "access_revoke.source.lag_threshold must be greater than zero",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.modify(&cfg)
+			err := cfg.Validate()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

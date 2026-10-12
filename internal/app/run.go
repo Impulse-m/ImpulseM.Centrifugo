@@ -212,6 +212,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("error setting up client handler")
 	}
+	serviceManager.Register(clientHandler.Services()...)
 	if cfg.RPC.Ping.Enabled {
 		log.Info().Str("method", cfg.RPC.Ping.Method).Msg("RPC ping extension enabled")
 		clientHandler.SetRPCExtension(cfg.RPC.Ping.Method, func(c client.Client, e centrifuge.RPCEvent) (centrifuge.RPCReply, error) {

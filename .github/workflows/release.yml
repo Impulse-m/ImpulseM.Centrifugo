@@ -12,8 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
@@ -99,6 +98,8 @@ jobs:
     name: Test
     needs:
       - validate
+    permissions:
+      contents: read
     uses: ./.github/workflows/test.yml
 
   images:
@@ -106,6 +107,9 @@ jobs:
     needs:
       - validate
       - test
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/images.yml
     with:
       version: ${{ needs.validate.outputs.version }}
@@ -117,6 +121,8 @@ jobs:
       - validate
       - images
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       PRERELEASE: ${{ needs.validate.outputs.prerelease }}

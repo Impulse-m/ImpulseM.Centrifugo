@@ -2,10 +2,8 @@ package consuming
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,15 +11,12 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/api"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/kafkautil"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
-	"github.com/rs/zerolog"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
-	"github.com/twmb/franz-go/pkg/sasl/aws"
-	"github.com/twmb/franz-go/pkg/sasl/plain"
-	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
 type KafkaConfig = configtypes.KafkaConsumerConfig
@@ -99,48 +94,6 @@ func NewKafkaConsumer(
 
 const kafkaClientID = "centrifugo"
 
-// kgoZerologAdapter adapts zerolog.Logger to kgo.Logger interface.
-type kgoZerologAdapter struct {
-	log zerolog.Logger
-}
-
-func (l *kgoZerologAdapter) Level() kgo.LogLevel {
-	switch {
-	case logging.Enabled(logging.TraceLevel):
-		return kgo.LogLevelDebug // Kafka client debug level is more like our trace.
-	case logging.Enabled(logging.InfoLevel):
-		return kgo.LogLevelInfo
-	case logging.Enabled(logging.WarnLevel):
-		return kgo.LogLevelWarn
-	case logging.Enabled(logging.ErrorLevel):
-		return kgo.LogLevelError
-	default:
-		return kgo.LogLevelNone
-	}
-}
-
-func (l *kgoZerologAdapter) Log(level kgo.LogLevel, msg string, keyvals ...any) {
-	var e *zerolog.Event
-	switch level {
-	case kgo.LogLevelError:
-		e = l.log.Error()
-	case kgo.LogLevelWarn:
-		e = l.log.Warn()
-	case kgo.LogLevelInfo:
-		e = l.log.Info()
-	case kgo.LogLevelDebug:
-		e = l.log.Trace() // Kafka client debug level is more like our trace.
-	default:
-		return
-	}
-	for i := 0; i+1 < len(keyvals); i += 2 {
-		if key, ok := keyvals[i].(string); ok {
-			e = e.Interface(key, keyvals[i+1])
-		}
-	}
-	e.Msg(msg)
-}
-
 // leaveGroup sends a manual LeaveGroup request for static members. franz-go's Close does not
 // send LeaveGroup for static members by design. This method is only used in tests to simulate
 // the old behavior where dynamic instance IDs were combined with a manual LeaveGroup.
@@ -160,8 +113,18 @@ func (c *KafkaConsumer) leaveGroup(ctx context.Context, client *kgo.Client) erro
 }
 
 func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
+	connOpts, err := kafkautil.Options(kafkautil.Config{
+		Name:          c.name,
+		Brokers:       c.config.Brokers,
+		TLS:           c.config.TLS,
+		SASLMechanism: c.config.SASLMechanism,
+		SASLUser:      c.config.SASLUser,
+		SASLPassword:  c.config.SASLPassword,
+	}, c.common.log)
+	if err != nil {
+		return nil, err
+	}
 	opts := []kgo.Opt{
-		kgo.SeedBrokers(c.config.Brokers...),
 		kgo.ConsumeTopics(c.config.Topics...),
 		kgo.ConsumerGroup(c.config.ConsumerGroup),
 		kgo.OnPartitionsAssigned(c.assigned),
@@ -171,8 +134,8 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 		kgo.BlockRebalanceOnPoll(),
 		kgo.ClientID(kafkaClientID),
 		kgo.FetchMaxWait(time.Duration(c.config.FetchMaxWait)),
-		kgo.WithLogger(&kgoZerologAdapter{log: c.common.log}),
 	}
+	opts = append(opts, connOpts...)
 	if c.config.InstanceID != "" { // Important to keep separate, otherwise pointer to empty string is used in kgo.InstanceID.
 		opts = append(opts, kgo.InstanceID(c.config.InstanceID))
 	}
@@ -183,44 +146,6 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 		opts = append(opts, kgo.FetchIsolationLevel(kgo.ReadCommitted()))
 	} else {
 		opts = append(opts, kgo.FetchIsolationLevel(kgo.ReadUncommitted()))
-	}
-	if c.config.TLS.Enabled {
-		tlsConfig, err := c.config.TLS.ToGoTLSConfig("kafka:" + c.name)
-		if err != nil {
-			return nil, fmt.Errorf("error making TLS configuration: %w", err)
-		}
-		dialer := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: 10 * time.Second},
-			Config:    tlsConfig,
-		}
-		opts = append(opts, kgo.Dialer(dialer.DialContext))
-	}
-
-	if c.config.SASLMechanism != "" {
-		switch c.config.SASLMechanism {
-		case "plain":
-			opts = append(opts, kgo.SASL(plain.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsMechanism()))
-		case "scram-sha-256":
-			opts = append(opts, kgo.SASL(scram.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsSha256Mechanism()))
-		case "scram-sha-512":
-			opts = append(opts, kgo.SASL(scram.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsSha512Mechanism()))
-		case "aws-msk-iam":
-			opts = append(opts, kgo.SASL(aws.Auth{
-				AccessKey: c.config.SASLUser,
-				SecretKey: c.config.SASLPassword,
-			}.AsManagedStreamingIAMMechanism()))
-		default:
-			return nil, fmt.Errorf("unsupported SASL mechanism: %s", c.config.SASLMechanism)
-		}
 	}
 
 	client, err := kgo.NewClient(opts...)

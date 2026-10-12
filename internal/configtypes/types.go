@@ -63,6 +63,31 @@ type Token struct {
 	IssuerRegex        string `mapstructure:"issuer_regex" json:"issuer_regex" envconfig:"issuer_regex" yaml:"issuer_regex" toml:"issuer_regex"`
 	UserIDClaim                         string `mapstructure:"user_id_claim" json:"user_id_claim" envconfig:"user_id_claim" yaml:"user_id_claim" toml:"user_id_claim"`
 	InsecureSkipJWKSEndpointSafetyCheck bool   `mapstructure:"insecure_skip_jwks_endpoint_safety_check" json:"insecure_skip_jwks_endpoint_safety_check" envconfig:"insecure_skip_jwks_endpoint_safety_check" yaml:"insecure_skip_jwks_endpoint_safety_check" toml:"insecure_skip_jwks_endpoint_safety_check"`
+
+	// Ed25519PublicKeys is a list of static Ed25519 public keys used to validate EdDSA tokens.
+	Ed25519PublicKeys Ed25519PublicKeys `mapstructure:"ed25519_public_keys" json:"ed25519_public_keys" envconfig:"ed25519_public_keys" yaml:"ed25519_public_keys" toml:"ed25519_public_keys"`
+}
+
+// Ed25519PublicKey is a static Ed25519 public key used to validate EdDSA tokens.
+type Ed25519PublicKey struct {
+	// KID is a key ID. EdDSA token selects the key by its kid header. Required when more than one key is configured.
+	KID string `mapstructure:"kid" json:"kid" envconfig:"kid" yaml:"kid" toml:"kid"`
+	// PublicKey is a PEM encoded Ed25519 public key (PKIX "PUBLIC KEY").
+	PublicKey string `mapstructure:"public_key" json:"public_key" envconfig:"public_key" yaml:"public_key" toml:"public_key"`
+}
+
+type Ed25519PublicKeys []Ed25519PublicKey
+
+// Decode to implement the envconfig.Decoder interface
+func (d *Ed25519PublicKeys) Decode(value string) error {
+	if value == "" {
+		// If the value is empty, leave the slice as it is.
+		return nil
+	}
+	if err := json.Unmarshal([]byte(value), d); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON array: %w", err)
+	}
+	return nil
 }
 
 // SubscriptionToken can be used to set custom configuration for subscription tokens.

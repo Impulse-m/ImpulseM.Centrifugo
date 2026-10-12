@@ -2760,6 +2760,38 @@
             "default": "",
             "comment": "",
             "is_complex_type": false
+          },
+          {
+            "field": "client.token.ed25519_public_keys",
+            "name": "ed25519_public_keys",
+            "go_name": "Ed25519PublicKeys",
+            "level": 3,
+            "type": "[]Ed25519PublicKey",
+            "default": "",
+            "comment": "Ed25519PublicKeys is a list of static Ed25519 public keys used to validate EdDSA tokens.",
+            "is_complex_type": true,
+            "children": [
+              {
+                "field": "client.token.ed25519_public_keys[].kid",
+                "name": "kid",
+                "go_name": "KID",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "KID is a key ID. EdDSA token selects the key by its kid header. Required when more than one key is configured.",
+                "is_complex_type": false
+              },
+              {
+                "field": "client.token.ed25519_public_keys[].public_key",
+                "name": "public_key",
+                "go_name": "PublicKey",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "PublicKey is a PEM encoded Ed25519 public key (PKIX \"PUBLIC KEY\").",
+                "is_complex_type": false
+              }
+            ]
           }
         ]
       },
@@ -2902,6 +2934,38 @@
             "default": "",
             "comment": "",
             "is_complex_type": false
+          },
+          {
+            "field": "client.subscription_token.ed25519_public_keys",
+            "name": "ed25519_public_keys",
+            "go_name": "Ed25519PublicKeys",
+            "level": 3,
+            "type": "[]Ed25519PublicKey",
+            "default": "",
+            "comment": "Ed25519PublicKeys is a list of static Ed25519 public keys used to validate EdDSA tokens.",
+            "is_complex_type": true,
+            "children": [
+              {
+                "field": "client.subscription_token.ed25519_public_keys[].kid",
+                "name": "kid",
+                "go_name": "KID",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "KID is a key ID. EdDSA token selects the key by its kid header. Required when more than one key is configured.",
+                "is_complex_type": false
+              },
+              {
+                "field": "client.subscription_token.ed25519_public_keys[].public_key",
+                "name": "public_key",
+                "go_name": "PublicKey",
+                "level": 4,
+                "type": "string",
+                "default": "",
+                "comment": "PublicKey is a PEM encoded Ed25519 public key (PKIX \"PUBLIC KEY\").",
+                "is_complex_type": false
+              }
+            ]
           }
         ]
       },

@@ -1,6 +1,7 @@
 package confighelpers
 
 import (
+	"crypto/ed25519"
 	"fmt"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -31,6 +32,20 @@ func MakeVerifierConfig(tokenConf configtypes.Token) (jwtverify.VerifierConfig, 
 			return jwtverify.VerifierConfig{}, fmt.Errorf("error parsing ECDSA public key: %w", err)
 		}
 		cfg.ECDSAPublicKey = pubKey
+	}
+
+	if len(tokenConf.Ed25519PublicKeys) > 0 {
+		cfg.Ed25519PublicKeys = make(map[string]ed25519.PublicKey, len(tokenConf.Ed25519PublicKeys))
+	}
+	for i, key := range tokenConf.Ed25519PublicKeys {
+		if _, ok := cfg.Ed25519PublicKeys[key.KID]; ok {
+			return jwtverify.VerifierConfig{}, fmt.Errorf("duplicate Ed25519 public key kid %q at index %d", key.KID, i)
+		}
+		pubKey, err := jwtutils.ParseEd25519PublicKeyFromPEM([]byte(key.PublicKey))
+		if err != nil {
+			return jwtverify.VerifierConfig{}, fmt.Errorf("error parsing Ed25519 public key at index %d (kid %q): %w", i, key.KID, err)
+		}
+		cfg.Ed25519PublicKeys[key.KID] = pubKey
 	}
 
 	cfg.JWKSPublicEndpoint = tokenConf.JWKSPublicEndpoint

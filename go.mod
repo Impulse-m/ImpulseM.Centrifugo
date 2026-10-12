@@ -146,4 +146,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-replace github.com/centrifugal/centrifuge => github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261012135254-3b27a40ff228
+replace github.com/centrifugal/centrifuge => github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261012175723-cb6edf5a84b3

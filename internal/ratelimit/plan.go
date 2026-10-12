@@ -6,6 +6,9 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
+// defaultScopeName names the scope shared by all operations which fall back to default buckets.
+const defaultScopeName = "default"
+
 // Operation is a client command which can be rate limited.
 type Operation uint8
 
@@ -49,8 +52,12 @@ type slotBucket struct {
 }
 
 // scope is a list of buckets which must all allow an operation. Nil scope means no limit.
+// name and argv are used by Redis limits only: name is a part of the Redis key and argv holds
+// the arguments of the rate limit script for the buckets.
 type scope struct {
+	name    string
 	buckets []slotBucket
+	argv    []string
 }
 
 // allowed reports whether all buckets of the scope allow an operation at now. It does not change state.
@@ -80,6 +87,20 @@ type opLimit struct {
 	overrides map[string]*scope
 }
 
+// resolve returns the scope of the operation for key: an override for key when there is one,
+// otherwise the base scope. Nil means no limit.
+func (l *opLimit) resolve(key string) *scope {
+	if s, ok := l.overrides[key]; ok {
+		return s
+	}
+	return l.base
+}
+
+// needsKey reports whether resolution depends on the key (namespace or method).
+func (l *opLimit) needsKey() bool {
+	return len(l.overrides) > 0
+}
+
 // CommandPlan is a compiled rate limit of client commands. It is built once from configuration
 // and is safe for concurrent use: all mutable state is kept in ConnState.
 type CommandPlan struct {
@@ -96,16 +117,17 @@ type slotAllocator struct {
 	maxInterval time.Duration
 }
 
-// compileScope compiles enabled buckets into a scope. Returns nil when there is nothing to limit.
-func (a *slotAllocator) compileScope(enabled bool, buckets configtypes.RateLimitBucketList) *scope {
+// compileScope compiles enabled buckets into a scope named name. Returns nil when there is nothing to limit.
+func (a *slotAllocator) compileScope(name string, enabled bool, buckets configtypes.RateLimitBucketList) *scope {
 	if !enabled || len(buckets) == 0 {
 		return nil
 	}
-	s := &scope{buckets: make([]slotBucket, 0, len(buckets))}
+	s := &scope{name: name, buckets: make([]slotBucket, 0, len(buckets))}
+	var maxInterval time.Duration
 	for _, item := range buckets {
 		interval := item.Interval.ToDuration()
-		if interval > a.maxInterval {
-			a.maxInterval = interval
+		if interval > maxInterval {
+			maxInterval = interval
 		}
 		s.buckets = append(s.buckets, slotBucket{
 			slot:   a.next,
@@ -113,12 +135,16 @@ func (a *slotAllocator) compileScope(enabled bool, buckets configtypes.RateLimit
 		})
 		a.next++
 	}
+	if maxInterval > a.maxInterval {
+		a.maxInterval = maxInterval
+	}
+	s.argv = redisScriptArgs(s.buckets, maxInterval)
 	return s
 }
 
 // baseScope returns buckets of the operation, or the default scope when the operation has none.
-func (a *slotAllocator) baseScope(enabled bool, buckets configtypes.RateLimitBucketList, def *scope) *scope {
-	if s := a.compileScope(enabled, buckets); s != nil {
+func (a *slotAllocator) baseScope(name string, enabled bool, buckets configtypes.RateLimitBucketList, def *scope) *scope {
+	if s := a.compileScope(name, enabled, buckets); s != nil {
 		return s
 	}
 	return def
@@ -127,8 +153,9 @@ func (a *slotAllocator) baseScope(enabled bool, buckets configtypes.RateLimitBuc
 // channelLimit compiles a channel operation with its namespace overrides. An override counts only
 // when it is enabled and has buckets: per the docs an enabled override without buckets is treated
 // the same as no override, so the base operation buckets apply, or default when there are none.
-func (a *slotAllocator) channelLimit(cfg configtypes.RateLimitChannelBuckets, def *scope) opLimit {
-	limit := opLimit{base: a.baseScope(cfg.Enabled, cfg.Buckets, def)}
+func (a *slotAllocator) channelLimit(op Operation, cfg configtypes.RateLimitChannelBuckets, def *scope) opLimit {
+	name := op.String()
+	limit := opLimit{base: a.baseScope(name, cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.NamespaceOverrides {
 		if !override.Enabled || len(override.Buckets) == 0 {
 			continue
@@ -136,13 +163,14 @@ func (a *slotAllocator) channelLimit(cfg configtypes.RateLimitChannelBuckets, de
 		if limit.overrides == nil {
 			limit.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.NamespaceName] = a.compileScope(true, override.Buckets)
+		limit.overrides[override.NamespaceName] = a.compileScope(name+".ns."+override.NamespaceName, true, override.Buckets)
 	}
 	return limit
 }
 
+// rpcLimit compiles RPC buckets with method overrides, same resolution as channelLimit.
 func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope) opLimit {
-	limit := opLimit{base: a.baseScope(cfg.Enabled, cfg.Buckets, def)}
+	limit := opLimit{base: a.baseScope(OperationRPC.String(), cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.MethodOverrides {
 		if !override.Enabled || len(override.Buckets) == 0 {
 			continue
@@ -150,7 +178,7 @@ func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope
 		if limit.overrides == nil {
 			limit.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.Method] = a.compileScope(true, override.Buckets)
+		limit.overrides[override.Method] = a.compileScope(OperationRPC.String()+".m."+override.Method, true, override.Buckets)
 	}
 	return limit
 }
@@ -162,17 +190,17 @@ func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope
 func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 	alloc := &slotAllocator{}
 	p := &CommandPlan{}
-	p.total = alloc.compileScope(cfg.Total.Enabled, cfg.Total.Buckets)
-	def := alloc.compileScope(cfg.Default.Enabled, cfg.Default.Buckets)
+	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
+	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
 
-	p.ops[OperationSubscribe] = alloc.channelLimit(cfg.Subscribe, def)
-	p.ops[OperationUnsubscribe] = alloc.channelLimit(cfg.Unsubscribe, def)
-	p.ops[OperationPublish] = alloc.channelLimit(cfg.Publish, def)
-	p.ops[OperationHistory] = alloc.channelLimit(cfg.History, def)
-	p.ops[OperationPresence] = alloc.channelLimit(cfg.Presence, def)
-	p.ops[OperationPresenceStats] = alloc.channelLimit(cfg.PresenceStats, def)
-	p.ops[OperationSubRefresh] = alloc.channelLimit(cfg.SubRefresh, def)
-	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
+	p.ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
+	p.ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
+	p.ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
+	p.ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
+	p.ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
+	p.ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
+	p.ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
+	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
 	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
 
 	p.numSlots = alloc.next
@@ -185,18 +213,18 @@ func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 	alloc := &slotAllocator{}
 	p := &CommandPlan{}
-	p.total = alloc.compileScope(cfg.Total.Enabled, cfg.Total.Buckets)
-	def := alloc.compileScope(cfg.Default.Enabled, cfg.Default.Buckets)
+	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
+	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
 
-	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
-	p.ops[OperationSubscribe] = alloc.channelLimit(cfg.Subscribe, def)
-	p.ops[OperationUnsubscribe] = alloc.channelLimit(cfg.Unsubscribe, def)
-	p.ops[OperationPublish] = alloc.channelLimit(cfg.Publish, def)
-	p.ops[OperationHistory] = alloc.channelLimit(cfg.History, def)
-	p.ops[OperationPresence] = alloc.channelLimit(cfg.Presence, def)
-	p.ops[OperationPresenceStats] = alloc.channelLimit(cfg.PresenceStats, def)
-	p.ops[OperationSubRefresh] = alloc.channelLimit(cfg.SubRefresh, def)
-	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
+	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
+	p.ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
+	p.ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
+	p.ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
+	p.ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
+	p.ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
+	p.ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
+	p.ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
+	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
 	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
 
 	p.numSlots = alloc.next
@@ -207,16 +235,12 @@ func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 // resolve returns buckets for operation op. key is a namespace name for channel operations
 // and a method name for RPC. Nil means no limit.
 func (p *CommandPlan) resolve(op Operation, key string) *scope {
-	limit := &p.ops[op]
-	if s, ok := limit.overrides[key]; ok {
-		return s
-	}
-	return limit.base
+	return p.ops[op].resolve(key)
 }
 
 // needsKey reports whether resolution of op depends on the key (namespace or method).
 func (p *CommandPlan) needsKey(op Operation) bool {
-	return len(p.ops[op].overrides) > 0
+	return p.ops[op].needsKey()
 }
 
 // allow checks the operation against its buckets and then against total. Nothing is consumed

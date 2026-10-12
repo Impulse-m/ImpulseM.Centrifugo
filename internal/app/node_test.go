@@ -41,3 +41,21 @@ func TestCentrifugeNodeConfigChannelMediumOptions(t *testing.T) {
 	require.False(t, nodeCfg.GetChannelMediumOptions("unknown:test").SharedPositionSync)
 	require.True(t, nodeCfg.GetChannelMediumOptions("top").SharedPositionSync)
 }
+
+func TestCentrifugeNodeConfigChannelMediumOptionsUnsetWithoutMedium(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+		{
+			Name: "plain",
+			ChannelOptions: configtypes.ChannelOptions{
+				ForcePositioning: true,
+			},
+		},
+	}
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	// No channel options use the medium, so Core must not look it up on every publication.
+	require.Nil(t, nodeCfg.GetChannelMediumOptions)
+}

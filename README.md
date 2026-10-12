@@ -15,6 +15,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * Detection latency: one to two `client.channel_position_check_delay` intervals for a node-wide loss, one interval for a single client.
   * `client.channel_position_check_delay` must exceed the broker's worst-case PUB/SUB lag, otherwise a publication in flight is reported as a loss.
   * Options are applied when a channel's first subscriber arrives on the node. A config change applies to a channel after it empties.
+  * Enabling it for the first time (no channel used it at startup) requires a node restart: when no channel options use it, the node skips the per-publication lookup entirely.
 
 ### Access revocation event source
 

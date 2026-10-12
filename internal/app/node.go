@@ -21,12 +21,17 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 		EnableRecoveredPublicationsHistogram: appCfg.Prometheus.RecoveredPublicationsHistogram,
 	}
 	cfg.UseSingleFlight = appCfg.Singleflight.Enabled
-	cfg.GetChannelMediumOptions = func(ch string) centrifuge.ChannelMediumOptions {
-		_, _, chOpts, found, err := cfgContainer.ChannelOptions(ch)
-		if err != nil || !found {
-			return centrifuge.ChannelMediumOptions{}
+	// Set only when some channel options use the channel medium: with a non-nil GetChannelMediumOptions Core
+	// looks up the medium on every publication, which other setups should not pay for. Enabling the medium on
+	// a running node therefore requires a restart; changes of enabled options apply after a channel empties.
+	if channelMediumEnabled(appCfg) {
+		cfg.GetChannelMediumOptions = func(ch string) centrifuge.ChannelMediumOptions {
+			_, _, chOpts, found, err := cfgContainer.ChannelOptions(ch)
+			if err != nil || !found {
+				return centrifuge.ChannelMediumOptions{}
+			}
+			return confighelpers.MediumOptionsFromChannelOptions(chOpts)
 		}
-		return confighelpers.MediumOptionsFromChannelOptions(chOpts)
 	}
 	cfg.Name = nodeName(appCfg)
 	cfg.ChannelMaxLength = appCfg.Channel.MaxLength
@@ -54,6 +59,20 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 		cfg.UnidirectionalCodeToDisconnect = uniCodeTransforms
 	}
 	return cfg
+}
+
+// channelMediumEnabled reports whether channels without namespace or any channel namespace enable a channel
+// medium feature.
+func channelMediumEnabled(cfg config.Config) bool {
+	if confighelpers.MediumEnabled(cfg.Channel.WithoutNamespace) {
+		return true
+	}
+	for _, ns := range cfg.Channel.Namespaces {
+		if confighelpers.MediumEnabled(ns.ChannelOptions) {
+			return true
+		}
+	}
+	return false
 }
 
 // nodeName returns a name for this Centrifugo node. If no name provided

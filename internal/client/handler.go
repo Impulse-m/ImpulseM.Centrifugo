@@ -17,6 +17,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/protobuf/proto"
 )
 
 // RPCExtensionFunc ...
@@ -231,10 +232,14 @@ func tokenChannelsChanged(client *centrifuge.Client, subs map[string]centrifuge.
 			return true
 		}
 	}
-	// Check channels not actual anymore.
+	// Check channels not actual anymore and server tags filters changed.
 	for ch, chCtx := range client.ChannelsWithContext() {
 		if chCtx.Source == subsource.ConnectionToken {
-			if _, ok := subs[ch]; !ok {
+			newOpts, ok := subs[ch]
+			if !ok {
+				return true
+			}
+			if !proto.Equal(chCtx.ServerTagsFilter, newOpts.ServerTagsFilter) {
 				return true
 			}
 		}
@@ -588,8 +593,9 @@ func (h *Handler) OnSubRefresh(c Client, subRefreshProxyHandler proxy.SubRefresh
 		return centrifuge.SubRefreshReply{}, SubRefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	return centrifuge.SubRefreshReply{
-		ExpireAt: token.Options.ExpireAt,
-		Info:     token.Options.ChannelInfo,
+		ExpireAt:         token.Options.ExpireAt,
+		Info:             token.Options.ChannelInfo,
+		ServerTagsFilter: token.Options.ServerTagsFilter,
 	}, SubRefreshExtra{}, nil
 }
 

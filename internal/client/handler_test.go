@@ -12,6 +12,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
+	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -1194,6 +1195,210 @@ func TestClientOnSubscribe_SubRefreshProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, numProxyCalls)
 	require.False(t, reply.ClientSideRefresh)
+}
+
+func testServerTagsFilter() *protocol.FilterNode {
+	return &protocol.FilterNode{
+		Op: "and",
+		Nodes: []*protocol.FilterNode{
+			{Key: "type", Cmp: "eq", Val: "a"},
+			{Key: "tier", Cmp: "in", Vals: []string{"x", "y"}},
+		},
+	}
+}
+
+func getSubscribeTokenHSWithServerTagsFilter(user string, channel string, serverTagsFilter *protocol.FilterNode) string {
+	builder := getTokenBuilder(nil, "secret")
+	claims := &jwtverify.SubscribeTokenClaims{
+		SubscribeOptions: jwtverify.SubscribeOptions{
+			ServerTagsFilter: serverTagsFilter,
+		},
+		Channel: channel,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject: user,
+		},
+	}
+	token, err := builder.Build(claims)
+	if err != nil {
+		panic(err)
+	}
+	return token.String()
+}
+
+func TestClientSubscribeWithTokenServerTagsFilter(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	transport := tools.NewTestTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
+	require.NoError(t, err)
+	defer func() { _ = closeFn() }()
+
+	node.OnConnecting(func(ctx context.Context, event centrifuge.ConnectEvent) (centrifuge.ConnectReply, error) {
+		return centrifuge.ConnectReply{
+			Credentials: &centrifuge.Credentials{
+				UserID: "12",
+			},
+		}, nil
+	})
+
+	connectCommand := &protocol.Command{
+		Id:      1,
+		Connect: &protocol.ConnectRequest{},
+	}
+	encoder := protocol.NewJSONCommandEncoder()
+	data, err := encoder.Encode(connectCommand)
+	require.NoError(t, err)
+	ok := centrifuge.HandleReadFrame(client, bytes.NewReader(data))
+	require.True(t, ok)
+
+	reply, _, err := h.OnSubscribe(client, centrifuge.SubscribeEvent{
+		Channel: "$test1",
+		Token:   getSubscribeTokenHSWithServerTagsFilter("12", "$test1", testServerTagsFilter()),
+	}, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, testServerTagsFilter(), reply.Options.ServerTagsFilter)
+}
+
+func TestClientOnSubscribe_ServerTagsFilterFromProxy(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Proxy.Subscribe.Endpoint = "http://localhost:8080"
+	cfg.Channel.WithoutNamespace.SubscribeProxyEnabled = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+
+	proxyFunc := func(c proxy.Client, e centrifuge.SubscribeEvent, chOpts configtypes.ChannelOptions, pcd proxy.PerCallData) (centrifuge.SubscribeReply, proxy.SubscribeExtra, error) {
+		return centrifuge.SubscribeReply{
+			Options: centrifuge.SubscribeOptions{
+				ServerTagsFilter: testServerTagsFilter(),
+			},
+			ClientSideRefresh: !chOpts.SubRefreshProxyEnabled,
+		}, proxy.SubscribeExtra{}, nil
+	}
+
+	reply, _, err := h.OnSubscribe(&tools.TestClientMock{
+		UserIDFunc: func() string {
+			return "42"
+		},
+	}, centrifuge.SubscribeEvent{
+		Channel: "user",
+	}, proxyFunc, nil)
+	require.NoError(t, err)
+	require.Equal(t, testServerTagsFilter(), reply.Options.ServerTagsFilter)
+}
+
+func TestClientSideSubRefresh_ServerTagsFilter(t *testing.T) {
+	node := tools.NodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	transport := tools.NewTestTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
+	require.NoError(t, err)
+	defer func() { _ = closeFn() }()
+
+	node.OnConnecting(func(ctx context.Context, event centrifuge.ConnectEvent) (centrifuge.ConnectReply, error) {
+		return centrifuge.ConnectReply{
+			Credentials: &centrifuge.Credentials{
+				UserID: "12",
+			},
+		}, nil
+	})
+
+	connectCommand := &protocol.Command{
+		Id:      1,
+		Connect: &protocol.ConnectRequest{},
+	}
+	encoder := protocol.NewJSONCommandEncoder()
+	data, err := encoder.Encode(connectCommand)
+	require.NoError(t, err)
+	ok := centrifuge.HandleReadFrame(client, bytes.NewReader(data))
+	require.True(t, ok)
+
+	subRefreshReply, _, err := h.OnSubRefresh(client, nil, centrifuge.SubRefreshEvent{
+		Channel: "$test1",
+		Token:   getSubscribeTokenHSWithServerTagsFilter("12", "$test1", testServerTagsFilter()),
+	})
+	require.NoError(t, err)
+	require.Equal(t, testServerTagsFilter(), subRefreshReply.ServerTagsFilter)
+
+	subRefreshReply, _, err = h.OnSubRefresh(client, nil, centrifuge.SubRefreshEvent{
+		Channel: "$test1",
+		Token:   getSubscribeTokenHS("12", "$test1", 0),
+	})
+	require.NoError(t, err)
+	require.Nil(t, subRefreshReply.ServerTagsFilter)
+}
+
+func TestTokenChannelsChangedServerTagsFilter(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	_ = NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	transport := tools.NewTestTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
+	require.NoError(t, err)
+	defer func() { _ = closeFn() }()
+
+	node.OnConnecting(func(ctx context.Context, event centrifuge.ConnectEvent) (centrifuge.ConnectReply, error) {
+		return centrifuge.ConnectReply{
+			Credentials: &centrifuge.Credentials{
+				UserID: "12",
+			},
+			Subscriptions: map[string]centrifuge.SubscribeOptions{
+				"test1": {
+					Source:           subsource.ConnectionToken,
+					ServerTagsFilter: testServerTagsFilter(),
+				},
+			},
+		}, nil
+	})
+
+	connectCommand := &protocol.Command{
+		Id:      1,
+		Connect: &protocol.ConnectRequest{},
+	}
+	encoder := protocol.NewJSONCommandEncoder()
+	data, err := encoder.Encode(connectCommand)
+	require.NoError(t, err)
+	ok := centrifuge.HandleReadFrame(client, bytes.NewReader(data))
+	require.True(t, ok)
+	require.True(t, client.IsSubscribed("test1"))
+
+	// Same filter content, different pointer: no change.
+	require.False(t, tokenChannelsChanged(client, map[string]centrifuge.SubscribeOptions{
+		"test1": {ServerTagsFilter: testServerTagsFilter()},
+	}))
+
+	// Different filter: change.
+	otherFilter := testServerTagsFilter()
+	otherFilter.Nodes[0].Val = "b"
+	require.True(t, tokenChannelsChanged(client, map[string]centrifuge.SubscribeOptions{
+		"test1": {ServerTagsFilter: otherFilter},
+	}))
+
+	// Filter removed: change.
+	require.True(t, tokenChannelsChanged(client, map[string]centrifuge.SubscribeOptions{
+		"test1": {},
+	}))
 }
 
 func TestSingleConnection(t *testing.T) {

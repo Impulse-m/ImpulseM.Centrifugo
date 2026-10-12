@@ -40,6 +40,11 @@ var (
 		Code:    108,
 		Message: "not available",
 	}
+	// ErrorTooManyRequests means that a rate limit is exceeded, the request can be retried later.
+	ErrorTooManyRequests = &Error{
+		Code:    111,
+		Message: "too many requests",
+	}
 	// ErrorUnrecoverablePosition means that stream does not contain required
 	// range of publications to fulfill a history query. This can be happen to
 	// expiration, size limitation or due to wrong epoch.
@@ -62,6 +67,8 @@ func MapErrorToHTTPCode(err *Error) int {
 		return http.StatusNotFound
 	case ErrorBadRequest.Code, ErrorNotAvailable.Code:
 		return http.StatusBadRequest
+	case ErrorTooManyRequests.Code:
+		return http.StatusTooManyRequests
 	case ErrorUnrecoverablePosition.Code:
 		return http.StatusRequestedRangeNotSatisfiable
 	case ErrorConflict.Code:
@@ -81,6 +88,8 @@ func MapErrorToGRPCCode(err *Error) codes.Code {
 		return codes.NotFound
 	case ErrorBadRequest.Code, ErrorNotAvailable.Code:
 		return codes.InvalidArgument
+	case ErrorTooManyRequests.Code:
+		return codes.ResourceExhausted
 	case ErrorUnrecoverablePosition.Code:
 		return codes.OutOfRange
 	case ErrorConflict.Code:

@@ -101,6 +101,10 @@ type ChannelOptions struct {
 	// AllowRecovery allows recovery when client asks about it.
 	AllowRecovery bool `mapstructure:"allow_recovery" json:"allow_recovery" envconfig:"allow_recovery" yaml:"allow_recovery" toml:"allow_recovery"`
 
+	// SharedPositionSync delegates client position checks for channel to a shared channel medium on the node.
+	// Requires positioning or recovery. Requires client.channel_position_check_delay to be greater than zero.
+	SharedPositionSync bool `mapstructure:"shared_position_sync" json:"shared_position_sync" envconfig:"shared_position_sync" yaml:"shared_position_sync" toml:"shared_position_sync"`
+
 	// ForceRecoveryMode can set the recovery mode for all channel subscribers in the namespace which use recovery.
 	ForceRecoveryMode string `mapstructure:"force_recovery_mode" json:"force_recovery_mode" envconfig:"force_recovery_mode" yaml:"force_recovery_mode" toml:"force_recovery_mode"`
 

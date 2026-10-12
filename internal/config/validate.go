@@ -220,6 +220,12 @@ func validateChannelOptions(c configtypes.ChannelOptions, globalHistoryMetaTTL c
 	if c.ForceRecovery && (c.HistorySize == 0 || c.HistoryTTL == 0) {
 		return errors.New("both history size and history ttl required for recovery")
 	}
+	if c.SharedPositionSync && !c.ForcePositioning && !c.AllowPositioning && !c.ForceRecovery && !c.AllowRecovery {
+		return errors.New("shared_position_sync requires positioning or recovery")
+	}
+	if c.SharedPositionSync && cfg.Client.ChannelPositionCheckDelay == 0 {
+		return errors.New("shared_position_sync requires client.channel_position_check_delay to be greater than zero")
+	}
 	if c.ChannelRegex != "" {
 		if _, err := regexp.Compile(c.ChannelRegex); err != nil {
 			return fmt.Errorf("invalid channel regex %s: %w", c.ChannelRegex, err)

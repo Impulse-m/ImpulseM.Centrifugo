@@ -9,6 +9,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
+* Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enabled`): concurrent identical calls share one broker or presence request. Helps only with a remote engine (Redis), not with the memory engine.
 
 ### Access revocation event source
 

@@ -85,6 +85,8 @@ type Config struct {
 	Admin configtypes.Admin `mapstructure:"admin" json:"admin" envconfig:"admin" toml:"admin" yaml:"admin"`
 	// Prometheus metrics configuration.
 	Prometheus configtypes.Prometheus `mapstructure:"prometheus" json:"prometheus" envconfig:"prometheus" toml:"prometheus" yaml:"prometheus"`
+	// Singleflight is a configuration for merging concurrent identical History, Presence and PresenceStats calls.
+	Singleflight configtypes.Singleflight `mapstructure:"singleflight" json:"singleflight" envconfig:"singleflight" toml:"singleflight" yaml:"singleflight"`
 	// Health check endpoint configuration.
 	Health configtypes.Health `mapstructure:"health" json:"health" envconfig:"health" toml:"health" yaml:"health"`
 	// Swagger documentation (for server HTTP API) configuration.

@@ -435,6 +435,13 @@ type Prometheus struct {
 	RecoveredPublicationsHistogram bool `mapstructure:"recovered_publications_histogram" json:"recovered_publications_histogram" envconfig:"recovered_publications_histogram" yaml:"recovered_publications_histogram" toml:"recovered_publications_histogram"`
 }
 
+type Singleflight struct {
+	// Enabled merges concurrent identical History, Presence and PresenceStats calls on the node into
+	// one broker or presence manager request. Gives benefit only with a remote engine (Redis);
+	// with the memory engine there is nothing to save.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`
+}
+
 type Health struct {
 	Enabled       bool   `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`
 	HandlerPrefix string `mapstructure:"handler_prefix" json:"handler_prefix" envconfig:"handler_prefix" default:"/health" yaml:"handler_prefix" toml:"handler_prefix"`

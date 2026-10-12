@@ -9774,6 +9774,28 @@
     ]
   },
   {
+    "field": "singleflight",
+    "name": "singleflight",
+    "go_name": "Singleflight",
+    "level": 1,
+    "type": "Singleflight",
+    "default": "",
+    "comment": "Singleflight is a configuration for merging concurrent identical History, Presence and PresenceStats calls.",
+    "is_complex_type": true,
+    "children": [
+      {
+        "field": "singleflight.enabled",
+        "name": "enabled",
+        "go_name": "Enabled",
+        "level": 2,
+        "type": "bool",
+        "default": "",
+        "comment": "Enabled merges concurrent identical History, Presence and PresenceStats calls on the node into\none broker or presence manager request. Gives benefit only with a remote engine (Redis);\nwith the memory engine there is nothing to save.",
+        "is_complex_type": false
+      }
+    ]
+  },
+  {
     "field": "health",
     "name": "health",
     "go_name": "Health",

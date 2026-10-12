@@ -19,6 +19,7 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 		MetricsNamespace:                     "centrifugo",
 		EnableRecoveredPublicationsHistogram: appCfg.Prometheus.RecoveredPublicationsHistogram,
 	}
+	cfg.UseSingleFlight = appCfg.Singleflight.Enabled
 	cfg.Name = nodeName(appCfg)
 	cfg.ChannelMaxLength = appCfg.Channel.MaxLength
 	cfg.ClientPresenceUpdateInterval = appCfg.Client.PresenceUpdateInterval.ToDuration()

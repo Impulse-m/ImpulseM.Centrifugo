@@ -29,3 +29,11 @@ var (
 	ConnLimitReached  prometheus.Counter
 	HTTPRequestsTotal *prometheus.CounterVec
 )
+
+// Access revocation metrics - exported for use by accessrevoke and client packages
+var (
+	AccessRevokeRejectsTotal            *prometheus.CounterVec
+	AccessRevokeDisconnectsTotal        *prometheus.CounterVec
+	AccessRevokeDisconnectsDroppedTotal prometheus.Counter
+	AccessRevokeStoreSize               *prometheus.GaugeVec
+)

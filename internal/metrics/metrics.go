@@ -42,6 +42,12 @@ type Registry struct {
 	// Middleware metrics
 	connLimitReached  prometheus.Counter
 	httpRequestsTotal *prometheus.CounterVec
+
+	// Access revocation metrics
+	accessRevokeRejectsTotal            *prometheus.CounterVec
+	accessRevokeDisconnectsTotal        *prometheus.CounterVec
+	accessRevokeDisconnectsDroppedTotal prometheus.Counter
+	accessRevokeStoreSize               *prometheus.GaugeVec
 }
 
 // Init initializes the metrics registry with the provided configuration.
@@ -70,6 +76,11 @@ func Init(cfg Config) error {
 
 	ConnLimitReached = reg.connLimitReached
 	HTTPRequestsTotal = reg.httpRequestsTotal
+
+	AccessRevokeRejectsTotal = reg.accessRevokeRejectsTotal
+	AccessRevokeDisconnectsTotal = reg.accessRevokeDisconnectsTotal
+	AccessRevokeDisconnectsDroppedTotal = reg.accessRevokeDisconnectsDroppedTotal
+	AccessRevokeStoreSize = reg.accessRevokeStoreSize
 
 	return nil
 }
@@ -199,6 +210,39 @@ func newRegistry(cfg Config) (*Registry, error) {
 		[]string{"path", "method", "status"},
 	)
 
+	// Access revocation metrics
+	m.accessRevokeRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "rejects_total",
+		Help:        "Number of connections or refreshes rejected by access revocation checks.",
+		ConstLabels: constLabels,
+	}, []string{"reason", "stage"})
+
+	m.accessRevokeDisconnectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "disconnects_total",
+		Help:        "Number of live connections disconnected by access revocation.",
+		ConstLabels: constLabels,
+	}, []string{"reason"})
+
+	m.accessRevokeDisconnectsDroppedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "disconnects_dropped_total",
+		Help:        "Number of live disconnects dropped because the access revocation disconnect queue was full.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeStoreSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "store_size",
+		Help:        "Number of entries in access revocation store by kind.",
+		ConstLabels: constLabels,
+	}, []string{"kind"})
+
 	// Register all metrics
 	var alreadyRegistered prometheus.AlreadyRegisteredError
 
@@ -215,6 +259,10 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.consumerErrorsTotal,
 		m.connLimitReached,
 		m.httpRequestsTotal,
+		m.accessRevokeRejectsTotal,
+		m.accessRevokeDisconnectsTotal,
+		m.accessRevokeDisconnectsDroppedTotal,
+		m.accessRevokeStoreSize,
 	}
 
 	for _, collector := range collectors {

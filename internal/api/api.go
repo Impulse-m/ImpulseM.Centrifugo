@@ -682,6 +682,9 @@ func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTo
 // rate limit is checked first, so ErrorTooManyRequests is returned before anything is applied and
 // the whole call can be retried.
 func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Error {
+	if h.config.AccessRevoker == nil || h.config.AccessNotifier == nil {
+		return ErrorNotAvailable
+	}
 	if !h.config.AccessNotifier.Allow() {
 		return ErrorTooManyRequests
 	}

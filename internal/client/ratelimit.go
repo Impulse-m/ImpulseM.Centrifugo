@@ -55,6 +55,9 @@ func (h *Handler) rateLimitCommandRead(
 			}
 			return nil
 		}
+		if !checkCommands && userLimiter == nil {
+			return nil
+		}
 		st, ok := c.ExtState().(*ratelimit.ConnState)
 		if !ok {
 			return nil
@@ -100,6 +103,8 @@ func (h *Handler) attachUserRateLimit(c *centrifuge.Client) {
 		return
 	}
 	h.userLimiter.Attach(st, c.UserID())
+	// Core keeps a single disconnect handler per client. If another one is ever set in OnConnect,
+	// it must call Detach too, otherwise user states are never evicted.
 	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
 		h.userLimiter.Detach(st)
 	})

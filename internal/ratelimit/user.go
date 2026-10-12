@@ -96,6 +96,10 @@ func (l *UserLimiter) CommandAllowed(st *ConnState, at time.Time, op Operation, 
 // ConnectAllowed checks and consumes one connect of userID. The state is referenced only while the
 // check runs, so a rejected connect leaves no connection behind.
 func (l *UserLimiter) ConnectAllowed(userID string, at time.Time) bool {
+	if l.plan.ops[OperationConnect].base == nil {
+		// Connect is not limited: skip the store, a reconnect storm costs one shard lock per connect.
+		return true
+	}
 	us := l.store.acquire(userID)
 	us.mu.Lock()
 	allowed := l.plan.allowConnect(us.slots, nowNano(at))

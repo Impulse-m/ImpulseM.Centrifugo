@@ -29,63 +29,8 @@ type RedisShard struct {
 	finalAddress  []string
 }
 
-// shardOptions are Redis client options of a shard together with the kind of Redis setup they describe.
-type shardOptions struct {
-	client               rueidis.ClientOption
-	isCluster            bool
-	isSentinel           bool
-	replicaClientEnabled bool
-}
-
-// NewRedisShard initializes new Redis shard. It connects to Redis, so it fails when Redis is unreachable.
-// Configuration errors are returned by ParseRedisShardConfigs without connecting.
+// NewRedisShard initializes new Redis shard.
 func NewRedisShard(conf RedisShardConfig) (*RedisShard, error) {
-	opts, err := newShardOptions(&conf)
-	if err != nil {
-		return nil, err
-	}
-	options := opts.client
-	isCluster := opts.isCluster
-	replicaClientEnabled := opts.replicaClientEnabled
-
-	client, err := rueidis.NewClient(options)
-	if err != nil {
-		return nil, fmt.Errorf("error creating Redis client: %v", err)
-	}
-	if strings.Contains(strings.ToLower(fmt.Sprintf("%T", client)), "cluster") {
-		// Cluster mode is not explicitly set but client is a cluster client – thus set isCluster to true.
-		// This scenario covered with tests for our main integrations: see TestNewRedisShard.
-		// Centrifuge need to know that it's working with Redis Cluster to construct proper keys.
-		isCluster = true
-	}
-
-	shard := &RedisShard{
-		config:       conf,
-		isCluster:    isCluster,
-		closeCh:      make(chan struct{}),
-		finalAddress: options.InitAddress,
-	}
-
-	shard.client = client
-
-	if replicaClientEnabled {
-		if !isCluster && !opts.isSentinel {
-			return nil, errors.New("replica client may be initialized only in cluster and sentinel mode")
-		}
-		options.ReplicaOnly = true
-		replicaClient, err := rueidis.NewClient(options)
-		if err != nil {
-			return nil, fmt.Errorf("error creating Redis replica client: %w", err)
-		}
-		shard.replicaClient = replicaClient
-	}
-
-	return shard, nil
-}
-
-// newShardOptions applies defaults to conf and builds Redis client options of the shard. It does not
-// connect to Redis, so it returns configuration errors only.
-func newShardOptions(conf *RedisShardConfig) (shardOptions, error) {
 	if conf.ConnectTimeout == 0 {
 		conf.ConnectTimeout = defaultRedisConnectTimeout
 	}
@@ -109,10 +54,12 @@ func newShardOptions(conf *RedisShardConfig) (shardOptions, error) {
 		},
 	}
 
-	result := shardOptions{replicaClientEnabled: conf.ReplicaClientEnabled}
+	var isCluster bool
+	var isSentinel bool
+	replicaClientEnabled := conf.ReplicaClientEnabled
 
 	if len(conf.SentinelAddresses) > 0 {
-		result.isSentinel = true
+		isSentinel = true
 		options.InitAddress = conf.SentinelAddresses
 		options.Sentinel = rueidis.SentinelOption{
 			TLSConfig:  conf.SentinelTLSConfig,
@@ -122,42 +69,54 @@ func newShardOptions(conf *RedisShardConfig) (shardOptions, error) {
 			ClientName: conf.SentinelClientName,
 		}
 	} else if len(conf.ClusterAddresses) > 0 {
-		result.isCluster = true
+		isCluster = true
 		options.InitAddress = conf.ClusterAddresses
 	} else {
 		addressOpts, err := optionsFromAddress(conf.Address, options)
 		if err != nil {
-			return shardOptions{}, fmt.Errorf("error processing Redis address: %v", err)
+			return nil, fmt.Errorf("error processing Redis address: %v", err)
 		}
-		options = addressOpts.ClientOption
-		result.isCluster = addressOpts.IsCluster
-		result.isSentinel = addressOpts.IsSentinel
-		result.replicaClientEnabled = addressOpts.ReplicaClientEnabled
+		options, isCluster, isSentinel, replicaClientEnabled =
+			addressOpts.ClientOption, addressOpts.IsCluster, addressOpts.IsSentinel, addressOpts.ReplicaClientEnabled
 	}
 
-	if result.isSentinel && options.Sentinel.MasterSet == "" {
-		return shardOptions{}, errors.New("sentinel master name must be configured for Redis Sentinel setup")
+	if isSentinel && options.Sentinel.MasterSet == "" {
+		return nil, errors.New("sentinel master name must be configured for Redis Sentinel setup")
 	}
 
-	result.client = options
-	return result, nil
-}
+	client, err := rueidis.NewClient(options)
+	if err != nil {
+		return nil, fmt.Errorf("error creating Redis client: %v", err)
+	}
+	if strings.Contains(strings.ToLower(fmt.Sprintf("%T", client)), "cluster") {
+		// Cluster mode is not explicitly set but client is a cluster client – thus set isCluster to true.
+		// This scenario covered with tests for our main integrations: see TestNewRedisShard.
+		// Centrifuge need to know that it's working with Redis Cluster to construct proper keys.
+		isCluster = true
+	}
 
-// NewRedisShards connects to all shards of configs. It is all-or-nothing: when any shard fails, the shards
-// already connected are closed and the error is returned, so the caller never gets a partial set of shards.
-func NewRedisShards(configs []RedisShardConfig) ([]*RedisShard, error) {
-	shards := make([]*RedisShard, 0, len(configs))
-	for _, conf := range configs {
-		shard, err := NewRedisShard(conf)
+	shard := &RedisShard{
+		config:       conf,
+		isCluster:    isCluster,
+		closeCh:      make(chan struct{}),
+		finalAddress: options.InitAddress,
+	}
+
+	shard.client = client
+
+	if replicaClientEnabled {
+		if !isCluster && !isSentinel {
+			return nil, errors.New("replica client may be initialized only in cluster and sentinel mode")
+		}
+		options.ReplicaOnly = true
+		replicaClient, err := rueidis.NewClient(options)
 		if err != nil {
-			for _, connected := range shards {
-				connected.Close()
-			}
-			return nil, err
+			return nil, fmt.Errorf("error creating Redis replica client: %w", err)
 		}
-		shards = append(shards, shard)
+		shard.replicaClient = replicaClient
 	}
-	return shards, nil
+
+	return shard, nil
 }
 
 var knownRedisURLPrefixes = []string{

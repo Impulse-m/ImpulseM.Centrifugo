@@ -63,6 +63,8 @@ type Registry struct {
 	rateLimitRejectsTotal          *prometheus.CounterVec
 	rateLimitErrorDisconnectsTotal prometheus.Counter
 	rateLimitUserEntries           prometheus.Gauge
+	rateLimitRedisErrorsTotal      prometheus.Counter
+	rateLimitRedisDuration         prometheus.Histogram
 }
 
 // Init initializes the metrics registry with the provided configuration.
@@ -109,6 +111,8 @@ func Init(cfg Config) error {
 	RateLimitRejectsTotal = reg.rateLimitRejectsTotal
 	RateLimitErrorDisconnectsTotal = reg.rateLimitErrorDisconnectsTotal
 	RateLimitUserEntries = reg.rateLimitUserEntries
+	RateLimitRedisErrorsTotal = reg.rateLimitRedisErrorsTotal
+	RateLimitRedisDuration = reg.rateLimitRedisDuration
 
 	return nil
 }
@@ -359,6 +363,25 @@ func newRegistry(cfg Config) (*Registry, error) {
 		ConstLabels: constLabels,
 	})
 
+	m.rateLimitRedisErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "redis_errors_total",
+		Help:        "Number of Redis errors of redis_user_command rate limits. Commands are allowed on such errors.",
+		ConstLabels: constLabels,
+	})
+
+	m.rateLimitRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace: metricsNamespace,
+		Subsystem: "rate_limit",
+		Name:      "redis_duration_seconds",
+		Help:      "Duration of redis_user_command rate limit script calls.",
+		Buckets: []float64{
+			0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
+		},
+		ConstLabels: constLabels,
+	})
+
 	// Register all metrics
 	var alreadyRegistered prometheus.AlreadyRegisteredError
 
@@ -390,6 +413,8 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.rateLimitRejectsTotal,
 		m.rateLimitErrorDisconnectsTotal,
 		m.rateLimitUserEntries,
+		m.rateLimitRedisErrorsTotal,
+		m.rateLimitRedisDuration,
 	}
 
 	for _, collector := range collectors {

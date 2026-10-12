@@ -62,6 +62,7 @@ type Registry struct {
 	// Rate limit metrics
 	rateLimitRejectsTotal          *prometheus.CounterVec
 	rateLimitErrorDisconnectsTotal prometheus.Counter
+	rateLimitUserEntries           prometheus.Gauge
 }
 
 // Init initializes the metrics registry with the provided configuration.
@@ -107,6 +108,7 @@ func Init(cfg Config) error {
 
 	RateLimitRejectsTotal = reg.rateLimitRejectsTotal
 	RateLimitErrorDisconnectsTotal = reg.rateLimitErrorDisconnectsTotal
+	RateLimitUserEntries = reg.rateLimitUserEntries
 
 	return nil
 }
@@ -349,6 +351,14 @@ func newRegistry(cfg Config) (*Registry, error) {
 		ConstLabels: constLabels,
 	})
 
+	m.rateLimitUserEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "user_entries",
+		Help:        "Number of per-user rate limit states kept in memory.",
+		ConstLabels: constLabels,
+	})
+
 	// Register all metrics
 	var alreadyRegistered prometheus.AlreadyRegisteredError
 
@@ -379,6 +389,7 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.accessRevokeSourceFailOpenTotal,
 		m.rateLimitRejectsTotal,
 		m.rateLimitErrorDisconnectsTotal,
+		m.rateLimitUserEntries,
 	}
 
 	for _, collector := range collectors {

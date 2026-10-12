@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/api"
 	"github.com/centrifugal/centrifugo/v6/internal/build"
 	"github.com/centrifugal/centrifugo/v6/internal/client"
@@ -156,6 +157,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("error creating JWT verifier config")
 	}
+	confighelpers.SetRevokeClaims(&verifierConfig, cfg.TokenRevoke, cfg.UserTokensInvalidate)
 
 	tokenVerifier, err := jwtverify.NewTokenVerifierJWT(verifierConfig, cfgContainer)
 	if err != nil {
@@ -175,7 +177,14 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap)
+	accessStore := accessrevoke.NewStore(cfg.AccessRevoke.DefaultTTL.ToDuration())
+	accessDisconnectQueue := accessrevoke.NewDisconnectQueue(cfg.AccessRevoke.DisconnectRate, cfg.AccessRevoke.DisconnectQueueSize)
+	serviceManager.Register(
+		accessrevoke.NewSweeper(accessStore, cfg.AccessRevoke.SweepInterval.ToDuration()),
+		accessDisconnectQueue,
+	)
+
+	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap, accessStore)
 	err = clientHandler.Setup()
 	if err != nil {
 		log.Fatal().Err(err).Msg("error setting up client handler")
@@ -340,6 +349,7 @@ func handleSignals(
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
+			confighelpers.SetRevokeClaims(&verifierConfig, newCfg.TokenRevoke, newCfg.UserTokensInvalidate)
 			if err = tokenVerifier.Reload(verifierConfig); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue

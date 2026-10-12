@@ -6,12 +6,14 @@ import (
 	"errors"
 	"unicode"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
@@ -43,6 +45,7 @@ type Handler struct {
 	subTokenVerifier *jwtverify.VerifierJWT
 	proxyMap         *ProxyMap
 	rpcExtension     map[string]RPCExtensionFunc
+	accessStore      *accessrevoke.Store
 }
 
 // NewHandler creates new Handler.
@@ -52,6 +55,7 @@ func NewHandler(
 	tokenVerifier *jwtverify.VerifierJWT,
 	subTokenVerifier *jwtverify.VerifierJWT,
 	proxyMap *ProxyMap,
+	accessStore *accessrevoke.Store,
 ) *Handler {
 	return &Handler{
 		node:             node,
@@ -60,6 +64,7 @@ func NewHandler(
 		subTokenVerifier: subTokenVerifier,
 		proxyMap:         proxyMap,
 		rpcExtension:     make(map[string]RPCExtensionFunc),
+		accessStore:      accessStore,
 	}
 }
 
@@ -131,6 +136,11 @@ func (h *Handler) Setup() error {
 	concurrency := cfg.Client.Concurrency
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
+		disconnect, revoked := h.recheckConnection(client)
+		if revoked {
+			client.Disconnect(disconnect)
+			return
+		}
 
 		var semaphore chan struct{}
 		if concurrency > 1 {
@@ -296,6 +306,12 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, err
 		}
 
+		identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+		result := h.checkAccess(token.UserID, identity, accessRevokeOptions(cfg), "connect")
+		if result.Verdict != accessrevoke.Allowed {
+			return centrifuge.ConnectReply{}, connectRevokeError(e.ClientID, token.UserID, result)
+		}
+
 		if token.UserID == "" && cfg.Client.DisallowAnonymousConnectionTokens {
 			if logging.Enabled(logging.DebugLevel) {
 				log.Debug().Str("client", e.ClientID).Msg("anonymous connection tokens disallowed")
@@ -304,9 +320,10 @@ func (h *Handler) OnClientConnecting(
 		}
 
 		credentials = &centrifuge.Credentials{
-			UserID:   token.UserID,
-			ExpireAt: token.ExpireAt,
-			Info:     token.Info,
+			UserID:        token.UserID,
+			ExpireAt:      token.ExpireAt,
+			Info:          token.Info,
+			TokenIdentity: identity,
 		}
 
 		if cfg.Client.Insecure {
@@ -324,6 +341,9 @@ func (h *Handler) OnClientConnecting(
 		connectReply, _, err := connectProxyHandler(clientcontext.SetEmulatedHeadersToContext(ctx, e.Headers), e)
 		if err != nil {
 			return centrifuge.ConnectReply{}, err
+		}
+		if connectReply.Credentials != nil && h.isUserBlocked(connectReply.Credentials.UserID, "connect") {
+			return centrifuge.ConnectReply{}, accessrevoke.DisconnectUserBlocked
 		}
 		credentials = connectReply.Credentials
 		if connectReply.Subscriptions != nil {
@@ -500,6 +520,9 @@ func setStorageMeta(c Client, meta json.RawMessage) {
 // OnRefresh ...
 func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHandler proxy.RefreshHandlerFunc) (centrifuge.RefreshReply, RefreshExtra, error) {
 	if refreshProxyHandler != nil {
+		if h.isUserBlocked(c.UserID(), "refresh") {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
+		}
 		r, extra, err := refreshProxyHandler(c, e, getPerCallData(c))
 		if err == nil && extra.Meta != nil {
 			setStorageMeta(c, extra.Meta)
@@ -522,13 +545,104 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	result := h.checkAccess(token.UserID, identity, accessRevokeOptions(h.cfgContainer.Config()), "refresh")
+	switch result.Verdict {
+	case accessrevoke.Blocked:
+		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
+	case accessrevoke.Revoked:
+		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
+	case accessrevoke.LoopGuard:
+		logLoopGuard(c.ID(), c.UserID(), result)
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
 	return centrifuge.RefreshReply{
-		ExpireAt: token.ExpireAt,
-		Info:     token.Info,
+		ExpireAt:      token.ExpireAt,
+		Info:          token.Info,
+		TokenIdentity: &identity,
 	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+}
+
+// accessRevokeOptions returns access revocation checks enabled in config.
+func accessRevokeOptions(cfg config.Config) accessrevoke.CheckOptions {
+	return accessrevoke.CheckOptions{
+		Block:      cfg.UserBlock.Enabled,
+		Session:    cfg.TokenRevoke.Enabled,
+		UserTokens: cfg.UserTokensInvalidate.Enabled,
+	}
+}
+
+// checkAccess checks token identity against access revocation store and counts rejections by stage.
+func (h *Handler) checkAccess(
+	userID string,
+	identity centrifuge.TokenIdentity,
+	opts accessrevoke.CheckOptions,
+	stage string,
+) accessrevoke.Result {
+	result := h.accessStore.Check(userID, identity, opts)
+	if result.Verdict != accessrevoke.Allowed {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(string(result.Reason), stage).Inc()
+	}
+	return result
+}
+
+// isUserBlocked checks only user block for paths which have no token identity (connect and
+// refresh proxies).
+func (h *Handler) isUserBlocked(userID string, stage string) bool {
+	if !h.cfgContainer.Config().UserBlock.Enabled {
+		return false
+	}
+	result := h.checkAccess(userID, centrifuge.TokenIdentity{}, accessrevoke.CheckOptions{Block: true}, stage)
+	return result.Verdict == accessrevoke.Blocked
+}
+
+// recheckConnection checks a connection right after it was registered in the hub. Events applied
+// between the connect check and the registration are caught here. A connection with zero token
+// identity came from the connect proxy (no token), so only user block applies to it. The same is
+// true for a token which has no session, generation and iat claims, which is a deliberate
+// trade-off: the full check at connect time already ran for such a token.
+func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
+	identity := client.TokenIdentity()
+	opts := accessRevokeOptions(h.cfgContainer.Config())
+	if identity == (centrifuge.TokenIdentity{}) {
+		opts = accessrevoke.CheckOptions{Block: opts.Block}
+	}
+	result := h.checkAccess(client.UserID(), identity, opts, "recheck")
+	switch result.Verdict {
+	case accessrevoke.Blocked:
+		return accessrevoke.DisconnectUserBlocked, true
+	case accessrevoke.Revoked:
+		return centrifuge.DisconnectExpired, true
+	case accessrevoke.LoopGuard:
+		logLoopGuard(client.ID(), client.UserID(), result)
+		return centrifuge.DisconnectInvalidToken, true
+	}
+	return centrifuge.Disconnect{}, false
+}
+
+// connectRevokeError maps a failed access check made at connect to the error returned from connecting.
+func connectRevokeError(clientID string, userID string, result accessrevoke.Result) error {
+	switch result.Verdict {
+	case accessrevoke.Blocked:
+		return accessrevoke.DisconnectUserBlocked
+	case accessrevoke.Revoked:
+		return centrifuge.ErrorTokenExpired
+	case accessrevoke.LoopGuard:
+		logLoopGuard(clientID, userID, result)
+		return centrifuge.DisconnectInvalidToken
+	}
+	return nil
+}
+
+func logLoopGuard(clientID string, userID string, result accessrevoke.Result) {
+	log.Error().
+		Str("client", clientID).
+		Str("user", userID).
+		Str("reason", string(result.Reason)).
+		Msg("token issued after revocation, auth service and Centrifugo disagree, disconnecting")
 }
 
 // OnRPC ...

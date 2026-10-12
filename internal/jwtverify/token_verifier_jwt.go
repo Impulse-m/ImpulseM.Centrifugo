@@ -3,6 +3,7 @@ package jwtverify
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -47,6 +48,12 @@ type VerifierConfig struct {
 	// ECDSAPublicKey is a public key used to validate connection and subscription
 	// tokens generated using ECDSA. Zero value means that ECDSA tokens won't be allowed.
 	ECDSAPublicKey *ecdsa.PublicKey
+
+	// Ed25519PublicKeys are public keys used to validate connection and subscription
+	// tokens generated using EdDSA. Keys are selected by token "kid" header. A token without
+	// "kid" is accepted only when exactly one key is configured. Zero value means that EdDSA
+	// tokens won't be allowed.
+	Ed25519PublicKeys map[string]ed25519.PublicKey
 
 	// JWKSPublicEndpoint is a public url used to validate connection and subscription
 	// tokens generated using rotating RSA public keys. Zero value means that JSON Web Key Sets
@@ -94,6 +101,9 @@ func (c VerifierConfig) Validate() error {
 	}
 	if c.Issuer != "" && c.IssuerRegex != "" {
 		return errors.New("can not use both token_issuer and token_issuer_regex, configure only one of them")
+	}
+	if c.JWKSPublicEndpoint != "" && len(c.Ed25519PublicKeys) > 0 {
+		return errors.New("can not use ed25519 public keys together with JWKS public endpoint, configure only one of them")
 	}
 	if c.JWKSPublicEndpoint != "" {
 		if err := validateJWKSEndpointSafety(c.JWKSPublicEndpoint, c.IssuerRegex, c.AudienceRegex); err != nil {
@@ -151,6 +161,9 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 		if err != nil {
 			return nil, fmt.Errorf("error initializing token algorithms: %w", err)
 		}
+		if err = alg.setEd25519Keys(config.Ed25519PublicKeys); err != nil {
+			return nil, fmt.Errorf("error initializing token algorithms: %w", err)
+		}
 		verifier.algorithms = alg
 		if config.HMACPreviousSecretKey != "" {
 			prevAlg, err := newAlgorithms(config.HMACPreviousSecretKey, nil, nil)
@@ -196,6 +209,7 @@ var (
 	errPublicKeyInvalid     = errors.New("public key is invalid")
 	errUnsupportedAlgorithm = errors.New("unsupported JWT algorithm")
 	errDisabledAlgorithm    = errors.New("disabled JWT algorithm")
+	errUnknownEd25519KeyID  = errors.New("unknown Ed25519 key ID")
 )
 
 // BoolValue allows override boolean option.
@@ -352,6 +366,8 @@ type algorithms struct {
 	ES256 jwt.Verifier
 	ES384 jwt.Verifier
 	ES512 jwt.Verifier
+	// Ed25519 verifiers keyed by kid.
+	Ed25519 map[string]jwt.Verifier
 }
 
 func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPubKey *ecdsa.PublicKey) (*algorithms, error) {
@@ -442,9 +458,54 @@ func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPub
 	return alg, nil
 }
 
+// verifyEd25519 selects Ed25519 key by token kid header and verifies the token with it.
+// Token without kid is verified only when exactly one Ed25519 key is configured.
+func (s *algorithms) verifyEd25519(token *jwt.Token) error {
+	if len(s.Ed25519) == 0 {
+		return fmt.Errorf("%w: %s", errDisabledAlgorithm, string(token.Header().Algorithm))
+	}
+	var verifier jwt.Verifier
+	kid := token.Header().KeyID
+	if kid == "" {
+		if len(s.Ed25519) != 1 {
+			return fmt.Errorf("%w: token without kid and %d Ed25519 keys configured", errUnknownEd25519KeyID, len(s.Ed25519))
+		}
+		for _, v := range s.Ed25519 {
+			verifier = v
+		}
+	} else {
+		verifier = s.Ed25519[kid]
+		if verifier == nil {
+			return fmt.Errorf("%w: %q", errUnknownEd25519KeyID, kid)
+		}
+	}
+	return verifier.Verify(token)
+}
+
+// setEd25519Keys creates Ed25519 verifiers for the given keys, keyed by kid.
+func (s *algorithms) setEd25519Keys(ed25519PubKeys map[string]ed25519.PublicKey) error {
+	if len(ed25519PubKeys) == 0 {
+		s.Ed25519 = nil
+		return nil
+	}
+	ed25519Verifiers := make(map[string]jwt.Verifier, len(ed25519PubKeys))
+	for kid, pubKey := range ed25519PubKeys {
+		verifierEdDSA, err := jwt.NewVerifierEdDSA(pubKey)
+		if err != nil {
+			return fmt.Errorf("error initializing Ed25519 verifier for kid %q: %w", kid, err)
+		}
+		ed25519Verifiers[kid] = verifierEdDSA
+	}
+	s.Ed25519 = ed25519Verifiers
+	log.Info().Int("keys", len(ed25519PubKeys)).Msg("enabled EdDSA verifiers")
+	return nil
+}
+
 func (s *algorithms) verify(token *jwt.Token) error {
 	var verifier jwt.Verifier
 	switch token.Header().Algorithm {
+	case jwt.EdDSA:
+		return s.verifyEd25519(token)
 	case jwt.HS256:
 		verifier = s.HS256
 	case jwt.HS384:
@@ -917,6 +978,9 @@ func (verifier *VerifierJWT) Reload(config VerifierConfig) error {
 	} else {
 		alg, err := newAlgorithms(config.HMACSecretKey, config.RSAPublicKey, config.ECDSAPublicKey)
 		if err != nil {
+			return err
+		}
+		if err = alg.setEd25519Keys(config.Ed25519PublicKeys); err != nil {
 			return err
 		}
 		verifier.algorithms = alg

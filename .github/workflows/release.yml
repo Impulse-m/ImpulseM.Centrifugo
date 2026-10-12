@@ -1,0 +1,158 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the leading v, e.g. 1.0.0 or 1.1.0-rc.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      tags: ${{ steps.version.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
+          else
+            version="${REF_NAME#v}"
+          fi
+
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$version" =~ $semver ]]; then
+            echo "::error::Invalid version '${version}'. Expected semver without the leading v, e.g. 1.0.0 or 1.1.0-rc.1."
+            exit 1
+          fi
+
+          tag="v${version}"
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}")"
+            if [ -n "$remote_tag" ]; then
+              echo "::error::Tag ${tag} already exists on origin."
+              exit 1
+            fi
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::GitHub Release ${tag} already exists."
+            exit 1
+          fi
+
+          if [ "$prerelease" = "false" ]; then
+            highest="$(gh release list --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName' | sed 's/^v//' | sort -V | tail -n 1)"
+            if [ -n "$highest" ]; then
+              newest="$(printf '%s\n%s\n' "$highest" "$version" | sort -V | tail -n 1)"
+              if [ "$highest" = "$version" ] || [ "$newest" != "$version" ]; then
+                echo "::error::Version ${version} is not greater than the latest release v${highest}."
+                exit 1
+              fi
+            fi
+          fi
+
+          tags=("$version")
+          if [ "$prerelease" = "false" ]; then
+            tags+=("${version%.*}" "latest")
+          fi
+
+          {
+            echo "version=${version}"
+            echo "prerelease=${prerelease}"
+            echo "tags<<TAGS_EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    needs:
+      - validate
+    uses: ./.github/workflows/test.yml
+
+  images:
+    name: Build and publish images
+    needs:
+      - validate
+      - test
+    uses: ./.github/workflows/images.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+      tags: ${{ needs.validate.outputs.tags }}
+
+  release:
+    name: Tag and publish release
+    needs:
+      - validate
+      - images
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          (cd dist && sha256sum -- *.tar.gz > "centrifugo_${VERSION}_checksums.txt")
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "v${VERSION}" "$GITHUB_SHA"
+          git push origin "refs/tags/v${VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          args=(--verify-tag --generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+
+          gh release create "v${VERSION}" "${args[@]}" \
+            dist/*.tar.gz \
+            "dist/centrifugo_${VERSION}_checksums.txt"

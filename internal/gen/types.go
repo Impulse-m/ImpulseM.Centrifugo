@@ -15,4 +15,8 @@ var Requests = []string{
 	"RPC",
 	"Refresh",
 	"Channels",
+	"BlockUser",
+	"UnblockUser",
+	"RevokeToken",
+	"InvalidateUserTokens",
 }

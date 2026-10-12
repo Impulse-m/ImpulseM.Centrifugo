@@ -80,3 +80,23 @@ func (e *JSONResponseEncoder) EncodeRefresh(response *RefreshResponse) ([]byte, 
 func (e *JSONResponseEncoder) EncodeChannels(response *ChannelsResponse) ([]byte, error) {
 	return json.Marshal(response)
 }
+
+// EncodeBlockUser ...
+func (e *JSONResponseEncoder) EncodeBlockUser(response *BlockUserResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeUnblockUser ...
+func (e *JSONResponseEncoder) EncodeUnblockUser(response *UnblockUserResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeRevokeToken ...
+func (e *JSONResponseEncoder) EncodeRevokeToken(response *RevokeTokenResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeInvalidateUserTokens ...
+func (e *JSONResponseEncoder) EncodeInvalidateUserTokens(response *InvalidateUserTokensResponse) ([]byte, error) {
+	return json.Marshal(response)
+}

@@ -130,3 +130,71 @@ func (h *ConsumingHandler) handleRefresh(ctx context.Context, data []byte) (*Ref
 	}
 	return resp.Result, nil
 }
+
+func (h *ConsumingHandler) handleBlockUser(ctx context.Context, data []byte) (*BlockUserResult, error) {
+	req, err := requestDecoder.DecodeBlockUser(data)
+	if err != nil {
+		return nil, ErrInvalidData
+	}
+	resp := h.api.BlockUser(ctx, req)
+	if h.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(h.api.config.Protocol, "block_user", resp.Error.Code)
+		return nil, resp.Error
+	}
+	return resp.Result, nil
+}
+
+func (h *ConsumingHandler) handleUnblockUser(ctx context.Context, data []byte) (*UnblockUserResult, error) {
+	req, err := requestDecoder.DecodeUnblockUser(data)
+	if err != nil {
+		return nil, ErrInvalidData
+	}
+	resp := h.api.UnblockUser(ctx, req)
+	if h.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(h.api.config.Protocol, "unblock_user", resp.Error.Code)
+		return nil, resp.Error
+	}
+	return resp.Result, nil
+}
+
+func (h *ConsumingHandler) handleRevokeToken(ctx context.Context, data []byte) (*RevokeTokenResult, error) {
+	req, err := requestDecoder.DecodeRevokeToken(data)
+	if err != nil {
+		return nil, ErrInvalidData
+	}
+	resp := h.api.RevokeToken(ctx, req)
+	if h.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(h.api.config.Protocol, "revoke_token", resp.Error.Code)
+		return nil, resp.Error
+	}
+	return resp.Result, nil
+}
+
+func (h *ConsumingHandler) handleInvalidateUserTokens(ctx context.Context, data []byte) (*InvalidateUserTokensResult, error) {
+	req, err := requestDecoder.DecodeInvalidateUserTokens(data)
+	if err != nil {
+		return nil, ErrInvalidData
+	}
+	resp := h.api.InvalidateUserTokens(ctx, req)
+	if h.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(h.api.config.Protocol, "invalidate_user_tokens", resp.Error.Code)
+		return nil, resp.Error
+	}
+	return resp.Result, nil
+}

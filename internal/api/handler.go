@@ -40,20 +40,24 @@ func NewHandler(n *centrifuge.Node, apiExecutor *Executor, c Config) *Handler {
 
 func (s *Handler) Routes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"/batch":          s.handleBatch,
-		"/publish":        s.handlePublish,
-		"/broadcast":      s.handleBroadcast,
-		"/subscribe":      s.handleSubscribe,
-		"/unsubscribe":    s.handleUnsubscribe,
-		"/disconnect":     s.handleDisconnect,
-		"/presence":       s.handlePresence,
-		"/presence_stats": s.handlePresenceStats,
-		"/history":        s.handleHistory,
-		"/history_remove": s.handleHistoryRemove,
-		"/info":           s.handleInfo,
-		"/rpc":            s.handleRPC,
-		"/refresh":        s.handleRefresh,
-		"/channels":       s.handleChannels,
+		"/batch":                  s.handleBatch,
+		"/publish":                s.handlePublish,
+		"/broadcast":              s.handleBroadcast,
+		"/subscribe":              s.handleSubscribe,
+		"/unsubscribe":            s.handleUnsubscribe,
+		"/disconnect":             s.handleDisconnect,
+		"/presence":               s.handlePresence,
+		"/presence_stats":         s.handlePresenceStats,
+		"/history":                s.handleHistory,
+		"/history_remove":         s.handleHistoryRemove,
+		"/info":                   s.handleInfo,
+		"/rpc":                    s.handleRPC,
+		"/refresh":                s.handleRefresh,
+		"/channels":               s.handleChannels,
+		"/block_user":             s.handleBlockUser,
+		"/unblock_user":           s.handleUnblockUser,
+		"/revoke_token":           s.handleRevokeToken,
+		"/invalidate_user_tokens": s.handleInvalidateUserTokens,
 	}
 }
 

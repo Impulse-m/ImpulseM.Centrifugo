@@ -6,6 +6,7 @@ func generateHandlersConsumer() {
 		nil,
 		[]string{
 			"Publish", "Broadcast", "Subscribe", "Unsubscribe", "Disconnect", "HistoryRemove", "Refresh",
+			"BlockUser", "UnblockUser", "RevokeToken", "InvalidateUserTokens",
 		},
 	)
 }

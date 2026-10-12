@@ -521,6 +521,8 @@ message UnblockUserResponse {
 message RevokeTokenRequest {
     int64 expire_at = 1;
     string uid = 2;
+    string user = 3;
+    int64 revoked_at = 4;
 }
 
 message RevokeTokenResult {}
@@ -535,6 +537,8 @@ message InvalidateUserTokensRequest {
     string user = 2;
     int64 issued_before = 3;
     string channel = 4;
+    uint64 generation = 5;
+    int64 revoked_at = 6;
 }
 
 message InvalidateUserTokensResult {}

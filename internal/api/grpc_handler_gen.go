@@ -265,3 +265,79 @@ func (s *grpcAPIService) Channels(ctx context.Context, req *ChannelsRequest) (*C
 	}
 	return resp, nil
 }
+
+// BlockUser ...
+func (s *grpcAPIService) BlockUser(ctx context.Context, req *BlockUserRequest) (*BlockUserResponse, error) {
+	resp := s.api.BlockUser(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "block_user", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "block_user", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// UnblockUser ...
+func (s *grpcAPIService) UnblockUser(ctx context.Context, req *UnblockUserRequest) (*UnblockUserResponse, error) {
+	resp := s.api.UnblockUser(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "unblock_user", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "unblock_user", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// RevokeToken ...
+func (s *grpcAPIService) RevokeToken(ctx context.Context, req *RevokeTokenRequest) (*RevokeTokenResponse, error) {
+	resp := s.api.RevokeToken(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "revoke_token", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "revoke_token", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// InvalidateUserTokens ...
+func (s *grpcAPIService) InvalidateUserTokens(ctx context.Context, req *InvalidateUserTokensRequest) (*InvalidateUserTokensResponse, error) {
+	resp := s.api.InvalidateUserTokens(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "invalidate_user_tokens", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "invalidate_user_tokens", resp.Error.Code)
+	}
+	return resp, nil
+}

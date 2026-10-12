@@ -4790,6 +4790,8 @@ type RevokeTokenRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ExpireAt      int64                  `protobuf:"varint,1,opt,name=expire_at,json=expireAt,proto3" json:"expire_at,omitempty"`
 	Uid           string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	User          string                 `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
+	RevokedAt     int64                  `protobuf:"varint,4,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4836,6 +4838,20 @@ func (x *RevokeTokenRequest) GetUid() string {
 		return x.Uid
 	}
 	return ""
+}
+
+func (x *RevokeTokenRequest) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
+}
+
+func (x *RevokeTokenRequest) GetRevokedAt() int64 {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return 0
 }
 
 type RevokeTokenResult struct {
@@ -4932,6 +4948,8 @@ type InvalidateUserTokensRequest struct {
 	User          string                 `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
 	IssuedBefore  int64                  `protobuf:"varint,3,opt,name=issued_before,json=issuedBefore,proto3" json:"issued_before,omitempty"`
 	Channel       string                 `protobuf:"bytes,4,opt,name=channel,proto3" json:"channel,omitempty"`
+	Generation    uint64                 `protobuf:"varint,5,opt,name=generation,proto3" json:"generation,omitempty"`
+	RevokedAt     int64                  `protobuf:"varint,6,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4992,6 +5010,20 @@ func (x *InvalidateUserTokensRequest) GetChannel() string {
 		return x.Channel
 	}
 	return ""
+}
+
+func (x *InvalidateUserTokensRequest) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *InvalidateUserTokensRequest) GetRevokedAt() int64 {
+	if x != nil {
+		return x.RevokedAt
+	}
+	return 0
 }
 
 type InvalidateUserTokensResult struct {
@@ -8616,19 +8648,27 @@ const file_api_proto_rawDesc = "" +
 	"\x11UnblockUserResult\"\x95\x01\n" +
 	"\x13UnblockUserResponse\x127\n" +
 	"\x05error\x18\x01 \x01(\v2!.centrifugal.centrifugo.api.ErrorR\x05error\x12E\n" +
-	"\x06result\x18\x02 \x01(\v2-.centrifugal.centrifugo.api.UnblockUserResultR\x06result\"C\n" +
+	"\x06result\x18\x02 \x01(\v2-.centrifugal.centrifugo.api.UnblockUserResultR\x06result\"v\n" +
 	"\x12RevokeTokenRequest\x12\x1b\n" +
 	"\texpire_at\x18\x01 \x01(\x03R\bexpireAt\x12\x10\n" +
-	"\x03uid\x18\x02 \x01(\tR\x03uid\"\x13\n" +
+	"\x03uid\x18\x02 \x01(\tR\x03uid\x12\x12\n" +
+	"\x04user\x18\x03 \x01(\tR\x04user\x12\x1d\n" +
+	"\n" +
+	"revoked_at\x18\x04 \x01(\x03R\trevokedAt\"\x13\n" +
 	"\x11RevokeTokenResult\"\x95\x01\n" +
 	"\x13RevokeTokenResponse\x127\n" +
 	"\x05error\x18\x01 \x01(\v2!.centrifugal.centrifugo.api.ErrorR\x05error\x12E\n" +
-	"\x06result\x18\x02 \x01(\v2-.centrifugal.centrifugo.api.RevokeTokenResultR\x06result\"\x8d\x01\n" +
+	"\x06result\x18\x02 \x01(\v2-.centrifugal.centrifugo.api.RevokeTokenResultR\x06result\"\xcc\x01\n" +
 	"\x1bInvalidateUserTokensRequest\x12\x1b\n" +
 	"\texpire_at\x18\x01 \x01(\x03R\bexpireAt\x12\x12\n" +
 	"\x04user\x18\x02 \x01(\tR\x04user\x12#\n" +
 	"\rissued_before\x18\x03 \x01(\x03R\fissuedBefore\x12\x18\n" +
-	"\achannel\x18\x04 \x01(\tR\achannel\"\x1c\n" +
+	"\achannel\x18\x04 \x01(\tR\achannel\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x05 \x01(\x04R\n" +
+	"generation\x12\x1d\n" +
+	"\n" +
+	"revoked_at\x18\x06 \x01(\x03R\trevokedAt\"\x1c\n" +
 	"\x1aInvalidateUserTokensResult\"\xa7\x01\n" +
 	"\x1cInvalidateUserTokensResponse\x127\n" +
 	"\x05error\x18\x01 \x01(\v2!.centrifugal.centrifugo.api.ErrorR\x05error\x12N\n" +

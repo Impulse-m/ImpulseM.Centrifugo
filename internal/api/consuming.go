@@ -220,6 +220,50 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 			return nil
 		}
 		return nil
+	case "block_user":
+		_, err := d.handler.handleBlockUser(ctx, payload)
+		if err != nil {
+			var apiError *apiproto.Error
+			if errors.As(err, &apiError) && (apiError.Code == apiproto.ErrorInternal.Code || apiError.Code == apiproto.ErrorTooManyRequests.Code) {
+				return err
+			}
+			logNonRetryableConsumingError(err, method)
+			return nil
+		}
+		return nil
+	case "unblock_user":
+		_, err := d.handler.handleUnblockUser(ctx, payload)
+		if err != nil {
+			var apiError *apiproto.Error
+			if errors.As(err, &apiError) && (apiError.Code == apiproto.ErrorInternal.Code || apiError.Code == apiproto.ErrorTooManyRequests.Code) {
+				return err
+			}
+			logNonRetryableConsumingError(err, method)
+			return nil
+		}
+		return nil
+	case "revoke_token":
+		_, err := d.handler.handleRevokeToken(ctx, payload)
+		if err != nil {
+			var apiError *apiproto.Error
+			if errors.As(err, &apiError) && (apiError.Code == apiproto.ErrorInternal.Code || apiError.Code == apiproto.ErrorTooManyRequests.Code) {
+				return err
+			}
+			logNonRetryableConsumingError(err, method)
+			return nil
+		}
+		return nil
+	case "invalidate_user_tokens":
+		_, err := d.handler.handleInvalidateUserTokens(ctx, payload)
+		if err != nil {
+			var apiError *apiproto.Error
+			if errors.As(err, &apiError) && (apiError.Code == apiproto.ErrorInternal.Code || apiError.Code == apiproto.ErrorTooManyRequests.Code) {
+				return err
+			}
+			logNonRetryableConsumingError(err, method)
+			return nil
+		}
+		return nil
 	default:
 		// Skip unsupported.
 		log.Info().Msg("skip unsupported API command method")

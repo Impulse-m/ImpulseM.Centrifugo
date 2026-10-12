@@ -585,3 +585,171 @@ func (s *Handler) handleChannels(w http.ResponseWriter, r *http.Request) {
 
 	s.writeJson(w, data)
 }
+
+func (s *Handler) handleBlockUser(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "block_user", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeBlockUser(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "block_user", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.BlockUser(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "block_user", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeBlockUser(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "block_user", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "block_user", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "unblock_user", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeUnblockUser(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "unblock_user", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.UnblockUser(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "unblock_user", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeUnblockUser(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "unblock_user", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "unblock_user", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "revoke_token", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeRevokeToken(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "revoke_token", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.RevokeToken(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "revoke_token", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeRevokeToken(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "revoke_token", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "revoke_token", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleInvalidateUserTokens(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "invalidate_user_tokens", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeInvalidateUserTokens(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "invalidate_user_tokens", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.InvalidateUserTokens(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "invalidate_user_tokens", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeInvalidateUserTokens(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "invalidate_user_tokens", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "invalidate_user_tokens", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	. "github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -39,6 +40,10 @@ type SurveyCaller interface {
 type ExecutorConfig struct {
 	Protocol         string
 	UseOpenTelemetry bool
+	// AccessRevoker applies access revocation operations on this node.
+	AccessRevoker *accessrevoke.Revoker
+	// AccessNotifier sends access revocation operations to other nodes.
+	AccessNotifier *accessrevoke.Notifier
 }
 
 // NewExecutor ...
@@ -108,6 +113,22 @@ func (h *Executor) processCmd(ctx context.Context, cmd *Command, i int, replies 
 		method = "refresh"
 		res := h.Refresh(ctx, cmd.Refresh)
 		replies[i].Refresh, replies[i].Error = res.Result, res.Error
+	} else if cmd.BlockUser != nil {
+		method = "block_user"
+		res := h.BlockUser(ctx, cmd.BlockUser)
+		replies[i].BlockUser, replies[i].Error = res.Result, res.Error
+	} else if cmd.UnblockUser != nil {
+		method = "unblock_user"
+		res := h.UnblockUser(ctx, cmd.UnblockUser)
+		replies[i].UnblockUser, replies[i].Error = res.Result, res.Error
+	} else if cmd.RevokeToken != nil {
+		method = "revoke_token"
+		res := h.RevokeToken(ctx, cmd.RevokeToken)
+		replies[i].RevokeToken, replies[i].Error = res.Result, res.Error
+	} else if cmd.InvalidateUserTokens != nil {
+		method = "invalidate_user_tokens"
+		res := h.InvalidateUserTokens(ctx, cmd.InvalidateUserTokens)
+		replies[i].InvalidateUserTokens, replies[i].Error = res.Result, res.Error
 	} else if cmd.Channels != nil {
 		method = "channels"
 		res := h.Channels(ctx, cmd.Channels)
@@ -515,6 +536,182 @@ func (h *Executor) Refresh(_ context.Context, cmd *RefreshRequest) *RefreshRespo
 	}
 	resp.Result = &RefreshResult{}
 	return resp
+}
+
+// BlockUser blocks user on all nodes until expire_at. Live connections of the user are disconnected
+// with 4500 code and the user can't connect or refresh while the block is active.
+func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUserResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "block_user")
+
+	resp := &BlockUserResponse{}
+
+	cfg := h.cfgContainer.Config()
+	if !cfg.UserBlock.Enabled {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+	if cmd.User == "" {
+		log.Error().Err(errors.New("user required for block_user")).Msg("bad block_user request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	notification := accessrevoke.Notification{
+		Kind:     accessrevoke.KindBlockUser,
+		User:     cmd.User,
+		ExpireAt: accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+	}
+	resp.Error = h.applyAccessRevoke(notification)
+	if resp.Error != nil {
+		return resp
+	}
+	resp.Result = &BlockUserResult{}
+	return resp
+}
+
+// UnblockUser removes the block of user on all nodes. Connections are not affected.
+func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *UnblockUserResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "unblock_user")
+
+	resp := &UnblockUserResponse{}
+
+	cfg := h.cfgContainer.Config()
+	if !cfg.UserBlock.Enabled {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+	if cmd.User == "" {
+		log.Error().Err(errors.New("user required for unblock_user")).Msg("bad unblock_user request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	notification := accessrevoke.Notification{
+		Kind: accessrevoke.KindUnblockUser,
+		User: cmd.User,
+	}
+	resp.Error = h.applyAccessRevoke(notification)
+	if resp.Error != nil {
+		return resp
+	}
+	resp.Result = &UnblockUserResult{}
+	return resp
+}
+
+// RevokeToken revokes session (uid claim of connection tokens) on all nodes. Connections of user
+// with this session are disconnected when user is set. Without user only connect and refresh
+// checks apply.
+func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *RevokeTokenResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "revoke_token")
+
+	resp := &RevokeTokenResponse{}
+
+	cfg := h.cfgContainer.Config()
+	if !cfg.TokenRevoke.Enabled {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+	if cmd.Uid == "" {
+		log.Error().Err(errors.New("uid required for revoke_token")).Msg("bad revoke_token request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	notification := accessrevoke.Notification{
+		Kind:      accessrevoke.KindRevokeToken,
+		User:      cmd.User,
+		Session:   cmd.Uid,
+		RevokedAt: accessRevokeRevokedAt(cmd.RevokedAt),
+		ExpireAt:  accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+	}
+	resp.Error = h.applyAccessRevoke(notification)
+	if resp.Error != nil {
+		return resp
+	}
+	resp.Result = &RevokeTokenResult{}
+	return resp
+}
+
+// InvalidateUserTokens invalidates tokens of user on all nodes. Connections of user with rejected
+// tokens are disconnected.
+func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTokensRequest) *InvalidateUserTokensResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "invalidate_user_tokens")
+
+	resp := &InvalidateUserTokensResponse{}
+
+	cfg := h.cfgContainer.Config()
+	if !cfg.UserTokensInvalidate.Enabled {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+	if cmd.Channel != "" {
+		// Per-channel subscription token invalidation is not supported yet.
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+	if cmd.User == "" {
+		log.Error().Err(errors.New("user required for invalidate_user_tokens")).Msg("bad invalidate_user_tokens request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	// When generation is set, issued_before is used only if given: defaulting it to now would reject
+	// legitimate tokens of the new generation on nodes with lagging clocks.
+	issuedBefore := cmd.IssuedBefore
+	if cmd.Generation == 0 && issuedBefore == 0 {
+		issuedBefore = time.Now().Unix()
+	}
+
+	notification := accessrevoke.Notification{
+		Kind:         accessrevoke.KindInvalidateUserTokens,
+		User:         cmd.User,
+		Generation:   cmd.Generation,
+		IssuedBefore: issuedBefore,
+		RevokedAt:    accessRevokeRevokedAt(cmd.RevokedAt),
+		ExpireAt:     accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+	}
+	resp.Error = h.applyAccessRevoke(notification)
+	if resp.Error != nil {
+		return resp
+	}
+	resp.Result = &InvalidateUserTokensResult{}
+	return resp
+}
+
+// applyAccessRevoke applies the notification on this node and then sends it to other nodes. The
+// rate limit is checked first, so ErrorTooManyRequests is returned before anything is applied and
+// the whole call can be retried.
+func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Error {
+	if !h.config.AccessNotifier.Allow() {
+		return ErrorTooManyRequests
+	}
+	err := h.config.AccessRevoker.Apply(notification)
+	if err != nil {
+		log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation")
+		return ErrorInternal
+	}
+	err = h.config.AccessNotifier.Notify(notification)
+	if err != nil {
+		log.Error().Err(err).Str("kind", notification.Kind).Msg("error notifying nodes about access revocation")
+		return ErrorInternal
+	}
+	return nil
+}
+
+// accessRevokeRevokedAt returns revokedAt or current Unix time when it is zero.
+func accessRevokeRevokedAt(revokedAt int64) int64 {
+	if revokedAt != 0 {
+		return revokedAt
+	}
+	return time.Now().Unix()
+}
+
+// accessRevokeExpireAt returns expireAt or Unix time of now plus defaultTTL when it is zero.
+func accessRevokeExpireAt(expireAt int64, defaultTTL configtypes.Duration) int64 {
+	if expireAt != 0 {
+		return expireAt
+	}
+	return time.Now().Add(defaultTTL.ToDuration()).Unix()
 }
 
 // Presence returns response with presence information for channel.

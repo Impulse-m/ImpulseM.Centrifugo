@@ -153,3 +153,43 @@ func (d *JSONRequestDecoder) DecodeChannels(data []byte) (*ChannelsRequest, erro
 	}
 	return &p, nil
 }
+
+// DecodeBlockUser ...
+func (d *JSONRequestDecoder) DecodeBlockUser(data []byte) (*BlockUserRequest, error) {
+	var p BlockUserRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeUnblockUser ...
+func (d *JSONRequestDecoder) DecodeUnblockUser(data []byte) (*UnblockUserRequest, error) {
+	var p UnblockUserRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeRevokeToken ...
+func (d *JSONRequestDecoder) DecodeRevokeToken(data []byte) (*RevokeTokenRequest, error) {
+	var p RevokeTokenRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeInvalidateUserTokens ...
+func (d *JSONRequestDecoder) DecodeInvalidateUserTokens(data []byte) (*InvalidateUserTokensRequest, error) {
+	var p InvalidateUserTokensRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}

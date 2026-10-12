@@ -189,6 +189,26 @@ func TestInvalidateUserTokensAPIIssuedBeforeDefault(t *testing.T) {
 	require.Equal(t, accessrevoke.Allowed, store.Check("user", accessrevoke.Identity("s", 5, 400), allAccessChecks).Verdict)
 }
 
+func TestAccessRevokeAPIPastExpireAt(t *testing.T) {
+	api, store, events := newAccessRevokeExecutor(t, config.DefaultConfig(), 100)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Minute).Unix()
+
+	blockResp := api.BlockUser(ctx, &BlockUserRequest{User: "user", ExpireAt: past})
+	require.Equal(t, ErrorBadRequest, blockResp.Error)
+	require.Equal(t, accessrevoke.Allowed, userVerdict(store, "user"))
+
+	revokeResp := api.RevokeToken(ctx, &RevokeTokenRequest{User: "user", Uid: "session", ExpireAt: past})
+	require.Equal(t, ErrorBadRequest, revokeResp.Error)
+	require.Equal(t, accessrevoke.Allowed, sessionVerdict(store, "session", 500))
+
+	invalidateResp := api.InvalidateUserTokens(ctx, &InvalidateUserTokensRequest{User: "user", Generation: 5, ExpireAt: past})
+	require.Equal(t, ErrorBadRequest, invalidateResp.Error)
+	require.Equal(t, accessrevoke.Allowed, store.Check("user", accessrevoke.Identity("s", 4, 500), allAccessChecks).Verdict)
+
+	require.Empty(t, *events)
+}
+
 func TestAccessRevokeAPIRateLimit(t *testing.T) {
 	api, store, events := newAccessRevokeExecutor(t, config.DefaultConfig(), 1)
 	ctx := context.Background()

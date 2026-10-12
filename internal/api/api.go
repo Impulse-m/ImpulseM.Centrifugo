@@ -687,7 +687,13 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 // resolveAccessRevoke resolves the operation into a Notification using the current time. Validation
 // failures are mapped to API errors: unsupported operations to ErrorNotAvailable, others to ErrorBadRequest.
 func resolveAccessRevoke(operation accessrevoke.Operation, defaultTTL configtypes.Duration) (accessrevoke.Notification, *Error) {
-	notification, err := accessrevoke.Resolve(operation, time.Now(), defaultTTL.ToDuration())
+	now := time.Now()
+	// Expired operation has no effect, so it is rejected here. Kafka source skips such records itself.
+	if operation.ExpireAt != 0 && operation.ExpireAt <= now.Unix() {
+		log.Error().Int64("expire_at", operation.ExpireAt).Str("kind", operation.Kind).Msg("bad access revocation request: expire_at is in the past")
+		return accessrevoke.Notification{}, ErrorBadRequest
+	}
+	notification, err := accessrevoke.Resolve(operation, now, defaultTTL.ToDuration())
 	if err != nil {
 		log.Error().Err(err).Str("kind", operation.Kind).Msg("bad access revocation request")
 		var validationErr *accessrevoke.ValidationError

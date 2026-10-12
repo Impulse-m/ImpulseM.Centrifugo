@@ -93,11 +93,14 @@ func (s *KafkaSource) Run(ctx context.Context) error {
 	}
 	defer client.Close()
 
+	// Watch starts before seeding: when Kafka is unreachable seeding retries until the startup
+	// timeout, and the fail-open transition must still be logged and exported.
+	go s.watch(ctx)
+
 	adm := kadm.NewClient(client)
 	if err := s.seed(ctx, adm, startMilli); err != nil {
 		return err
 	}
-	go s.watch(ctx)
 
 	for {
 		fetches := client.PollFetches(ctx)

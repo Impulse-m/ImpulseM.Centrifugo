@@ -183,6 +183,8 @@ func Run(cmd *cobra.Command, configFile string) {
 		accessrevoke.NewSweeper(accessStore, cfg.AccessRevoke.SweepInterval.ToDuration()),
 		accessDisconnectQueue,
 	)
+	accessRevoker := accessrevoke.NewRevoker(accessStore, node.Hub(), accessDisconnectQueue)
+	accessNotifier := accessrevoke.NewNotifier(node, cfg.AccessRevoke.NotifyRate)
 
 	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap, accessStore)
 	err = clientHandler.Setup()
@@ -204,14 +206,20 @@ func Run(cmd *cobra.Command, configFile string) {
 	httpAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "http",
 		UseOpenTelemetry: useAPIOpentelemetry,
+		AccessRevoker:    accessRevoker,
+		AccessNotifier:   accessNotifier,
 	})
 	grpcAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "grpc",
 		UseOpenTelemetry: useAPIOpentelemetry,
+		AccessRevoker:    accessRevoker,
+		AccessNotifier:   accessNotifier,
 	})
 	consumingAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "consuming",
 		UseOpenTelemetry: useConsumingOpentelemetry,
+		AccessRevoker:    accessRevoker,
+		AccessNotifier:   accessNotifier,
 	})
 
 	consumingHandler := api.NewConsumingHandler(node, consumingAPIExecutor, api.ConsumingHandlerConfig{
@@ -268,7 +276,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		serviceManager.Register(statsSender)
 	}
 
-	notify.RegisterHandlers(node, statsSender)
+	notify.RegisterHandlers(node, statsSender, accessRevoker)
 
 	if err = node.Run(); err != nil {
 		log.Fatal().Err(err).Msg("error running node")

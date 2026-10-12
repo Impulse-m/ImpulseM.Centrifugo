@@ -2,19 +2,13 @@ package notify
 
 import (
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/usage"
+	"github.com/rs/zerolog/log"
 )
 
-func RegisterHandlers(node *centrifuge.Node, statsSender *usage.Sender) {
-	handlers := map[string]centrifuge.NotificationHandler{
-		usage.LastSentUpdateNotificationOp: func(event centrifuge.NotificationEvent) {
-			if statsSender == nil {
-				// Different configurations on different nodes.
-				return
-			}
-			statsSender.UpdateLastSentAt(event.Data)
-		},
-	}
+func RegisterHandlers(node *centrifuge.Node, statsSender *usage.Sender, revoker *accessrevoke.Revoker) {
+	handlers := notificationHandlers(node, statsSender, revoker)
 	node.OnNotification(func(event centrifuge.NotificationEvent) {
 		h, ok := handlers[event.Op]
 		if !ok {
@@ -22,4 +16,35 @@ func RegisterHandlers(node *centrifuge.Node, statsSender *usage.Sender) {
 		}
 		go h(event)
 	})
+}
+
+func notificationHandlers(
+	node *centrifuge.Node,
+	statsSender *usage.Sender,
+	revoker *accessrevoke.Revoker,
+) map[string]centrifuge.NotificationHandler {
+	return map[string]centrifuge.NotificationHandler{
+		usage.LastSentUpdateNotificationOp: func(event centrifuge.NotificationEvent) {
+			if statsSender == nil {
+				// Different configurations on different nodes.
+				return
+			}
+			statsSender.UpdateLastSentAt(event.Data)
+		},
+		accessrevoke.NotifyOp: func(event centrifuge.NotificationEvent) {
+			if event.FromNodeID == node.ID() {
+				// Operation is already applied on this node by the API call.
+				return
+			}
+			notification, err := accessrevoke.DecodeNotification(event.Data)
+			if err != nil {
+				log.Error().Err(err).Str("from_node_id", event.FromNodeID).Msg("error decoding access revocation notification")
+				return
+			}
+			err = revoker.Apply(notification)
+			if err != nil {
+				log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation notification")
+			}
+		},
+	}
 }

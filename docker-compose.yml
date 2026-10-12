@@ -31,7 +31,8 @@ services:
       - "8085:8085"
 
   aws-localstack:
-    image: localstack/localstack
+    # Last release before LocalStack images started requiring an auth token (2026-03-23).
+    image: localstack/localstack:4.14.0
     container_name: localstack
     ports:
       - "4566:4566"   # Edge port for all services.

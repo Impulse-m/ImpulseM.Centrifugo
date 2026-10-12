@@ -25,7 +25,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: stable
+          # Must not be newer than the Go version golangci-lint is built with.
+          go-version-file: go.mod
       - name: Read golangci-lint version
         id: golangci-lint-version
         run: echo "version=$(cat .golangci-lint-version)" >> "$GITHUB_OUTPUT"

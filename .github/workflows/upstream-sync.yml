@@ -41,12 +41,14 @@ jobs:
             *) echo "No upstream known for ${GITHUB_REPOSITORY}" >&2; exit 1 ;;
           esac
           git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
-          git fetch --quiet --tags upstream "${UPSTREAM_BRANCH}"
+          # No upstream tags locally: upstream has old tags with the same names as our releases (v1.0.0, ...).
+          git fetch --quiet --no-tags upstream "${UPSTREAM_BRANCH}"
           upstream_ref="upstream/${UPSTREAM_BRANCH}"
 
           behind=$(git rev-list --count "HEAD..${upstream_ref}")
           ahead=$(git rev-list --count "${upstream_ref}..HEAD")
-          tag=$(git describe --tags --abbrev=0 "${upstream_ref}" 2>/dev/null || echo "none")
+          tag=$(git ls-remote --tags --refs --sort=-v:refname upstream | awk 'NR == 1 { sub("refs/tags/", "", $2); print $2 }')
+          tag=${tag:-none}
           existing=$(gh issue list --label "${LABEL}" --state open --json number --jq '.[0].number // empty')
 
           if [ "${behind}" -eq 0 ]; then
@@ -65,7 +67,7 @@ jobs:
           else
             conflicts_md=$(printf '%s\n' "${conflicts}" | sed 's/^/- `/; s/$/`/')
           fi
-          commits_md=$(git log --format='- %h %s' "HEAD..${upstream_ref}" | head -n 50)
+          commits_md=$(git log -n 50 --format='- %h %s' "HEAD..${upstream_ref}")
 
           title="Upstream sync: ${behind} commits behind ${UPSTREAM_REPO}"
           body=$(printf '%s\n' \

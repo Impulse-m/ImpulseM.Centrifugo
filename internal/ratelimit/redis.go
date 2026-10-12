@@ -2,6 +2,8 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
+	"math/rand/v2"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -19,7 +21,13 @@ const (
 	redisDefaultIOTimeout = 4 * time.Second
 	// redisErrorLogInterval is the minimum time between two logged Redis errors of a node.
 	redisErrorLogInterval = 10 * time.Second
+	// redisRetryMin and redisRetryMax bound the delay between connect attempts while Redis is unreachable.
+	redisRetryMin = time.Second
+	redisRetryMax = 30 * time.Second
 )
+
+// errRedisNotConnected is the error of checks made before the limiter connected to Redis.
+var errRedisNotConnected = errors.New("not connected to Redis")
 
 // rateLimitScript is the rate limit check which runs in Redis. KEYS[1] is a hash with one theoretical
 // arrival time (TAT, microseconds) per bucket of a scope, fields are bucket indexes starting from 0.
@@ -61,35 +69,48 @@ type redisScriptRunner func(ctx context.Context, shard *redisshard.RedisShard, k
 
 // RedisUserLimiter holds compiled redis_user_command limits. Limits of a user are kept in Redis, on the
 // shard chosen by consistent hash of the user ID, so all nodes sharing Redis share the limits.
-// Redis errors allow commands: a Redis outage must not take down connections.
+// Redis errors allow commands: a Redis outage must not take down connections, and neither must a Redis
+// which is unreachable at startup. Until the limiter connects, commands are allowed too.
 type RedisUserLimiter struct {
-	plan    *redisPlan
-	shards  []*redisshard.RedisShard
-	prefix  string
-	timeout time.Duration
+	plan         *redisPlan
+	shardConfigs []redisshard.RedisShardConfig
+	prefix       string
+	timeout      time.Duration
+	// connect makes all shards of shardConfigs, all-or-nothing. It is a field so tests can replace Redis.
+	connect func(configs []redisshard.RedisShardConfig) ([]*redisshard.RedisShard, error)
 	run     redisScriptRunner
+	// backoffMin and backoffMax bound the delay between connect attempts in Run.
+	backoffMin time.Duration
+	backoffMax time.Duration
+	// shards is set once, by a successful Connect. Its shard count never changes, so the user-to-shard
+	// mapping stays the same for the life of the process. Nil means not connected.
+	shards atomic.Pointer[[]*redisshard.RedisShard]
 	// lastErrorLog is the time of the last logged Redis error in Unix nanoseconds.
 	lastErrorLog atomic.Int64
 }
 
-// NewRedisUserLimiter compiles redis_user_command limits. Shards must not be empty, they are closed
-// by Run when its context is done. prefix starts all Redis keys of the limiter. ioTimeout bounds each
+// NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
+// run Run as a service, which keeps connecting until it succeeds. shardConfigs must not be empty, shards are
+// closed by Run when its context is done. prefix starts all Redis keys of the limiter. ioTimeout bounds each
 // Redis call, zero means the default.
 func NewRedisUserLimiter(
 	cfg configtypes.RateLimitRedisUserCommand,
 	prefix string,
-	shards []*redisshard.RedisShard,
+	shardConfigs []redisshard.RedisShardConfig,
 	ioTimeout time.Duration,
 ) *RedisUserLimiter {
 	if ioTimeout <= 0 {
 		ioTimeout = redisDefaultIOTimeout
 	}
 	return &RedisUserLimiter{
-		plan:    newRedisUserPlan(cfg),
-		shards:  shards,
-		prefix:  prefix,
-		timeout: ioTimeout,
-		run:     runRedisScript,
+		plan:         newRedisUserPlan(cfg),
+		shardConfigs: shardConfigs,
+		prefix:       prefix,
+		timeout:      ioTimeout,
+		connect:      redisshard.NewRedisShards,
+		run:          runRedisScript,
+		backoffMin:   redisRetryMin,
+		backoffMax:   redisRetryMax,
 	}
 }
 
@@ -100,7 +121,7 @@ func (l *RedisUserLimiter) NeedsKey(op Operation) bool {
 
 // CommandAllowed checks and consumes one command of op of userID. key is a namespace name for channel
 // operations and a method name for RPC. Anonymous users (empty user ID) are not limited. On Redis errors
-// the command is allowed.
+// and while not connected the command is allowed.
 func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key string) bool {
 	if userID == "" {
 		return true
@@ -113,7 +134,7 @@ func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key strin
 }
 
 // ConnectAllowed checks and consumes one connect of userID. Anonymous users are not limited. On Redis
-// errors the connect is allowed.
+// errors and while not connected the connect is allowed.
 func (l *RedisUserLimiter) ConnectAllowed(userID string) bool {
 	if userID == "" {
 		return true
@@ -125,19 +146,69 @@ func (l *RedisUserLimiter) ConnectAllowed(userID string) bool {
 	return l.check(userID, s)
 }
 
-// Run closes Redis shards of the limiter when the context is done. It is a service of the handler.
-func (l *RedisUserLimiter) Run(ctx context.Context) error {
-	<-ctx.Done()
-	for _, shard := range l.shards {
-		shard.Close()
+// Connect makes one attempt to connect to all shards. The attempt is all-or-nothing: on failure nothing is
+// kept and the limiter stays not connected. Failure is logged as a warning, success as info. Once connected,
+// Connect does nothing: the Redis client reconnects by itself.
+func (l *RedisUserLimiter) Connect() {
+	if l.connected() {
+		return
 	}
+	shards, err := l.connect(l.shardConfigs)
+	if err != nil {
+		log.Warn().Err(err).Msg("redis_user_command rate limit: Redis is unreachable, commands are allowed until it is reachable")
+		return
+	}
+	l.shards.Store(&shards)
+	log.Info().Int("shards", len(shards)).Msg("redis_user_command rate limit: connected to Redis")
+}
+
+// Run connects to Redis in the background while the limiter is not connected: attempts are spaced by
+// exponential backoff with jitter, from backoffMin up to backoffMax. When the context is done, Run stops
+// retrying and closes the connected shards. It implements service.Service.
+func (l *RedisUserLimiter) Run(ctx context.Context) error {
+	backoff := l.backoffMin
+	for !l.connected() {
+		if !sleepContext(ctx, retryDelay(backoff)) {
+			break
+		}
+		l.Connect()
+		backoff = min(2*backoff, l.backoffMax)
+	}
+	<-ctx.Done()
+	l.closeShards()
 	return ctx.Err()
 }
 
+// connected reports whether Connect succeeded.
+func (l *RedisUserLimiter) connected() bool {
+	return l.shards.Load() != nil
+}
+
+// closeShards closes the connected shards and forgets them, so later checks are made while not connected.
+func (l *RedisUserLimiter) closeShards() {
+	shards := l.shards.Swap(nil)
+	if shards == nil {
+		return
+	}
+	for _, shard := range *shards {
+		if shard != nil {
+			shard.Close()
+		}
+	}
+}
+
 // check runs the script for scope s of userID. Redis errors are counted and logged, and allow the operation.
+// While not connected, the operation is allowed and counted as an error.
 func (l *RedisUserLimiter) check(userID string, s *scope) bool {
+	shards := l.shards.Load()
+	if shards == nil {
+		metrics.RateLimitRedisErrorsTotal.Inc()
+		l.logError(errRedisNotConnected)
+		return true
+	}
+	list := *shards
 	key := redisKey(l.prefix, userID, s.name)
-	shard := l.shards[shardIndex(userID, len(l.shards))]
+	shard := list[shardIndex(userID, len(list))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	start := time.Now()
@@ -164,6 +235,24 @@ func (l *RedisUserLimiter) logError(err error) {
 		return
 	}
 	log.Error().Err(err).Msg("redis_user_command rate limit: Redis error, command allowed")
+}
+
+// retryDelay returns a random delay in [backoff/2, backoff], so nodes started together do not retry in lockstep.
+func retryDelay(backoff time.Duration) time.Duration {
+	half := backoff / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
+}
+
+// sleepContext waits for d. It returns false when the context is done first.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // runRedisScript runs the rate limit script on shard.

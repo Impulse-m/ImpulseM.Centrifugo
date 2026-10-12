@@ -26,17 +26,21 @@ func uniquePrefix() string {
 	return fmt.Sprintf("rltest%d", time.Now().UnixNano())
 }
 
-// newIntegrationLimiter creates a limiter with its own Redis shards, as a separate node would have.
+// newIntegrationLimiter creates a connected limiter with its own Redis shards, as a separate node would have.
 func newIntegrationLimiter(tb testing.TB, cfg configtypes.RateLimitRedisUserCommand, prefix string) *RedisUserLimiter {
 	tb.Helper()
-	shards, err := redisshard.BuildRedisShards(configtypes.Redis{Address: []string{integrationRedisAddress}})
+	configs, err := redisshard.ParseRedisShardConfigs(configtypes.Redis{Address: []string{integrationRedisAddress}})
 	require.NoError(tb, err)
-	tb.Cleanup(func() {
-		for _, shard := range shards {
-			shard.Close()
-		}
-	})
-	return NewRedisUserLimiter(cfg, prefix, shards, 0)
+	l := NewRedisUserLimiter(cfg, prefix, configs, 0)
+	l.Connect()
+	require.True(tb, l.connected())
+	tb.Cleanup(l.closeShards)
+	return l
+}
+
+// firstShard returns the first connected shard of the limiter.
+func firstShard(l *RedisUserLimiter) *redisshard.RedisShard {
+	return (*l.shards.Load())[0]
 }
 
 // redisIntegrationConfig returns redis_user_command limits of publish with one bucket.
@@ -49,7 +53,7 @@ func redisIntegrationConfig(interval time.Duration, rate int) configtypes.RateLi
 
 // runOnShard runs a Redis command on the first shard of the limiter.
 func runOnShard(l *RedisUserLimiter, build func(client rueidis.Client) rueidis.Completed) rueidis.RedisResult {
-	return l.shards[0].RunOp(func(client rueidis.Client) rueidis.RedisResult {
+	return firstShard(l).RunOp(func(client rueidis.Client) rueidis.RedisResult {
 		return client.Do(context.Background(), build(client))
 	})
 }
@@ -141,7 +145,7 @@ func TestRedisLimiterFailOpenOnClosedShard(t *testing.T) {
 	before := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
 
 	// Every call fails on the closed shard, and the commands and the connect are allowed.
-	l.shards[0].Close()
+	firstShard(l).Close()
 	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
 	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
 	require.True(t, l.ConnectAllowed("42"))
@@ -157,8 +161,9 @@ func TestRedisLimiterRunClosesShards(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	require.ErrorIs(t, l.Run(ctx), context.Canceled)
+	require.False(t, l.connected())
 
-	// Closed shards fail open.
+	// Limiter without shards fails open.
 	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
 	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
 }

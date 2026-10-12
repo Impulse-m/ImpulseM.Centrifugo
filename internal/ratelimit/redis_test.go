@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,10 +182,35 @@ func fakeRedisRunner(allowed bool, err error, calls *[]string) redisScriptRunner
 	}
 }
 
-// newFakeRedisLimiter returns a limiter with one nil shard and the given runner.
+// fakeShardConfigs returns n shard configs. They are never dialed by tests, which replace connect.
+func fakeShardConfigs(n int) []redisshard.RedisShardConfig {
+	configs := make([]redisshard.RedisShardConfig, 0, n)
+	for i := 0; i < n; i++ {
+		configs = append(configs, redisshard.RedisShardConfig{Address: fmt.Sprintf("fake-%d:6379", i)})
+	}
+	return configs
+}
+
+// flakyConnector is a connect replacement which fails its first failFor calls, then succeeds.
+type flakyConnector struct {
+	calls   atomic.Int32
+	failFor int32
+}
+
+func (f *flakyConnector) connect(configs []redisshard.RedisShardConfig) ([]*redisshard.RedisShard, error) {
+	if n := f.calls.Add(1); n <= f.failFor {
+		return nil, errors.New("connection refused")
+	}
+	return make([]*redisshard.RedisShard, len(configs)), nil
+}
+
+// newFakeRedisLimiter returns a connected limiter with two fake shards and the given runner.
 func newFakeRedisLimiter(cfg configtypes.RateLimitRedisUserCommand, run redisScriptRunner) *RedisUserLimiter {
-	l := NewRedisUserLimiter(cfg, "p", []*redisshard.RedisShard{nil}, 0)
+	connector := &flakyConnector{}
+	l := NewRedisUserLimiter(cfg, "p", fakeShardConfigs(2), 0)
+	l.connect = connector.connect
 	l.run = run
+	l.Connect()
 	return l
 }
 
@@ -265,7 +291,7 @@ func TestRedisLimiterLogsErrorsRateLimited(t *testing.T) {
 }
 
 func TestRedisLimiterNeedsKey(t *testing.T) {
-	l := NewRedisUserLimiter(redisTestConfig(), "p", []*redisshard.RedisShard{nil}, 0)
+	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
 	require.True(t, l.NeedsKey(OperationPublish))
 	require.True(t, l.NeedsKey(OperationRPC))
 	require.False(t, l.NeedsKey(OperationHistory))
@@ -273,8 +299,105 @@ func TestRedisLimiterNeedsKey(t *testing.T) {
 }
 
 func TestRedisLimiterDefaultTimeout(t *testing.T) {
-	l := NewRedisUserLimiter(redisTestConfig(), "p", []*redisshard.RedisShard{nil}, 0)
+	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
 	require.Equal(t, redisDefaultIOTimeout, l.timeout)
-	l = NewRedisUserLimiter(redisTestConfig(), "p", []*redisshard.RedisShard{nil}, 250*time.Millisecond)
+	l = NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 250*time.Millisecond)
 	require.Equal(t, 250*time.Millisecond, l.timeout)
+}
+
+// newRetryTestLimiter returns a not yet connected limiter with a connector which fails failFor calls,
+// and short retry delays.
+func newRetryTestLimiter(failFor int32) (*RedisUserLimiter, *flakyConnector) {
+	connector := &flakyConnector{failFor: failFor}
+	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(2), 0)
+	l.connect = connector.connect
+	l.backoffMin = time.Millisecond
+	l.backoffMax = 2 * time.Millisecond
+	return l, connector
+}
+
+func TestRedisLimiterRunRetriesUntilConnected(t *testing.T) {
+	l, connector := newRetryTestLimiter(3)
+	l.Connect()
+	require.False(t, l.connected())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx) }()
+
+	require.Eventually(t, l.connected, 5*time.Second, time.Millisecond)
+	// One attempt in Connect, three failed retries in Run, then the successful one.
+	require.Equal(t, int32(4), connector.calls.Load())
+
+	// Connected limiter does not connect again.
+	l.Connect()
+	require.Equal(t, int32(4), connector.calls.Load())
+
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after context is done")
+	}
+	// Shards are closed and forgotten when Run stops.
+	require.False(t, l.connected())
+}
+
+func TestRedisLimiterRunStopsRetryingWhenContextIsDone(t *testing.T) {
+	l, connector := newRetryTestLimiter(1000)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- l.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return connector.calls.Load() >= 3 }, 5*time.Second, time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after context is done")
+	}
+	require.False(t, l.connected())
+
+	// No more attempts after Run returned.
+	calls := connector.calls.Load()
+	time.Sleep(10 * time.Millisecond)
+	require.Equal(t, calls, connector.calls.Load())
+}
+
+func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
+	connector := &flakyConnector{failFor: 100}
+	var calls []string
+	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(2), 0)
+	l.connect = connector.connect
+	l.run = fakeRedisRunner(false, nil, &calls)
+	l.Connect()
+	require.False(t, l.connected())
+
+	before := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	require.True(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.True(t, l.ConnectAllowed("42"))
+	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	require.Equal(t, float64(2), after-before)
+	// Nothing reaches Redis while not connected.
+	require.Empty(t, calls)
+
+	// After a successful connect the same limiter enforces its limits.
+	connector.failFor = 0
+	l.Connect()
+	require.True(t, l.connected())
+	require.False(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, []string{"p.rl.{42}.publish.ns.chat"}, calls)
+}
+
+func TestRedisRetryDelayWithinJitterBounds(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		delay := retryDelay(time.Second)
+		require.GreaterOrEqual(t, delay, 500*time.Millisecond)
+		require.LessOrEqual(t, delay, time.Second)
+	}
 }

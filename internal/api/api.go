@@ -550,16 +550,15 @@ func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUse
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
-	if cmd.User == "" {
-		log.Error().Err(errors.New("user required for block_user")).Msg("bad block_user request")
-		resp.Error = ErrorBadRequest
-		return resp
-	}
 
-	notification := accessrevoke.Notification{
+	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind:     accessrevoke.KindBlockUser,
 		User:     cmd.User,
-		ExpireAt: accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+		ExpireAt: cmd.ExpireAt,
+	}, cfg.AccessRevoke.DefaultTTL)
+	if respErr != nil {
+		resp.Error = respErr
+		return resp
 	}
 	resp.Error = h.applyAccessRevoke(notification)
 	if resp.Error != nil {
@@ -580,15 +579,14 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
-	if cmd.User == "" {
-		log.Error().Err(errors.New("user required for unblock_user")).Msg("bad unblock_user request")
-		resp.Error = ErrorBadRequest
-		return resp
-	}
 
-	notification := accessrevoke.Notification{
+	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind: accessrevoke.KindUnblockUser,
 		User: cmd.User,
+	}, cfg.AccessRevoke.DefaultTTL)
+	if respErr != nil {
+		resp.Error = respErr
+		return resp
 	}
 	resp.Error = h.applyAccessRevoke(notification)
 	if resp.Error != nil {
@@ -611,18 +609,16 @@ func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *Revo
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
-	if cmd.Uid == "" {
-		log.Error().Err(errors.New("uid required for revoke_token")).Msg("bad revoke_token request")
-		resp.Error = ErrorBadRequest
-		return resp
-	}
-
-	notification := accessrevoke.Notification{
+	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind:      accessrevoke.KindRevokeToken,
 		User:      cmd.User,
 		Session:   cmd.Uid,
-		RevokedAt: accessRevokeRevokedAt(cmd.RevokedAt),
-		ExpireAt:  accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+		RevokedAt: cmd.RevokedAt,
+		ExpireAt:  cmd.ExpireAt,
+	}, cfg.AccessRevoke.DefaultTTL)
+	if respErr != nil {
+		resp.Error = respErr
+		return resp
 	}
 	resp.Error = h.applyAccessRevoke(notification)
 	if resp.Error != nil {
@@ -644,31 +640,18 @@ func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTo
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
-	if cmd.Channel != "" {
-		// Per-channel subscription token invalidation is not supported yet.
-		resp.Error = ErrorNotAvailable
-		return resp
-	}
-	if cmd.User == "" {
-		log.Error().Err(errors.New("user required for invalidate_user_tokens")).Msg("bad invalidate_user_tokens request")
-		resp.Error = ErrorBadRequest
-		return resp
-	}
-
-	// When generation is set, issued_before is used only if given: defaulting it to now would reject
-	// legitimate tokens of the new generation on nodes with lagging clocks.
-	issuedBefore := cmd.IssuedBefore
-	if cmd.Generation == 0 && issuedBefore == 0 {
-		issuedBefore = time.Now().Unix()
-	}
-
-	notification := accessrevoke.Notification{
+	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind:         accessrevoke.KindInvalidateUserTokens,
 		User:         cmd.User,
+		Channel:      cmd.Channel,
 		Generation:   cmd.Generation,
-		IssuedBefore: issuedBefore,
-		RevokedAt:    accessRevokeRevokedAt(cmd.RevokedAt),
-		ExpireAt:     accessRevokeExpireAt(cmd.ExpireAt, cfg.AccessRevoke.DefaultTTL),
+		IssuedBefore: cmd.IssuedBefore,
+		RevokedAt:    cmd.RevokedAt,
+		ExpireAt:     cmd.ExpireAt,
+	}, cfg.AccessRevoke.DefaultTTL)
+	if respErr != nil {
+		resp.Error = respErr
+		return resp
 	}
 	resp.Error = h.applyAccessRevoke(notification)
 	if resp.Error != nil {
@@ -701,20 +684,19 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 	return nil
 }
 
-// accessRevokeRevokedAt returns revokedAt or current Unix time when it is zero.
-func accessRevokeRevokedAt(revokedAt int64) int64 {
-	if revokedAt != 0 {
-		return revokedAt
+// resolveAccessRevoke resolves the operation into a Notification using the current time. Validation
+// failures are mapped to API errors: unsupported operations to ErrorNotAvailable, others to ErrorBadRequest.
+func resolveAccessRevoke(operation accessrevoke.Operation, defaultTTL configtypes.Duration) (accessrevoke.Notification, *Error) {
+	notification, err := accessrevoke.Resolve(operation, time.Now(), defaultTTL.ToDuration())
+	if err != nil {
+		log.Error().Err(err).Str("kind", operation.Kind).Msg("bad access revocation request")
+		var validationErr *accessrevoke.ValidationError
+		if errors.As(err, &validationErr) && validationErr.NotSupported {
+			return accessrevoke.Notification{}, ErrorNotAvailable
+		}
+		return accessrevoke.Notification{}, ErrorBadRequest
 	}
-	return time.Now().Unix()
-}
-
-// accessRevokeExpireAt returns expireAt or Unix time of now plus defaultTTL when it is zero.
-func accessRevokeExpireAt(expireAt int64, defaultTTL configtypes.Duration) int64 {
-	if expireAt != 0 {
-		return expireAt
-	}
-	return time.Now().Add(defaultTTL.ToDuration()).Unix()
+	return notification, nil
 }
 
 // Presence returns response with presence information for channel.

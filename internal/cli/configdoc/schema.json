@@ -9838,6 +9838,184 @@
     ]
   },
   {
+    "field": "user_block",
+    "name": "user_block",
+    "go_name": "UserBlock",
+    "level": 1,
+    "type": "UserBlock",
+    "default": "",
+    "comment": "UserBlock is a configuration for blocking users. Enabled by default.",
+    "is_complex_type": true,
+    "children": [
+      {
+        "field": "user_block.enabled",
+        "name": "enabled",
+        "go_name": "Enabled",
+        "level": 2,
+        "type": "bool",
+        "default": "",
+        "comment": "Enabled turns on user block checks. Enabled by default.",
+        "is_complex_type": false
+      },
+      {
+        "field": "user_block.storage_type",
+        "name": "storage_type",
+        "go_name": "StorageType",
+        "level": 2,
+        "type": "string",
+        "default": "memory",
+        "comment": "StorageType is a storage for block entries. Only memory is supported at the moment.",
+        "is_complex_type": false
+      }
+    ]
+  },
+  {
+    "field": "token_revoke",
+    "name": "token_revoke",
+    "go_name": "TokenRevoke",
+    "level": 1,
+    "type": "TokenRevoke",
+    "default": "",
+    "comment": "TokenRevoke is a configuration for revoking connection tokens by session ID. Enabled by default.",
+    "is_complex_type": true,
+    "children": [
+      {
+        "field": "token_revoke.enabled",
+        "name": "enabled",
+        "go_name": "Enabled",
+        "level": 2,
+        "type": "bool",
+        "default": "",
+        "comment": "Enabled turns on session revocation checks. Enabled by default.",
+        "is_complex_type": false
+      },
+      {
+        "field": "token_revoke.storage_type",
+        "name": "storage_type",
+        "go_name": "StorageType",
+        "level": 2,
+        "type": "string",
+        "default": "memory",
+        "comment": "StorageType is a storage for revoked sessions. Only memory is supported at the moment.",
+        "is_complex_type": false
+      },
+      {
+        "field": "token_revoke.uid_claim",
+        "name": "uid_claim",
+        "go_name": "UIDClaim",
+        "level": 2,
+        "type": "string",
+        "default": "jti",
+        "comment": "UIDClaim is a name of connection token claim with session ID. Default is jti.",
+        "is_complex_type": false
+      }
+    ]
+  },
+  {
+    "field": "user_tokens_invalidate",
+    "name": "user_tokens_invalidate",
+    "go_name": "UserTokensInvalidate",
+    "level": 1,
+    "type": "UserTokensInvalidate",
+    "default": "",
+    "comment": "UserTokensInvalidate is a configuration for invalidating all tokens of a user. Enabled by default.",
+    "is_complex_type": true,
+    "children": [
+      {
+        "field": "user_tokens_invalidate.enabled",
+        "name": "enabled",
+        "go_name": "Enabled",
+        "level": 2,
+        "type": "bool",
+        "default": "",
+        "comment": "Enabled turns on user token invalidation checks. Enabled by default.",
+        "is_complex_type": false
+      },
+      {
+        "field": "user_tokens_invalidate.storage_type",
+        "name": "storage_type",
+        "go_name": "StorageType",
+        "level": 2,
+        "type": "string",
+        "default": "memory",
+        "comment": "StorageType is a storage for invalidation entries. Only memory is supported at the moment.",
+        "is_complex_type": false
+      },
+      {
+        "field": "user_tokens_invalidate.generation_claim",
+        "name": "generation_claim",
+        "go_name": "GenerationClaim",
+        "level": 2,
+        "type": "string",
+        "default": "",
+        "comment": "GenerationClaim is a name of connection token claim with revocation generation. Empty means\ngeneration checks are off.",
+        "is_complex_type": false
+      }
+    ]
+  },
+  {
+    "field": "access_revoke",
+    "name": "access_revoke",
+    "go_name": "AccessRevoke",
+    "level": 1,
+    "type": "AccessRevoke",
+    "default": "",
+    "comment": "AccessRevoke is a configuration for access revocation internals.",
+    "is_complex_type": true,
+    "children": [
+      {
+        "field": "access_revoke.disconnect_rate",
+        "name": "disconnect_rate",
+        "go_name": "DisconnectRate",
+        "level": 2,
+        "type": "int",
+        "default": "1000",
+        "comment": "DisconnectRate is a maximum number of live connections disconnected per second on this node\nbecause of access revocation.",
+        "is_complex_type": false
+      },
+      {
+        "field": "access_revoke.disconnect_queue_size",
+        "name": "disconnect_queue_size",
+        "go_name": "DisconnectQueueSize",
+        "level": 2,
+        "type": "int",
+        "default": "100000",
+        "comment": "DisconnectQueueSize is a size of the queue of pending live disconnects. Disconnects beyond\nthe queue size are dropped; the refresh check catches them within token lifetime.",
+        "is_complex_type": false
+      },
+      {
+        "field": "access_revoke.notify_rate",
+        "name": "notify_rate",
+        "go_name": "NotifyRate",
+        "level": 2,
+        "type": "int",
+        "default": "100",
+        "comment": "NotifyRate is a maximum number of access revocation notifications sent to other nodes per second.",
+        "is_complex_type": false
+      },
+      {
+        "field": "access_revoke.default_ttl",
+        "name": "default_ttl",
+        "go_name": "DefaultTTL",
+        "level": 2,
+        "type": "Duration",
+        "default": "20m",
+        "comment": "DefaultTTL is how long a revocation entry is kept when the request does not set expiration time.",
+        "is_complex_type": false
+      },
+      {
+        "field": "access_revoke.sweep_interval",
+        "name": "sweep_interval",
+        "go_name": "SweepInterval",
+        "level": 2,
+        "type": "Duration",
+        "default": "30s",
+        "comment": "SweepInterval is how often expired revocation entries are removed from memory.",
+        "is_complex_type": false
+      }
+    ]
+  },
+  {
     "field": "opentelemetry",
     "name": "opentelemetry",
     "go_name": "OpenTelemetry",

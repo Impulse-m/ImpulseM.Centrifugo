@@ -33,6 +33,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateAccessRevoke(c); err != nil {
+		return err
+	}
+
 	if c.Client.Proxy.Connect.Enabled {
 		if err := validateProxy("default", c.Client.Proxy.Connect.Proxy); err != nil {
 			return fmt.Errorf("in client.proxy.connect: %v", err)
@@ -329,6 +333,42 @@ func validateTokens(cfg Config) error {
 		if !customClaimRe.MatchString(cfg.Client.SubscriptionToken.UserIDClaim) {
 			return fmt.Errorf("invalid subscription token custom user ID claim: %s, must match %s regular expression", cfg.Client.SubscriptionToken.UserIDClaim, customClaimRe.String())
 		}
+	}
+	return nil
+}
+
+var knownAccessRevokeStorageTypes = []string{"", "memory"}
+
+func validateAccessRevoke(cfg Config) error {
+	if !slices.Contains(knownAccessRevokeStorageTypes, cfg.UserBlock.StorageType) {
+		return fmt.Errorf("unknown user_block.storage_type: \"%s\"", cfg.UserBlock.StorageType)
+	}
+	if !slices.Contains(knownAccessRevokeStorageTypes, cfg.TokenRevoke.StorageType) {
+		return fmt.Errorf("unknown token_revoke.storage_type: \"%s\"", cfg.TokenRevoke.StorageType)
+	}
+	if !slices.Contains(knownAccessRevokeStorageTypes, cfg.UserTokensInvalidate.StorageType) {
+		return fmt.Errorf("unknown user_tokens_invalidate.storage_type: \"%s\"", cfg.UserTokensInvalidate.StorageType)
+	}
+	if cfg.TokenRevoke.UIDClaim != "" && !customClaimRe.MatchString(cfg.TokenRevoke.UIDClaim) {
+		return fmt.Errorf("invalid token_revoke.uid_claim: %s, must match %s regular expression", cfg.TokenRevoke.UIDClaim, customClaimRe.String())
+	}
+	if cfg.UserTokensInvalidate.GenerationClaim != "" && !customClaimRe.MatchString(cfg.UserTokensInvalidate.GenerationClaim) {
+		return fmt.Errorf("invalid user_tokens_invalidate.generation_claim: %s, must match %s regular expression", cfg.UserTokensInvalidate.GenerationClaim, customClaimRe.String())
+	}
+	if cfg.AccessRevoke.DisconnectRate <= 0 {
+		return fmt.Errorf("access_revoke.disconnect_rate must be greater than zero")
+	}
+	if cfg.AccessRevoke.DisconnectQueueSize <= 0 {
+		return fmt.Errorf("access_revoke.disconnect_queue_size must be greater than zero")
+	}
+	if cfg.AccessRevoke.NotifyRate <= 0 {
+		return fmt.Errorf("access_revoke.notify_rate must be greater than zero")
+	}
+	if cfg.AccessRevoke.DefaultTTL.ToDuration() <= 0 {
+		return fmt.Errorf("access_revoke.default_ttl must be greater than zero")
+	}
+	if cfg.AccessRevoke.SweepInterval.ToDuration() <= 0 {
+		return fmt.Errorf("access_revoke.sweep_interval must be greater than zero")
 	}
 	return nil
 }

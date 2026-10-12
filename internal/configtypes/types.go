@@ -72,6 +72,53 @@ type SubscriptionToken struct {
 	Token   `mapstructure:",squash" yaml:",inline"`
 }
 
+// UserBlock is a configuration for user blocking. Blocked user connections are disconnected
+// with 4500 code and can't connect or refresh while the block is active.
+type UserBlock struct {
+	// Enabled turns on user block checks. Enabled by default.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`
+	// StorageType is a storage for block entries. Only memory is supported at the moment.
+	StorageType string `mapstructure:"storage_type" default:"memory" json:"storage_type" envconfig:"storage_type" yaml:"storage_type" toml:"storage_type"`
+}
+
+// TokenRevoke is a configuration for revoking connection tokens by session ID.
+type TokenRevoke struct {
+	// Enabled turns on session revocation checks. Enabled by default.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`
+	// StorageType is a storage for revoked sessions. Only memory is supported at the moment.
+	StorageType string `mapstructure:"storage_type" default:"memory" json:"storage_type" envconfig:"storage_type" yaml:"storage_type" toml:"storage_type"`
+	// UIDClaim is a name of connection token claim with session ID. Default is jti.
+	UIDClaim string `mapstructure:"uid_claim" default:"jti" json:"uid_claim" envconfig:"uid_claim" yaml:"uid_claim" toml:"uid_claim"`
+}
+
+// UserTokensInvalidate is a configuration for invalidating all tokens of a user.
+type UserTokensInvalidate struct {
+	// Enabled turns on user token invalidation checks. Enabled by default.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`
+	// StorageType is a storage for invalidation entries. Only memory is supported at the moment.
+	StorageType string `mapstructure:"storage_type" default:"memory" json:"storage_type" envconfig:"storage_type" yaml:"storage_type" toml:"storage_type"`
+	// GenerationClaim is a name of connection token claim with revocation generation. Empty means
+	// generation checks are off.
+	GenerationClaim string `mapstructure:"generation_claim" json:"generation_claim" envconfig:"generation_claim" yaml:"generation_claim" toml:"generation_claim"`
+}
+
+// AccessRevoke is a configuration for access revocation internals: live disconnects and cluster
+// notifications.
+type AccessRevoke struct {
+	// DisconnectRate is a maximum number of live connections disconnected per second on this node
+	// because of access revocation.
+	DisconnectRate int `mapstructure:"disconnect_rate" default:"1000" json:"disconnect_rate" envconfig:"disconnect_rate" yaml:"disconnect_rate" toml:"disconnect_rate"`
+	// DisconnectQueueSize is a size of the queue of pending live disconnects. Disconnects beyond
+	// the queue size are dropped; the refresh check catches them within token lifetime.
+	DisconnectQueueSize int `mapstructure:"disconnect_queue_size" default:"100000" json:"disconnect_queue_size" envconfig:"disconnect_queue_size" yaml:"disconnect_queue_size" toml:"disconnect_queue_size"`
+	// NotifyRate is a maximum number of access revocation notifications sent to other nodes per second.
+	NotifyRate int `mapstructure:"notify_rate" default:"100" json:"notify_rate" envconfig:"notify_rate" yaml:"notify_rate" toml:"notify_rate"`
+	// DefaultTTL is how long a revocation entry is kept when the request does not set expiration time.
+	DefaultTTL Duration `mapstructure:"default_ttl" default:"20m" json:"default_ttl" envconfig:"default_ttl" yaml:"default_ttl" toml:"default_ttl"`
+	// SweepInterval is how often expired revocation entries are removed from memory.
+	SweepInterval Duration `mapstructure:"sweep_interval" default:"30s" json:"sweep_interval" envconfig:"sweep_interval" yaml:"sweep_interval" toml:"sweep_interval"`
+}
+
 // HTTP3 is EXPERIMENTAL.
 type HTTP3 struct {
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled"`

@@ -96,6 +96,15 @@ type Config struct {
 	// Init is a configuration for connection initialization endpoint.
 	Init configtypes.ConnInit `mapstructure:"init" json:"init" envconfig:"init" toml:"init" yaml:"init"`
 
+	// UserBlock is a configuration for blocking users. Enabled by default.
+	UserBlock configtypes.UserBlock `mapstructure:"user_block" json:"user_block" envconfig:"user_block" toml:"user_block" yaml:"user_block"`
+	// TokenRevoke is a configuration for revoking connection tokens by session ID. Enabled by default.
+	TokenRevoke configtypes.TokenRevoke `mapstructure:"token_revoke" json:"token_revoke" envconfig:"token_revoke" toml:"token_revoke" yaml:"token_revoke"`
+	// UserTokensInvalidate is a configuration for invalidating all tokens of a user. Enabled by default.
+	UserTokensInvalidate configtypes.UserTokensInvalidate `mapstructure:"user_tokens_invalidate" json:"user_tokens_invalidate" envconfig:"user_tokens_invalidate" toml:"user_tokens_invalidate" yaml:"user_tokens_invalidate"`
+	// AccessRevoke is a configuration for access revocation internals.
+	AccessRevoke configtypes.AccessRevoke `mapstructure:"access_revoke" json:"access_revoke" envconfig:"access_revoke" toml:"access_revoke" yaml:"access_revoke"`
+
 	// OpenTelemetry is a configuration for OpenTelemetry tracing.
 	OpenTelemetry configtypes.OpenTelemetry `mapstructure:"opentelemetry" json:"opentelemetry" envconfig:"opentelemetry" toml:"opentelemetry" yaml:"opentelemetry"`
 	// Graphite is a configuration for export metrics to Graphite.
@@ -166,6 +175,13 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 		configtypes.StringToMapStringStringHookFunc(),
 		configtypes.StringToStringKeyValuesHookFunc(),
 	)))
+
+	// Access revocation features are on by default. Defaults are set here rather than with
+	// default tags: envconfig applies a default tag to any zero field, which would turn an
+	// explicit "enabled: false" back into true.
+	v.SetDefault("user_block.enabled", true)
+	v.SetDefault("token_revoke.enabled", true)
+	v.SetDefault("user_tokens_invalidate.enabled", true)
 
 	if cmd != nil {
 		bindPFlags := []string{

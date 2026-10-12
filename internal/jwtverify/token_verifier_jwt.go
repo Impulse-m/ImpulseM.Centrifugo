@@ -73,6 +73,14 @@ type VerifierConfig struct {
 	// By default, Centrifugo uses "sub" and we recommend keeping the default if possible.
 	UserIDClaim string
 
+	// SessionClaim allows overriding claim used to extract session ID from connection token.
+	// Empty value means "jti" claim.
+	SessionClaim string
+
+	// GenerationClaim is a claim used to extract revocation generation from connection token.
+	// Empty value means generation is not extracted (always zero).
+	GenerationClaim string
+
 	// InsecureSkipJWKSEndpointSafetyCheck disables the config-time safety validation of
 	// JWKS endpoint URL templates. This is INSECURE and exists only as a temporary escape
 	// hatch for users upgrading with existing permissive regex patterns. This option will
@@ -120,12 +128,14 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 	}
 
 	verifier := &VerifierJWT{
-		cfgContainer: cfgContainer,
-		issuer:       config.Issuer,
-		issuerRe:     issuerRe,
-		audience:     config.Audience,
-		audienceRe:   audienceRe,
-		userIDClaim:  config.UserIDClaim,
+		cfgContainer:    cfgContainer,
+		issuer:          config.Issuer,
+		issuerRe:        issuerRe,
+		audience:        config.Audience,
+		audienceRe:      audienceRe,
+		userIDClaim:     config.UserIDClaim,
+		sessionClaim:    sessionClaimOrDefault(config.SessionClaim),
+		generationClaim: config.GenerationClaim,
 	}
 
 	if config.JWKSPublicEndpoint != "" {
@@ -167,6 +177,17 @@ type VerifierJWT struct {
 	issuer                          string
 	issuerRe                        *regexp.Regexp
 	userIDClaim                     string
+	sessionClaim                    string
+	generationClaim                 string
+}
+
+const defaultSessionClaim = "jti"
+
+func sessionClaimOrDefault(claim string) string {
+	if claim == "" {
+		return defaultSessionClaim
+	}
+	return claim
 }
 
 var (
@@ -698,7 +719,34 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	} else {
 		ct.UserID = claims.RegisteredClaims.Subject
 	}
+	ct.Session = verifier.sessionFromClaims(token.Claims(), claims.RegisteredClaims)
+	ct.Generation = verifier.generationFromClaims(token.Claims())
+	if claims.RegisteredClaims.IssuedAt != nil {
+		ct.IssuedAt = claims.RegisteredClaims.IssuedAt.Unix()
+	}
 	return ct, nil
+}
+
+// sessionFromClaims returns session ID of the token. The "jti" claim is taken from registered
+// claims, any other claim is read from raw claims.
+func (verifier *VerifierJWT) sessionFromClaims(rawClaims []byte, registered jwt.RegisteredClaims) string {
+	if verifier.sessionClaim == defaultSessionClaim {
+		return registered.ID
+	}
+	return gjson.GetBytes(rawClaims, verifier.sessionClaim).String()
+}
+
+// generationFromClaims returns revocation generation of the token. Non-numeric or negative
+// values and absent claim give zero generation.
+func (verifier *VerifierJWT) generationFromClaims(rawClaims []byte) uint64 {
+	if verifier.generationClaim == "" {
+		return 0
+	}
+	value := gjson.GetBytes(rawClaims, verifier.generationClaim)
+	if value.Type != gjson.Number || value.Int() < 0 {
+		return 0
+	}
+	return uint64(value.Int())
 }
 
 func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (SubscribeToken, error) {
@@ -891,5 +939,7 @@ func (verifier *VerifierJWT) Reload(config VerifierConfig) error {
 	verifier.issuer = config.Issuer
 	verifier.issuerRe = issuerRe
 	verifier.userIDClaim = config.UserIDClaim
+	verifier.sessionClaim = sessionClaimOrDefault(config.SessionClaim)
+	verifier.generationClaim = config.GenerationClaim
 	return nil
 }

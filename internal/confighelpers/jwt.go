@@ -46,3 +46,14 @@ func MakeVerifierConfig(tokenConf configtypes.Token) (jwtverify.VerifierConfig, 
 
 	return cfg, nil
 }
+
+// SetRevokeClaims sets claims used for access revocation checks on a verifier config made by
+// MakeVerifierConfig. Call it both at startup and on reload.
+func SetRevokeClaims(
+	verifierConfig *jwtverify.VerifierConfig,
+	tokenRevoke configtypes.TokenRevoke,
+	userTokensInvalidate configtypes.UserTokensInvalidate,
+) {
+	verifierConfig.SessionClaim = tokenRevoke.UIDClaim
+	verifierConfig.GenerationClaim = userTokensInvalidate.GenerationClaim
+}

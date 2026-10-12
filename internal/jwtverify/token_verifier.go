@@ -30,6 +30,14 @@ type ConnectToken struct {
 	Meta json.RawMessage
 	// Subs is a map of channels to subscribe server-side with options.
 	Subs map[string]centrifuge.SubscribeOptions
+	// Session identifies a session the token was issued for. Taken from the claim
+	// configured by token_revoke.uid_claim (jti by default). Empty when absent.
+	Session string
+	// Generation is a revocation generation of the token. Taken from the claim configured
+	// by user_tokens_invalidate.generation_claim. Zero when the claim is not configured or absent.
+	Generation uint64
+	// IssuedAt is a Unix time in seconds the token was issued at (iat claim). Zero when absent.
+	IssuedAt int64
 }
 
 type SubscribeToken struct {

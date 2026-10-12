@@ -311,9 +311,6 @@ func validateRateLimit(c Config) error {
 		return fmt.Errorf("client_error: enabled without total bucket has no effect, enable client_error.total")
 	}
 
-	if uc.Enabled {
-		return fmt.Errorf("user_command: not implemented yet")
-	}
 	if rc.Enabled {
 		return fmt.Errorf("redis_user_command: not implemented yet")
 	}

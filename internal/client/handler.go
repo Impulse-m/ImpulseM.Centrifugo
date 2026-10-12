@@ -55,6 +55,7 @@ type Handler struct {
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
 	userLimiter      *ratelimit.UserLimiter
+	redisLimiter     *ratelimit.RedisUserLimiter
 }
 
 // NewHandler creates new Handler.
@@ -146,7 +147,9 @@ func (h *Handler) Setup() error {
 	cfg := h.cfgContainer.Config()
 	concurrency := cfg.Client.Concurrency
 
-	h.setupRateLimit(cfg.Client.RateLimit)
+	if err := h.setupRateLimit(cfg); err != nil {
+		return err
+	}
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
 		disconnect, revoked := h.recheckConnection(client)

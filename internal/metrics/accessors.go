@@ -52,4 +52,6 @@ var (
 	RateLimitRejectsTotal          *prometheus.CounterVec
 	RateLimitErrorDisconnectsTotal prometheus.Counter
 	RateLimitUserEntries           prometheus.Gauge
+	RateLimitRedisErrorsTotal      prometheus.Counter
+	RateLimitRedisDuration         prometheus.Histogram
 )

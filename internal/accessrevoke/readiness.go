@@ -17,17 +17,17 @@ type ReadinessConfig struct {
 
 // ReadinessSnapshot is a state of a ReadinessTracker at some moment.
 type ReadinessSnapshot struct {
-	// Ready is true once every partition reached its high watermark at least once, or after startup
+	// Ready is true once every partition reached its target offset at least once, or after startup
 	// timeout when not strict. Ready stays true afterwards.
 	Ready bool
 	// FailedOpen is true when Ready was set by startup timeout before catch up.
 	FailedOpen bool
-	// CaughtUp is true once every partition reached its high watermark at least once.
+	// CaughtUp is true once every partition reached its target offset at least once.
 	CaughtUp bool
 	// Lagging is true when a partition stayed behind longer than LagThreshold, or no fetch succeeded
 	// for longer than LagThreshold.
 	Lagging bool
-	// LagRecords is the number of records between consumed offsets and high watermarks.
+	// LagRecords is the number of records between consumed offsets and target offsets.
 	LagRecords int64
 	// CatchUpDuration is the time from start until CaughtUp. Zero when not caught up yet.
 	CatchUpDuration time.Duration
@@ -36,14 +36,15 @@ type ReadinessSnapshot struct {
 // partitionProgress is the progress of a single partition.
 type partitionProgress struct {
 	next        int64
-	hwm         int64
+	target      int64
 	reached     bool
 	behindSince time.Time
 }
 
 // ReadinessTracker decides whether a source of access revocation events has caught up and whether it
-// is lagging. It is fed by per-partition observations (next consumed offset and high watermark) and
-// by successful fetches. It is safe for concurrent use.
+// is lagging. The target offset of a partition is its last stable offset, so an open transaction does
+// not count as lag. It is fed by per-partition observations (next consumed offset and target offset)
+// and by successful fetches. It is safe for concurrent use.
 type ReadinessTracker struct {
 	mu         sync.Mutex
 	config     ReadinessConfig
@@ -73,10 +74,10 @@ func NewReadinessTracker(config ReadinessConfig, clock func() time.Time) *Readin
 	}
 }
 
-// Observe records the next offset to be consumed and the high watermark of a partition. A negative next
-// keeps the previously observed next offset, which is used when a fetch returns the high watermark
+// Observe records the next offset to be consumed and the target offset of a partition. A negative next
+// keeps the previously observed next offset, which is used when a fetch returns the target offset
 // of a partition without records.
-func (t *ReadinessTracker) Observe(partition int32, next int64, hwm int64) {
+func (t *ReadinessTracker) Observe(partition int32, next int64, target int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.clock()
@@ -88,8 +89,8 @@ func (t *ReadinessTracker) Observe(partition int32, next int64, hwm int64) {
 	if next >= 0 {
 		progress.next = next
 	}
-	progress.hwm = hwm
-	if progress.next >= progress.hwm {
+	progress.target = target
+	if progress.next >= progress.target {
 		progress.reached = true
 		progress.behindSince = time.Time{}
 	} else if progress.behindSince.IsZero() {
@@ -122,8 +123,8 @@ func (t *ReadinessTracker) Snapshot() ReadinessSnapshot {
 	}
 	snapshot.Lagging = now.Sub(t.lastFetch) > t.config.LagThreshold
 	for _, progress := range t.partitions {
-		if progress.hwm > progress.next {
-			snapshot.LagRecords += progress.hwm - progress.next
+		if progress.target > progress.next {
+			snapshot.LagRecords += progress.target - progress.next
 		}
 		if !progress.behindSince.IsZero() && now.Sub(progress.behindSince) > t.config.LagThreshold {
 			snapshot.Lagging = true
@@ -171,8 +172,12 @@ func (t *ReadinessTracker) evaluateLocked(now time.Time) {
 	}
 }
 
-// allReachedLocked reports whether every known partition reached its high watermark at least once.
+// allReachedLocked reports whether every known partition reached its target offset at least once. No
+// partition known yet means the offsets are not listed yet, so it is not caught up.
 func (t *ReadinessTracker) allReachedLocked() bool {
+	if len(t.partitions) == 0 {
+		return false
+	}
 	for _, progress := range t.partitions {
 		if !progress.reached {
 			return false

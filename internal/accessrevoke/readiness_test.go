@@ -61,6 +61,13 @@ func TestReadinessIdlePartitionWithNoRecordsIsCaughtUp(t *testing.T) {
 	require.True(t, tracker.Ready())
 }
 
+func TestReadinessNotReadyBeforeAnyPartitionIsObserved(t *testing.T) {
+	tracker, _ := newReadinessTest(false)
+	// Offsets are not listed yet: nothing is known, so the tracker is not caught up.
+	require.False(t, tracker.Ready())
+	require.False(t, tracker.Snapshot().CaughtUp)
+}
+
 func TestReadinessEmptyHighWatermarkOnlyFetchKeepsNext(t *testing.T) {
 	tracker, _ := newReadinessTest(false)
 	tracker.Observe(0, 3, 10)

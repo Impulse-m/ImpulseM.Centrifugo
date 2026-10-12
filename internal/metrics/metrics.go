@@ -282,7 +282,7 @@ func newRegistry(cfg Config) (*Registry, error) {
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
 		Name:        "source_lag_records",
-		Help:        "Number of records between the consumed offsets and high watermarks of the access revocation source.",
+		Help:        "Number of records between the consumed offsets and last stable offsets of the access revocation source.",
 		ConstLabels: constLabels,
 	})
 

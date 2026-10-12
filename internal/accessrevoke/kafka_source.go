@@ -129,10 +129,9 @@ func (s *KafkaSource) clientOptions(startMilli int64) ([]kgo.Opt, error) {
 		kgo.ConsumeTopics(s.source.Kafka.Topic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AfterMilli(startMilli)),
 		kgo.FetchMaxWait(s.source.Kafka.FetchMaxWait.ToDuration()),
-		// Read uncommitted keeps offsets contiguous, so the tracker sees the end of a partition.
-		// Producers must not use aborted transactions for access revocation events.
-		kgo.FetchIsolationLevel(kgo.ReadUncommitted()),
-		// Control records are kept to keep offsets contiguous. They are skipped when processed.
+		// Read committed: records of aborted transactions are dropped by the client, so they are never applied.
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+		// Control records are kept so that offsets advance past transaction markers. They are skipped when processed.
 		kgo.KeepControlRecords(),
 		kgo.ClientID("centrifugo-access-revoke"),
 		kgo.WithHooks(&fetchHook{tracker: s.tracker}),
@@ -141,7 +140,7 @@ func (s *KafkaSource) clientOptions(startMilli int64) ([]kgo.Opt, error) {
 }
 
 // seed sets initial offsets of all partitions of the topic: the first offset from startMilli as the
-// next offset, and the end offset as high watermark. Partitions without fetched records are tracked
+// next offset, and the last stable offset as the target. Partitions without fetched records are tracked
 // from these values. It retries until listing succeeds or ctx is done.
 func (s *KafkaSource) seed(ctx context.Context, adm *kadm.Client, startMilli int64) error {
 	for {
@@ -160,11 +159,12 @@ func (s *KafkaSource) seed(ctx context.Context, adm *kadm.Client, startMilli int
 
 func (s *KafkaSource) trySeed(ctx context.Context, adm *kadm.Client, startMilli int64) error {
 	topic := s.source.Kafka.Topic
-	ends, err := adm.ListEndOffsets(ctx, topic)
+	// Committed offsets are last stable offsets: they do not move past an open transaction.
+	stables, err := adm.ListCommittedOffsets(ctx, topic)
 	if err != nil {
 		return err
 	}
-	if err := ends.Error(); err != nil {
+	if err := stables.Error(); err != nil {
 		return err
 	}
 	starts, err := adm.ListOffsetsAfterMilli(ctx, startMilli, topic)
@@ -174,12 +174,12 @@ func (s *KafkaSource) trySeed(ctx context.Context, adm *kadm.Client, startMilli 
 	if err := starts.Error(); err != nil {
 		return err
 	}
-	for partition, end := range ends[topic] {
-		next := end.Offset
+	for partition, stable := range stables[topic] {
+		next := stable.Offset
 		if start, ok := starts.Lookup(topic, partition); ok && start.Offset >= 0 {
 			next = start.Offset
 		}
-		s.tracker.Observe(partition, next, end.Offset)
+		s.tracker.Observe(partition, next, stable.Offset)
 	}
 	return nil
 }
@@ -194,7 +194,7 @@ func (s *KafkaSource) handlePartition(partition kgo.FetchTopicPartition) {
 		s.handleRecord(record)
 		next = record.Offset + 1
 	}
-	s.tracker.Observe(partition.Partition, next, partition.HighWatermark)
+	s.tracker.Observe(partition.Partition, next, partition.LastStableOffset)
 }
 
 // handleRecord decodes a record and applies the access revocation event it carries. Records which

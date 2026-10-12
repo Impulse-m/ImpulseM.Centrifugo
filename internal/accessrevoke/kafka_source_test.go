@@ -209,6 +209,29 @@ func TestKafkaSourceSkipRules(t *testing.T) {
 	}
 }
 
+func TestKafkaSourceTargetIsLastStableOffset(t *testing.T) {
+	clock := &sourceTestClock{now: time.Now()}
+	source, _ := newSourceTest(t, sourceTestConfig(), clock)
+
+	// High watermark is ahead of the last stable offset: an open transaction at offset 2 must not
+	// keep the source lagging. Records from offset 2 on are not delivered until the transaction ends.
+	recordTime := clock.now.Add(-time.Minute)
+	source.handlePartition(kgo.FetchTopicPartition{
+		Topic: "access_revoke",
+		FetchPartition: kgo.FetchPartition{
+			Partition:        0,
+			HighWatermark:    5,
+			LastStableOffset: 2,
+			Records: []*kgo.Record{
+				testRecord("block_user", `{"user":"user-1"}`, recordTime),
+			},
+		},
+	})
+	snapshot := source.tracker.Snapshot()
+	require.True(t, snapshot.CaughtUp)
+	require.Equal(t, int64(0), snapshot.LagRecords)
+}
+
 func TestKafkaSourceBeyondWindowIsCountedAndApplied(t *testing.T) {
 	clock := &sourceTestClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)

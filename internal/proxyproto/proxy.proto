@@ -66,6 +66,7 @@ message SubscribeOptions {
   bytes data = 4;
   string b64data = 5;
   SubscribeOptionOverride override = 6;
+  FilterNode server_tags_filter = 7;
 }
 
 message ConnectResult {
@@ -156,6 +157,7 @@ message SubscribeResult {
   string b64data = 5;
   SubscribeOptionOverride override = 6;
   repeated string allow = 7;
+  FilterNode server_tags_filter = 8;
 }
 
 message SubscribeResponse {
@@ -229,6 +231,7 @@ message SubRefreshResult {
   int64 expire_at = 2;
   bytes info = 3;
   string b64info = 4;
+  FilterNode server_tags_filter = 5;
 }
 
 message SubRefreshResponse {
@@ -290,3 +293,12 @@ message NotifyChannelStateResponse {
 }
 
 message NotifyChannelStateResult {}
+
+message FilterNode {
+  string op = 1;
+  string key = 2;
+  string cmp = 3;
+  string val = 4;
+  repeated string vals = 5;
+  repeated FilterNode nodes = 6;
+}

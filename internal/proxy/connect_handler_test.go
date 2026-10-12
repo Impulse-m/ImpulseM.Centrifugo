@@ -343,6 +343,30 @@ func TestHandleConnectWithSubscriptionError(t *testing.T) {
 	}
 }
 
+func TestHandleConnectWithSubscriptionServerTagsFilter(t *testing.T) {
+	opts := proxyGRPCTestServerOptions{
+		User:             "56",
+		Channels:         []string{"test_ch"},
+		ServerTagsFilter: newServerTagsFilterProto(),
+	}
+	grpcTestCase := newConnHandleGRPCTestCase(context.Background(), newProxyGRPCTestServer("subscription options", opts))
+	defer grpcTestCase.Teardown()
+
+	httpTestCase := newConnHandleHTTPTestCase(context.Background(), "/proxy")
+	httpTestCase.Mux.HandleFunc("/proxy", func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"result": {"user": "56", "subs": {"test_ch": {"server_tags_filter": %s}}}}`, serverTagsFilterJSON)))
+	})
+	defer httpTestCase.Teardown()
+
+	cases := newConnHandleTestCases(httpTestCase, grpcTestCase)
+	for _, c := range cases {
+		reply, err := c.invokeHandle(context.Background())
+		require.NoError(t, err, c.protocol)
+		require.Contains(t, reply.Subscriptions, "test_ch", c.protocol)
+		require.Equal(t, newServerTagsFilterProtocol(), reply.Subscriptions["test_ch"].ServerTagsFilter, c.protocol)
+	}
+}
+
 func TestHandleConnectWithHTTPCodeTransform(t *testing.T) {
 	grpcTestCase := newConnHandleGRPCTestCase(context.Background(), newProxyGRPCTestServer("http status code transform", proxyGRPCTestServerOptions{}))
 	defer grpcTestCase.Teardown()

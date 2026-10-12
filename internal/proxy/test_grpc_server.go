@@ -13,11 +13,12 @@ type proxyGRPCTestServer struct {
 }
 
 type proxyGRPCTestServerOptions struct {
-	User     string
-	ExpireAt int64
-	B64Data  string
-	Channels []string
-	Data     []byte
+	User             string
+	ExpireAt         int64
+	B64Data          string
+	Channels         []string
+	Data             []byte
+	ServerTagsFilter *proxyproto.FilterNode
 }
 
 func newProxyGRPCTestServer(flag string, opts proxyGRPCTestServerOptions) proxyGRPCTestServer {
@@ -50,6 +51,19 @@ func (p proxyGRPCTestServer) Connect(_ context.Context, _ *proxyproto.ConnectReq
 			Result: &proxyproto.ConnectResult{
 				User:     p.opts.User,
 				Channels: p.opts.Channels,
+			},
+		}, nil
+	case "subscription options":
+		subs := make(map[string]*proxyproto.SubscribeOptions, len(p.opts.Channels))
+		for _, ch := range p.opts.Channels {
+			subs[ch] = &proxyproto.SubscribeOptions{
+				ServerTagsFilter: p.opts.ServerTagsFilter,
+			}
+		}
+		return &proxyproto.ConnectResponse{
+			Result: &proxyproto.ConnectResult{
+				User: p.opts.User,
+				Subs: subs,
 			},
 		}, nil
 	case "custom disconnect":
@@ -107,6 +121,12 @@ func (p proxyGRPCTestServer) Subscribe(_ context.Context, _ *proxyproto.Subscrib
 				},
 			},
 		}, nil
+	case "server tags filter":
+		return &proxyproto.SubscribeResponse{
+			Result: &proxyproto.SubscribeResult{
+				ServerTagsFilter: p.opts.ServerTagsFilter,
+			},
+		}, nil
 	case "custom disconnect":
 		return &proxyproto.SubscribeResponse{
 			Disconnect: p.newDisconnect(),
@@ -117,6 +137,19 @@ func (p proxyGRPCTestServer) Subscribe(_ context.Context, _ *proxyproto.Subscrib
 		}, nil
 	default:
 		return &proxyproto.SubscribeResponse{}, nil
+	}
+}
+
+func (p proxyGRPCTestServer) SubRefresh(_ context.Context, _ *proxyproto.SubRefreshRequest) (*proxyproto.SubRefreshResponse, error) {
+	switch p.flag {
+	case "server tags filter":
+		return &proxyproto.SubRefreshResponse{
+			Result: &proxyproto.SubRefreshResult{
+				ServerTagsFilter: p.opts.ServerTagsFilter,
+			},
+		}, nil
+	default:
+		return &proxyproto.SubRefreshResponse{}, nil
 	}
 }
 

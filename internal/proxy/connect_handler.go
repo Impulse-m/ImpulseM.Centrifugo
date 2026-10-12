@@ -227,6 +227,7 @@ func (h *ConnectHandler) Handle() ConnectingHandlerFunc {
 					HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
 					AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
 					AllowTagsFilter:   chOpts.AllowTagsFilter,
+					ServerTagsFilter:  proxyproto.FilterNodeFromProto(options.ServerTagsFilter),
 				}
 			}
 		}

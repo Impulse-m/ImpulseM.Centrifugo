@@ -146,8 +146,9 @@ func (h *SubRefreshHandler) Handle() SubRefreshHandlerFunc {
 		extra := SubRefreshExtra{}
 
 		return centrifuge.SubRefreshReply{
-			ExpireAt: result.ExpireAt,
-			Info:     info,
+			ExpireAt:         result.ExpireAt,
+			Info:             info,
+			ServerTagsFilter: proxyproto.FilterNodeFromProto(result.ServerTagsFilter),
 		}, extra, nil
 	}
 }

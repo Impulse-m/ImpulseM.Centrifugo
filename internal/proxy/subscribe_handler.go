@@ -10,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
@@ -133,6 +134,7 @@ func (h *SubscribeHandler) Handle() SubscribeHandlerFunc {
 		var info []byte
 		var data []byte
 		var expireAt int64
+		var serverTagsFilter *protocol.FilterNode
 		var extra SubscribeExtra
 		if subscribeRep.Result != nil {
 			if subscribeRep.Result.B64Info != "" {
@@ -175,6 +177,7 @@ func (h *SubscribeHandler) Handle() SubscribeHandlerFunc {
 			}
 
 			expireAt = result.ExpireAt
+			serverTagsFilter = proxyproto.FilterNodeFromProto(result.ServerTagsFilter)
 		}
 
 		return centrifuge.SubscribeReply{
@@ -190,6 +193,7 @@ func (h *SubscribeHandler) Handle() SubscribeHandlerFunc {
 				AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
 				AllowTagsFilter:   chOpts.AllowTagsFilter,
 				Data:              data,
+				ServerTagsFilter:  serverTagsFilter,
 				Source:            subsource.SubscribeProxy,
 				HistoryMetaTTL:    time.Duration(chOpts.HistoryMetaTTL),
 			},

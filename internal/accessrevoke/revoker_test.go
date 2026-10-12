@@ -56,7 +56,7 @@ func connectTestClient(t *testing.T, node *centrifuge.Node, token string) {
 	}
 	data, err := protocol.NewJSONCommandEncoder().Encode(command)
 	require.NoError(t, err)
-	require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data)))
+	require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20))
 }
 
 func newTestRevoker(t *testing.T, node *centrifuge.Node) *Revoker {

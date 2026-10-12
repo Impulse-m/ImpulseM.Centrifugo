@@ -50,7 +50,7 @@ func TestUnidirectionalWebSocket(t *testing.T) {
 	}
 
 	pingPong := centrifuge.PingPongConfig{
-		PingInterval: 5 * time.Second,
+		PingInterval: time.Second,
 		PongTimeout:  1 * time.Second,
 	}
 
@@ -131,6 +131,29 @@ func TestUnidirectionalWebSocket(t *testing.T) {
 		ensureMessageHasClient(t, data)
 	})
 
+	t.Run("null connect request", func(t *testing.T) {
+		// null is an empty connect request, in the URL or as the first
+		// message; it must never reach the connect handler as a nil request
+		// (that runs in a goroutine with no recover).
+		params := url.Values{}
+		params.Set(connectUrlParam, "null")
+		dialer := websocket.Dialer{}
+		conn, _, _, err := dialer.Dial(wsURL+"?"+params.Encode(), nil)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		_, data, err := conn.ReadMessage()
+		require.NoError(t, err)
+		ensureMessageHasClient(t, data)
+
+		conn2, _, _, err := dialer.Dial(wsURL, nil)
+		require.NoError(t, err)
+		defer func() { _ = conn2.Close() }()
+		require.NoError(t, conn2.WriteMessage(websocket.TextMessage, []byte("null")))
+		_, data, err = conn2.ReadMessage()
+		require.NoError(t, err)
+		ensureMessageHasClient(t, data)
+	})
+
 	t.Run("invalid connect request in URL params", func(t *testing.T) {
 		params := url.Values{}
 		params.Set(connectUrlParam, "invalid-json")
@@ -180,18 +203,68 @@ func TestUnidirectionalWebSocket(t *testing.T) {
 		err = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		require.NoError(t, err)
 
-		for {
+		appPingReceived := false
+		for !pingReceived || !appPingReceived {
 			_, data, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
+			require.NoError(t, err, "frame ping received: %v, protocol ping received: %v", pingReceived, appPingReceived)
 			if string(data) == `{}` {
+				appPingReceived = true
 				t.Logf("centrifugal protocol ping received: %s", string(data))
 			}
 		}
-
-		require.True(t, pingReceived, "Expected to receive ping message")
 	})
+}
+
+func TestUnidirectionalWebSocket_DecompressionBombRejected(t *testing.T) {
+	t.Parallel()
+
+	node, err := centrifuge.New(centrifuge.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+
+	node.OnConnecting(func(ctx context.Context, event centrifuge.ConnectEvent) (centrifuge.ConnectReply, error) {
+		return centrifuge.ConnectReply{Credentials: &centrifuge.Credentials{}}, nil
+	})
+
+	// MessageSizeLimit 1024 -> decompressed limit = 1024 * 10 = 10240 bytes.
+	config := configtypes.UniWebSocket{
+		Compression:      true,
+		MessageSizeLimit: 1024,
+	}
+
+	handler := NewHandler(node, config, func(r *http.Request) bool { return true }, centrifuge.PingPongConfig{})
+	server := httptest.NewServer(middleware.LogRequest(handler))
+	t.Cleanup(func() { server.Close() })
+
+	for {
+		resp, err := http.Get(server.URL)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		_ = resp.Body.Close()
+		break
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	dialer := websocket.Dialer{EnableCompression: true}
+	conn, _, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.NoError(t, conn.SetCompressionLevel(9))
+
+	// 64KB of zeros compresses to well under the 1024-byte compressed limit but
+	// inflates far past the 10240-byte decompressed limit, as the first
+	// (pre-auth) frame.
+	bomb := make([]byte, 64*1024)
+	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, bomb))
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.Error(t, err)
+	require.Truef(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig),
+		"expected close %d, got %v", websocket.CloseMessageTooBig, err)
 }
 
 func TestUnidirectionalWebSocket_CloseFrameSent(t *testing.T) {

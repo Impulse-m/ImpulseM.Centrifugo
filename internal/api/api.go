@@ -64,6 +64,14 @@ func (h *Executor) SetRPCExtension(method string, handler RPCHandler) {
 }
 
 func (h *Executor) processCmd(ctx context.Context, cmd *Command, i int, replies []*Reply) {
+	if cmd == nil {
+		// A batch can carry a nil command (e.g. a JSON `null` array element). In
+		// parallel mode processCmd runs in its own goroutine, so a nil-deref here
+		// would escape net/http's per-request recover and crash the whole process;
+		// reject it as a bad request instead.
+		replies[i].Error = ErrorBadRequest
+		return
+	}
 	var method string
 	if cmd.Publish != nil {
 		method = "publish"
@@ -133,6 +141,34 @@ func (h *Executor) processCmd(ctx context.Context, cmd *Command, i int, replies 
 		method = "channels"
 		res := h.Channels(ctx, cmd.Channels)
 		replies[i].Channels, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapPublish != nil {
+		method = "map_publish"
+		res := h.MapPublish(ctx, cmd.MapPublish)
+		replies[i].MapPublish, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapRemove != nil {
+		method = "map_remove"
+		res := h.MapRemove(ctx, cmd.MapRemove)
+		replies[i].MapRemove, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapReadState != nil {
+		method = "map_read_state"
+		res := h.MapReadState(ctx, cmd.MapReadState)
+		replies[i].MapReadState, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapReadStream != nil {
+		method = "map_read_stream"
+		res := h.MapReadStream(ctx, cmd.MapReadStream)
+		replies[i].MapReadStream, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapStats != nil {
+		method = "map_stats"
+		res := h.MapStats(ctx, cmd.MapStats)
+		replies[i].MapStats, replies[i].Error = res.Result, res.Error
+	} else if cmd.MapClear != nil {
+		method = "map_clear"
+		res := h.MapClear(ctx, cmd.MapClear)
+		replies[i].MapClear, replies[i].Error = res.Result, res.Error
+	} else if cmd.SharedPollPublish != nil {
+		method = "shared_poll_publish"
+		res := h.SharedPollPublish(ctx, cmd.SharedPollPublish)
+		replies[i].SharedPollPublish, replies[i].Error = res.Result, res.Error
 	} else {
 		method = "unknown"
 		replies[i].Error = ErrorNotFound
@@ -213,6 +249,16 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 		resp.Error = ErrorUnknownChannel
 		return resp
 	}
+	// Stream-only API. Map channels must use map_publish; shared poll channels
+	// must use shared_poll_publish. Empty subscription_type defaults to stream.
+	switch chOpts.SubscriptionType {
+	case "", "stream":
+		// ok
+	default:
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("publish called on non-stream namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
 
 	// Data format validation
 	if err := config.ValidatePublicationData(data, chOpts.PublicationDataFormat); err != nil {
@@ -244,7 +290,7 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 	)
 	if err != nil {
 		log.Error().Err(err).Str("channel", cmd.Channel).Msg("error publishing data to channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &PublishResult{
@@ -290,6 +336,7 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 	sem := make(chan struct{}, broadcastRequestMaxConcurrency)
 
 	responses := make([]*PublishResponse, len(channels))
+	validation := &broadcastDataValidation{data: data}
 	var wg sync.WaitGroup
 	wg.Add(len(channels))
 	for i, ch := range channels {
@@ -322,7 +369,7 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 			}
 
 			// Data format validation
-			if err := config.ValidatePublicationData(data, chOpts.PublicationDataFormat); err != nil {
+			if err := validation.validate(chOpts.PublicationDataFormat); err != nil {
 				respError := ErrorBadRequest
 				metrics.IncAPIError(h.config.Protocol, "broadcast_publish", respError.Code)
 				log.Error().Err(err).Str("channel", ch).Msg("bad broadcast request")
@@ -358,8 +405,8 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 					Epoch:  result.StreamPosition.Epoch,
 				}
 			} else {
-				respError := ErrorInternal
-				metrics.IncAPIError(h.config.Protocol, "publish", respError.Code)
+				respError := toAPIErr(err)
+				metrics.IncAPIError(h.config.Protocol, "broadcast_publish", respError.Code)
 				log.Error().Err(err).Str("channel", ch).Msg("error publishing data to channel during broadcast")
 				resp.Error = respError
 			}
@@ -426,11 +473,34 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 		}
 	}
 
+	// Prefer the base64 fields when set (they exist for binary payloads that
+	// can't be carried in a JSON bytes field), matching publish/broadcast. Without
+	// this, b64data/b64info were silently dropped and the subscription got empty
+	// data/info.
+	data := cmd.Data
+	if cmd.B64Data != "" {
+		decoded, err := base64.StdEncoding.DecodeString(cmd.B64Data)
+		if err != nil {
+			resp.Error = ErrorBadRequest
+			return resp
+		}
+		data = decoded
+	}
+	info := cmd.Info
+	if cmd.B64Info != "" {
+		decoded, err := base64.StdEncoding.DecodeString(cmd.B64Info)
+		if err != nil {
+			resp.Error = ErrorBadRequest
+			return resp
+		}
+		info = decoded
+	}
+
 	err = h.node.Subscribe(user, channel,
-		centrifuge.WithSubscribeData(cmd.Data),
+		centrifuge.WithSubscribeData(data),
 		centrifuge.WithSubscribeClient(cmd.Client),
 		centrifuge.WithSubscribeSession(cmd.Session),
-		centrifuge.WithChannelInfo(cmd.Info),
+		centrifuge.WithChannelInfo(info),
 		centrifuge.WithExpireAt(cmd.ExpireAt),
 		centrifuge.WithEmitJoinLeave(joinLeave),
 		centrifuge.WithPushJoinLeave(pushJoinLeave),
@@ -443,7 +513,7 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 	)
 	if err != nil {
 		log.Error().Err(err).Str("channel", channel).Str("user", user).Msg("error subscribing user to channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &SubscribeResult{}
@@ -460,22 +530,26 @@ func (h *Executor) Unsubscribe(_ context.Context, cmd *UnsubscribeRequest) *Unsu
 	user := cmd.User
 	channel := cmd.Channel
 
-	if channel != "" {
-		_, _, _, found, err := h.cfgContainer.ChannelOptions(channel)
-		if err != nil {
-			resp.Error = ErrorInternal
-			return resp
-		}
-		if !found {
-			resp.Error = ErrorUnknownChannel
-			return resp
-		}
+	// Without a channel there is nothing to unsubscribe from: every targeted
+	// connection would only be sent an unsubscribe push for an empty channel.
+	if channel == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+	_, _, _, found, err := h.cfgContainer.ChannelOptions(channel)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
 	}
 
-	err := h.node.Unsubscribe(user, channel, centrifuge.WithUnsubscribeClient(cmd.Client), centrifuge.WithUnsubscribeSession(cmd.Session))
+	err = h.node.Unsubscribe(user, channel, centrifuge.WithUnsubscribeClient(cmd.Client), centrifuge.WithUnsubscribeSession(cmd.Session))
 	if err != nil {
 		log.Error().Err(err).Str("channel", channel).Str("user", user).Msg("error unsubscribing user from channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &UnsubscribeResult{}
@@ -507,7 +581,7 @@ func (h *Executor) Disconnect(_ context.Context, cmd *DisconnectRequest) *Discon
 		centrifuge.WithDisconnectClientWhitelist(cmd.Whitelist))
 	if err != nil {
 		log.Error().Err(err).Str("user", user).Msg("error disconnecting user")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &DisconnectResult{}
@@ -531,7 +605,7 @@ func (h *Executor) Refresh(_ context.Context, cmd *RefreshRequest) *RefreshRespo
 	)
 	if err != nil {
 		log.Error().Err(err).Str("user", user).Msg("error refreshing user")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &RefreshResult{}
@@ -729,6 +803,7 @@ func (h *Executor) Presence(_ context.Context, cmd *PresenceRequest) *PresenceRe
 	}
 
 	if !chOpts.Presence {
+		log.Warn().Str("channel", ch).Msg("presence is not enabled for channel in Centrifugo configuration")
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
@@ -736,7 +811,7 @@ func (h *Executor) Presence(_ context.Context, cmd *PresenceRequest) *PresenceRe
 	presence, err := h.node.Presence(ch)
 	if err != nil {
 		log.Error().Err(err).Str("channel", ch).Msg("error getting presence for channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 
@@ -780,6 +855,7 @@ func (h *Executor) PresenceStats(_ context.Context, cmd *PresenceStatsRequest) *
 	}
 
 	if !chOpts.Presence {
+		log.Warn().Str("channel", ch).Msg("presence is not enabled for channel in Centrifugo configuration")
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
@@ -787,7 +863,7 @@ func (h *Executor) PresenceStats(_ context.Context, cmd *PresenceStatsRequest) *
 	stats, err := h.node.PresenceStats(cmd.Channel)
 	if err != nil {
 		log.Error().Err(err).Str("channel", ch).Msg("error getting presence stats for channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 
@@ -823,6 +899,7 @@ func (h *Executor) History(_ context.Context, cmd *HistoryRequest) *HistoryRespo
 	}
 
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {
+		log.Warn().Str("channel", ch).Msg("history is not enabled for channel in Centrifugo configuration (history_size and history_ttl must both be > 0)")
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
@@ -850,7 +927,7 @@ func (h *Executor) History(_ context.Context, cmd *HistoryRequest) *HistoryRespo
 			resp.Error = ErrorUnrecoverablePosition
 			return resp
 		}
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 
@@ -905,6 +982,7 @@ func (h *Executor) HistoryRemove(_ context.Context, cmd *HistoryRemoveRequest) *
 	}
 
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {
+		log.Warn().Str("channel", ch).Msg("history is not enabled for channel in Centrifugo configuration (history_size and history_ttl must both be > 0)")
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
@@ -912,7 +990,7 @@ func (h *Executor) HistoryRemove(_ context.Context, cmd *HistoryRemoveRequest) *
 	err = h.node.RemoveHistory(ch)
 	if err != nil {
 		log.Error().Err(err).Str("channel", ch).Msg("error removing history for channel")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 	resp.Result = &HistoryRemoveResult{}
@@ -928,7 +1006,7 @@ func (h *Executor) Info(_ context.Context, _ *InfoRequest) *InfoResponse {
 	info, err := h.node.Info()
 	if err != nil {
 		log.Error().Err(err).Msg("error calling info")
-		resp.Error = ErrorInternal
+		resp.Error = toAPIErr(err)
 		return resp
 	}
 
@@ -1015,10 +1093,467 @@ func (h *Executor) Channels(ctx context.Context, cmd *ChannelsRequest) *Channels
 	return resp
 }
 
+// MapPublish publishes data to a map channel key.
+func (h *Executor) MapPublish(ctx context.Context, cmd *MapPublishRequest) *MapPublishResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_publish")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapPublishResponse{}
+	if ch == "" || cmd.Key == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_publish called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	var data []byte
+	if cmd.B64Data != "" {
+		byteInfo, err := base64.StdEncoding.DecodeString(cmd.B64Data)
+		if err != nil {
+			resp.Error = ErrorBadRequest
+			return resp
+		}
+		data = byteInfo
+	} else {
+		data = cmd.Data
+	}
+
+	if err := config.ValidatePublicationData(data, chOpts.PublicationDataFormat); err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("bad map publish request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	delta := cmd.Delta
+	if chOpts.DeltaPublish {
+		delta = true
+	}
+
+	opts := centrifuge.MapPublishOptions{
+		Data:           data,
+		Tags:           cmd.GetTags(),
+		IdempotencyKey: cmd.GetIdempotencyKey(),
+		UseDelta:       delta,
+	}
+	opts.Version = cmd.Version
+	opts.VersionEpoch = cmd.VersionEpoch
+	if cmd.KeyMode != "" {
+		switch cmd.KeyMode {
+		case "if_new", "if_exists":
+			opts.KeyMode = centrifuge.KeyMode(cmd.KeyMode)
+		default:
+			log.Warn().Str("channel", ch).Str("key_mode", cmd.KeyMode).Msg("map_publish: invalid key_mode")
+			resp.Error = ErrorBadRequest
+			return resp
+		}
+	}
+
+	result, err := h.node.MapPublish(ctx, ch, cmd.Key, opts)
+	if err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("error in map publish")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+	resp.Result = &MapPublishResult{
+		Offset:         result.Position.Offset,
+		Epoch:          result.Position.Epoch,
+		Suppressed:     result.Suppressed,
+		SuppressReason: string(result.SuppressReason),
+	}
+	return resp
+}
+
+// MapRemove removes a key from a map channel.
+func (h *Executor) MapRemove(ctx context.Context, cmd *MapRemoveRequest) *MapRemoveResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_remove")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapRemoveResponse{}
+	if ch == "" || cmd.Key == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_remove called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	opts := centrifuge.MapRemoveOptions{
+		IdempotencyKey: cmd.GetIdempotencyKey(),
+	}
+
+	result, err := h.node.MapRemove(ctx, ch, cmd.Key, opts)
+	if err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("error in map remove")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+	resp.Result = &MapRemoveResult{
+		Offset:         result.Position.Offset,
+		Epoch:          result.Position.Epoch,
+		Suppressed:     result.Suppressed,
+		SuppressReason: string(result.SuppressReason),
+	}
+	return resp
+}
+
+// MapReadState reads the current state of a map channel.
+func (h *Executor) MapReadState(ctx context.Context, cmd *MapReadStateRequest) *MapReadStateResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_read_state")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapReadStateResponse{}
+	if ch == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_read_state called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	opts := centrifuge.MapReadStateOptions{
+		Cursor: cmd.Cursor,
+		Limit:  int(cmd.Limit),
+		Key:    cmd.Key,
+		Asc:    cmd.Asc,
+	}
+	if cmd.RevisionOffset > 0 || cmd.RevisionEpoch != "" {
+		opts.Revision = &centrifuge.StreamPosition{Offset: cmd.RevisionOffset, Epoch: cmd.RevisionEpoch}
+	}
+
+	result, err := h.node.MapStateRead(ctx, ch, opts)
+	if err != nil {
+		if errors.Is(err, centrifuge.ErrorUnrecoverablePosition) {
+			resp.Error = ErrorUnrecoverablePosition
+			return resp
+		}
+		log.Error().Err(err).Str("channel", ch).Msg("error in map read state")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+
+	entries := make([]*MapEntry, 0, len(result.Publications))
+	for _, pub := range result.Publications {
+		entries = append(entries, &MapEntry{
+			Key:     pub.Key,
+			Data:    pub.Data,
+			Tags:    pub.Tags,
+			Offset:  pub.Offset,
+			Score:   pub.Score,
+			Removed: pub.Removed,
+			Time:    pub.Time,
+		})
+	}
+
+	resp.Result = &MapReadStateResult{
+		Entries: entries,
+		Offset:  result.Position.Offset,
+		Epoch:   result.Position.Epoch,
+		Cursor:  result.Cursor,
+	}
+	return resp
+}
+
+// MapReadStream reads the stream of a map channel.
+func (h *Executor) MapReadStream(ctx context.Context, cmd *MapReadStreamRequest) *MapReadStreamResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_read_stream")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapReadStreamResponse{}
+	if ch == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_read_stream called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	opts := centrifuge.MapReadStreamOptions{
+		Filter: centrifuge.StreamFilter{
+			Limit:   int(cmd.Limit),
+			Reverse: cmd.Reverse,
+		},
+	}
+	if cmd.SinceOffset > 0 || cmd.SinceEpoch != "" {
+		opts.Filter.Since = &centrifuge.StreamPosition{Offset: cmd.SinceOffset, Epoch: cmd.SinceEpoch}
+	}
+
+	result, err := h.node.MapStreamRead(ctx, ch, opts)
+	if err != nil {
+		if errors.Is(err, centrifuge.ErrorUnrecoverablePosition) {
+			resp.Error = ErrorUnrecoverablePosition
+			return resp
+		}
+		log.Error().Err(err).Str("channel", ch).Msg("error in map read stream")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+
+	entries := make([]*MapEntry, 0, len(result.Publications))
+	for _, pub := range result.Publications {
+		entries = append(entries, &MapEntry{
+			Key:     pub.Key,
+			Data:    pub.Data,
+			Tags:    pub.Tags,
+			Offset:  pub.Offset,
+			Score:   pub.Score,
+			Removed: pub.Removed,
+			Time:    pub.Time,
+		})
+	}
+
+	resp.Result = &MapReadStreamResult{
+		Entries: entries,
+		Offset:  result.Position.Offset,
+		Epoch:   result.Position.Epoch,
+	}
+	return resp
+}
+
+// MapStats returns stats for a map channel.
+func (h *Executor) MapStats(ctx context.Context, cmd *MapStatsRequest) *MapStatsResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_stats")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapStatsResponse{}
+	if ch == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_stats called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	result, err := h.node.MapStats(ctx, ch)
+	if err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("error in map stats")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+	resp.Result = &MapStatsResult{
+		NumKeys: int32(result.NumKeys),
+	}
+	return resp
+}
+
+// MapClear removes all data from a map channel.
+func (h *Executor) MapClear(ctx context.Context, cmd *MapClearRequest) *MapClearResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "map_clear")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &MapClearResponse{}
+	if ch == "" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "map" && chOpts.SubscriptionType != "map_clients" && chOpts.SubscriptionType != "map_users" {
+		log.Warn().Str("channel", ch).Str("subscription_type", chOpts.SubscriptionType).Msg("map_clear called on non-map namespace")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	err = h.node.MapClear(ctx, ch, centrifuge.MapClearOptions{})
+	if err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("error in map clear")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+	resp.Result = &MapClearResult{}
+	return resp
+}
+
+func (h *Executor) SharedPollPublish(ctx context.Context, cmd *SharedPollPublishRequest) *SharedPollPublishResponse {
+	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "shared_poll_publish")
+
+	ch := cmd.Channel
+	if h.config.UseOpenTelemetry {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("centrifugo.channel", ch))
+	}
+
+	resp := &SharedPollPublishResponse{}
+	if ch == "" || cmd.Key == "" || cmd.Version == 0 {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
+	if err != nil {
+		resp.Error = ErrorInternal
+		return resp
+	}
+	if !found {
+		resp.Error = ErrorUnknownChannel
+		return resp
+	}
+	if chOpts.SubscriptionType != "shared_poll" {
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+	if !chOpts.SharedPoll.PublishEnabled {
+		log.Warn().Str("channel", ch).Msg("shared_poll publish_enabled is not enabled for channel in Centrifugo configuration")
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+
+	var data []byte
+	if cmd.B64Data != "" {
+		byteInfo, err := base64.StdEncoding.DecodeString(cmd.B64Data)
+		if err != nil {
+			resp.Error = ErrorBadRequest
+			return resp
+		}
+		data = byteInfo
+	} else {
+		data = cmd.Data
+	}
+
+	if err := config.ValidatePublicationData(data, chOpts.PublicationDataFormat); err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("bad shared poll publish request")
+		resp.Error = ErrorBadRequest
+		return resp
+	}
+
+	err = h.node.SharedPollPublish(ctx, ch, cmd.Key, cmd.Version, cmd.Epoch, data)
+	if err != nil {
+		log.Error().Err(err).Str("channel", ch).Msg("error in shared poll publish")
+		resp.Error = toAPIErr(err)
+		return resp
+	}
+	resp.Result = &SharedPollPublishResult{}
+	return resp
+}
+
+// toAPIErr converts an error to an API error. An error of the client protocol,
+// which the Node returns for a request it refused, becomes the API error with
+// the same meaning. Codes are not shared as a whole: 113 is a conflict in the
+// API but concurrent pagination in the client protocol. Without an API
+// equivalent, it keeps being temporary or not. Any other error - a broker
+// failing, say - is an internal error.
 func toAPIErr(err error) *Error {
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
-	return ErrorInternal
+	var protocolErr *centrifuge.Error
+	if !errors.As(err, &protocolErr) {
+		return ErrorInternal
+	}
+	switch protocolErr.Code {
+	case centrifuge.ErrorUnknownChannel.Code:
+		return ErrorUnknownChannel
+	case centrifuge.ErrorBadRequest.Code:
+		return ErrorBadRequest
+	case centrifuge.ErrorNotAvailable.Code:
+		return ErrorNotAvailable
+	case centrifuge.ErrorTooManyRequests.Code:
+		return ErrorTooManyRequests
+	case centrifuge.ErrorUnrecoverablePosition.Code:
+		return ErrorUnrecoverablePosition
+	}
+	if protocolErr.Temporary {
+		return ErrorInternal
+	}
+	// Retrying cannot help: the request was refused.
+	return ErrorBadRequest
 }

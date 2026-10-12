@@ -533,10 +533,9 @@ func (s *algorithms) verify(token *jwt.Token) error {
 	return verifier.Verify(token)
 }
 
+// verifySignature verifies a token's signature. The caller must hold
+// verifier.mu (at least RLock); it does not lock, to avoid recursive RLock.
 func (verifier *VerifierJWT) verifySignature(token *jwt.Token) error {
-	verifier.mu.RLock()
-	defer verifier.mu.RUnlock()
-
 	err := verifier.algorithms.verify(token)
 	if err != nil && verifier.previousHMACAlgorithms != nil {
 		if validUntil := verifier.hmacPreviousSecretKeyValidUntil; validUntil > 0 && time.Now().Unix() > validUntil {
@@ -549,10 +548,10 @@ func (verifier *VerifierJWT) verifySignature(token *jwt.Token) error {
 	return err
 }
 
+// verifySignatureByJWK verifies a token against the JWKS manager. The caller
+// must hold verifier.mu (at least RLock); it does not lock, to avoid recursive
+// RLock.
 func (verifier *VerifierJWT) verifySignatureByJWK(token *jwt.Token, tokenVars map[string]any) error {
-	verifier.mu.RLock()
-	defer verifier.mu.RUnlock()
-
 	return verifier.jwksManager.verify(token, tokenVars)
 }
 
@@ -620,6 +619,15 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	if err != nil {
 		return ConnectToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
+
+	// Hold a read lock across the whole verification so a concurrent Reload (which
+	// rewrites the verifier's signing/config fields under mu.Lock) can't change
+	// them mid-verification - reading them unlocked was a data race and could
+	// nil-deref algorithms/jwksManager when a reload switched auth mode. The
+	// signature helpers assume the caller holds this lock and don't re-acquire it
+	// (recursive RLock can deadlock if a writer is waiting).
+	verifier.mu.RLock()
+	defer verifier.mu.RUnlock()
 
 	tokenVars := map[string]any{}
 
@@ -761,7 +769,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	if claims.Base64Info != "" {
 		byteInfo, err := base64.StdEncoding.DecodeString(claims.Base64Info)
 		if err != nil {
-			return ConnectToken{}, err
+			return ConnectToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 		}
 		info = byteInfo
 	} else {
@@ -820,6 +828,11 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 	if err != nil {
 		return SubscribeToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
+
+	// See VerifyConnectToken: hold a read lock across verification so a concurrent
+	// Reload can't change the signing/config fields mid-verification.
+	verifier.mu.RLock()
+	defer verifier.mu.RUnlock()
 
 	tokenVars := map[string]any{}
 
@@ -941,69 +954,36 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 	return st, nil
 }
 
+// PrepareReload builds everything the verifier needs for config without changing
+// the verifier. Calling the returned function applies the new config and can't
+// fail, so several verifiers may be reloaded all or nothing.
+func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), error) {
+	next, err := NewTokenVerifierJWT(config, verifier.cfgContainer)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		verifier.mu.Lock()
+		defer verifier.mu.Unlock()
+		verifier.jwksManager = next.jwksManager
+		verifier.algorithms = next.algorithms
+		verifier.previousHMACAlgorithms = next.previousHMACAlgorithms
+		verifier.hmacPreviousSecretKeyValidUntil = next.hmacPreviousSecretKeyValidUntil
+		verifier.audience = next.audience
+		verifier.audienceRe = next.audienceRe
+		verifier.issuer = next.issuer
+		verifier.issuerRe = next.issuerRe
+		verifier.userIDClaim = next.userIDClaim
+		verifier.sessionClaim = next.sessionClaim
+		verifier.generationClaim = next.generationClaim
+	}, nil
+}
+
 func (verifier *VerifierJWT) Reload(config VerifierConfig) error {
-	if err := config.Validate(); err != nil {
-		return fmt.Errorf("error validating token verifier config: %w", err)
+	apply, err := verifier.PrepareReload(config)
+	if err != nil {
+		return err
 	}
-
-	verifier.mu.Lock()
-	defer verifier.mu.Unlock()
-
-	var audienceRe *regexp.Regexp
-	var issuerRe *regexp.Regexp
-	if config.AudienceRegex != "" {
-		var err error
-		audienceRe, err = regexp.Compile(config.AudienceRegex)
-		if err != nil {
-			return fmt.Errorf("error compiling audience regex: %w", err)
-		}
-	}
-	if config.IssuerRegex != "" {
-		var err error
-		issuerRe, err = regexp.Compile(config.IssuerRegex)
-		if err != nil {
-			return fmt.Errorf("error compiling issuer regex: %w", err)
-		}
-	}
-
-	if config.JWKSPublicEndpoint != "" {
-		mng, err := jwks.NewManager(config.JWKSPublicEndpoint)
-		if err != nil {
-			return fmt.Errorf("error creating JWK manager: %w", err)
-		}
-		verifier.jwksManager = &jwksManager{mng}
-		verifier.algorithms = nil
-		verifier.previousHMACAlgorithms = nil
-		verifier.hmacPreviousSecretKeyValidUntil = 0
-	} else {
-		alg, err := newAlgorithms(config.HMACSecretKey, config.RSAPublicKey, config.ECDSAPublicKey)
-		if err != nil {
-			return err
-		}
-		if err = alg.setEd25519Keys(config.Ed25519PublicKeys); err != nil {
-			return err
-		}
-		verifier.algorithms = alg
-		verifier.jwksManager = nil
-		if config.HMACPreviousSecretKey != "" {
-			prevAlg, err := newAlgorithms(config.HMACPreviousSecretKey, nil, nil)
-			if err != nil {
-				return fmt.Errorf("error initializing previous HMAC token algorithms: %w", err)
-			}
-			verifier.previousHMACAlgorithms = prevAlg
-			verifier.hmacPreviousSecretKeyValidUntil = config.HMACPreviousSecretKeyValidUntil
-		} else {
-			verifier.previousHMACAlgorithms = nil
-			verifier.hmacPreviousSecretKeyValidUntil = 0
-		}
-	}
-
-	verifier.audience = config.Audience
-	verifier.audienceRe = audienceRe
-	verifier.issuer = config.Issuer
-	verifier.issuerRe = issuerRe
-	verifier.userIDClaim = config.UserIDClaim
-	verifier.sessionClaim = sessionClaimOrDefault(config.SessionClaim)
-	verifier.generationClaim = config.GenerationClaim
+	apply()
 	return nil
 }

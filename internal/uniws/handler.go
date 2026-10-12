@@ -11,8 +11,8 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/centrifugal/protocol/cfjson"
 	"github.com/rs/zerolog/log"
-	"github.com/segmentio/encoding/json"
 )
 
 // Handler handles WebSocket client connections. Usually WebSocket protocol
@@ -66,7 +66,8 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	var req *protocol.ConnectRequest
 	connectRequestString := r.URL.Query().Get(connectUrlParam)
 	if connectRequestString != "" {
-		_, err := json.Parse(convert.StringToBytes(connectRequestString), &req, json.ZeroCopy)
+		req = &protocol.ConnectRequest{}
+		err := cfjson.Unmarshal(convert.StringToBytes(connectRequestString), req, 0)
 		if err != nil {
 			log.Info().Err(err).Str("transport", transportName).Msg("error unmarshalling connect request")
 			http.Error(rw, "invalid connect request", http.StatusBadRequest)
@@ -108,9 +109,26 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if messageSizeLimit > 0 {
 		conn.SetReadLimit(int64(messageSizeLimit))
 	}
+	if compression {
+		decompressedMessageSizeLimit := s.config.DecompressedMessageSizeLimit
+		if decompressedMessageSizeLimit == 0 {
+			decompressedMessageSizeLimit = messageSizeLimit * DefaultWebsocketDecompressedMessageSizeLimitMultiplier
+		}
+		if decompressedMessageSizeLimit > 0 {
+			conn.SetDecompressedReadLimit(int64(decompressedMessageSizeLimit))
+		}
+	}
 
 	// Separate goroutine for better GC of caller's data.
 	go func() {
+		// Record server-sent (outgoing) close codes for observability. Runs last
+		// (registered first), after any teardown close frame has been written.
+		// Client-supplied codes are skipped to keep metric cardinality bounded.
+		defer func() {
+			if code, incoming := conn.CloseCode(); code != 0 && !incoming {
+				s.node.IncTransportOutgoingClose(transportName, code)
+			}
+		}()
 		opts := websocketTransportOptions{
 			framePingInterval:       framePingInterval,
 			framePongTimeout:        framePongTimeout,
@@ -181,7 +199,8 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				waitClose()
 				return
 			}
-			_, err = json.Parse(data, &req, json.ZeroCopy)
+			req = &protocol.ConnectRequest{}
+			err = cfjson.Unmarshal(data, req, 0)
 			if err != nil {
 				log.Info().Err(err).Str("transport", transportName).Msg("error unmarshalling connect request")
 				if !s.config.DisableClosingHandshake {

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,11 +165,25 @@ func encodeUint64ToString(v uint64) string {
 	return encodeToString(data[i:])
 }
 
-func generateTestRSAKeys(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
-	reader := rand.Reader
-	bitSize := 2048
-	key, err := rsa.GenerateKey(reader, bitSize)
-	require.NoError(t, err)
+var (
+	testRSAKeysMu sync.Mutex
+	testRSAKeys   = map[int]*rsa.PrivateKey{}
+)
+
+// testRSAKey returns the n-th test RSA key pair. RSA key generation is slow
+// (especially with -race), so keys are generated once and shared by tests.
+// Tests needing several distinct keys use different n.
+func testRSAKey(t *testing.T, n int) (*rsa.PrivateKey, *rsa.PublicKey) {
+	t.Helper()
+	testRSAKeysMu.Lock()
+	defer testRSAKeysMu.Unlock()
+	key, ok := testRSAKeys[n]
+	if !ok {
+		var err error
+		key, err = rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		testRSAKeys[n] = key
+	}
 	return key, &key.PublicKey
 }
 
@@ -302,7 +317,7 @@ func getJWKServer(pubKey *rsa.PublicKey, kty, use, kid string) *httptest.Server 
 }
 
 func Test_tokenVerifierJWT_Signer(t *testing.T) {
-	_, rsaPubKey := generateTestRSAKeys(t)
+	_, rsaPubKey := testRSAKey(t, 0)
 	_, ecdsaPubKey := generateTestECDSAKeys(t)
 	signer, err := newAlgorithms("secret", rsaPubKey, ecdsaPubKey)
 	require.NoError(t, err)
@@ -531,7 +546,7 @@ func Test_tokenVerifierJWT_VerifyConnectToken(t *testing.T) {
 		token string
 	}
 
-	rsaPrivateKey, rsaPubKey := generateTestRSAKeys(t)
+	rsaPrivateKey, rsaPubKey := testRSAKey(t, 0)
 	ecdsaPrivateKey, ecdsaPubKey := generateTestECDSAKeys(t)
 
 	cfg := config.DefaultConfig()
@@ -690,7 +705,7 @@ func Test_tokenVerifierJWT_VerifyConnectTokenWithJWK(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := require.New(t)
 
-			privKey, pubKey := generateTestRSAKeys(t)
+			privKey, pubKey := testRSAKey(t, 0)
 			ts := getJWKServer(pubKey, tt.jwk.kty, tt.jwk.use, tt.jwk.kid)
 
 			ts.Start()
@@ -727,7 +742,7 @@ func Test_tokenVerifierJWT_VerifySubscribeToken(t *testing.T) {
 		token string
 	}
 
-	rsaPrivateKey, rsaPubKey := generateTestRSAKeys(t)
+	rsaPrivateKey, rsaPubKey := testRSAKey(t, 0)
 	ecdsaPrivateKey, ecdsaPubKey := generateTestECDSAKeys(t)
 
 	cfg := config.DefaultConfig()
@@ -1031,6 +1046,41 @@ func getHMACConnToken(user string, exp int64, secret string) string {
 		panic(err)
 	}
 	return token.String()
+}
+
+func Test_tokenVerifierJWT_InvalidBase64Info(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	verifier, err := NewTokenVerifierJWT(VerifierConfig{HMACSecretKey: "secret"}, cfgContainer)
+	require.NoError(t, err)
+	signer, err := jwt.NewSignerHS(jwt.HS256, []byte("secret"))
+	require.NoError(t, err)
+
+	token, err := jwt.NewBuilder(signer).Build(&ConnectTokenClaims{
+		Base64Info:       "not base64",
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "user1"},
+	})
+	require.NoError(t, err)
+	_, err = verifier.VerifyConnectToken(token.String(), false)
+	require.ErrorIs(t, err, ErrInvalidToken)
+
+	token, err = jwt.NewBuilder(signer).Build(&ConnectTokenClaims{
+		Subs:             map[string]SubscribeOptions{"channel": {Base64Info: "not base64"}},
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "user1"},
+	})
+	require.NoError(t, err)
+	_, err = verifier.VerifyConnectToken(token.String(), false)
+	require.ErrorIs(t, err, ErrInvalidToken)
+
+	token, err = jwt.NewBuilder(signer).Build(&SubscribeTokenClaims{
+		SubscribeOptions: SubscribeOptions{Base64Info: "not base64"},
+		Channel:          "channel",
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "user1"},
+	})
+	require.NoError(t, err)
+	_, err = verifier.VerifySubscribeToken(token.String(), false)
+	require.ErrorIs(t, err, ErrInvalidToken)
 }
 
 func Test_tokenVerifierJWT_PreviousHMACKey(t *testing.T) {

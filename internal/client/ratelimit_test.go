@@ -95,6 +95,13 @@ func (t *recordingTransport) waitDisconnect(tb testing.TB) centrifuge.Disconnect
 	return centrifuge.Disconnect{}
 }
 
+// replyCount returns the number of received replies.
+func (t *recordingTransport) replyCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.replies)
+}
+
 func (t *recordingTransport) disconnected() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -106,7 +113,7 @@ func sendRateLimitCommand(client *centrifuge.Client, cmd *protocol.Command) {
 	if err != nil {
 		panic(err)
 	}
-	centrifuge.HandleReadFrame(client, bytes.NewReader(data))
+	centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20)
 }
 
 // newRateLimitHandler creates a handler with a real Core node and the given rate limit config.

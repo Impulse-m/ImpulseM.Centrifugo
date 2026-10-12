@@ -124,6 +124,7 @@ func (s *KafkaSource) clientOptions(startMilli int64) ([]kgo.Opt, error) {
 		SASLMechanism: s.source.Kafka.SASLMechanism,
 		SASLUser:      s.source.Kafka.SASLUser,
 		SASLPassword:  s.source.Kafka.SASLPassword,
+		AssumeRoleARN: s.source.Kafka.AssumeRoleARN,
 	}, log.Logger)
 	if err != nil {
 		return nil, err

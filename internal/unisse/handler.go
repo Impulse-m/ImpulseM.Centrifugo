@@ -11,8 +11,8 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/centrifugal/protocol/cfjson"
 	"github.com/rs/zerolog/log"
-	"github.com/segmentio/encoding/json"
 )
 
 type Handler struct {
@@ -35,6 +35,12 @@ const connectUrlParam = "cf_connect"
 
 const streamWriteTimeout = time.Second
 
+// SSE event framing written around each message.
+var (
+	sseDataPrefix = []byte("data: ")
+	sseDataSuffix = []byte("\n\n")
+)
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, ok := w.(http.Flusher)
 	if !ok {
@@ -42,18 +48,16 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req *protocol.ConnectRequest
+	req := &protocol.ConnectRequest{}
 	if r.Method == http.MethodGet {
 		connectRequestString := r.URL.Query().Get(connectUrlParam)
 		if connectRequestString != "" {
-			_, err := json.Parse(convert.StringToBytes(connectRequestString), &req, json.ZeroCopy)
+			err := cfjson.Unmarshal(convert.StringToBytes(connectRequestString), req, 0)
 			if err != nil {
 				log.Info().Err(err).Str("transport", transportName).Msg("error unmarshalling connect request")
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-		} else {
-			req = &protocol.ConnectRequest{}
 		}
 	} else if r.Method == http.MethodPost {
 		maxBytesSize := h.config.MaxRequestBodySize
@@ -67,7 +71,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		_, err = json.Parse(connectRequestData, &req, json.ZeroCopy)
+		err = cfjson.Unmarshal(connectRequestData, req, 0)
 		if err != nil {
 			if logging.Enabled(logging.DebugLevel) {
 				log.Debug().Err(err).Str("transport", transportName).Msg("malformed connect request")
@@ -155,7 +159,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 			for _, msg := range messages {
-				_, err = w.Write(convert.StringToBytes("data: " + convert.BytesToString(msg) + "\n\n"))
+				// Write the framing around msg rather than concatenating: msg
+				// is shared by all subscribers, and the writer is buffered.
+				if _, err = w.Write(sseDataPrefix); err == nil {
+					if _, err = w.Write(msg); err == nil {
+						_, err = w.Write(sseDataSuffix)
+					}
+				}
 				if err != nil {
 					sendAck()
 					return

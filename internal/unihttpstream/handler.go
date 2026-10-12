@@ -10,8 +10,8 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/centrifugal/protocol/cfjson"
 	"github.com/rs/zerolog/log"
-	"github.com/segmentio/encoding/json"
 )
 
 type Handler struct {
@@ -30,6 +30,9 @@ func NewHandler(n *centrifuge.Node, c Config, pingPong centrifuge.PingPongConfig
 
 const streamWriteTimeout = time.Second
 
+// newline separates messages in the stream.
+var newline = []byte("\n")
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Max-Age", "300")
@@ -46,7 +49,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected http.ResponseWriter to be http.Flusher", http.StatusInternalServerError)
 		return
 	}
-	var req *protocol.ConnectRequest
+	req := &protocol.ConnectRequest{}
 
 	maxBytesSize := int64(h.config.MaxRequestBodySize)
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytesSize)
@@ -59,7 +62,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	_, err = json.Parse(connectRequestData, &req, json.ZeroCopy)
+	err = cfjson.Unmarshal(connectRequestData, req, 0)
 	if err != nil {
 		if logging.Enabled(logging.DebugLevel) {
 			log.Debug().Err(err).Str("transport", transportName).Msg("malformed connect request")
@@ -141,7 +144,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					sendAck()
 					return
 				}
-				_, err = w.Write([]byte("\n"))
+				_, err = w.Write(newline)
 				if err != nil {
 					sendAck()
 					return

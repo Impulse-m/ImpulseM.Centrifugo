@@ -165,6 +165,10 @@ func (h *ConnectHandler) Handle() ConnectingHandlerFunc {
 				reply.Subscriptions = make(map[string]centrifuge.SubscribeOptions, len(result.Subs))
 			}
 			for ch, options := range result.Subs {
+				if options == nil {
+					// A JSON null: subscribe with default options, as with {}.
+					options = &proxyproto.SubscribeOptions{}
+				}
 				_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(ch)
 				if err != nil {
 					return centrifuge.ConnectReply{}, ConnectExtra{}, err
@@ -222,6 +226,7 @@ func (h *ConnectHandler) Handle() ConnectingHandlerFunc {
 					EnableRecovery:    recovery,
 					EnablePositioning: positioning,
 					RecoveryMode:      recoveryMode,
+					AutoCacheRecover:  options.CacheRecover,
 					Data:              chData,
 					Source:            subsource.ConnectProxy,
 					HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),

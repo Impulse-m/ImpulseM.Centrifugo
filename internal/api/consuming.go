@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 
@@ -39,6 +40,18 @@ func logNonRetryableConsumingError(err error, method string) {
 	log.Error().Err(err).Str("method", method).Msg("non retryable error during consuming, skip message")
 }
 
+// ErrShutdown is returned to consumers for messages received after Node shutdown
+// started. Such messages must not be acknowledged: this node is no longer able to
+// deliver them, and depending on the broker a publish may still return success (a
+// memory broker never fails, so without this check a message would be committed
+// while going nowhere). Returning an error makes consumers leave the message
+// unacknowledged, so it's redelivered to another node or after restart.
+//
+// It wraps context.Canceled since consumers treat cancellation as a stop signal
+// and give up immediately instead of retrying with backoff until the shutdown
+// timeout is reached.
+var ErrShutdown = fmt.Errorf("node is shutting down: %w", context.Canceled)
+
 type Dispatcher struct {
 	handler *ConsumingHandler
 }
@@ -49,13 +62,26 @@ func NewDispatcher(handler *ConsumingHandler) *Dispatcher {
 	}
 }
 
+// shuttingDown returns true once Node shutdown started.
+func (d *Dispatcher) shuttingDown() bool {
+	select {
+	case <-d.handler.node.NotifyShutdown():
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *Dispatcher) Publish(ctx context.Context, req *apiproto.PublishRequest) error {
+	if d.shuttingDown() {
+		return ErrShutdown
+	}
 	resp := d.handler.api.Publish(ctx, req)
 	if d.handler.config.UseOpenTelemetry && resp.Error != nil {
 		span := trace.SpanFromContext(ctx)
 		span.SetStatus(codes.Error, resp.Error.Error())
 	}
-	if resp.Error != nil && resp.Error.Code == apiproto.ErrorInternal.Code {
+	if resp.Error != nil && resp.Error.Temporary {
 		return resp.Error
 	}
 	if resp.Error != nil {
@@ -65,12 +91,15 @@ func (d *Dispatcher) Publish(ctx context.Context, req *apiproto.PublishRequest) 
 }
 
 func (d *Dispatcher) Broadcast(ctx context.Context, req *apiproto.BroadcastRequest) error {
+	if d.shuttingDown() {
+		return ErrShutdown
+	}
 	resp := d.handler.api.Broadcast(ctx, req)
 	if d.handler.config.UseOpenTelemetry && resp.Error != nil {
 		span := trace.SpanFromContext(ctx)
 		span.SetStatus(codes.Error, resp.Error.Error())
 	}
-	if resp.Error != nil && resp.Error.Code == apiproto.ErrorInternal.Code {
+	if resp.Error != nil && resp.Error.Temporary {
 		return resp.Error
 	}
 	if resp.Error != nil {
@@ -78,8 +107,8 @@ func (d *Dispatcher) Broadcast(ctx context.Context, req *apiproto.BroadcastReque
 		return nil
 	}
 	for _, response := range resp.Result.Responses {
-		if response.Error != nil && response.Error.Code == apiproto.ErrorInternal.Code {
-			// Any internal error in any channel response will result into a retry by a consumer.
+		if response.Error != nil && response.Error.Temporary {
+			// Any temporary error in any channel response will result into a retry by a consumer.
 			// To prevent duplicate messages publishers may use idempotency keys.
 			return response.Error
 		}
@@ -104,6 +133,9 @@ type ConsumedPublication struct {
 func (d *Dispatcher) DispatchPublication(
 	ctx context.Context, channels []string, pub ConsumedPublication,
 ) error {
+	if d.shuttingDown() {
+		return ErrShutdown
+	}
 	if len(channels) == 0 {
 		return nil
 	}
@@ -138,7 +170,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handlePublish(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -151,15 +183,15 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		res, err := d.handler.handleBroadcast(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
 			return nil
 		}
 		for _, resp := range res.Responses {
-			if resp.Error != nil && resp.Error.Code == apiproto.ErrorInternal.Code {
-				// Any internal error in any channel response will result into a retry by a consumer.
+			if resp.Error != nil && resp.Error.Temporary {
+				// Any temporary error in any channel response will result into a retry by a consumer.
 				// To prevent duplicate messages publishers may use idempotency keys.
 				return resp.Error
 			}
@@ -169,7 +201,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handleSubscribe(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -180,7 +212,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handleUnsubscribe(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -191,7 +223,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handleDisconnect(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -202,7 +234,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handleHistoryRemove(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -213,7 +245,7 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		_, err := d.handler.handleRefresh(ctx, payload)
 		if err != nil {
 			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Code == apiproto.ErrorInternal.Code {
+			if errors.As(err, &apiError) && apiError.Temporary {
 				return err
 			}
 			logNonRetryableConsumingError(err, method)
@@ -308,6 +340,9 @@ type MethodWithRequestPayload struct {
 
 // DispatchCommand processes commands received from asynchronous consumers.
 func (d *Dispatcher) DispatchCommand(ctx context.Context, method string, payload []byte) error {
+	if d.shuttingDown() {
+		return ErrShutdown
+	}
 	if method != "" {
 		// If method already known – we can skip decoding into MethodWithRequestPayload.
 		return d.dispatchMethodPayload(ctx, method, payload)

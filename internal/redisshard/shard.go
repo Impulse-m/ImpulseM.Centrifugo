@@ -1,6 +1,7 @@
 package redisshard
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -17,6 +18,18 @@ import (
 const (
 	defaultRedisIOTimeout      = 4 * time.Second
 	defaultRedisConnectTimeout = time.Second
+
+	// sentinelTopologyRefreshInterval makes the Sentinel client periodically
+	// re-check its targets with Sentinels instead of relying solely on the
+	// +switch-master event. That event is the only way the client learns about
+	// a failover, and it can be missed — a demoted master keeps its connection
+	// alive and a role change sends no MOVED, so a client which missed the
+	// event stays pinned to a node that is now a read-only replica until
+	// restart. This is easy to hit with a Sentinel co-located with each Redis
+	// node (as in the Bitnami Redis Helm chart), where the client loses its
+	// Sentinel connection at the same moment the master dies and Redis PUB/SUB
+	// does not replay the missed message.
+	sentinelTopologyRefreshInterval = 5 * time.Second
 )
 
 type RedisShard struct {
@@ -49,8 +62,30 @@ func NewRedisShard(conf RedisShardConfig) (*RedisShard, error) {
 		AlwaysPipelining: true,
 		AlwaysRESP2:      conf.ForceRESP2,
 		MaxFlushDelay:    100 * time.Microsecond,
+		// Redis commands are issued without per-request context deadlines
+		// and rely on IOTimeout to bound every call. rueidis retries
+		// read-only commands on network errors until the context is done —
+		// which, without a deadline, means a read command issued during a
+		// Redis outage never returns instead of failing within the IOTimeout
+		// envelope like writes do. Disable client-level retries entirely:
+		// errors are surfaced to callers, and reads and writes should fail
+		// the same way. Same change as in centrifuge RedisShard.
+		DisableRetry: true,
 		Dialer: net.Dialer{
 			Timeout: conf.ConnectTimeout,
+			// KeepAlive doubles as the rueidis keepalive PING cadence — the
+			// mechanism that detects a silently stalled connection (peer
+			// stops replying while TCP stays open) and errors out every
+			// pending command. Worst-case failure time for a command on a
+			// stalled connection is 2*KeepAlive + IOTimeout: a straggler
+			// reply can make one keepalive tick look active, only the next
+			// tick sends a PING, and the PING waits a full IOTimeout. The
+			// rueidis default of 1s gives 6s with the default 4s IOTimeout;
+			// 400ms keeps the worst case within 5s (4.8s), since commands
+			// are issued without per-request context deadlines. Same change
+			// as in centrifuge RedisShard, where a regression test pins the
+			// bound against a blackholed connection.
+			KeepAlive: 400 * time.Millisecond,
 		},
 	}
 
@@ -80,8 +115,11 @@ func NewRedisShard(conf RedisShardConfig) (*RedisShard, error) {
 			addressOpts.ClientOption, addressOpts.IsCluster, addressOpts.IsSentinel, addressOpts.ReplicaClientEnabled
 	}
 
-	if isSentinel && options.Sentinel.MasterSet == "" {
-		return nil, errors.New("sentinel master name must be configured for Redis Sentinel setup")
+	if isSentinel {
+		if options.Sentinel.MasterSet == "" {
+			return nil, errors.New("sentinel master name must be configured for Redis Sentinel setup")
+		}
+		options.Sentinel.TopologyRefreshInterval = sentinelTopologyRefreshInterval
 	}
 
 	client, err := rueidis.NewClient(options)
@@ -392,4 +430,78 @@ type MultiOp func(client rueidis.Client) []rueidis.RedisResult
 // RunMulti allows executing multiple commands.
 func (s *RedisShard) RunMulti(op MultiOp) []rueidis.RedisResult {
 	return op(s.client)
+}
+
+// Publish sends data to a Redis PUB/SUB channel.
+// Uses SPUBLISH for cluster mode, PUBLISH otherwise.
+func (s *RedisShard) Publish(ctx context.Context, channel string, data []byte) error {
+	var cmd rueidis.Completed
+	if s.isCluster {
+		cmd = s.client.B().Spublish().Channel(channel).Message(string(data)).Build()
+	} else {
+		cmd = s.client.B().Publish().Channel(channel).Message(string(data)).Build()
+	}
+	return s.client.Do(ctx, cmd).Error()
+}
+
+// Subscribe listens on a Redis PUB/SUB channel and calls handler for each message.
+// Uses SSUBSCRIBE for cluster mode, SUBSCRIBE otherwise.
+// Blocks until ctx is cancelled. Handles reconnections automatically.
+func (s *RedisShard) Subscribe(ctx context.Context, channel string, handler func(data []byte)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		err := s.runSubscribeLoop(ctx, channel, handler)
+		if err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Reconnect after a short delay.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
+func (s *RedisShard) runSubscribeLoop(ctx context.Context, channel string, handler func(data []byte)) error {
+	conn, cancel := s.client.Dedicate()
+	defer cancel()
+	defer conn.Close()
+
+	done := make(chan struct{})
+	var doneOnce sync.Once
+
+	wait := conn.SetPubSubHooks(rueidis.PubSubHooks{
+		OnMessage: func(msg rueidis.PubSubMessage) {
+			handler([]byte(msg.Message))
+		},
+		OnSubscription: func(ps rueidis.PubSubSubscription) {
+			if s.isCluster && ps.Kind == "sunsubscribe" && ps.Channel == channel {
+				doneOnce.Do(func() { close(done) })
+			}
+		},
+	})
+
+	var err error
+	if s.isCluster {
+		err = conn.Do(ctx, conn.B().Ssubscribe().Channel(channel).Build()).Error()
+	} else {
+		err = conn.Do(ctx, conn.B().Subscribe().Channel(channel).Build()).Error()
+	}
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return errors.New("subscription lost due to slot migration")
+	case err = <-wait:
+		return err
+	}
 }

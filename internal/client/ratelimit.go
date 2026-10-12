@@ -26,14 +26,14 @@ const limiterRedisUserCommand = "redis_user_command"
 
 // setupRateLimit creates rate limiters and registers node hooks for client rate limits. Nothing is
 // created or registered when client_command, client_error, user_command and redis_user_command are all disabled.
-func (h *Handler) setupRateLimit(cfg config.Config) error {
+func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	rl := cfg.Client.RateLimit
 	if !rl.ClientCommand.Enabled && !rl.ClientError.Enabled && !rl.UserCommand.Enabled && !rl.RedisUserCommand.Enabled {
 		return nil
 	}
 	var redisLimiter *ratelimit.RedisUserLimiter
 	if rl.RedisUserCommand.Enabled {
-		limiter, err := newRedisUserLimiter(cfg)
+		limiter, err := newRedisUserLimiter(*cfg)
 		if err != nil {
 			return err
 		}

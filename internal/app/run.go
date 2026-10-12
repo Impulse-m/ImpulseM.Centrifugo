@@ -60,6 +60,11 @@ func Run(cmd *cobra.Command, configFile string) {
 	ctx, serviceCancel := context.WithCancel(context.Background())
 	defer serviceCancel()
 
+	// Ingest services (async consumers) have a separate lifecycle from the rest of
+	// services – see the shutdown sequence in handleSignals.
+	ingestCtx, ingestCancel := context.WithCancel(context.Background())
+	defer ingestCancel()
+
 	centrifugeLogHandler, logCloseFn := logging.Setup(cfg)
 	if logCloseFn != nil {
 		defer logCloseFn()
@@ -118,13 +123,13 @@ func Run(cmd *cobra.Command, configFile string) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("error creating config")
 	}
-	cfgContainer.ChannelOptionsCacheTTL = 200 * time.Millisecond
 
 	// Initialize centralized metrics registry.
 	err = metrics.Init(metrics.Config{
-		Namespace:   "", // Use default "centrifugo" namespace.
-		ConstLabels: nil, // Can be populated from config in the future.
-		Registerer:  nil, // Use prometheus.DefaultRegisterer.
+		Namespace:        "",  // Use default "centrifugo" namespace.
+		ConstLabels:      nil, // Can be populated from config in the future.
+		Registerer:       nil, // Use prometheus.DefaultRegisterer.
+		NativeHistograms: cfg.Prometheus.NativeHistograms,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("error initializing metrics")
@@ -142,7 +147,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	}
 
 	if cfg.OpenTelemetry.Enabled {
-		_, err := telemetry.SetupTracing(context.Background())
+		_, err := telemetry.SetupTracing(context.Background(), cfg.OpenTelemetry, node.ID())
 		if err != nil {
 			log.Fatal().Err(err).Msg("error setting up opentelemetry tracing")
 		}
@@ -151,6 +156,11 @@ func Run(cmd *cobra.Command, configFile string) {
 	err = configureEngines(node, cfgContainer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("configure engines error")
+	}
+
+	err = configureMapBroker(node, cfgContainer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("configure map broker error")
 	}
 
 	verifierConfig, err := confighelpers.MakeVerifierConfig(cfg.Client.Token)
@@ -201,7 +211,7 @@ func Run(cmd *cobra.Command, configFile string) {
 				accessStore,
 				accessDisconnectQueue,
 				func() accessrevoke.CheckOptions {
-					return accessrevoke.OptionsFromConfig(cfgContainer.Config())
+					return accessrevoke.OptionsFromConfig(cfgContainer.ConfigRef())
 				},
 			),
 		)
@@ -253,7 +263,11 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error initializing consumers")
 	}
 
-	serviceManager.Register(consumingServices...)
+	// Consumers are registered in a separate manager: unlike other services they
+	// must be stopped before Node shutdown, so that no consumed message is
+	// acknowledged after this node lost the ability to deliver it.
+	ingestManager := service.NewManager()
+	ingestManager.Register(consumingServices...)
 
 	if cfg.Graphite.Enabled {
 		serviceManager.Register(graphiteExporter(cfg, nodeCfg))
@@ -304,16 +318,8 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error running node")
 	}
 
-	serviceDone := make(chan struct{})
-	serviceManager.Run(ctx)
-	go func() {
-		defer close(serviceDone)
-		err := serviceManager.Wait()
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Error().Err(err).Msg("error running service")
-			os.Exit(1)
-		}
-	}()
+	serviceDone := runServices(ctx, serviceManager)
+	ingestDone := runServices(ingestCtx, ingestManager)
 
 	var grpcAPIServer *grpc.Server
 	if cfg.GrpcAPI.Enabled {
@@ -327,9 +333,9 @@ func Run(cmd *cobra.Command, configFile string) {
 	var grpcUniServer *grpc.Server
 	if cfg.UniGRPC.Enabled {
 		var err error
-		grpcAPIServer, err = runGRPCUniServer(cfg, node)
+		grpcUniServer, err = runGRPCUniServer(cfg, node)
 		if err != nil {
-			log.Fatal().Err(err).Msg("error creating GRPC API server")
+			log.Fatal().Err(err).Msg("error creating uni GRPC server")
 		}
 	}
 
@@ -343,15 +349,66 @@ func Run(cmd *cobra.Command, configFile string) {
 	handleSignals(
 		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier,
 		httpServers, grpcAPIServer, grpcUniServer,
-		serviceDone, serviceCancel,
+		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
+}
+
+// runServices runs all services registered in the manager and returns a channel
+// closed when all of them stopped.
+func runServices(ctx context.Context, manager *service.Manager) chan struct{} {
+	done := make(chan struct{})
+	manager.Run(ctx)
+	go func() {
+		defer close(done)
+		err := manager.Wait()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Error().Err(err).Msg("error running service")
+			os.Exit(1)
+		}
+	}()
+	return done
+}
+
+// reloadConfig applies newCfg to the token verifiers and the config container.
+// Everything which can fail is done before any verifier changes, so the new
+// config is applied either fully or not at all.
+func reloadConfig(
+	newCfg config.Config, cfgContainer *config.Container,
+	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
+) error {
+	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
+	if err != nil {
+		return err
+	}
+	confighelpers.SetRevokeClaims(&verifierConfig, newCfg.TokenRevoke, newCfg.UserTokensInvalidate)
+	applyTokenVerifier, err := tokenVerifier.PrepareReload(verifierConfig)
+	if err != nil {
+		return err
+	}
+	applySubTokenVerifier := func() {}
+	if subTokenVerifier != nil {
+		subVerifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.SubscriptionToken.Token)
+		if err != nil {
+			return err
+		}
+		applySubTokenVerifier, err = subTokenVerifier.PrepareReload(subVerifierConfig)
+		if err != nil {
+			return err
+		}
+	}
+	if err = cfgContainer.Reload(newCfg); err != nil {
+		return err
+	}
+	applyTokenVerifier()
+	applySubTokenVerifier()
+	return nil
 }
 
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
-	serviceCancel context.CancelFunc,
+	serviceCancel context.CancelFunc, ingestDone chan struct{}, ingestCancel context.CancelFunc,
 ) {
 	cfg := cfgContainer.Config()
 	sigCh := make(chan os.Signal, 1)
@@ -374,28 +431,7 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
-			if err != nil {
-				log.Error().Msgf("error reloading: %v", err)
-				continue
-			}
-			confighelpers.SetRevokeClaims(&verifierConfig, newCfg.TokenRevoke, newCfg.UserTokensInvalidate)
-			if err = tokenVerifier.Reload(verifierConfig); err != nil {
-				log.Error().Msgf("error reloading: %v", err)
-				continue
-			}
-			if subTokenVerifier != nil {
-				subVerifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.SubscriptionToken.Token)
-				if err != nil {
-					log.Error().Msgf("error reloading: %v", err)
-					continue
-				}
-				if err := subTokenVerifier.Reload(subVerifierConfig); err != nil {
-					log.Error().Msgf("error reloading: %v", err)
-					continue
-				}
-			}
-			if err = cfgContainer.Reload(newCfg); err != nil {
+			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
@@ -436,6 +472,16 @@ func handleSignals(
 					_ = srv.Shutdown(context.Background()) // We have a separate timeout goroutine.
 				}(srv)
 			}
+
+			// Stop consuming messages before Node shutdown and wait until consumers
+			// stopped. Otherwise a message consumed here may be acknowledged while
+			// this node is already unable to deliver it – such message must be left
+			// unacknowledged instead, to be redelivered upon restart. Note that we
+			// don't wait for HTTP/GRPC servers here: their shutdown only completes
+			// after Node disconnected clients, since long-lived streaming requests
+			// (SSE, HTTP-streaming, unidirectional GRPC) are in-flight until then.
+			ingestCancel()
+			<-ingestDone
 
 			_ = n.Shutdown(context.Background()) // We have a separate timeout goroutine.
 			wg.Wait()

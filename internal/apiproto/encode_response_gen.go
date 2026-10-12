@@ -81,6 +81,41 @@ func (e *JSONResponseEncoder) EncodeChannels(response *ChannelsResponse) ([]byte
 	return json.Marshal(response)
 }
 
+// EncodeMapPublish ...
+func (e *JSONResponseEncoder) EncodeMapPublish(response *MapPublishResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeMapRemove ...
+func (e *JSONResponseEncoder) EncodeMapRemove(response *MapRemoveResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeMapReadState ...
+func (e *JSONResponseEncoder) EncodeMapReadState(response *MapReadStateResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeMapReadStream ...
+func (e *JSONResponseEncoder) EncodeMapReadStream(response *MapReadStreamResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeMapStats ...
+func (e *JSONResponseEncoder) EncodeMapStats(response *MapStatsResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeMapClear ...
+func (e *JSONResponseEncoder) EncodeMapClear(response *MapClearResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeSharedPollPublish ...
+func (e *JSONResponseEncoder) EncodeSharedPollPublish(response *SharedPollPublishResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
 // EncodeBlockUser ...
 func (e *JSONResponseEncoder) EncodeBlockUser(response *BlockUserResponse) ([]byte, error) {
 	return json.Marshal(response)

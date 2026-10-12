@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -28,7 +30,20 @@ type testOnlyConfig struct {
 	// leaveGroupOnShutdown when true sends a manual LeaveGroup request on shutdown.
 	// Used only in tests to simulate the old behavior with dynamic instance IDs.
 	leaveGroupOnShutdown bool
+	// injectFatalPollErrorCh, when a value is received from this channel (non-blocking
+	// check on each pollUntilFatal entry), causes pollUntilFatal to return it as a fatal
+	// error instead of actually polling — used to exercise the client re-init path in tests.
+	injectFatalPollErrorCh chan error
+	// autoCommitInterval overrides franz-go's default auto-commit interval (5s)
+	// so tests waiting for committed offsets do not wait on the production default.
+	autoCommitInterval time.Duration
 }
+
+// testKafkaMetadataMinAge overrides franz-go's MetadataMinAge (5s by default)
+// when set. Set by tests only: they create topics concurrently, and a consumer
+// that loaded metadata before its topic became visible waits the min age
+// before refreshing it.
+var testKafkaMetadataMinAge time.Duration
 
 type topicPartition struct {
 	topic     string
@@ -112,7 +127,26 @@ func (c *KafkaConsumer) leaveGroup(ctx context.Context, client *kgo.Client) erro
 	return err
 }
 
+// defaultKafkaDialTimeout is the fallback TCP dial timeout to a single broker.
+const defaultKafkaDialTimeout = 3 * time.Second
+
+func effectiveDialTimeout(d configtypes.Duration) time.Duration {
+	if d <= 0 {
+		return defaultKafkaDialTimeout
+	}
+	return time.Duration(d)
+}
+
+// pingTimeout returns a context deadline long enough for Ping to try every
+// seed broker. franz-go retries each broker's connection once on retryable
+// errors (see broker.handleReq), so each broker may cost up to 2 × dialTimeout.
+func pingTimeout(dialTimeout time.Duration, numBrokers int) time.Duration {
+	const maxAttemptsPerBroker = 2
+	return dialTimeout * time.Duration(numBrokers) * maxAttemptsPerBroker
+}
+
 func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
+	dialTimeout := effectiveDialTimeout(c.config.DialTimeout)
 	connOpts, err := kafkautil.Options(kafkautil.Config{
 		Name:          c.name,
 		Brokers:       c.config.Brokers,
@@ -120,11 +154,13 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 		SASLMechanism: c.config.SASLMechanism,
 		SASLUser:      c.config.SASLUser,
 		SASLPassword:  c.config.SASLPassword,
+		AssumeRoleARN: c.config.AssumeRoleARN,
 	}, c.common.log)
 	if err != nil {
 		return nil, err
 	}
-	opts := []kgo.Opt{
+	opts := append(connOpts, []kgo.Opt{
+		kgo.DialTimeout(dialTimeout),
 		kgo.ConsumeTopics(c.config.Topics...),
 		kgo.ConsumerGroup(c.config.ConsumerGroup),
 		kgo.OnPartitionsAssigned(c.assigned),
@@ -134,10 +170,15 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 		kgo.BlockRebalanceOnPoll(),
 		kgo.ClientID(kafkaClientID),
 		kgo.FetchMaxWait(time.Duration(c.config.FetchMaxWait)),
-	}
-	opts = append(opts, connOpts...)
+	}...)
 	if c.config.InstanceID != "" { // Important to keep separate, otherwise pointer to empty string is used in kgo.InstanceID.
 		opts = append(opts, kgo.InstanceID(c.config.InstanceID))
+	}
+	if testKafkaMetadataMinAge > 0 {
+		opts = append(opts, kgo.MetadataMinAge(testKafkaMetadataMinAge))
+	}
+	if c.testOnlyConfig.autoCommitInterval > 0 {
+		opts = append(opts, kgo.AutoCommitInterval(c.testOnlyConfig.autoCommitInterval))
 	}
 	if c.config.FetchMaxBytes > 0 {
 		opts = append(opts, kgo.FetchMaxBytes(c.config.FetchMaxBytes))
@@ -147,12 +188,11 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 	} else {
 		opts = append(opts, kgo.FetchIsolationLevel(kgo.ReadUncommitted()))
 	}
-
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("error initializing client: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout(dialTimeout, len(c.config.Brokers)))
 	defer cancel()
 	if err := client.Ping(ctx); err != nil {
 		client.Close()
@@ -161,8 +201,30 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 	return client, nil
 }
 
+// fetchPartitionErrorRequiresClientReinit reports whether a PollRecords fetch error
+// should trigger a full consumer client re-initialization. franz-go classifies Kafka
+// protocol errors with kerr.IsRetriable; broker-level retryability uses
+// kgo.IsRetryableBrokerErr — these differ, so both are consulted. *kgo.ErrDataLoss
+// is handled by offset reset inside the client and does not require restarting it.
+func fetchPartitionErrorRequiresClientReinit(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dataLoss *kgo.ErrDataLoss
+	if errors.As(err, &dataLoss) {
+		return false
+	}
+	if kerr.IsRetriable(err) || kgo.IsRetryableBrokerErr(err) {
+		return false
+	}
+	return true
+}
+
 func (c *KafkaConsumer) Run(ctx context.Context) error {
+	started := time.Now()
 	defer func() {
+		c.common.log.Info().Str("was_running_for", time.Since(started).String()).Msg("stopping Kafka consumer")
+		stopStarted := time.Now()
 		close(c.doneCh)
 		if c.client != nil {
 			// Stop all partition consumers first to ensure all offsets are marked.
@@ -190,25 +252,31 @@ func (c *KafkaConsumer) Run(ctx context.Context) error {
 			// with the same instance ID can take over partitions seamlessly.
 			c.client.CloseAllowingRebalance()
 		}
+		c.common.log.Info().Str("elapsed", time.Since(stopStarted).String()).Msg("stopped Kafka consumer")
 	}()
 	for {
+		pollStarted := time.Now()
 		err := c.pollUntilFatal(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			// franz-go may return context.DeadlineExceeded instead of context.Canceled on
+			// shutdown, so check the external context to detect shutdown — avoids logging
+			// the unwrapped error as if it were a real polling failure.
+			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			c.common.log.Error().Err(err).Msg("error polling Kafka")
+			c.common.log.Error().Err(err).Msg("fatal error polling Kafka, need client re-init")
 		}
-		// Upon returning from polling loop we are re-initializing consumer client.
+		// Upon returning from polling loop with fatal error we re-initialize consumer client.
 		c.client.CloseAllowingRebalance()
 		c.client = nil
-		c.common.log.Info().Msg("re-initializing Kafka consumer client")
+		c.common.log.Info().Str("was_polling_for", time.Since(pollStarted).String()).Msg("start re-initializing Kafka consumer client")
+		reInitStarted := time.Now()
 		err = c.reInitClient(ctx)
 		if err != nil {
 			// Only context.Canceled may be returned.
 			return err
 		}
-		c.common.log.Info().Msg("Kafka consumer client re-initialized")
+		c.common.log.Info().Str("elapsed", time.Since(reInitStarted).String()).Msg("Kafka consumer client re-initialized")
 	}
 }
 
@@ -218,22 +286,51 @@ func (c *KafkaConsumer) pollUntilFatal(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+			if ch := c.testOnlyConfig.injectFatalPollErrorCh; ch != nil {
+				select {
+				case err := <-ch:
+					return err
+				default:
+				}
+			}
 			fetches := c.client.PollRecords(ctx, c.config.MaxPollRecords)
 			if fetches.IsClientClosed() {
-				return nil
+				// Defensive check: in our code the client is only closed by Run after this loop
+				// exits, so this should not normally happen. Trigger re-init via Run to recover.
+				c.common.log.Warn().Msg("Kafka client unexpectedly closed during poll, will re-init")
+				return errors.New("client closed during poll")
 			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// Check fetch errors. Only return fatal error if at least one partition error needs a
+			// full client re-init. Kafka-retriable protocol errors (kerr) and retryable broker
+			// errors (kgo) are left to franz-go; ErrDataLoss is handled via offset reset inside the
+			// client. Otherwise we log and continue so EachPartition still processes fetched
+			// records for partitions without errors.
 			fetchErrors := fetches.Errors()
 			if len(fetchErrors) > 0 {
-				// Non-retryable errors returned. We will restart consumer client, but log errors first.
 				var errs []error
+				var fatal bool
 				for _, fetchErr := range fetchErrors {
-					if errors.Is(fetchErr.Err, context.Canceled) {
-						return ctx.Err()
-					}
 					errs = append(errs, fetchErr.Err)
-					c.common.log.Error().Err(fetchErr.Err).Str("topic", fetchErr.Topic).Int32("partition", fetchErr.Partition).Msg("error while polling Kafka")
+					reinit := fetchPartitionErrorRequiresClientReinit(fetchErr.Err)
+					c.common.log.Error().
+						Err(fetchErr.Err).
+						Str("topic", fetchErr.Topic).
+						Int32("partition", fetchErr.Partition).
+						Bool("fatal", reinit).
+						Msg("error while polling topic partition")
+					if reinit {
+						fatal = true
+					}
 				}
-				return fmt.Errorf("poll error: %w", errors.Join(errs...))
+				if fatal {
+					// Client will be re-initialized in Run. This poll returns before EachPartition,
+					// so records from this cycle are not enqueued yet; recovery is at-least-once
+					// via refetch after re-init.
+					return fmt.Errorf("poll error: %w", errors.Join(errs...))
+				}
 			}
 
 			// Track which partitions we've paused in this poll cycle.
@@ -276,6 +373,18 @@ func (c *KafkaConsumer) pollUntilFatal(ctx context.Context) error {
 						pausedTopicPartitions[tp] = struct{}{}
 					}
 				}
+
+				// Clone p.Records to a fresh, tightly-sized backing array before enqueueing.
+				// The []*kgo.Record slice returned by franz-go points into the per-partition
+				// array franz-go grew via append while decoding the fetch response. That array
+				// can hold many more *Record pointers than the window we take here (up to
+				// MaxPollRecords); Go's GC tracks the whole backing allocation, so retaining
+				// the sub-slice keeps every pointer in the original array reachable — including
+				// records semantically stripped when the partition gets paused. That in turn
+				// keeps their Record structs and the batch buffers their Values point into
+				// alive, amplifying heap usage under lag. Cloning breaks the reference so the
+				// queue only pins the records we actually intend to process.
+				p.Records = slices.Clone(p.Records)
 
 				// Now submit to unbounded queue.
 				if !consumer.queue.Push(p) {
@@ -359,7 +468,13 @@ func (c *KafkaConsumer) revoked(ctx context.Context, cl *kgo.Client, revoked map
 	c.killConsumers(revoked)
 	// Always commit marked offsets on revoke.
 	if err := cl.CommitMarkedOffsets(ctx); err != nil {
-		c.common.log.Error().Err(err).Msg("error committing marked offsets on revoke")
+		// On shutdown the app context is already canceled; commit will fail with
+		// context.Canceled. That is expected, not an error — log at info level instead.
+		if errors.Is(err, context.Canceled) {
+			c.common.log.Info().Err(err).Msg("skipping commit on revoke due to context cancellation")
+		} else {
+			c.common.log.Error().Err(err).Msg("error committing marked offsets on revoke")
+		}
 	}
 }
 
@@ -545,7 +660,11 @@ func (pc *partitionConsumer) processRecords(records []*kgo.Record) {
 				pc.cl.MarkCommitRecords(record)
 				break
 			}
-			if errors.Is(err, context.Canceled) {
+			// Only stop on our own cancellation: an unrelated context.Canceled bubbling up
+			// from the dispatcher must be retried, not treated as shutdown. Bailing out here
+			// would skip the rest of the batch and let a later batch commit an offset past
+			// this record — losing it for good.
+			if pc.partitionCtx.Err() != nil {
 				return
 			}
 			retries++

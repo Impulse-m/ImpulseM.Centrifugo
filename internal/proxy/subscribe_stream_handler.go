@@ -113,6 +113,14 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 		subscriptionReady := make(chan struct{})
 		var subscriptionReadyOnce sync.Once
 
+		// streamMu and streamClosed keep a closed stream away from the client: once
+		// the cancel func returned below was called (by OnUnsubscribe), the
+		// callback writes no publication and doesn't unsubscribe. Both are done by
+		// channel name, so they would act on a newer subscription to the channel,
+		// which Centrifuge starts only after the previous one's OnUnsubscribe.
+		var streamMu sync.Mutex
+		streamClosed := false
+
 		subscribeRep, publishFunc, cancelFunc, err := p.SubscribeStream(
 			client.Context(),
 			bidi,
@@ -130,7 +138,16 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 					return
 				default:
 				}
+				streamMu.Lock()
+				if streamClosed {
+					streamMu.Unlock()
+					return
+				}
 				if err != nil {
+					// The stream ended: nothing more comes from it. Unsubscribe
+					// outside the lock, Unsubscribe calls OnUnsubscribe, which cancels.
+					streamClosed = true
+					streamMu.Unlock()
 					if errors.Is(err, io.EOF) {
 						client.Unsubscribe(e.Channel, centrifuge.Unsubscribe{
 							Code:   centrifuge.UnsubscribeCodeServer,
@@ -148,6 +165,7 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 					Data: pub.Data,
 					Tags: pub.Tags,
 				}, centrifuge.StreamPosition{})
+				streamMu.Unlock()
 			},
 		)
 
@@ -173,6 +191,11 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 
 		if subscribeRep.Disconnect != nil {
 			//proxyCallErrorCount.WithLabelValues(proxyName, "subscribe", "disconnect_"+strconv.FormatUint(uint64(subscribeRep.Disconnect.Code), 10)).Inc()
+			// SubscribeStream returned successfully here, so it has opened the stream
+			// and spawned its reader goroutine. Every rejection/error return below
+			// must cancel it or the stream context and goroutine leak until the
+			// client disconnects.
+			cancelFunc()
 			return centrifuge.SubscribeReply{}, nil, nil, &centrifuge.Disconnect{
 				Code:   subscribeRep.Disconnect.Code,
 				Reason: subscribeRep.Disconnect.Reason,
@@ -180,6 +203,7 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 		}
 		if subscribeRep.Error != nil {
 			//proxyCallErrorCount.WithLabelValues(proxyName, "subscribe", "error_"+strconv.FormatUint(uint64(subscribeRep.Error.Code), 10)).Inc()
+			cancelFunc()
 			return centrifuge.SubscribeReply{}, nil, nil, &centrifuge.Error{
 				Code:    subscribeRep.Error.Code,
 				Message: subscribeRep.Error.Message,
@@ -199,6 +223,7 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 				decodedInfo, err := base64.StdEncoding.DecodeString(subscribeRep.Result.B64Info)
 				if err != nil {
 					log.Error().Err(err).Str("client", client.ID()).Msg("error decoding base64 info")
+					cancelFunc()
 					return centrifuge.SubscribeReply{}, nil, nil, centrifuge.ErrorInternal
 				}
 				info = decodedInfo
@@ -209,6 +234,7 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 				decodedData, err := base64.StdEncoding.DecodeString(subscribeRep.Result.B64Data)
 				if err != nil {
 					log.Error().Err(err).Str("client", client.ID()).Msg("error decoding base64 data")
+					cancelFunc()
 					return centrifuge.SubscribeReply{}, nil, nil, centrifuge.ErrorInternal
 				}
 				data = decodedData
@@ -246,7 +272,12 @@ func (h *SubscribeStreamHandler) Handle() SubscribeStreamHandlerFunc {
 			},
 			ClientSideRefresh: true,
 			SubscriptionReady: subscriptionReady,
-		}, publishFunc, cancelFunc, nil
+		}, publishFunc, func() {
+			streamMu.Lock()
+			streamClosed = true
+			streamMu.Unlock()
+			cancelFunc()
+		}, nil
 	}
 }
 
@@ -254,6 +285,31 @@ type OnPublication func(pub *proxyproto.Publication, err error)
 
 type ChannelStreamReader interface {
 	Recv() (*proxyproto.StreamSubscribeResponse, error)
+}
+
+// readStream passes the publications of a stream to pubFunc until the stream
+// ends, then reports why it ended. A stream closed by its own context is not
+// reported: it was closed on purpose — on unsubscribe, for a subscription
+// refused after the stream was opened, or with the client — and nobody waits
+// for the error then. Reporting it would block on a subscription which never
+// became ready, or unsubscribe a newer subscription to the same channel.
+func readStream(ctx context.Context, cancel context.CancelFunc, stream ChannelStreamReader, pubFunc OnPublication) {
+	for {
+		pubResp, err := stream.Recv()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			cancel()
+			pubFunc(nil, err)
+			return
+		}
+		pub := pubResp.GetPublication()
+		if pub != nil {
+			// TODO: better handling of unexpected nil publication.
+			pubFunc(pub, nil)
+		}
+	}
 }
 
 // SubscribeStream ...
@@ -299,44 +355,28 @@ func (p *SubscribeStreamProxy) SubscribeStream(
 		}
 	}
 
-	firstMessageReceived := make(chan struct{})
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			cancel()
-			return
-		case <-time.After(p.config.Timeout.ToDuration()):
-			cancel()
-			return
-		case <-firstMessageReceived:
-		}
-	}()
+	// Only this timer cancels the stream before its first message. Once it
+	// has fired, the stream is refused even if a message raced in: its reader
+	// would find it cancelled and, as for any stream its owner closed, not
+	// report it — leaving the subscription with a dead stream.
+	timer := time.AfterFunc(p.config.Timeout.ToDuration(), cancel)
 
 	resp, err := stream.Recv()
+	if !timer.Stop() {
+		cancel()
+		return nil, nil, nil, errors.New("timeout waiting for first message from stream proxy")
+	}
 	if err != nil {
 		cancel()
 		return nil, nil, nil, err
 	}
-	close(firstMessageReceived)
 
-	go func() {
-		for {
-			pubResp, err := stream.Recv()
-			if err != nil {
-				cancel()
-				pubFunc(nil, err)
-				return
-			}
-			pub := pubResp.GetPublication()
-			if pub != nil {
-				// TODO: better handling of unexpected nil publication.
-				pubFunc(pub, nil)
-			}
-		}
-	}()
+	go readStream(ctx, cancel, stream, pubFunc)
 
 	if resp.SubscribeResponse == nil {
+		// The reader goroutine was already spawned above, so cancel before
+		// returning an error or it (and the derived context) leaks.
+		cancel()
 		return nil, nil, nil, errors.New("no subscribe response in first message from stream proxy")
 	}
 	return resp.SubscribeResponse, publishFunc, cancel, nil

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
@@ -321,6 +322,30 @@ func TestHandleConnectWithSubscription(t *testing.T) {
 
 }
 
+func TestHandleConnectWithSubscriptionRecover(t *testing.T) {
+	opts := proxyGRPCTestServerOptions{
+		User:     "56",
+		Channels: []string{"test_ch"},
+	}
+	grpcTestCase := newConnHandleGRPCTestCase(context.Background(), newProxyGRPCTestServer("subscription with recover", opts))
+	defer grpcTestCase.Teardown()
+
+	httpTestCase := newConnHandleHTTPTestCase(context.Background(), "/proxy")
+	httpTestCase.Mux.HandleFunc("/proxy", func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(`{"result": {"user": "56", "subs": {"test_ch": {"cache_recover": true}}}}`))
+	})
+	defer httpTestCase.Teardown()
+
+	cases := newConnHandleTestCases(httpTestCase, grpcTestCase)
+	for _, c := range cases {
+		reply, err := c.invokeHandle(context.Background())
+		require.NoError(t, err, c.protocol)
+		require.NotNil(t, reply.Subscriptions, c.protocol)
+		require.Contains(t, reply.Subscriptions, "test_ch", c.protocol)
+		require.True(t, reply.Subscriptions["test_ch"].AutoCacheRecover, c.protocol)
+	}
+}
+
 func TestHandleConnectWithSubscriptionError(t *testing.T) {
 	opts := proxyGRPCTestServerOptions{
 		User:     "56",
@@ -367,6 +392,57 @@ func TestHandleConnectWithSubscriptionServerTagsFilter(t *testing.T) {
 	}
 }
 
+// TestHandleConnectForwardsEmulatedHeaders is an end-to-end test of the
+// emulated_headers feature: a client supplies emulated headers in the
+// connect frame (here via the emulated-headers context value, exactly as the
+// client handler sets them from ConnectEvent.Headers), and we assert what the
+// backend actually receives over a real HTTP proxy request:
+//   - a name listed in emulated_headers is forwarded;
+//   - a name listed only in http_headers (transport-only) is NOT forwardable via
+//     emulation, so a client-forged value never reaches the backend.
+func TestHandleConnectForwardsEmulatedHeaders(t *testing.T) {
+	httpTestCase := tools.NewCommonHTTPProxyTestCase(context.Background())
+	defer httpTestCase.Teardown()
+
+	var received http.Header
+	httpTestCase.Mux.HandleFunc("/proxy", func(w http.ResponseWriter, req *http.Request) {
+		received = req.Header.Clone()
+		_, _ = w.Write([]byte(`{"result": {"user": "56"}}`))
+	})
+
+	// Mixed-case allow lists also exercise normalization end-to-end.
+	proxyCfg := configtypes.Proxy{
+		Endpoint: httpTestCase.Server.URL + "/proxy",
+		Timeout:  configtypes.Duration(5 * time.Second),
+		ProxyCommon: configtypes.ProxyCommon{
+			HttpHeaders:     []string{"X-Trusted"},   // transport-only allow list
+			EmulatedHeaders: []string{"X-App-Token"}, // emulated allow list
+		},
+	}
+	connectProxy, err := GetConnectProxy("default", proxyCfg)
+	require.NoError(t, err)
+
+	cfgContainer, err := config.NewContainer(config.DefaultConfig())
+	require.NoError(t, err)
+	connHandler := NewConnectHandler(ConnectHandlerConfig{Proxy: connectProxy}, cfgContainer).Handle()
+
+	// Client supplies an allowed emulated header and tries to forge a name that is
+	// only allowed as a transport header — the latter must not pass via emulation.
+	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{
+		"x-app-token": "from-client",
+		"x-trusted":   "forged-by-client",
+		"x-other":     "not-allowed",
+	})
+
+	_, _, err = connHandler(ctx, centrifuge.ConnectEvent{Transport: tools.NewTestTransport()})
+	require.NoError(t, err)
+
+	require.NotNil(t, received, "backend should have been called")
+	require.Equal(t, "from-client", received.Get("X-App-Token"), "header in emulated_headers must be forwarded")
+	require.Empty(t, received.Get("X-Trusted"), "emulated value for an http_headers-only name must NOT be forwarded")
+	require.Empty(t, received.Get("X-Other"), "header in neither allow list must NOT be forwarded")
+}
+
 func TestHandleConnectWithHTTPCodeTransform(t *testing.T) {
 	grpcTestCase := newConnHandleGRPCTestCase(context.Background(), newProxyGRPCTestServer("http status code transform", proxyGRPCTestServerOptions{}))
 	defer grpcTestCase.Teardown()
@@ -394,4 +470,27 @@ func TestHandleConnectWithHTTPCodeTransform(t *testing.T) {
 		require.Equal(t, expectedErr.Error(), err.Error(), c.protocol)
 		require.Equal(t, centrifuge.ConnectReply{}, reply, c.protocol)
 	}
+}
+
+func TestHandleConnectWithNullSubscriptionOptions(t *testing.T) {
+	httpTestCase := newConnHandleHTTPTestCase(context.Background(), "/proxy")
+	httpTestCase.Mux.HandleFunc("/proxy", func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(`{"result": {"user": "56", "subs": {"test_ch": null}}}`))
+	})
+	defer httpTestCase.Teardown()
+
+	c := connHandleTestCase{
+		connectProxyHandler: httpTestCase.connectProxyHandler,
+		node:                httpTestCase.Node,
+		protocol:            "http",
+	}
+	var err error
+	var subscriptions map[string]centrifuge.SubscribeOptions
+	require.NotPanics(t, func() {
+		var reply centrifuge.ConnectReply
+		reply, err = c.invokeHandle(context.Background())
+		subscriptions = reply.Subscriptions
+	})
+	require.NoError(t, err)
+	require.Contains(t, subscriptions, "test_ch")
 }

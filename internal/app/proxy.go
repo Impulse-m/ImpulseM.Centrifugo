@@ -15,16 +15,20 @@ import (
 
 func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 	proxyMap := &client.ProxyMap{
-		ConnectProxy:           nil,
-		RefreshProxy:           nil,
-		RpcProxies:             map[string]proxy.RPCProxy{},
-		PublishProxies:         map[string]proxy.PublishProxy{},
-		SubscribeProxies:       map[string]proxy.SubscribeProxy{},
-		SubRefreshProxies:      map[string]proxy.SubRefreshProxy{},
-		SubscribeStreamProxies: map[string]*proxy.SubscribeStreamProxy{},
+		ConnectProxy:             nil,
+		RefreshProxy:             nil,
+		RpcProxies:               map[string]proxy.RPCProxy{},
+		PublishProxies:           map[string]proxy.PublishProxy{},
+		SubscribeProxies:         map[string]proxy.SubscribeProxy{},
+		SubRefreshProxies:        map[string]proxy.SubRefreshProxy{},
+		SubscribeStreamProxies:   map[string]*proxy.SubscribeStreamProxy{},
+		MapPublishProxies:        map[string]proxy.MapPublishProxy{},
+		MapRemoveProxies:         map[string]proxy.MapRemoveProxy{},
+		SharedPollRefreshProxies: map[string]*proxy.SharedPollRefreshHandler{},
 	}
 
 	var keepHeadersInContext bool
+	var keepEmulatedHeadersInContext bool
 
 	var err error
 	var proxyFound bool
@@ -39,6 +43,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
 		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
 	}
 
 	if cfg.Client.Proxy.Refresh.Enabled {
@@ -50,6 +57,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		log.Info().Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("refresh proxy enabled")
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
+		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
 		}
 	}
 
@@ -81,6 +91,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
 		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
 	}
 
 	publishProxyEnabled := cfg.Channel.WithoutNamespace.PublishProxyEnabled
@@ -106,6 +119,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
 		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
 	}
 
 	subRefreshProxyEnabled := cfg.Channel.WithoutNamespace.SubRefreshProxyEnabled
@@ -130,6 +146,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		log.Info().Str("proxy_name", subRefreshProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("sub refresh proxy enabled for channels without namespace")
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
+		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
 		}
 	}
 
@@ -159,6 +178,65 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
 		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
+	}
+
+	mapPublishProxyEnabled := cfg.Channel.WithoutNamespace.Map.PublishProxyEnabled
+	mapPublishProxyName := cfg.Channel.WithoutNamespace.Map.PublishProxyName
+	if mapPublishProxyEnabled {
+		var p proxy.Config
+		if mapPublishProxyName == config.DefaultProxyName {
+			p = cfg.Channel.Proxy.MapPublish
+		} else {
+			p, proxyFound = namedProxies[mapPublishProxyName]
+			if !proxyFound {
+				return nil, false, fmt.Errorf("map publish proxy not found: %s", mapPublishProxyName)
+			}
+		}
+		if _, ok := proxyMap.MapPublishProxies[mapPublishProxyName]; !ok {
+			mpp, err := proxy.GetMapPublishProxy(mapPublishProxyName, p)
+			if err != nil {
+				return nil, false, fmt.Errorf("error creating map publish proxy %s: %w", mapPublishProxyName, err)
+			}
+			proxyMap.MapPublishProxies[mapPublishProxyName] = mpp
+		}
+		log.Info().Str("proxy_name", mapPublishProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("map publish proxy enabled for channels without namespace")
+		if len(p.HttpHeaders) > 0 {
+			keepHeadersInContext = true
+		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
+	}
+
+	mapRemoveProxyEnabled := cfg.Channel.WithoutNamespace.Map.RemoveProxyEnabled
+	mapRemoveProxyName := cfg.Channel.WithoutNamespace.Map.RemoveProxyName
+	if mapRemoveProxyEnabled {
+		var p proxy.Config
+		if mapRemoveProxyName == config.DefaultProxyName {
+			p = cfg.Channel.Proxy.MapRemove
+		} else {
+			p, proxyFound = namedProxies[mapRemoveProxyName]
+			if !proxyFound {
+				return nil, false, fmt.Errorf("map remove proxy not found: %s", mapRemoveProxyName)
+			}
+		}
+		if _, ok := proxyMap.MapRemoveProxies[mapRemoveProxyName]; !ok {
+			mrp, err := proxy.GetMapRemoveProxy(mapRemoveProxyName, p)
+			if err != nil {
+				return nil, false, fmt.Errorf("error creating map remove proxy %s: %w", mapRemoveProxyName, err)
+			}
+			proxyMap.MapRemoveProxies[mapRemoveProxyName] = mrp
+		}
+		log.Info().Str("proxy_name", mapRemoveProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("map remove proxy enabled for channels without namespace")
+		if len(p.HttpHeaders) > 0 {
+			keepHeadersInContext = true
+		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
+		}
 	}
 
 	for _, ns := range cfg.Channel.Namespaces {
@@ -185,6 +263,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			if len(p.HttpHeaders) > 0 {
 				keepHeadersInContext = true
 			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
 		}
 
 		publishProxyEnabled := ns.PublishProxyEnabled
@@ -210,6 +291,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			if len(p.HttpHeaders) > 0 {
 				keepHeadersInContext = true
 			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
 		}
 
 		subRefreshProxyEnabled := ns.SubRefreshProxyEnabled
@@ -234,6 +318,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			log.Info().Str("proxy_name", subRefreshProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("sub refresh proxy enabled for channels in namespace")
 			if len(p.HttpHeaders) > 0 {
 				keepHeadersInContext = true
+			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
 			}
 		}
 
@@ -263,7 +350,123 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			if len(p.HttpHeaders) > 0 {
 				keepHeadersInContext = true
 			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
 		}
+
+		mapPublishProxyEnabled := ns.Map.PublishProxyEnabled
+		mapPublishProxyName := ns.Map.PublishProxyName
+		if mapPublishProxyEnabled {
+			var p proxy.Config
+			if mapPublishProxyName == config.DefaultProxyName {
+				p = cfg.Channel.Proxy.MapPublish
+			} else {
+				p, proxyFound = namedProxies[mapPublishProxyName]
+				if !proxyFound {
+					return nil, false, fmt.Errorf("map publish proxy not found: %s", mapPublishProxyName)
+				}
+			}
+			if _, ok := proxyMap.MapPublishProxies[mapPublishProxyName]; !ok {
+				mpp, err := proxy.GetMapPublishProxy(mapPublishProxyName, p)
+				if err != nil {
+					return nil, false, fmt.Errorf("error creating map publish proxy %s: %w", mapPublishProxyName, err)
+				}
+				proxyMap.MapPublishProxies[mapPublishProxyName] = mpp
+			}
+			log.Info().Str("proxy_name", mapPublishProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("map publish proxy enabled for channels in namespace")
+			if len(p.HttpHeaders) > 0 {
+				keepHeadersInContext = true
+			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
+		}
+
+		mapRemoveProxyEnabled := ns.Map.RemoveProxyEnabled
+		mapRemoveProxyName := ns.Map.RemoveProxyName
+		if mapRemoveProxyEnabled {
+			var p proxy.Config
+			if mapRemoveProxyName == config.DefaultProxyName {
+				p = cfg.Channel.Proxy.MapRemove
+			} else {
+				p, proxyFound = namedProxies[mapRemoveProxyName]
+				if !proxyFound {
+					return nil, false, fmt.Errorf("map remove proxy not found: %s", mapRemoveProxyName)
+				}
+			}
+			if _, ok := proxyMap.MapRemoveProxies[mapRemoveProxyName]; !ok {
+				mrp, err := proxy.GetMapRemoveProxy(mapRemoveProxyName, p)
+				if err != nil {
+					return nil, false, fmt.Errorf("error creating map remove proxy %s: %w", mapRemoveProxyName, err)
+				}
+				proxyMap.MapRemoveProxies[mapRemoveProxyName] = mrp
+			}
+			log.Info().Str("proxy_name", mapRemoveProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("map remove proxy enabled for channels in namespace")
+			if len(p.HttpHeaders) > 0 {
+				keepHeadersInContext = true
+			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
+		}
+
+		if ns.SubscriptionType == "shared_poll" {
+			sharedPollProxyName := ns.SharedPoll.ProxyName
+			if sharedPollProxyName == "" {
+				sharedPollProxyName = config.DefaultProxyName
+			}
+			var p proxy.Config
+			if sharedPollProxyName == config.DefaultProxyName {
+				p = cfg.Channel.Proxy.SharedPollRefresh
+			} else {
+				p, proxyFound = namedProxies[sharedPollProxyName]
+				if !proxyFound {
+					return nil, false, fmt.Errorf("shared poll refresh proxy not found: %s", sharedPollProxyName)
+				}
+			}
+			if _, ok := proxyMap.SharedPollRefreshProxies[sharedPollProxyName]; !ok {
+				sp, err := proxy.GetSharedPollRefreshProxy(sharedPollProxyName, p)
+				if err != nil {
+					return nil, false, fmt.Errorf("error creating shared poll refresh proxy %s: %w", sharedPollProxyName, err)
+				}
+				handler := proxy.NewSharedPollRefreshHandler(proxy.SharedPollRefreshHandlerConfig{
+					Proxy: sp,
+					Name:  sharedPollProxyName,
+				})
+				proxyMap.SharedPollRefreshProxies[sharedPollProxyName] = handler
+			}
+			log.Info().Str("proxy_name", sharedPollProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("shared poll refresh proxy enabled for channels in namespace")
+		}
+	}
+
+	// Also check without-namespace channels for shared poll proxy.
+	if cfg.Channel.WithoutNamespace.SubscriptionType == "shared_poll" {
+		sharedPollProxyName := cfg.Channel.WithoutNamespace.SharedPoll.ProxyName
+		if sharedPollProxyName == "" {
+			sharedPollProxyName = config.DefaultProxyName
+		}
+		var p proxy.Config
+		if sharedPollProxyName == config.DefaultProxyName {
+			p = cfg.Channel.Proxy.SharedPollRefresh
+		} else {
+			p, proxyFound = namedProxies[sharedPollProxyName]
+			if !proxyFound {
+				return nil, false, fmt.Errorf("shared poll refresh proxy not found: %s", sharedPollProxyName)
+			}
+		}
+		if _, ok := proxyMap.SharedPollRefreshProxies[sharedPollProxyName]; !ok {
+			sp, err := proxy.GetSharedPollRefreshProxy(sharedPollProxyName, p)
+			if err != nil {
+				return nil, false, fmt.Errorf("error creating shared poll refresh proxy %s: %w", sharedPollProxyName, err)
+			}
+			handler := proxy.NewSharedPollRefreshHandler(proxy.SharedPollRefreshHandlerConfig{
+				Proxy: sp,
+				Name:  sharedPollProxyName,
+			})
+			proxyMap.SharedPollRefreshProxies[sharedPollProxyName] = handler
+		}
+		log.Info().Str("proxy_name", sharedPollProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("shared poll refresh proxy enabled for channels without namespace")
 	}
 
 	rpcProxyEnabled := cfg.RPC.WithoutNamespace.ProxyEnabled
@@ -288,6 +491,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		log.Info().Str("proxy_name", rpcProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("RPC proxy enabled for methods without namespace")
 		if len(p.HttpHeaders) > 0 {
 			keepHeadersInContext = true
+		}
+		if len(p.EmulatedHeaders) > 0 {
+			keepEmulatedHeadersInContext = true
 		}
 	}
 
@@ -315,8 +521,13 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			if len(p.HttpHeaders) > 0 {
 				keepHeadersInContext = true
 			}
+			if len(p.EmulatedHeaders) > 0 {
+				keepEmulatedHeadersInContext = true
+			}
 		}
 	}
+
+	proxyMap.UsesEmulatedHeaders = keepEmulatedHeadersInContext
 
 	return proxyMap, keepHeadersInContext, nil
 }

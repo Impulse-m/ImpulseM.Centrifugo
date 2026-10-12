@@ -1,6 +1,9 @@
 package redisnatsbroker
 
 import (
+	"context"
+	"errors"
+
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
 
 	"github.com/centrifugal/centrifuge"
@@ -25,21 +28,21 @@ func New(nats *natsbroker.NatsBroker, redis *centrifuge.RedisBroker) (*Broker, e
 	}, nil
 }
 
-func (b *Broker) Publish(ch string, data []byte, opts centrifuge.PublishOptions) (centrifuge.StreamPosition, bool, error) {
+func (b *Broker) Publish(ch string, data []byte, opts centrifuge.PublishOptions) (centrifuge.PublishResult, error) {
 	if !b.NatsBroker.IsSupportedPublishChannel(ch) {
 		// Do not support wildcard subscriptions just like natsbroker.NatsBroker.
-		return centrifuge.StreamPosition{}, false, centrifuge.ErrorBadRequest
+		return centrifuge.PublishResult{}, centrifuge.ErrorBadRequest
 	}
 	if opts.IdempotencyKey != "" || (opts.HistorySize > 0 && opts.HistoryTTL > 0) {
-		sp, fromCache, err := b.redis.Publish(ch, data, opts)
+		res, err := b.redis.Publish(ch, data, opts)
 		if err != nil {
-			return sp, fromCache, err
+			return res, err
 		}
-		if fromCache {
-			return sp, true, nil
+		if res.Suppressed {
+			return res, nil
 		}
-		_ = b.NatsBroker.PublishWithStreamPosition(ch, data, opts, sp)
-		return sp, fromCache, nil
+		_ = b.NatsBroker.PublishWithStreamPosition(ch, data, opts, res.StreamPosition)
+		return res, nil
 	}
 	return b.NatsBroker.Publish(ch, data, opts)
 }
@@ -47,6 +50,12 @@ func (b *Broker) Publish(ch string, data []byte, opts centrifuge.PublishOptions)
 // History ...
 func (b *Broker) History(ch string, opts centrifuge.HistoryOptions) ([]*centrifuge.Publication, centrifuge.StreamPosition, error) {
 	return b.redis.History(ch, opts)
+}
+
+// Close closes both brokers. Otherwise the Close promoted from the embedded
+// NatsBroker would be the one called, leaving the Redis broker running.
+func (b *Broker) Close(ctx context.Context) error {
+	return errors.Join(b.redis.Close(ctx), b.NatsBroker.Close(ctx))
 }
 
 // RemoveHistory ...

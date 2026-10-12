@@ -71,12 +71,21 @@ func (s *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		}(time.Now())
 	}
 
+	// Coerce a non-positive limit to the default, matching the other transports:
+	// the stream decoder requires a positive limit (it panics otherwise), so an
+	// explicit message_size_limit of 0 (a natural "use default" choice for
+	// operators) or a negative value must not reach it.
+	messageSizeLimit := int64(s.config.MessageSizeLimit)
+	if messageSizeLimit <= 0 {
+		messageSizeLimit = defaultWebTransportMessageSizeLimit
+	}
+
 	var decoder protocol.StreamCommandDecoder
 	if protoType == centrifuge.ProtocolTypeJSON {
-		decoder = protocol.GetStreamCommandDecoderLimited(protocol.TypeJSON, stream, int64(s.config.MessageSizeLimit))
+		decoder = protocol.GetStreamCommandDecoderLimited(protocol.TypeJSON, stream, messageSizeLimit)
 		defer protocol.PutStreamCommandDecoder(protocol.TypeJSON, decoder)
 	} else {
-		decoder = protocol.NewProtobufStreamCommandDecoder(stream, int64(s.config.MessageSizeLimit))
+		decoder = protocol.NewProtobufStreamCommandDecoder(stream, messageSizeLimit)
 		defer protocol.PutStreamCommandDecoder(protocol.TypeProtobuf, decoder)
 	}
 

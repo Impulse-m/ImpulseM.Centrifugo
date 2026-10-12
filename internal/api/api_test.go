@@ -2,7 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +15,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/survey"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/prometheus/client_golang/prometheus"
@@ -47,6 +53,21 @@ func (t testSurveyCaller) Connections(_ context.Context, _ *ConnectionsRequest) 
 	return nil, nil
 }
 
+func TestChannelsAPI(t *testing.T) {
+	node := nodeWithMemoryEngine()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	api := NewExecutor(node, cfgContainer, survey.NewCaller(node), ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+	resp := api.Channels(context.Background(), &ChannelsRequest{Pattern: "test*"})
+	require.Nil(t, resp.Error)
+
+	resp = api.Channels(context.Background(), &ChannelsRequest{Pattern: "["})
+	require.Equal(t, ErrorBadRequest, resp.Error)
+}
+
 func TestPublishAPI(t *testing.T) {
 	node := nodeWithMemoryEngine()
 
@@ -66,6 +87,31 @@ func TestPublishAPI(t *testing.T) {
 
 	resp = api.Publish(context.Background(), &PublishRequest{Channel: "test:test", Data: []byte("test")})
 	require.Equal(t, ErrorUnknownChannel, resp.Error)
+}
+
+// TestBatchAPINilCommand guards against a crash on a nil batch command (e.g. a
+// JSON `null` array element). In parallel mode each command runs in its own
+// goroutine, so a nil-deref would escape net/http's recover and crash the node.
+func TestBatchAPINilCommand(t *testing.T) {
+	node := nodeWithMemoryEngine()
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+
+	for _, parallel := range []bool{false, true} {
+		resp := api.Batch(context.Background(), &BatchRequest{
+			Parallel: parallel,
+			Commands: []*Command{
+				nil,
+				{Publish: &PublishRequest{Channel: "test", Data: []byte("x")}},
+			},
+		})
+		require.Len(t, resp.Replies, 2)
+		require.Equal(t, ErrorBadRequest, resp.Replies[0].Error)
+		require.Nil(t, resp.Replies[1].Error)
+	}
 }
 
 func TestBroadcastAPI(t *testing.T) {
@@ -273,6 +319,115 @@ func TestBroadcastAPI_DataFormat_Binary(t *testing.T) {
 	require.Nil(t, resp.Result.Responses[1].Error)
 }
 
+// newMixedFormatExecutor returns an executor whose channels use different
+// publication data formats: "json:*" JSON, "object:*" JSON object, "binary:*"
+// binary, and channels without a namespace the default format.
+func newMixedFormatExecutor(t testing.TB) *Executor {
+	node := nodeWithMemoryEngine()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+		{Name: "json", ChannelOptions: configtypes.ChannelOptions{PublicationDataFormat: configtypes.PublicationDataFormatJSON}},
+		{Name: "object", ChannelOptions: configtypes.ChannelOptions{PublicationDataFormat: configtypes.PublicationDataFormatJSONObject}},
+		{Name: "binary", ChannelOptions: configtypes.ChannelOptions{PublicationDataFormat: configtypes.PublicationDataFormatBinary}},
+	}
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	return NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+}
+
+// Each channel of a broadcast validates the data against its own format.
+func TestBroadcastAPI_DataFormat_PerChannel(t *testing.T) {
+	api := newMixedFormatExecutor(t)
+	channels := []string{"json:a", "object:a", "binary:a", "plain", "json:b", "object:b", "binary:b"}
+	bad := ErrorBadRequest.Code
+	tests := []struct {
+		data []byte
+		want []uint32 // Error code per channel, 0 for success.
+	}{
+		{[]byte(`{"k":"v"}`), []uint32{0, 0, 0, 0, 0, 0, 0}},
+		{[]byte(`[1]`), []uint32{0, bad, 0, 0, 0, bad, 0}},
+		{[]byte(`not json`), []uint32{bad, bad, 0, 0, bad, bad, 0}},
+		{[]byte{}, []uint32{bad, bad, 0, bad, bad, bad, 0}},
+	}
+	for _, tt := range tests {
+		resp := api.Broadcast(context.Background(), &BroadcastRequest{Channels: channels, Data: tt.data})
+		require.Nil(t, resp.Error)
+		got := make([]uint32, len(channels))
+		for i, r := range resp.Result.Responses {
+			if r.Error != nil {
+				got[i] = r.Error.Code
+			}
+		}
+		require.Equal(t, tt.want, got, "data %q", tt.data)
+	}
+}
+
+// All channels of a broadcast share the data, and validating it as JSON
+// scans the whole payload, so a broadcast validates it once per JSON format
+// rather than once per channel.
+func TestBroadcastAPI_ValidatesJSONDataOncePerFormat(t *testing.T) {
+	api := newMixedFormatExecutor(t)
+
+	var mu sync.Mutex
+	calls := map[string]int{}
+	orig := validatePublicationData
+	validatePublicationData = func(data []byte, format string) error {
+		mu.Lock()
+		calls[format]++
+		mu.Unlock()
+		return orig(data, format)
+	}
+	t.Cleanup(func() { validatePublicationData = orig })
+
+	var channels []string
+	for i := 0; i < 100; i++ {
+		n := strconv.Itoa(i)
+		channels = append(channels, "json:"+n, "object:"+n, "plain"+n)
+	}
+	resp := api.Broadcast(context.Background(), &BroadcastRequest{Channels: channels, Data: []byte(`{"k":"v"}`)})
+	require.Nil(t, resp.Error)
+	for i, r := range resp.Result.Responses {
+		require.Nil(t, r.Error, channels[i])
+	}
+	require.Equal(t, 1, calls[configtypes.PublicationDataFormatJSON])
+	require.Equal(t, 1, calls[configtypes.PublicationDataFormatJSONObject])
+}
+
+func BenchmarkBroadcastAPIDataFormat(b *testing.B) {
+	for _, format := range []string{"", configtypes.PublicationDataFormatJSON} {
+		for _, size := range []int{1 << 10, 10 << 10} {
+			name := fmt.Sprintf("format=%q/size=%dKB", format, size>>10)
+			b.Run(name, func(b *testing.B) {
+				node := nodeWithMemoryEngine()
+				b.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+				cfg := config.DefaultConfig()
+				cfg.Channel.PublicationDataFormat = format
+				cfgContainer, err := config.NewContainer(cfg)
+				require.NoError(b, err)
+				api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test"})
+
+				channels := make([]string, 1000)
+				for i := range channels {
+					channels[i] = "channel" + strconv.Itoa(i)
+				}
+				cmd := &BroadcastRequest{
+					Channels: channels,
+					Data:     []byte(`{"p":"` + strings.Repeat("x", size) + `"}`),
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					resp := api.Broadcast(context.Background(), cmd)
+					if resp.Error != nil {
+						b.Fatal(resp.Error)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestHistoryAPI(t *testing.T) {
 	node := nodeWithMemoryEngine()
 	cfg := config.DefaultConfig()
@@ -381,6 +536,11 @@ func TestUnsubscribeAPI(t *testing.T) {
 		Channel: "test",
 	})
 	require.Nil(t, resp.Error)
+
+	resp = api.Unsubscribe(context.Background(), &UnsubscribeRequest{
+		User: "test",
+	})
+	require.Equal(t, ErrorBadRequest, resp.Error)
 }
 
 func TestRefreshAPI(t *testing.T) {
@@ -419,4 +579,302 @@ func TestInfoAPI(t *testing.T) {
 	api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
 	resp := api.Info(context.Background(), &InfoRequest{})
 	require.Nil(t, resp.Error)
+}
+
+// configWithNamespace returns a DefaultConfig with a single namespace having the
+// given name and subscription_type. Used to test the subscription_type gates on
+// publish/map_*/shared_poll_* API endpoints. Fills the minimum mandatory fields
+// (map.mode for map types, global shared_poll.hmac_secret_key for shared_poll)
+// so the config passes Validate().
+func configWithNamespace(name, subscriptionType string) config.Config {
+	cfg := config.DefaultConfig()
+	chOpts := configtypes.ChannelOptions{
+		SubscriptionType: subscriptionType,
+	}
+	switch subscriptionType {
+	case "map":
+		// Persistent mode requires no key_ttl and is the simplest minimum.
+		chOpts.Map = configtypes.MapConfig{Mode: "persistent"}
+	case "map_clients", "map_users":
+		// Persistent mode is forbidden here (presence entries need TTL-based
+		// cleanup), so use ephemeral with a key_ttl.
+		chOpts.Map = configtypes.MapConfig{
+			Mode:   "ephemeral",
+			KeyTTL: configtypes.Duration(time.Minute),
+		}
+	case "shared_poll":
+		// Global HMAC secret required for any shared_poll namespace.
+		cfg.SharedPoll.HMACSecretKey = "test-secret"
+		// Default refresh proxy must have an endpoint when no explicit
+		// proxy_name is set on the namespace.
+		cfg.Channel.Proxy.SharedPollRefresh = configtypes.Proxy{
+			Endpoint: "http://127.0.0.1:0/test",
+			Timeout:  configtypes.Duration(time.Second),
+		}
+		chOpts.SharedPoll = configtypes.SharedPollConfig{Mode: "versioned"}
+	}
+	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+		{
+			Name:           name,
+			ChannelOptions: chOpts,
+		},
+	}
+	return cfg
+}
+
+// TestPublishAPI_RejectsMapAndSharedPollNamespaces ensures the stream Publish
+// endpoint rejects calls aimed at namespaces configured for map or shared poll
+// subscriptions — those have their own dedicated APIs.
+func TestPublishAPI_RejectsMapAndSharedPollNamespaces(t *testing.T) {
+	cases := []struct {
+		subscriptionType string
+	}{
+		{"map"},
+		{"map_clients"},
+		{"map_users"},
+		{"shared_poll"},
+	}
+	for _, c := range cases {
+		t.Run(c.subscriptionType, func(t *testing.T) {
+			node := nodeWithMemoryEngine()
+			defer func() { _ = node.Shutdown(context.Background()) }()
+
+			cfg := configWithNamespace("ns", c.subscriptionType)
+			cfgContainer, err := config.NewContainer(cfg)
+			require.NoError(t, err)
+
+			api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+			resp := api.Publish(context.Background(), &PublishRequest{Channel: "ns:test", Data: []byte("data")})
+			require.Equal(t, ErrorBadRequest, resp.Error)
+		})
+	}
+}
+
+// TestMapPublishAPI_RejectsNonMapNamespaces ensures map_publish rejects calls
+// against namespaces that aren't configured for map subscriptions.
+func TestMapPublishAPI_RejectsNonMapNamespaces(t *testing.T) {
+	cases := []struct {
+		subscriptionType string
+	}{
+		{""},
+		{"stream"},
+		{"shared_poll"},
+	}
+	for _, c := range cases {
+		t.Run("type="+c.subscriptionType, func(t *testing.T) {
+			node := nodeWithMemoryEngine()
+			defer func() { _ = node.Shutdown(context.Background()) }()
+
+			cfg := configWithNamespace("ns", c.subscriptionType)
+			cfgContainer, err := config.NewContainer(cfg)
+			require.NoError(t, err)
+
+			api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+			resp := api.MapPublish(context.Background(), &MapPublishRequest{
+				Channel: "ns:test",
+				Key:     "k",
+				Data:    []byte(`{"v":1}`),
+			})
+			require.Equal(t, ErrorBadRequest, resp.Error)
+		})
+	}
+}
+
+// TestMapPublishAPI_RejectsInvalidKeyMode ensures key_mode is validated against
+// the allowed set ("", "if_new", "if_exists").
+func TestMapPublishAPI_RejectsInvalidKeyMode(t *testing.T) {
+	node := nodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := configWithNamespace("ns", "map")
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+	resp := api.MapPublish(context.Background(), &MapPublishRequest{
+		Channel: "ns:test",
+		Key:     "k",
+		Data:    []byte(`{"v":1}`),
+		KeyMode: "bogus",
+	})
+	require.Equal(t, ErrorBadRequest, resp.Error)
+}
+
+// TestMapAPIs_RejectNonMapNamespaces ensures the other map API endpoints
+// (remove / read_state / read_stream / stats / clear) reject calls against
+// namespaces that aren't configured for map subscriptions, instead of leaking
+// internal errors from the broker.
+func TestMapAPIs_RejectNonMapNamespaces(t *testing.T) {
+	node := nodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := configWithNamespace("ns", "") // default = stream
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+
+	rmResp := api.MapRemove(context.Background(), &MapRemoveRequest{Channel: "ns:test", Key: "k"})
+	require.Equal(t, ErrorBadRequest, rmResp.Error)
+
+	rsResp := api.MapReadState(context.Background(), &MapReadStateRequest{Channel: "ns:test"})
+	require.Equal(t, ErrorBadRequest, rsResp.Error)
+
+	rstrResp := api.MapReadStream(context.Background(), &MapReadStreamRequest{Channel: "ns:test"})
+	require.Equal(t, ErrorBadRequest, rstrResp.Error)
+
+	stResp := api.MapStats(context.Background(), &MapStatsRequest{Channel: "ns:test"})
+	require.Equal(t, ErrorBadRequest, stResp.Error)
+
+	clResp := api.MapClear(context.Background(), &MapClearRequest{Channel: "ns:test"})
+	require.Equal(t, ErrorBadRequest, clResp.Error)
+}
+
+// TestMapAPIs_RejectUnknownChannel ensures the map API endpoints return
+// ErrorUnknownChannel instead of leaking internal errors when the channel's
+// namespace doesn't exist.
+func TestMapAPIs_RejectUnknownChannel(t *testing.T) {
+	node := nodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+
+	// "missing:test" — namespace "missing" not configured.
+	pubResp := api.MapPublish(context.Background(), &MapPublishRequest{Channel: "missing:test", Key: "k", Data: []byte(`{}`)})
+	require.Equal(t, ErrorUnknownChannel, pubResp.Error)
+
+	rmResp := api.MapRemove(context.Background(), &MapRemoveRequest{Channel: "missing:test", Key: "k"})
+	require.Equal(t, ErrorUnknownChannel, rmResp.Error)
+
+	rsResp := api.MapReadState(context.Background(), &MapReadStateRequest{Channel: "missing:test"})
+	require.Equal(t, ErrorUnknownChannel, rsResp.Error)
+
+	rstrResp := api.MapReadStream(context.Background(), &MapReadStreamRequest{Channel: "missing:test"})
+	require.Equal(t, ErrorUnknownChannel, rstrResp.Error)
+
+	stResp := api.MapStats(context.Background(), &MapStatsRequest{Channel: "missing:test"})
+	require.Equal(t, ErrorUnknownChannel, stResp.Error)
+
+	clResp := api.MapClear(context.Background(), &MapClearRequest{Channel: "missing:test"})
+	require.Equal(t, ErrorUnknownChannel, clResp.Error)
+}
+
+// nodeWithMapSupport builds a node able to actually serve map operations for
+// channels of the given config container, so that valid publishes really reach
+// the map broker instead of failing on options resolution.
+func nodeWithMapSupport(cfgContainer *config.Container) *centrifuge.Node {
+	n, err := centrifuge.New(centrifuge.Config{
+		Map: centrifuge.MapConfig{
+			GetMapChannelOptions: func(channel string) centrifuge.MapChannelOptions {
+				_, _, chOpts, ok, err := cfgContainer.ChannelOptions(channel)
+				if err != nil || !ok {
+					return centrifuge.MapChannelOptions{}
+				}
+				var mode centrifuge.MapMode
+				switch chOpts.Map.Mode {
+				case "ephemeral":
+					mode = centrifuge.MapModeEphemeral
+				case "recoverable":
+					mode = centrifuge.MapModeRecoverable
+				case "persistent":
+					mode = centrifuge.MapModePersistent
+				}
+				return centrifuge.MapChannelOptions{Mode: mode, KeyTTL: chOpts.Map.KeyTTL.ToDuration()}
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	if err = n.Run(); err != nil {
+		panic(err)
+	}
+	return n
+}
+
+// TestMapPublishAPI_DataFormat ensures map_publish applies the namespace
+// publication_data_format policy, same as the stream Publish endpoint does.
+func TestMapPublishAPI_DataFormat(t *testing.T) {
+	cases := []struct {
+		format     string
+		data       []byte
+		b64Data    string
+		wantReject bool
+	}{
+		{configtypes.PublicationDataFormatJSONObject, []byte(`{"v":1}`), "", false},
+		{configtypes.PublicationDataFormatJSONObject, []byte(`[1,2]`), "", true},
+		{configtypes.PublicationDataFormatJSONObject, []byte(`not-json-object`), "", true},
+		{configtypes.PublicationDataFormatJSON, []byte(`[1,2]`), "", false},
+		{configtypes.PublicationDataFormatJSON, []byte(`nope`), "", true},
+		{configtypes.PublicationDataFormatBinary, nil, "", false},
+		{"", []byte(`whatever`), "", false},
+		{"", nil, "", true}, // default format rejects empty data
+		// b64data must be validated after decoding, not before.
+		{configtypes.PublicationDataFormatJSONObject, nil, base64.StdEncoding.EncodeToString([]byte(`{"v":1}`)), false},
+		{configtypes.PublicationDataFormatJSONObject, nil, base64.StdEncoding.EncodeToString([]byte(`nope`)), true},
+	}
+	for i, c := range cases {
+		t.Run(fmt.Sprintf("%d_format=%q", i, c.format), func(t *testing.T) {
+			cfg := configWithNamespace("ns", "map")
+			cfg.Channel.Namespaces[0].PublicationDataFormat = c.format
+			cfgContainer, err := config.NewContainer(cfg)
+			require.NoError(t, err)
+			node := nodeWithMapSupport(cfgContainer)
+			defer func() { _ = node.Shutdown(context.Background()) }()
+
+			api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test"})
+			resp := api.MapPublish(context.Background(), &MapPublishRequest{
+				Channel: "ns:test", Key: "k", Data: c.data, B64Data: c.b64Data,
+			})
+			if c.wantReject {
+				require.Equal(t, ErrorBadRequest, resp.Error)
+			} else {
+				require.Nil(t, resp.Error)
+			}
+		})
+	}
+}
+
+// TestSharedPollPublishAPI_DataFormat ensures shared_poll_publish applies the
+// namespace publication_data_format policy.
+func TestSharedPollPublishAPI_DataFormat(t *testing.T) {
+	cases := []struct {
+		format     string
+		data       []byte
+		wantReject bool
+	}{
+		{configtypes.PublicationDataFormatJSONObject, []byte(`{"v":1}`), false},
+		{configtypes.PublicationDataFormatJSONObject, []byte(`nope`), true},
+		{configtypes.PublicationDataFormatJSON, []byte(`nope`), true},
+		{configtypes.PublicationDataFormatBinary, nil, false},
+		{"", nil, true}, // default format rejects empty data
+	}
+	for i, c := range cases {
+		t.Run(fmt.Sprintf("%d_format=%q", i, c.format), func(t *testing.T) {
+			cfg := configWithNamespace("ns", "shared_poll")
+			cfg.Channel.Namespaces[0].PublicationDataFormat = c.format
+			cfg.Channel.Namespaces[0].SharedPoll.PublishEnabled = true
+			cfgContainer, err := config.NewContainer(cfg)
+			require.NoError(t, err)
+			node := nodeWithMemoryEngine()
+			defer func() { _ = node.Shutdown(context.Background()) }()
+
+			api := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test"})
+			resp := api.SharedPollPublish(context.Background(), &SharedPollPublishRequest{
+				Channel: "ns:test", Key: "k", Version: 1, Data: c.data,
+			})
+			if c.wantReject {
+				require.Equal(t, ErrorBadRequest, resp.Error)
+			} else {
+				// The test node has no shared poll manager, so a valid payload
+				// gets past validation and fails later — the point is that it is
+				// not rejected as a bad request.
+				require.NotEqual(t, ErrorBadRequest, resp.Error)
+			}
+		})
+	}
 }

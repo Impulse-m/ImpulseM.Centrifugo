@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +65,47 @@ func TestConsumingAccessRevokeRateLimitRetries(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, accessrevoke.Allowed, sessionVerdict(store, "session", 500))
 	require.Len(t, *events, 1)
+}
+
+func TestDispatcherErrorsAfterNodeShutdown(t *testing.T) {
+	n := nodeWithMemoryEngine()
+
+	cfg := config.DefaultConfig()
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	dispatcher := NewDispatcher(NewConsumingHandler(n, NewExecutor(n, cfgContainer, nil, ExecutorConfig{
+		Protocol: "consumer",
+	}), ConsumingHandlerConfig{}))
+
+	const payload = `{"channel": "test", "data": {}}`
+
+	// While node is running message must be dispatched successfully.
+	require.NoError(t, dispatcher.DispatchCommand(context.Background(), "publish", []byte(payload)))
+
+	require.NoError(t, n.Shutdown(context.Background()))
+
+	// Memory broker keeps accepting publications even after Node shutdown – without
+	// an explicit check a consumer would acknowledge a message which was never and
+	// will never be delivered.
+	err = dispatcher.DispatchCommand(context.Background(), "publish", []byte(payload))
+	require.ErrorIs(t, err, ErrShutdown)
+	// Consumers must stop processing instead of retrying until shutdown timeout.
+	require.ErrorIs(t, err, context.Canceled)
+
+	err = dispatcher.DispatchPublication(context.Background(), []string{"test"}, ConsumedPublication{
+		Data: []byte(`{}`),
+	})
+	require.ErrorIs(t, err, ErrShutdown)
+
+	// Typed entry points must behave the same way.
+	err = dispatcher.Publish(context.Background(), &apiproto.PublishRequest{
+		Channel: "test", Data: []byte(`{}`),
+	})
+	require.ErrorIs(t, err, ErrShutdown)
+
+	err = dispatcher.Broadcast(context.Background(), &apiproto.BroadcastRequest{
+		Channels: []string{"test"}, Data: []byte(`{}`),
+	})
+	require.ErrorIs(t, err, ErrShutdown)
 }

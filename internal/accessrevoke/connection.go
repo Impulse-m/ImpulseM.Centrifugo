@@ -9,7 +9,7 @@ import (
 )
 
 // OptionsFromConfig returns access revocation checks enabled in config.
-func OptionsFromConfig(cfg config.Config) CheckOptions {
+func OptionsFromConfig(cfg *config.Config) CheckOptions {
 	return CheckOptions{
 		Block:      cfg.UserBlock.Enabled,
 		Session:    cfg.TokenRevoke.Enabled,

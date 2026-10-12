@@ -5,6 +5,7 @@ package consuming
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ func TestNatsJetStreamConsumer(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			testNatsJetStreamConsumer(t, tc.useExistingConsumer)
 		})
 	}
@@ -120,4 +122,99 @@ func testNatsJetStreamConsumer(t *testing.T, useExistingConsumer bool) {
 	waitAnyCh(t, []chan struct{}{done1, done2}, 5*time.Second, "timeout waiting for message processing")
 	time.Sleep(500 * time.Millisecond) // Give a short delay in case both try to ack
 	require.Equal(t, int64(1), receivedNum.Load(), "only one consumer should have received the message")
+}
+
+// TestNatsJetStreamConsumer_RecreateOnConsumerDeleted verifies that the consumer
+// recovers without a process restart when its JetStream consumer is lost on the
+// server side – ex. the stream is deleted and re-created by an operator, or an
+// in-memory stream is lost after NATS restart.
+func TestNatsJetStreamConsumer_RecreateOnConsumerDeleted(t *testing.T) {
+	t.Parallel()
+
+	url := "nats://localhost:4222"
+	subject := "test.recreate." + uuid.NewString()
+	durableConsumerName := "test-durable-" + uuid.NewString()
+	streamName := "TEST_STREAM_" + uuid.NewString()
+
+	nc, err := nats.Connect(url)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+
+	addStream := func() {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     streamName,
+			Subjects: []string{subject},
+			Storage:  nats.MemoryStorage,
+		})
+		require.NoError(t, err)
+	}
+	addStream()
+
+	var receivedNum atomic.Int64
+	dispatcher := &MockDispatcher{
+		onDispatchCommand: func(ctx context.Context, method string, data []byte) error {
+			receivedNum.Add(1)
+			return nil
+		},
+	}
+
+	cfg := NatsJetStreamConsumerConfig{
+		URL:                 url,
+		StreamName:          streamName,
+		Subjects:            []string{subject},
+		DurableConsumerName: durableConsumerName,
+		DeliverPolicy:       "new",
+		MethodHeader:        "test-method",
+	}
+
+	var logBuf syncBuffer
+	consumer, err := NewNatsJetStreamConsumer(cfg, dispatcher, testCommonWithLogBuf(&logBuf))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("consumer error: %v", err)
+		}
+	}()
+
+	publishAndWaitReceived := func(stage string) {
+		deadline := time.Now().Add(30 * time.Second)
+		before := receivedNum.Load()
+		for time.Now().Before(deadline) {
+			msg := nats.NewMsg(subject)
+			msg.Data = []byte("hello")
+			msg.Header.Set("test-method", "publish")
+			_, _ = js.PublishMsg(msg)
+			// Re-publish periodically: a message published before the
+			// consumer is (re-)created is not delivered with DeliverPolicy new.
+			publishedAt := time.Now()
+			for time.Since(publishedAt) < 300*time.Millisecond {
+				if receivedNum.Load() > before {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		t.Fatalf("timeout waiting for message processing: %s", stage)
+	}
+
+	// Sanity check: consumer works initially.
+	publishAndWaitReceived("initial consume")
+
+	// Delete the stream: the durable consumer is destroyed together with it.
+	require.NoError(t, js.DeleteStream(streamName))
+	// Wait for the consumer to observe the loss.
+	require.Eventually(t, func() bool {
+		return strings.Contains(logBuf.String(), "consumer unavailable, triggering consumer recreation")
+	}, 30*time.Second, 10*time.Millisecond, "consumer did not observe the stream deletion")
+
+	// Re-create the stream (as an operator like NACK would do). The consumer
+	// must re-create its durable and resume consuming without a restart.
+	addStream()
+	publishAndWaitReceived("consume after stream re-creation")
 }

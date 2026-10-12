@@ -1,19 +1,21 @@
 VERSION := $(shell git describe --tags | sed -e 's/^v//g' | awk -F "-" '{print $$1}')
 ITERATION := $(shell git describe --tags --long | awk -F "-" '{print $$2}')
 TESTFOLDERS := $(shell go list ./... | grep -v /misc/)
+# Packages to test, all by default. To run a part of them like CI does:
+#   make test-integration TEST_PACKAGES="$(bash misc/scripts/test_packages.sh integration)"
+TEST_PACKAGES ?= $(TESTFOLDERS)
 
 all: test
 
 test:
-	go test -count=1 -v $(TESTFOLDERS) -cover -race
+	go test -count=1 -v $(strip $(TEST_PACKAGES)) -cover -race
 
 test-integration:
-	go test -count=1 -v $(TESTFOLDERS) -cover -race --tags=integration
+	go test -count=1 -v $(strip $(TEST_PACKAGES)) -cover -race --tags=integration
 
 generate:
 	bash misc/scripts/generate.sh
 	go generate ./...
-	go run internal/cli/configdoc/main.go
 
 web:
 	./misc/scripts/update_web.sh
@@ -84,3 +86,4 @@ vuln:
 
 build:
 	CGO_ENABLED=0 go build
+

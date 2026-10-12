@@ -19,6 +19,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/cristalhq/jwt/v5"
 	"github.com/rakutentech/jwk-go/okp"
 	"github.com/rs/zerolog/log"
@@ -215,6 +216,8 @@ type SubscribeOptions struct {
 	Base64Data string `json:"b64data,omitempty"`
 	// Override channel options can contain channel options overrides.
 	Override *SubscribeOptionOverride `json:"override,omitempty"`
+	// ServerTagsFilter is a publication tags filter set by the backend for the subscription.
+	ServerTagsFilter *protocol.FilterNode `json:"server_tags_filter,omitempty"`
 }
 
 type ConnectTokenClaims struct {
@@ -634,6 +637,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 				HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
 				AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
 				AllowTagsFilter:   chOpts.AllowTagsFilter,
+				ServerTagsFilter:  v.ServerTagsFilter,
 			}
 		}
 	} else if len(claims.Channels) > 0 {
@@ -816,6 +820,7 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 			AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
 			AllowTagsFilter:   chOpts.AllowTagsFilter,
 			Data:              data,
+			ServerTagsFilter:  claims.ServerTagsFilter,
 		},
 	}
 	if verifier.userIDClaim != "" {

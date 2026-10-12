@@ -144,6 +144,8 @@ func (h *Handler) Setup() error {
 	cfg := h.cfgContainer.Config()
 	concurrency := cfg.Client.Concurrency
 
+	h.setupRateLimit(cfg.Client.RateLimit)
+
 	h.node.OnConnect(func(client *centrifuge.Client) {
 		disconnect, revoked := h.recheckConnection(client)
 		if revoked {

@@ -19,8 +19,15 @@ type ClientLimiter struct {
 // transport reader goroutine, error counters are atomic since errors may be processed
 // concurrently.
 type ConnState struct {
-	slots    []int64
-	errorTAT []atomic.Int64
+	slots          []int64
+	errorTAT       []atomic.Int64
+	errorExhausted atomic.Bool
+}
+
+// MarkErrorExhausted marks the connection as over its error limit. It returns true only for the
+// first call, so the caller disconnects and counts the connection once.
+func (st *ConnState) MarkErrorExhausted() bool {
+	return st.errorExhausted.CompareAndSwap(false, true)
 }
 
 // NewClientLimiter compiles client_command and client_error limits. Nothing is compiled for

@@ -1,6 +1,8 @@
 package accessrevoke
 
 import (
+	"sync"
+
 	"github.com/centrifugal/centrifuge"
 )
 
@@ -11,9 +13,10 @@ var DisconnectUserBlocked = centrifuge.Disconnect{
 	Reason: "user blocked",
 }
 
-// Hub finds local connections of a user. Satisfied by *centrifuge.Hub.
+// Hub finds local connections. Satisfied by *centrifuge.Hub.
 type Hub interface {
 	UserConnections(userID string) map[string]*centrifuge.Client
+	Connections() map[string]*centrifuge.Client
 }
 
 // Revoker applies revocation events: it updates the Store and then disconnects matching local
@@ -23,15 +26,26 @@ type Revoker struct {
 	store *Store
 	hub   Hub
 	queue *DisconnectQueue
+	// sweep checks all local connections. It is a field so tests can observe and block sweeps.
+	sweep func()
+
+	sweepMu      sync.Mutex
+	sweeping     bool
+	sweepPending bool
 }
 
 // NewRevoker creates a Revoker.
 func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
-	return &Revoker{
+	revoker := &Revoker{
 		store: store,
 		hub:   hub,
 		queue: queue,
 	}
+	revoker.sweep = func() {
+		// Session is the only revocation kind changed by revoke_token, so only it is checked.
+		SweepConnections(hub, store, queue, CheckOptions{Session: true})
+	}
+	return revoker
 }
 
 // Store returns the Store the Revoker applies events to.
@@ -57,14 +71,16 @@ func (r *Revoker) UnblockUser(userID string) error {
 }
 
 // RevokeSession revokes the session and disconnects local connections of userID which have this
-// session with centrifuge.DisconnectExpired. Empty userID gives no live disconnects: only connect
-// and refresh checks apply then.
+// session with centrifuge.DisconnectExpired. Empty userID runs a sweep of all local connections
+// in the background, which disconnects every connection with this session. The sweep is O(local
+// connections), so passing userID is strongly preferred at scale.
 func (r *Revoker) RevokeSession(userID string, sessionID string, revokedAt int64, expireAt int64) error {
 	err := r.store.RevokeSession(sessionID, revokedAt, expireAt)
 	if err != nil {
 		return err
 	}
 	if userID == "" {
+		r.requestSweep()
 		return nil
 	}
 	sessionKey, _ := Key(sessionID)
@@ -108,5 +124,35 @@ func (r *Revoker) disconnectMatching(
 			continue
 		}
 		r.queue.Enqueue(client, disconnect, reason)
+	}
+}
+
+// requestSweep starts a sweep in the background. If a sweep is already running, it marks one more
+// sweep to run after the current one, so revocations applied during the run are not missed, and
+// no more than one sweep is pending at a time.
+func (r *Revoker) requestSweep() {
+	r.sweepMu.Lock()
+	if r.sweeping {
+		r.sweepPending = true
+		r.sweepMu.Unlock()
+		return
+	}
+	r.sweeping = true
+	r.sweepMu.Unlock()
+	go r.runSweeps()
+}
+
+// runSweeps runs sweeps until no sweep is pending.
+func (r *Revoker) runSweeps() {
+	for {
+		r.sweep()
+		r.sweepMu.Lock()
+		if !r.sweepPending {
+			r.sweeping = false
+			r.sweepMu.Unlock()
+			return
+		}
+		r.sweepPending = false
+		r.sweepMu.Unlock()
 	}
 }

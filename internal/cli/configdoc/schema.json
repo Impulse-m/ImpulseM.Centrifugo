@@ -5066,6 +5066,16 @@
             "is_complex_type": false
           },
           {
+            "field": "channel.without_namespace.shared_position_sync",
+            "name": "shared_position_sync",
+            "go_name": "SharedPositionSync",
+            "level": 3,
+            "type": "bool",
+            "default": "",
+            "comment": "SharedPositionSync delegates client position checks for channel to a shared channel medium on the node.\nRequires positioning or recovery. Requires client.channel_position_check_delay to be greater than zero.",
+            "is_complex_type": false
+          },
+          {
             "field": "channel.without_namespace.force_recovery_mode",
             "name": "force_recovery_mode",
             "go_name": "ForceRecoveryMode",
@@ -5455,6 +5465,16 @@
             "type": "bool",
             "default": "",
             "comment": "AllowRecovery allows recovery when client asks about it.",
+            "is_complex_type": false
+          },
+          {
+            "field": "channel.namespaces[].shared_position_sync",
+            "name": "shared_position_sync",
+            "go_name": "SharedPositionSync",
+            "level": 3,
+            "type": "bool",
+            "default": "",
+            "comment": "SharedPositionSync delegates client position checks for channel to a shared channel medium on the node.\nRequires positioning or recovery. Requires client.channel_position_check_delay to be greater than zero.",
             "is_complex_type": false
           },
           {

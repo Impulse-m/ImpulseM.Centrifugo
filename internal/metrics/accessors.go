@@ -36,4 +36,13 @@ var (
 	AccessRevokeDisconnectsTotal        *prometheus.CounterVec
 	AccessRevokeDisconnectsDroppedTotal prometheus.Counter
 	AccessRevokeStoreSize               *prometheus.GaugeVec
+
+	AccessRevokeSourceReady              prometheus.Gauge
+	AccessRevokeSourceLagging            prometheus.Gauge
+	AccessRevokeSourceLagRecords         prometheus.Gauge
+	AccessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
+	AccessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
+	AccessRevokeSourceEventsBeyondWindow prometheus.Counter
+	AccessRevokeSourceCatchUpDuration    prometheus.Gauge
+	AccessRevokeSourceFailOpenTotal      prometheus.Counter
 )

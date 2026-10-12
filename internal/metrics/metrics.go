@@ -48,6 +48,16 @@ type Registry struct {
 	accessRevokeDisconnectsTotal        *prometheus.CounterVec
 	accessRevokeDisconnectsDroppedTotal prometheus.Counter
 	accessRevokeStoreSize               *prometheus.GaugeVec
+
+	// Access revocation source metrics
+	accessRevokeSourceReady              prometheus.Gauge
+	accessRevokeSourceLagging            prometheus.Gauge
+	accessRevokeSourceLagRecords         prometheus.Gauge
+	accessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
+	accessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
+	accessRevokeSourceEventsBeyondWindow prometheus.Counter
+	accessRevokeSourceCatchUpDuration    prometheus.Gauge
+	accessRevokeSourceFailOpenTotal      prometheus.Counter
 }
 
 // Init initializes the metrics registry with the provided configuration.
@@ -81,6 +91,15 @@ func Init(cfg Config) error {
 	AccessRevokeDisconnectsTotal = reg.accessRevokeDisconnectsTotal
 	AccessRevokeDisconnectsDroppedTotal = reg.accessRevokeDisconnectsDroppedTotal
 	AccessRevokeStoreSize = reg.accessRevokeStoreSize
+
+	AccessRevokeSourceReady = reg.accessRevokeSourceReady
+	AccessRevokeSourceLagging = reg.accessRevokeSourceLagging
+	AccessRevokeSourceLagRecords = reg.accessRevokeSourceLagRecords
+	AccessRevokeSourceEventsAppliedTotal = reg.accessRevokeSourceEventsAppliedTotal
+	AccessRevokeSourceEventsSkippedTotal = reg.accessRevokeSourceEventsSkippedTotal
+	AccessRevokeSourceEventsBeyondWindow = reg.accessRevokeSourceEventsBeyondWindow
+	AccessRevokeSourceCatchUpDuration = reg.accessRevokeSourceCatchUpDuration
+	AccessRevokeSourceFailOpenTotal = reg.accessRevokeSourceFailOpenTotal
 
 	return nil
 }
@@ -243,6 +262,70 @@ func newRegistry(cfg Config) (*Registry, error) {
 		ConstLabels: constLabels,
 	}, []string{"kind"})
 
+	m.accessRevokeSourceReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_ready",
+		Help:        "1 when the access revocation source is ready (caught up or failed open), 0 otherwise.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeSourceLagging = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_lagging",
+		Help:        "1 when the access revocation source is lagging behind, 0 otherwise.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeSourceLagRecords = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_lag_records",
+		Help:        "Number of records between the consumed offsets and high watermarks of the access revocation source.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeSourceEventsAppliedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_events_applied_total",
+		Help:        "Number of access revocation events applied from the source by kind.",
+		ConstLabels: constLabels,
+	}, []string{"kind"})
+
+	m.accessRevokeSourceEventsSkippedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_events_skipped_total",
+		Help:        "Number of access revocation events skipped by the source by reason.",
+		ConstLabels: constLabels,
+	}, []string{"reason"})
+
+	m.accessRevokeSourceEventsBeyondWindow = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_events_beyond_window_total",
+		Help:        "Number of applied access revocation events which expire later than the source window allows.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeSourceCatchUpDuration = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_catch_up_duration_seconds",
+		Help:        "Time in seconds from start until the access revocation source caught up for the first time.",
+		ConstLabels: constLabels,
+	})
+
+	m.accessRevokeSourceFailOpenTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "source_fail_open_total",
+		Help:        "Number of times the node became ready before catching up with the access revocation source, after startup timeout.",
+		ConstLabels: constLabels,
+	})
+
 	// Register all metrics
 	var alreadyRegistered prometheus.AlreadyRegisteredError
 
@@ -263,6 +346,14 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
 		m.accessRevokeStoreSize,
+		m.accessRevokeSourceReady,
+		m.accessRevokeSourceLagging,
+		m.accessRevokeSourceLagRecords,
+		m.accessRevokeSourceEventsAppliedTotal,
+		m.accessRevokeSourceEventsSkippedTotal,
+		m.accessRevokeSourceEventsBeyondWindow,
+		m.accessRevokeSourceCatchUpDuration,
+		m.accessRevokeSourceFailOpenTotal,
 	}
 
 	for _, collector := range collectors {

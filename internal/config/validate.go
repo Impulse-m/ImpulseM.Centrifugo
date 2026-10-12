@@ -170,6 +170,252 @@ func (c Config) Validate() error {
 		return fmt.Errorf("in uni_http_stream.connect_code_to_http_status.transforms: %v", err)
 	}
 
+	if err := validateRateLimit(c); err != nil {
+		return fmt.Errorf("in client.rate_limit: %v", err)
+	}
+
+	return nil
+}
+
+// rateLimitBucketsEntry is a named non-channel operation buckets container.
+type rateLimitBucketsEntry struct {
+	name    string
+	buckets *configtypes.RateLimitBuckets
+}
+
+// rateLimitChannelEntry is a named channel operation buckets container.
+type rateLimitChannelEntry struct {
+	name    string
+	buckets *configtypes.RateLimitChannelBuckets
+}
+
+// rateLimitSection is a view over a rate limit section used for validation. Fields which
+// are not supported by a section are left nil or empty.
+type rateLimitSection struct {
+	name        string
+	total       *configtypes.RateLimitBuckets
+	defaults    *configtypes.RateLimitBuckets
+	plain       []rateLimitBucketsEntry
+	channels    []rateLimitChannelEntry
+	unsupported []rateLimitChannelEntry
+	rpc         *configtypes.RateLimitRPCBuckets
+}
+
+func validateRateLimit(c Config) error {
+	nsNames := make([]string, 0, len(c.Channel.Namespaces))
+	for _, ns := range c.Channel.Namespaces {
+		nsNames = append(nsNames, ns.Name)
+	}
+
+	rl := &c.Client.RateLimit
+	cc := &rl.ClientCommand
+	ccSection := rateLimitSection{
+		name:     "client_command",
+		total:    &cc.Total,
+		defaults: &cc.Default,
+		plain:    []rateLimitBucketsEntry{{name: "refresh", buckets: &cc.Refresh}},
+		channels: []rateLimitChannelEntry{
+			{name: "subscribe", buckets: &cc.Subscribe},
+			{name: "unsubscribe", buckets: &cc.Unsubscribe},
+			{name: "publish", buckets: &cc.Publish},
+			{name: "history", buckets: &cc.History},
+			{name: "presence", buckets: &cc.Presence},
+			{name: "presence_stats", buckets: &cc.PresenceStats},
+			{name: "sub_refresh", buckets: &cc.SubRefresh},
+		},
+		unsupported: []rateLimitChannelEntry{
+			{name: "map_publish", buckets: &cc.MapPublish},
+			{name: "map_remove", buckets: &cc.MapRemove},
+			{name: "track", buckets: &cc.Track},
+			{name: "untrack", buckets: &cc.Untrack},
+		},
+		rpc: &cc.RPC,
+	}
+	if err := validateRateLimitSection(ccSection, nsNames); err != nil {
+		return err
+	}
+
+	uc := &rl.UserCommand
+	ucSection := rateLimitSection{
+		name:     "user_command",
+		total:    &uc.Total,
+		defaults: &uc.Default,
+		plain: []rateLimitBucketsEntry{
+			{name: "connect", buckets: &uc.Connect},
+			{name: "refresh", buckets: &uc.Refresh},
+		},
+		channels: []rateLimitChannelEntry{
+			{name: "subscribe", buckets: &uc.Subscribe},
+			{name: "unsubscribe", buckets: &uc.Unsubscribe},
+			{name: "publish", buckets: &uc.Publish},
+			{name: "history", buckets: &uc.History},
+			{name: "presence", buckets: &uc.Presence},
+			{name: "presence_stats", buckets: &uc.PresenceStats},
+			{name: "sub_refresh", buckets: &uc.SubRefresh},
+		},
+		unsupported: []rateLimitChannelEntry{
+			{name: "map_publish", buckets: &uc.MapPublish},
+			{name: "map_remove", buckets: &uc.MapRemove},
+			{name: "track", buckets: &uc.Track},
+			{name: "untrack", buckets: &uc.Untrack},
+		},
+		rpc: &uc.RPC,
+	}
+	if err := validateRateLimitSection(ucSection, nsNames); err != nil {
+		return err
+	}
+
+	rc := &rl.RedisUserCommand
+	rcSection := rateLimitSection{
+		name:     "redis_user_command",
+		total:    &rc.Total,
+		defaults: &rc.Default,
+		plain: []rateLimitBucketsEntry{
+			{name: "connect", buckets: &rc.Connect},
+			{name: "refresh", buckets: &rc.Refresh},
+		},
+		channels: []rateLimitChannelEntry{
+			{name: "subscribe", buckets: &rc.Subscribe},
+			{name: "unsubscribe", buckets: &rc.Unsubscribe},
+			{name: "publish", buckets: &rc.Publish},
+			{name: "history", buckets: &rc.History},
+			{name: "presence", buckets: &rc.Presence},
+			{name: "presence_stats", buckets: &rc.PresenceStats},
+			{name: "sub_refresh", buckets: &rc.SubRefresh},
+		},
+		unsupported: []rateLimitChannelEntry{
+			{name: "map_publish", buckets: &rc.MapPublish},
+			{name: "map_remove", buckets: &rc.MapRemove},
+			{name: "track", buckets: &rc.Track},
+			{name: "untrack", buckets: &rc.Untrack},
+		},
+		rpc: &rc.RPC,
+	}
+	if err := validateRateLimitSection(rcSection, nsNames); err != nil {
+		return err
+	}
+	if rc.Total.Enabled || len(rc.Total.Buckets) > 0 {
+		return fmt.Errorf("redis_user_command.total is not supported, use per-operation buckets instead")
+	}
+	if rc.Redis.ReuseFromEngine && rc.Enabled && c.Engine.Type != "redis" {
+		return fmt.Errorf("redis_user_command.redis.reuse_from_engine requires engine.type to be redis")
+	}
+
+	if err := validateRateLimitSection(rateLimitSection{
+		name:  "client_error",
+		total: &rl.ClientError.Total,
+	}, nsNames); err != nil {
+		return err
+	}
+
+	if uc.Enabled {
+		return fmt.Errorf("user_command: not implemented yet")
+	}
+	if rc.Enabled {
+		return fmt.Errorf("redis_user_command: not implemented yet")
+	}
+	return nil
+}
+
+func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
+	if s.total != nil {
+		if err := validateRateLimitBuckets(s.total.Enabled, s.total.Buckets, true); err != nil {
+			return fmt.Errorf("%s.total: %v", s.name, err)
+		}
+	}
+	if s.defaults != nil {
+		if err := validateRateLimitBuckets(s.defaults.Enabled, s.defaults.Buckets, true); err != nil {
+			return fmt.Errorf("%s.default: %v", s.name, err)
+		}
+	}
+	for _, entry := range s.plain {
+		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Buckets, true); err != nil {
+			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
+		}
+	}
+	for _, entry := range s.channels {
+		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Buckets, true); err != nil {
+			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
+		}
+		if err := validateRateLimitNamespaceOverrides(entry.buckets.NamespaceOverrides, nsNames); err != nil {
+			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
+		}
+	}
+	for _, entry := range s.unsupported {
+		if entry.buckets.Enabled || len(entry.buckets.Buckets) > 0 || len(entry.buckets.NamespaceOverrides) > 0 {
+			return fmt.Errorf("%s.%s: not supported in this build", s.name, entry.name)
+		}
+	}
+	if s.rpc != nil {
+		if err := validateRateLimitBuckets(s.rpc.Enabled, s.rpc.Buckets, true); err != nil {
+			return fmt.Errorf("%s.rpc: %v", s.name, err)
+		}
+		if len(s.rpc.MethodOverride) > 0 && len(s.rpc.MethodOverrides) > 0 {
+			return fmt.Errorf("%s.rpc: method_override and method_overrides cannot be used together", s.name)
+		}
+		if err := validateRateLimitMethodOverrides(s.rpc.MethodOverrides); err != nil {
+			return fmt.Errorf("%s.rpc: %v", s.name, err)
+		}
+		for method, override := range s.rpc.MethodOverride {
+			if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+				return fmt.Errorf("%s.rpc.method_override.%s: %v", s.name, method, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateRateLimitBuckets validates bucket values of an enabled container. An enabled container
+// without buckets is an error when requireBuckets is set.
+func validateRateLimitBuckets(enabled bool, buckets configtypes.RateLimitBucketList, requireBuckets bool) error {
+	if !enabled {
+		return nil
+	}
+	if requireBuckets && len(buckets) == 0 {
+		return fmt.Errorf("enabled buckets must not be empty")
+	}
+	for _, bucket := range buckets {
+		if bucket.Interval.ToDuration() <= 0 {
+			return fmt.Errorf("bucket interval must be greater than 0")
+		}
+		if bucket.Rate <= 0 {
+			return fmt.Errorf("bucket rate must be greater than 0")
+		}
+		if bucket.Interval.ToDuration() < time.Duration(bucket.Rate) {
+			return fmt.Errorf("bucket interval %s is too small for rate %d", bucket.Interval.ToDuration(), bucket.Rate)
+		}
+	}
+	return nil
+}
+
+func validateRateLimitNamespaceOverrides(overrides configtypes.RateLimitNamespaceOverrides, nsNames []string) error {
+	seen := make([]string, 0, len(overrides))
+	for _, override := range overrides {
+		if slices.Contains(seen, override.NamespaceName) {
+			return fmt.Errorf("duplicate namespace_name in namespace_overrides: %s", override.NamespaceName)
+		}
+		if !slices.Contains(nsNames, override.NamespaceName) {
+			return fmt.Errorf("namespace_name %s in namespace_overrides not found in channel.namespaces", override.NamespaceName)
+		}
+		if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+			return fmt.Errorf("namespace override %s: %v", override.NamespaceName, err)
+		}
+		seen = append(seen, override.NamespaceName)
+	}
+	return nil
+}
+
+func validateRateLimitMethodOverrides(overrides configtypes.RateLimitMethodOverrides) error {
+	seen := make([]string, 0, len(overrides))
+	for _, override := range overrides {
+		if slices.Contains(seen, override.Method) {
+			return fmt.Errorf("duplicate method in method_overrides: %s", override.Method)
+		}
+		if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+			return fmt.Errorf("method override %s: %v", override.Method, err)
+		}
+		seen = append(seen, override.Method)
+	}
 	return nil
 }
 

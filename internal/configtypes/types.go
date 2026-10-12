@@ -551,6 +551,8 @@ type Client struct {
 	// ConnectCodeToUnidirectionalDisconnect is a configuration for a feature to transform connect error codes to the disconnect code
 	// for unidirectional transports.
 	ConnectCodeToUnidirectionalDisconnect ConnectCodeToUnidirectionalDisconnect `mapstructure:"connect_code_to_unidirectional_disconnect" json:"connect_code_to_unidirectional_disconnect" envconfig:"connect_code_to_unidirectional_disconnect" yaml:"connect_code_to_unidirectional_disconnect" toml:"connect_code_to_unidirectional_disconnect"`
+	// RateLimit is a configuration of operation rate limits (PRO feature docs describe the semantics).
+	RateLimit RateLimit `mapstructure:"rate_limit" json:"rate_limit" envconfig:"rate_limit" yaml:"rate_limit" toml:"rate_limit"`
 }
 
 type UniConnectCodeToDisconnectTransforms []UniConnectCodeToDisconnectTransform

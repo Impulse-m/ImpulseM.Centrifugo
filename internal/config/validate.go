@@ -307,6 +307,9 @@ func validateRateLimit(c Config) error {
 	}, nsNames); err != nil {
 		return err
 	}
+	if rl.ClientError.Enabled && !rl.ClientError.Total.Enabled {
+		return fmt.Errorf("client_error: enabled without total bucket has no effect, enable client_error.total")
+	}
 
 	if uc.Enabled {
 		return fmt.Errorf("user_command: not implemented yet")

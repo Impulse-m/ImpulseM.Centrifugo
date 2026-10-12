@@ -112,24 +112,19 @@ func (a *slotAllocator) baseScope(enabled bool, buckets configtypes.RateLimitBuc
 	return def
 }
 
-// overrideScope returns buckets of an enabled override. An override without buckets falls back to default.
-func (a *slotAllocator) overrideScope(buckets configtypes.RateLimitBucketList, def *scope) *scope {
-	if len(buckets) == 0 {
-		return def
-	}
-	return a.compileScope(true, buckets)
-}
-
+// channelLimit compiles a channel operation with its namespace overrides. An override counts only
+// when it is enabled and has buckets: per the docs an enabled override without buckets is treated
+// the same as no override, so the base operation buckets apply, or default when there are none.
 func (a *slotAllocator) channelLimit(cfg configtypes.RateLimitChannelBuckets, def *scope) opLimit {
 	limit := opLimit{base: a.baseScope(cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.NamespaceOverrides {
-		if !override.Enabled {
+		if !override.Enabled || len(override.Buckets) == 0 {
 			continue
 		}
 		if limit.overrides == nil {
 			limit.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.NamespaceName] = a.overrideScope(override.Buckets, def)
+		limit.overrides[override.NamespaceName] = a.compileScope(true, override.Buckets)
 	}
 	return limit
 }
@@ -137,13 +132,13 @@ func (a *slotAllocator) channelLimit(cfg configtypes.RateLimitChannelBuckets, de
 func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope) opLimit {
 	limit := opLimit{base: a.baseScope(cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.MethodOverrides {
-		if !override.Enabled {
+		if !override.Enabled || len(override.Buckets) == 0 {
 			continue
 		}
 		if limit.overrides == nil {
 			limit.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.Method] = a.overrideScope(override.Buckets, def)
+		limit.overrides[override.Method] = a.compileScope(true, override.Buckets)
 	}
 	return limit
 }

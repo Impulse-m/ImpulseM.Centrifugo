@@ -151,6 +151,13 @@ func TestValidateRateLimit(t *testing.T) {
 			wantErr: "client_error.total: enabled buckets must not be empty",
 		},
 		{
+			name: "enabled client error without total",
+			mutate: func(cfg *Config) {
+				cfg.Client.RateLimit.ClientError.Enabled = true
+			},
+			wantErr: "client_error: enabled without total bucket has no effect",
+		},
+		{
 			name: "zero interval",
 			mutate: func(cfg *Config) {
 				cfg.Client.RateLimit.ClientCommand.Enabled = true

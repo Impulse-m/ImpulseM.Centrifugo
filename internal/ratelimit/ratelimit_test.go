@@ -154,7 +154,7 @@ func TestCommandPlanResolution(t *testing.T) {
 			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
 				// Replaces base buckets.
 				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
-				// Enabled without buckets falls back to default, not to base.
+				// Enabled without buckets is treated as no override: base applies.
 				{NamespaceName: "notif", Enabled: true},
 				// Disabled override is ignored.
 				{NamespaceName: "off", Enabled: false, Buckets: testList(time.Second, 1)},
@@ -193,7 +193,7 @@ func TestCommandPlanResolution(t *testing.T) {
 	}{
 		{name: "publish base", op: OperationPublish, key: "", want: []Bucket{base5}},
 		{name: "publish namespace override replaces base", op: OperationPublish, key: "chat", want: []Bucket{chat20}},
-		{name: "publish enabled override without buckets uses default", op: OperationPublish, key: "notif", want: []Bucket{def}},
+		{name: "publish enabled override without buckets uses base", op: OperationPublish, key: "notif", want: []Bucket{base5}},
 		{name: "publish disabled override is ignored", op: OperationPublish, key: "off", want: []Bucket{base5}},
 		{name: "publish unknown namespace uses base", op: OperationPublish, key: "other", want: []Bucket{base5}},
 		{name: "subscribe base", op: OperationSubscribe, key: "", want: []Bucket{sub3}},
@@ -202,7 +202,7 @@ func TestCommandPlanResolution(t *testing.T) {
 		{name: "refresh base", op: OperationRefresh, key: "", want: []Bucket{ref7}},
 		{name: "rpc base", op: OperationRPC, key: "", want: []Bucket{rpc4}},
 		{name: "rpc method override", op: OperationRPC, key: "slow", want: []Bucket{slow}},
-		{name: "rpc enabled override without buckets uses default", op: OperationRPC, key: "empty", want: []Bucket{def}},
+		{name: "rpc enabled override without buckets uses base", op: OperationRPC, key: "empty", want: []Bucket{rpc4}},
 		{name: "rpc disabled override is ignored", op: OperationRPC, key: "off", want: []Bucket{rpc4}},
 	}
 	for _, tt := range tests {

@@ -24,6 +24,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * `client.channel_position_check_delay` must exceed the broker's worst-case PUB/SUB lag, otherwise a publication in flight is reported as a loss.
   * Options are applied when a channel's first subscriber arrives on the node. A config change applies to a channel after it empties.
   * Enabling it for the first time (no channel used it at startup) requires a node restart: when no channel options use it, the node skips the per-publication lookup entirely.
+* Operation rate limits (`client.rate_limit`) as described in the PRO docs: per-connection `client_command` limits with `total`, `default`, channel namespace overrides and RPC method overrides, and `client_error` limits that disconnect abusive connections. `user_command` and `redis_user_command` are coming.
 
 ### Access revocation event source
 

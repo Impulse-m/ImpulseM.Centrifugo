@@ -37,6 +37,9 @@ func (h *Handler) setupRateLimit(cfg config.Config) error {
 		if err != nil {
 			return err
 		}
+		// One attempt to connect now. If Redis is unreachable the node still starts: the limiter allows
+		// commands and connects in the background, see the Services of the handler.
+		limiter.Connect()
 		redisLimiter = limiter
 		h.redisLimiter = redisLimiter
 	}
@@ -57,7 +60,8 @@ func (h *Handler) setupRateLimit(cfg config.Config) error {
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit
 // configuration, or the engine Redis and engine prefix when reuse_from_engine is set. Engine prefix keeps
-// limits of different apps sharing one Redis apart.
+// limits of different apps sharing one Redis apart. Configuration errors are returned, connection errors
+// are not: the limiter connects later.
 func newRedisUserLimiter(cfg config.Config) (*ratelimit.RedisUserLimiter, error) {
 	rc := cfg.Client.RateLimit.RedisUserCommand
 	redisConf := rc.Redis.Redis
@@ -66,11 +70,11 @@ func newRedisUserLimiter(cfg config.Config) (*ratelimit.RedisUserLimiter, error)
 		redisConf = cfg.Engine.Redis.Redis
 		prefix = cfg.Engine.Redis.Prefix
 	}
-	shards, err := redisshard.BuildRedisShards(redisConf)
+	configs, err := redisshard.ParseRedisShardConfigs(redisConf)
 	if err != nil {
-		return nil, fmt.Errorf("redis_user_command: building Redis shards: %w", err)
+		return nil, fmt.Errorf("redis_user_command: Redis configuration: %w", err)
 	}
-	return ratelimit.NewRedisUserLimiter(rc, prefix, shards, redisConf.IOTimeout.ToDuration()), nil
+	return ratelimit.NewRedisUserLimiter(rc, prefix, configs, redisConf.IOTimeout.ToDuration()), nil
 }
 
 // rateLimitCommandRead allocates connection rate limit state on connect. For other commands it checks

@@ -5,6 +5,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -53,6 +54,49 @@ func newRedisRateLimitHandler(t *testing.T, mutate func(cfg *config.Config)) *Ha
 	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{}, accessrevoke.NewStore(time.Minute), nil)
 	require.NoError(t, h.Setup())
 	return h
+}
+
+// unreachableRedisAddress returns an address which refuses connections: the port was just released.
+func unreachableRedisAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+	return address
+}
+
+func TestRedisRateLimitUnreachableRedisStartsAndAllows(t *testing.T) {
+	address := unreachableRedisAddress(t)
+	before := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	h := newRedisRateLimitHandler(t, func(cfg *config.Config) {
+		cfg.Client.RateLimit.RedisUserCommand = configtypes.RateLimitRedisUserCommand{
+			Enabled: true,
+			Redis: configtypes.RateLimitRedis{
+				RedisPrefixed: configtypes.RedisPrefixed{
+					Prefix: uniqueRedisPrefix(),
+					Redis:  configtypes.Redis{Address: []string{address}},
+				},
+			},
+			Connect:     rateLimitBucketsOf(time.Minute, 1),
+			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+		}
+	})
+	require.NotNil(t, h.redisLimiter)
+
+	// Setup succeeded without Redis. While not connected nothing is limited: the limits of 1 per minute
+	// are not enforced, and the connects and commands are counted as Redis errors.
+	client, transport := connectUserRateLimitClient(t, h.node, "42")
+	require.Nil(t, transport.waitReply(t, 1).Error)
+	for id := uint32(2); id <= 4; id++ {
+		sendRateLimitCommand(client, &protocol.Command{Id: id, Unsubscribe: &protocol.UnsubscribeRequest{Channel: "test:1"}})
+		require.False(t, isRateLimited(transport.waitReply(t, id)), "command %d must be allowed while Redis is unreachable", id)
+	}
+	_, secondTransport := connectUserRateLimitClient(t, h.node, "42")
+	require.Nil(t, secondTransport.waitReply(t, 1).Error)
+
+	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	require.Equal(t, float64(5), after-before)
 }
 
 func TestRedisRateLimitSharedBetweenConnections(t *testing.T) {

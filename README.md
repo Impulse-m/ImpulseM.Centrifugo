@@ -9,6 +9,14 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
+  * Differences from Centrifugo PRO:
+    * `revoke_token` without `user` triggers a full sweep of local connections, coalesced and run in the background. Pass `user` for a targeted, cheap disconnect.
+    * `expire_at` in the past is rejected with bad request.
+    * Extensions: `user` and `revoked_at` on `revoke_token`; `generation` and `revoked_at` on `invalidate_user_tokens`; `token_revoke.uid_claim` and `user_tokens_invalidate.generation_claim` config; disconnect code 4500 for blocked users; loop guard disconnects with 3500.
+  * Not implemented:
+    * subscription tokens are not covered by revocation, only connection tokens;
+    * `invalidate_user_tokens.channel` is not available;
+    * `storage_type` is memory only: `redis` and `database` are rejected at startup. Use the per-node revocation source (`access_revoke.source`) as the durable delivery path.
 * Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enabled`): concurrent identical calls share one broker or presence request. Helps only with a remote engine (Redis), not with the memory engine.
 * `shared_position_sync` channel option (namespace or `channel.without_namespace`): the node checks stream position once per channel per `client.channel_position_check_delay` instead of once per subscriber, so position checks cost one broker request per channel per interval.
   * Requires `force_positioning`, `allow_positioning`, `force_recovery` or `allow_recovery`, and a `client.channel_position_check_delay` greater than zero.
@@ -51,6 +59,18 @@ Topic guidance:
 * Record key is the user ID, so events of one user stay ordered.
 * 1 to 6 partitions: every node reads every partition.
 * Restrict producers with topic ACLs: any producer can ban users.
+
+### Not implemented (yet)
+
+* Map subscriptions.
+* Redis and PostgreSQL persistence for revocation.
+* `user_connections` API.
+* Redis replica offloading.
+* Sharded PUB/SUB.
+* Per-namespace engines.
+* Custom controllers.
+
+Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
 ## Install
 

@@ -58,6 +58,10 @@ type Registry struct {
 	accessRevokeSourceEventsBeyondWindow prometheus.Counter
 	accessRevokeSourceCatchUpDuration    prometheus.Gauge
 	accessRevokeSourceFailOpenTotal      prometheus.Counter
+
+	// Rate limit metrics
+	rateLimitRejectsTotal          *prometheus.CounterVec
+	rateLimitErrorDisconnectsTotal prometheus.Counter
 }
 
 // Init initializes the metrics registry with the provided configuration.
@@ -100,6 +104,9 @@ func Init(cfg Config) error {
 	AccessRevokeSourceEventsBeyondWindow = reg.accessRevokeSourceEventsBeyondWindow
 	AccessRevokeSourceCatchUpDuration = reg.accessRevokeSourceCatchUpDuration
 	AccessRevokeSourceFailOpenTotal = reg.accessRevokeSourceFailOpenTotal
+
+	RateLimitRejectsTotal = reg.rateLimitRejectsTotal
+	RateLimitErrorDisconnectsTotal = reg.rateLimitErrorDisconnectsTotal
 
 	return nil
 }
@@ -326,6 +333,22 @@ func newRegistry(cfg Config) (*Registry, error) {
 		ConstLabels: constLabels,
 	})
 
+	m.rateLimitRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "rejects_total",
+		Help:        "Number of client commands rejected by rate limits.",
+		ConstLabels: constLabels,
+	}, []string{"limiter", "operation"})
+
+	m.rateLimitErrorDisconnectsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "error_disconnects_total",
+		Help:        "Number of connections disconnected because of too many protocol errors.",
+		ConstLabels: constLabels,
+	})
+
 	// Register all metrics
 	var alreadyRegistered prometheus.AlreadyRegisteredError
 
@@ -354,6 +377,8 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.accessRevokeSourceEventsBeyondWindow,
 		m.accessRevokeSourceCatchUpDuration,
 		m.accessRevokeSourceFailOpenTotal,
+		m.rateLimitRejectsTotal,
+		m.rateLimitErrorDisconnectsTotal,
 	}
 
 	for _, collector := range collectors {

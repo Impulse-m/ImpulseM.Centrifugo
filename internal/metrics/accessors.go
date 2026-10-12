@@ -46,3 +46,9 @@ var (
 	AccessRevokeSourceCatchUpDuration    prometheus.Gauge
 	AccessRevokeSourceFailOpenTotal      prometheus.Counter
 )
+
+// Rate limit metrics - exported for use by client package
+var (
+	RateLimitRejectsTotal          *prometheus.CounterVec
+	RateLimitErrorDisconnectsTotal prometheus.Counter
+)

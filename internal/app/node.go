@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 
 	"github.com/centrifugal/centrifuge"
@@ -20,6 +21,13 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 		EnableRecoveredPublicationsHistogram: appCfg.Prometheus.RecoveredPublicationsHistogram,
 	}
 	cfg.UseSingleFlight = appCfg.Singleflight.Enabled
+	cfg.GetChannelMediumOptions = func(ch string) centrifuge.ChannelMediumOptions {
+		_, _, chOpts, found, err := cfgContainer.ChannelOptions(ch)
+		if err != nil || !found {
+			return centrifuge.ChannelMediumOptions{}
+		}
+		return confighelpers.MediumOptionsFromChannelOptions(chOpts)
+	}
 	cfg.Name = nodeName(appCfg)
 	cfg.ChannelMaxLength = appCfg.Channel.MaxLength
 	cfg.ClientPresenceUpdateInterval = appCfg.Client.PresenceUpdateInterval.ToDuration()

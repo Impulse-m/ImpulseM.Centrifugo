@@ -10,6 +10,41 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
 
+### Access revocation event source
+
+Each node can receive access revocation events from a replayable log and rebuild its store after a restart. Kafka is the only source type now. Without `access_revoke.source.type` nothing changes.
+
+```json
+"access_revoke": {
+  "source": {
+    "type": "kafka",
+    "window": "30m",
+    "startup_timeout": "60s",
+    "lag_threshold": "30s",
+    "reject_connect_on_lag": false,
+    "kafka": {
+      "brokers": ["kafka:9092"],
+      "topic": "access_revoke",
+      "method_header": "centrifugo-method"
+    }
+  }
+}
+```
+
+A record carries the API method name in the `centrifugo-method` header (`block_user`, `unblock_user`, `revoke_token` or `invalidate_user_tokens`) and the JSON request body of that API command, for example `{"user":"42","expire_at":1790000000}` with `block_user`. One producer can feed both the API and the source.
+
+* Time defaults come from the record timestamp. Set `revoked_at` and `issued_before` in the payload when the producer may lag behind the real revocation.
+* Events older than `window` are not replayed after a restart. Longer bans must be re-emitted or set by the token issuer.
+* A node is ready once it caught up with the topic, or after `startup_timeout` (fail-open). The health endpoint answers 503 with `{"ready":false}` until then. With `reject_connect_on_lag: true` new connections are rejected while lagging. If all nodes lag, that is a cluster-wide outage.
+
+Topic guidance:
+
+* `cleanup.policy=delete`, not compact: compaction would collapse several events of one user.
+* Retention of at least 2 × `window`.
+* Record key is the user ID, so events of one user stay ordered.
+* 1 to 6 partitions: every node reads every partition.
+* Restrict producers with topic ACLs: any producer can ban users.
+
 ## Install
 
 Docker images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:

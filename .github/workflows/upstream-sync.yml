@@ -28,6 +28,8 @@ jobs:
       - name: Compare with upstream
         env:
           GH_TOKEN: ${{ github.token }}
+          # Without it gh picks the upstream remote added below as the repository to work with.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           # The same file is used in every fork, the upstream is picked by the repository name.

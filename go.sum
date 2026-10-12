@@ -34,6 +34,8 @@ github.com/FZambia/eagle v0.2.0 h1:1kQaZpJvbkvAXFRE/9K2ucBMuVqo+E29EMLYB74hIis=
 github.com/FZambia/eagle v0.2.0/go.mod h1:LKMYBwGYhao5sJI0TppvQ4SvvldFj9gITxrl8NvGwG0=
 github.com/FZambia/statik v0.1.2-0.20180217151304-b9f012bb2a1b h1:D3CXZ/tXFtPMSN5FlhHVezJJp9eqDPR3m27OVptqZYE=
 github.com/FZambia/statik v0.1.2-0.20180217151304-b9f012bb2a1b/go.mod h1:EqC55Pa/sH33dUeH/rkKY8EHRfnm2JyV+ORPzURdGm0=
+github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261012120240-051ac0d08634 h1:GNJmgKhz64nYY0k8pKT/u7/LhdIVqYn9/a5o5MgXpTw=
+github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261012120240-051ac0d08634/go.mod h1:EBy6yxySXRGukMK1SR22URyfZ771DnXdFH8vw3K64QE=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
 github.com/aws/aws-sdk-go-v2 v1.41.3 h1:4kQ/fa22KjDt13QCy1+bYADvdgcxpfH18f0zP542kZA=
@@ -71,8 +73,6 @@ github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6r
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/census-instrumentation/opencensus-proto v0.2.1/go.mod h1:f6KPmirojxKA12rnyqOA5BBL4O983OfeGPqjHWSTneU=
-github.com/centrifugal/centrifuge v0.38.1-0.20260223165319-249de951db38 h1:a4qDmzV5cJakOEpvGsoIjT2XSFEJ4uGla9vTvnlOuMo=
-github.com/centrifugal/centrifuge v0.38.1-0.20260223165319-249de951db38/go.mod h1:EBy6yxySXRGukMK1SR22URyfZ771DnXdFH8vw3K64QE=
 github.com/centrifugal/protocol v0.18.2 h1:0Iqf07aAPHo49EEfhn8As/JUpK7fbjF0aV5bT4A3+5M=
 github.com/centrifugal/protocol v0.18.2/go.mod h1:zFsp4f1ZRejq1dkyNUbabdPj4dMYOpK8RRXDwHGVpVY=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

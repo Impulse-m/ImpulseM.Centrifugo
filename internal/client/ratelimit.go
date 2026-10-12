@@ -33,7 +33,10 @@ func (h *Handler) setupRateLimit(rl configtypes.RateLimit) {
 func (h *Handler) rateLimitCommandRead(limiter *ratelimit.ClientLimiter, checkCommands bool) centrifuge.CommandReadHandler {
 	return func(c *centrifuge.Client, e centrifuge.CommandReadEvent) error {
 		if e.Command.Connect != nil {
-			c.SetExtState(limiter.NewConnState())
+			// Keep existing state: a repeated connect must not reset the buckets of the connection.
+			if c.ExtState() == nil {
+				c.SetExtState(limiter.NewConnState())
+			}
 			return nil
 		}
 		if !checkCommands {

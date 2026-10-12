@@ -369,6 +369,22 @@ func TestRateLimitClientErrorInternalNotCounted(t *testing.T) {
 	require.Equal(t, centrifuge.DisconnectTooManyErrors.Code, disconnect.Code)
 }
 
+func TestRateLimitRepeatedConnectKeepsState(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled:   true,
+			Subscribe: rateLimitChannelOf(time.Minute, 1),
+		},
+	})
+	client, _ := connectRateLimitClient(t, node)
+	state := client.ExtState()
+	require.NotNil(t, state)
+
+	// Repeated connect is rejected by Core, but it must not replace the connection limit state.
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Connect: &protocol.ConnectRequest{}})
+	require.Same(t, state, client.ExtState())
+}
+
 func TestRateLimitOperationMapping(t *testing.T) {
 	tests := []struct {
 		name    string

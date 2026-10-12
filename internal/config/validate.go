@@ -334,6 +334,35 @@ func validateTokens(cfg Config) error {
 			return fmt.Errorf("invalid subscription token custom user ID claim: %s, must match %s regular expression", cfg.Client.SubscriptionToken.UserIDClaim, customClaimRe.String())
 		}
 	}
+	if err := validateEd25519PublicKeys("client.token", cfg.Client.Token); err != nil {
+		return err
+	}
+	if err := validateEd25519PublicKeys("client.subscription_token.token", cfg.Client.SubscriptionToken.Token); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateEd25519PublicKeys(name string, token configtypes.Token) error {
+	if len(token.Ed25519PublicKeys) == 0 {
+		return nil
+	}
+	if token.JWKSPublicEndpoint != "" {
+		return fmt.Errorf("in %s: ed25519_public_keys can not be used together with jwks_public_endpoint", name)
+	}
+	seenKIDs := make(map[string]struct{}, len(token.Ed25519PublicKeys))
+	for i, key := range token.Ed25519PublicKeys {
+		if key.PublicKey == "" {
+			return fmt.Errorf("in %s: ed25519_public_keys[%d]: public_key is required", name, i)
+		}
+		if key.KID == "" && len(token.Ed25519PublicKeys) > 1 {
+			return fmt.Errorf("in %s: ed25519_public_keys[%d]: kid is required when more than one key is configured", name, i)
+		}
+		if _, ok := seenKIDs[key.KID]; ok {
+			return fmt.Errorf("in %s: ed25519_public_keys[%d]: duplicate kid \"%s\"", name, i, key.KID)
+		}
+		seenKIDs[key.KID] = struct{}{}
+	}
 	return nil
 }
 

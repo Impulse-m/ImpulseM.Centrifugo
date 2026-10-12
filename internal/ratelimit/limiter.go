@@ -17,11 +17,12 @@ type ClientLimiter struct {
 
 // ConnState is a per-connection rate limit state. Command slots are touched only from the
 // transport reader goroutine, error counters are atomic since errors may be processed
-// concurrently.
+// concurrently. user is the shared state of the connection user, attached by UserLimiter.Attach.
 type ConnState struct {
 	slots          []int64
 	errorTAT       []atomic.Int64
 	errorExhausted atomic.Bool
+	user           atomic.Pointer[UserState]
 }
 
 // MarkErrorExhausted marks the connection as over its error limit. It returns true only for the

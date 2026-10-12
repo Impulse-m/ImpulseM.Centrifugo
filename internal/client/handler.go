@@ -15,6 +15,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
+	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
@@ -53,6 +54,7 @@ type Handler struct {
 	rpcExtension     map[string]RPCExtensionFunc
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
+	userLimiter      *ratelimit.UserLimiter
 }
 
 // NewHandler creates new Handler.
@@ -152,6 +154,7 @@ func (h *Handler) Setup() error {
 			client.Disconnect(disconnect)
 			return
 		}
+		h.attachUserRateLimit(client)
 
 		var semaphore chan struct{}
 		if concurrency > 1 {
@@ -379,6 +382,10 @@ func (h *Handler) OnClientConnecting(
 			UserID: "",
 		}
 		processClientChannels = true
+	}
+
+	if credentials != nil && !h.userConnectAllowed(credentials.UserID) {
+		return centrifuge.ConnectReply{}, centrifuge.ErrorTooManyRequests
 	}
 
 	// Handle single connection enforcement before establishing connection.

@@ -266,11 +266,10 @@ func TestValidateRateLimit(t *testing.T) {
 			wantErr: "reuse_from_engine requires engine.type to be redis",
 		},
 		{
-			name: "user command is not implemented yet",
+			name: "user command is implemented",
 			mutate: func(cfg *Config) {
 				cfg.Client.RateLimit.UserCommand.Enabled = true
 			},
-			wantErr: "user_command: not implemented yet",
 		},
 		{
 			name: "redis user command is not implemented yet",

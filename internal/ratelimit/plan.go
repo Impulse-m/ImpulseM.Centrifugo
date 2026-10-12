@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"time"
+
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
@@ -17,6 +19,8 @@ const (
 	OperationSubRefresh
 	OperationRefresh
 	OperationRPC
+	// OperationConnect is checked only by user_command limits, on connect, without total.
+	OperationConnect
 	operationCount
 )
 
@@ -30,6 +34,7 @@ var operationNames = [operationCount]string{
 	OperationSubRefresh:    "sub_refresh",
 	OperationRefresh:       "refresh",
 	OperationRPC:           "rpc",
+	OperationConnect:       "connect",
 }
 
 // String returns the configuration name of the operation.
@@ -79,13 +84,16 @@ type opLimit struct {
 // and is safe for concurrent use: all mutable state is kept in ConnState.
 type CommandPlan struct {
 	numSlots int
-	total    *scope
-	ops      [operationCount]opLimit
+	// maxInterval is the longest interval of all buckets in the plan.
+	maxInterval time.Duration
+	total       *scope
+	ops         [operationCount]opLimit
 }
 
 // slotAllocator assigns static slot indexes to buckets while a plan is compiled.
 type slotAllocator struct {
-	next int
+	next        int
+	maxInterval time.Duration
 }
 
 // compileScope compiles enabled buckets into a scope. Returns nil when there is nothing to limit.
@@ -95,9 +103,13 @@ func (a *slotAllocator) compileScope(enabled bool, buckets configtypes.RateLimit
 	}
 	s := &scope{buckets: make([]slotBucket, 0, len(buckets))}
 	for _, item := range buckets {
+		interval := item.Interval.ToDuration()
+		if interval > a.maxInterval {
+			a.maxInterval = interval
+		}
 		s.buckets = append(s.buckets, slotBucket{
 			slot:   a.next,
-			bucket: NewBucket(item.Interval.ToDuration(), item.Rate),
+			bucket: NewBucket(interval, item.Rate),
 		})
 		a.next++
 	}
@@ -164,6 +176,31 @@ func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
 
 	p.numSlots = alloc.next
+	p.maxInterval = alloc.maxInterval
+	return p
+}
+
+// newUserPlan compiles user command rate limits. Resolution is the same as for client commands,
+// connect is added. Connect resolves its own buckets, then default, and is not subject to total.
+func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
+	alloc := &slotAllocator{}
+	p := &CommandPlan{}
+	p.total = alloc.compileScope(cfg.Total.Enabled, cfg.Total.Buckets)
+	def := alloc.compileScope(cfg.Default.Enabled, cfg.Default.Buckets)
+
+	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
+	p.ops[OperationSubscribe] = alloc.channelLimit(cfg.Subscribe, def)
+	p.ops[OperationUnsubscribe] = alloc.channelLimit(cfg.Unsubscribe, def)
+	p.ops[OperationPublish] = alloc.channelLimit(cfg.Publish, def)
+	p.ops[OperationHistory] = alloc.channelLimit(cfg.History, def)
+	p.ops[OperationPresence] = alloc.channelLimit(cfg.Presence, def)
+	p.ops[OperationPresenceStats] = alloc.channelLimit(cfg.PresenceStats, def)
+	p.ops[OperationSubRefresh] = alloc.channelLimit(cfg.SubRefresh, def)
+	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
+	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+
+	p.numSlots = alloc.next
+	p.maxInterval = alloc.maxInterval
 	return p
 }
 
@@ -198,5 +235,18 @@ func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) 
 	if p.total != nil {
 		p.total.commit(slots, now)
 	}
+	return true
+}
+
+// allowConnect checks and consumes one connect of a user. Only connect buckets apply, total does not.
+func (p *CommandPlan) allowConnect(slots []int64, now int64) bool {
+	s := p.ops[OperationConnect].base
+	if s == nil {
+		return true
+	}
+	if !s.allowed(slots, now) {
+		return false
+	}
+	s.commit(slots, now)
 	return true
 }

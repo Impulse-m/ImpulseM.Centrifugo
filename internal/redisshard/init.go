@@ -10,21 +10,28 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// BuildRedisShards parses the configuration and connects to all shards. Connection errors fail the build.
 func BuildRedisShards(redisConf configtypes.Redis) ([]*RedisShard, error) {
+	redisShardConfigs, err := ParseRedisShardConfigs(redisConf)
+	if err != nil {
+		return nil, err
+	}
+	return NewRedisShards(redisShardConfigs)
+}
+
+// ParseRedisShardConfigs returns configs of all shards of redisConf. It validates them without connecting to
+// Redis, so it returns configuration errors only: a Redis which is down does not make them fail.
+func ParseRedisShardConfigs(redisConf configtypes.Redis) ([]RedisShardConfig, error) {
 	redisShardConfigs, err := getRedisShardConfigs(redisConf)
 	if err != nil {
 		return nil, err
 	}
-	redisShards := make([]*RedisShard, 0, len(redisShardConfigs))
-
-	for _, redisCfg := range redisShardConfigs {
-		redisShard, err := NewRedisShard(redisCfg)
-		if err != nil {
+	for i := range redisShardConfigs {
+		if _, err := newShardOptions(&redisShardConfigs[i]); err != nil {
 			return nil, err
 		}
-		redisShards = append(redisShards, redisShard)
 	}
-	return redisShards, nil
+	return redisShardConfigs, nil
 }
 
 func addRedisShardCommonSettings(shardConf *RedisShardConfig, redisConf configtypes.Redis) {

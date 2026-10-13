@@ -570,6 +570,8 @@ type RPC struct {
 	Ping RPCPing `mapstructure:"ping" json:"ping" envconfig:"ping" yaml:"ping" toml:"ping" doc:"Built-in RPC ping method configuration."`
 	// NamespaceBoundary allows to set a custom boundary for rpc namespaces.
 	NamespaceBoundary string `mapstructure:"namespace_boundary" json:"namespace_boundary" envconfig:"namespace_boundary" default:":" yaml:"namespace_boundary" toml:"namespace_boundary" expose:"full" doc:"Separator between the RPC namespace name and the method name. Default <<:>>."`
+	// Registry configures the RPC method registry: named gRPC targets and the client methods mapped onto them.
+	Registry RPCRegistry `mapstructure:"registry" json:"registry" envconfig:"registry" yaml:"registry" toml:"registry" doc:"Configures the RPC method registry: gRPC targets and the client RPC methods mapped onto them. Disabled by default."`
 }
 
 type RPCPing struct {

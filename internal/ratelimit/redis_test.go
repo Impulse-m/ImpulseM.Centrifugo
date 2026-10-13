@@ -13,12 +13,12 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 )
 
 // redisTestConfig returns redis_user_command limits with overrides, buckets of the default scope
@@ -316,17 +316,15 @@ func TestRedisLimiterLogsErrorsRateLimited(t *testing.T) {
 
 func TestRedisLimiterLogsErrorsAgainAfterInterval(t *testing.T) {
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
-	// Errors are logged once per interval, not once per process.
-	require.Equal(t, redisErrorLogInterval, l.errorLog.Interval)
 
 	var logBuf bytes.Buffer
 	savedLogger := log.Logger
 	log.Logger = zerolog.New(&logBuf)
 	defer func() { log.Logger = savedLogger }()
 
-	l.errorLog = rate.Sometimes{Interval: 20 * time.Millisecond}
+	l.errorLog = tools.NewIntervalLimiter(10 * time.Millisecond)
 	l.logError(errors.New("boom"))
-	time.Sleep(40 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	l.logError(errors.New("boom"))
 	require.Equal(t, 2, strings.Count(logBuf.String(), "\n"))
 }

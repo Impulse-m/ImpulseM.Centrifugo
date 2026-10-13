@@ -11,10 +11,10 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/redis/rueidis"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -87,7 +87,7 @@ type RedisUserLimiter struct {
 	// mapping stays the same for the life of the process. Nil means not connected.
 	shards atomic.Pointer[[]*redisshard.RedisShard]
 	// errorLog limits how often Redis errors are logged to once per redisErrorLogInterval.
-	errorLog rate.Sometimes
+	errorLog *tools.IntervalLimiter
 }
 
 // NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
@@ -112,8 +112,7 @@ func NewRedisUserLimiter(
 		run:          runRedisScript,
 		backoffMin:   redisRetryMin,
 		backoffMax:   redisRetryMax,
-		// A zero Sometimes runs only once, so the interval must be set.
-		errorLog: rate.Sometimes{Interval: redisErrorLogInterval},
+		errorLog:     tools.NewIntervalLimiter(redisErrorLogInterval),
 	}
 }
 
@@ -229,12 +228,13 @@ func (l *RedisUserLimiter) check(userID string, s *scope) bool {
 
 // logError logs a Redis error at most once per redisErrorLogInterval.
 func (l *RedisUserLimiter) logError(err error) {
-	l.errorLog.Do(func() {
+	if l.errorLog.Allow() {
 		log.Error().Err(err).Msg("redis_user_command rate limit: Redis error, command allowed")
-	})
+	}
 }
 
 // retryDelay returns a random delay in [backoff/2, backoff], so nodes started together do not retry in lockstep.
+// The same half-jitter backoff exists in internal/pgschema/pgschema.go (schemaExecBackoff).
 func retryDelay(backoff time.Duration) time.Duration {
 	half := backoff / 2
 	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // Jitter of retries, not a secret.

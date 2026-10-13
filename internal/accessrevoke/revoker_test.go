@@ -59,7 +59,7 @@ func connectTestClient(t *testing.T, node *centrifuge.Node, token string) {
 	require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20))
 }
 
-func newTestRevoker(t *testing.T, node *centrifuge.Node) *Revoker {
+func newTestRevoker(t *testing.T, node *centrifuge.Node, store *Store) *Revoker {
 	t.Helper()
 	queue := NewDisconnectQueue(10000, 100)
 	cancel, errCh := runQueue(t, queue)
@@ -67,7 +67,7 @@ func newTestRevoker(t *testing.T, node *centrifuge.Node) *Revoker {
 		cancel()
 		<-errCh
 	})
-	return NewRevoker(NewStore(time.Minute), node.Hub(), queue)
+	return NewRevoker(store, node.Hub(), queue)
 }
 
 func waitConnections(t *testing.T, node *centrifuge.Node, userID string, count int) {
@@ -79,7 +79,8 @@ func waitConnections(t *testing.T, node *centrifuge.Node, userID string, count i
 
 func TestRevokerBlockUserDisconnectsUserConnections(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
 	connectTestClient(t, node, "user-1|"+testOtherUUID+"|0|100")
@@ -94,7 +95,8 @@ func TestRevokerBlockUserDisconnectsUserConnections(t *testing.T) {
 
 func TestRevokerUnblockUserDoesNotDisconnect(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
 	waitConnections(t, node, "user-1", 1)
@@ -107,7 +109,8 @@ func TestRevokerUnblockUserDoesNotDisconnect(t *testing.T) {
 
 func TestRevokerRevokeSessionDisconnectsMatchingSession(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
 	connectTestClient(t, node, "user-1|"+testOtherUUID+"|0|100")
@@ -126,7 +129,8 @@ func TestRevokerRevokeSessionDisconnectsMatchingSession(t *testing.T) {
 
 func TestRevokerInvalidateUserDisconnectsOlderTokens(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	// Generation 4 is below the minimum generation 5.
 	connectTestClient(t, node, "user-3|"+testUUID+"|4|100")
@@ -146,7 +150,8 @@ func TestRevokerInvalidateUserDisconnectsOlderTokens(t *testing.T) {
 
 func TestRevokerRevokeSessionWithoutUserSweepsConnections(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
 	connectTestClient(t, node, "user-2|"+testOtherUUID+"|0|100")
@@ -161,7 +166,8 @@ func TestRevokerRevokeSessionWithoutUserSweepsConnections(t *testing.T) {
 
 func TestRevokerRevokeSessionWithoutUserCoalescesSweeps(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	var sweeps atomic.Int64
 	swept := make(chan struct{})
@@ -199,7 +205,8 @@ func TestRevokerRevokeSessionWithoutUserCoalescesSweeps(t *testing.T) {
 
 func TestRevokerEmptyUserIsError(t *testing.T) {
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	require.ErrorIs(t, revoker.BlockUser("", 0), ErrEmptyID)
 	require.ErrorIs(t, revoker.InvalidateUser("", 1, 0, 0, 0), ErrEmptyID)

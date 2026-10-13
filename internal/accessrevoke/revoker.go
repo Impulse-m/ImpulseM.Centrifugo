@@ -48,11 +48,6 @@ func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 	return revoker
 }
 
-// Store returns the Store the Revoker applies events to.
-func (r *Revoker) Store() *Store {
-	return r.store
-}
-
 // BlockUser blocks the user and disconnects all local connections of the user with DisconnectUserBlocked.
 func (r *Revoker) BlockUser(userID string, expireAt int64) error {
 	err := r.store.BlockUser(userID, expireAt)

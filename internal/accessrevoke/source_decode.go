@@ -9,21 +9,13 @@ import (
 // ErrUnknownMethod is returned when a source record has a method which is not an access revocation method.
 var ErrUnknownMethod = errors.New("unknown access revocation method")
 
-// Method names of access revocation records. They are the same as API command method names.
-const (
-	methodBlockUser            = "block_user"
-	methodUnblockUser          = "unblock_user"
-	methodRevokeToken          = "revoke_token"
-	methodInvalidateUserTokens = "invalidate_user_tokens"
-)
-
 // decodeOperation decodes the JSON body of a source record into an Operation. The body has the same
-// format as the request of the API command named by method. It returns ErrUnknownMethod for methods
-// which are not access revocation methods.
+// format as the request of the API command named by method, and the method names are the Kind values.
+// It returns ErrUnknownMethod for methods which are not access revocation methods.
 func decodeOperation(method string, body []byte) (Operation, error) {
 	decoder := apiproto.NewJSONRequestDecoder()
 	switch method {
-	case methodBlockUser:
+	case KindBlockUser:
 		req, err := decoder.DecodeBlockUser(body)
 		if err != nil {
 			return Operation{}, err
@@ -33,7 +25,7 @@ func decodeOperation(method string, body []byte) (Operation, error) {
 			User:     req.User,
 			ExpireAt: req.ExpireAt,
 		}, nil
-	case methodUnblockUser:
+	case KindUnblockUser:
 		req, err := decoder.DecodeUnblockUser(body)
 		if err != nil {
 			return Operation{}, err
@@ -42,7 +34,7 @@ func decodeOperation(method string, body []byte) (Operation, error) {
 			Kind: KindUnblockUser,
 			User: req.User,
 		}, nil
-	case methodRevokeToken:
+	case KindRevokeToken:
 		req, err := decoder.DecodeRevokeToken(body)
 		if err != nil {
 			return Operation{}, err
@@ -54,7 +46,7 @@ func decodeOperation(method string, body []byte) (Operation, error) {
 			RevokedAt: req.RevokedAt,
 			ExpireAt:  req.ExpireAt,
 		}, nil
-	case methodInvalidateUserTokens:
+	case KindInvalidateUserTokens:
 		req, err := decoder.DecodeInvalidateUserTokens(body)
 		if err != nil {
 			return Operation{}, err

@@ -36,7 +36,7 @@ func TestNotificationEncodeDecode(t *testing.T) {
 func TestApplyUnknownKind(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
-	revoker := newTestRevoker(t, node)
+	revoker := newTestRevoker(t, node, NewStore(time.Minute))
 
 	err := revoker.Apply(Notification{Kind: "unknown"})
 	require.ErrorIs(t, err, ErrUnknownKind)
@@ -45,8 +45,8 @@ func TestApplyUnknownKind(t *testing.T) {
 func TestApplyBlockAndUnblock(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
-	revoker := newTestRevoker(t, node)
-	store := revoker.Store()
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	err := revoker.Apply(Notification{Kind: KindBlockUser, User: "user", ExpireAt: time.Now().Add(time.Minute).Unix()})
 	require.NoError(t, err)
@@ -60,8 +60,8 @@ func TestApplyBlockAndUnblock(t *testing.T) {
 func TestApplyRevokeSession(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
-	revoker := newTestRevoker(t, node)
-	store := revoker.Store()
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	err := revoker.Apply(Notification{
 		Kind:      KindRevokeToken,
@@ -77,8 +77,8 @@ func TestApplyRevokeSession(t *testing.T) {
 func TestApplyInvalidateUser(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
-	revoker := newTestRevoker(t, node)
-	store := revoker.Store()
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 
 	err := revoker.Apply(Notification{
 		Kind:       KindInvalidateUserTokens,

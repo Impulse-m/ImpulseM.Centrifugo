@@ -42,8 +42,8 @@ func newSourceTest(t *testing.T, cfg config.Config, clock *sourceTestClock) (*Ka
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	revoker := newTestRevoker(t, node)
-	store := revoker.Store()
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 	store.nowUnix = func() int64 {
 		return clock.Now().Unix()
 	}

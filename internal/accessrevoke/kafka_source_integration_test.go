@@ -89,7 +89,8 @@ func startIntegrationSource(t *testing.T, topic string) (*KafkaSource, *Store) {
 	require.NoError(t, err)
 
 	node := newRevokeTestNode(t)
-	revoker := newTestRevoker(t, node)
+	store := NewStore(time.Minute)
+	revoker := newTestRevoker(t, node, store)
 	source := NewKafkaSource(cfg.AccessRevoke.Source, cfgContainer, revoker)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,7 +105,7 @@ func startIntegrationSource(t *testing.T, topic string) (*KafkaSource, *Store) {
 		// do not leak into the unit tests which check the metric by absolute value.
 		metrics.AccessRevokeSourceEventsAppliedTotal.Reset()
 	})
-	return source, revoker.Store()
+	return source, store
 }
 
 // waitSourceReady waits until the source is ready and fails the test if it is not ready by fail-open.

@@ -29,6 +29,10 @@ type forkRegistry struct {
 	rateLimitUserEntries           prometheus.Gauge
 	rateLimitRedisErrorsTotal      prometheus.Counter
 	rateLimitRedisDuration         prometheus.Histogram
+
+	// RPC method registry metrics
+	rpcRegistryCallsTotal  *prometheus.CounterVec
+	rpcRegistryErrorsTotal *prometheus.CounterVec
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -173,6 +177,22 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.rpcRegistryCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "calls_total",
+		Help:        "Number of RPC method registry calls by method and result.",
+		ConstLabels: constLabels,
+	}, []string{"rpc_method", "result"})
+
+	m.rpcRegistryErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "errors_total",
+		Help:        "Number of RPC method registry calls which failed with an application error, by method and application error type.",
+		ConstLabels: constLabels,
+	}, []string{"rpc_method", "app_type"})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -191,6 +211,8 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rateLimitUserEntries,
 		m.rateLimitRedisErrorsTotal,
 		m.rateLimitRedisDuration,
+		m.rpcRegistryCallsTotal,
+		m.rpcRegistryErrorsTotal,
 	}
 }
 
@@ -215,4 +237,7 @@ func (m *Registry) setForkMetrics() {
 	RateLimitUserEntries = m.rateLimitUserEntries
 	RateLimitRedisErrorsTotal = m.rateLimitRedisErrorsTotal
 	RateLimitRedisDuration = m.rateLimitRedisDuration
+
+	RPCRegistryCallsTotal = m.rpcRegistryCallsTotal
+	RPCRegistryErrorsTotal = m.rpcRegistryErrorsTotal
 }

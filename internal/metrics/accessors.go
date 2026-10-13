@@ -78,6 +78,12 @@ var (
 	RateLimitRedisDuration         prometheus.Histogram
 )
 
+// RPC method registry metrics - exported for use by client and proxy packages
+var (
+	RPCRegistryCallsTotal  *prometheus.CounterVec
+	RPCRegistryErrorsTotal *prometheus.CounterVec
+)
+
 // Postgres broker metrics exported for use by pgmapbroker and pgstreambroker.
 //
 // All carry a postgres_ name prefix: these are Postgres-specific (outbox,

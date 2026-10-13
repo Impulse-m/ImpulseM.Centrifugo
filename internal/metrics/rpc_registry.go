@@ -1,0 +1,105 @@
+package metrics
+
+import (
+	"strings"
+	"sync"
+)
+
+// rpcRegistryMaxAppTypes caps the distinct app_type label values per process. Values beyond the cap
+// are reported as rpcRegistryOtherAppType.
+const rpcRegistryMaxAppTypes = 256
+
+// rpcRegistryOtherAppType is the app_type label of error types beyond rpcRegistryMaxAppTypes.
+const rpcRegistryOtherAppType = "other"
+
+// rpcRegistryNoAppType is the app_type label of errors without an application error type.
+const rpcRegistryNoAppType = "none"
+
+// Results of a RPC method registry call, the values of the result label.
+const (
+	RPCRegistryResultOK        = "ok"
+	RPCRegistryResultError     = "error"
+	RPCRegistryResultCancelled = "cancelled"
+	RPCRegistryResultTimeout   = "timeout"
+	RPCRegistryResultDenied    = "denied"
+	RPCRegistryResultUnknown   = "unknown"
+)
+
+// rpcRegistryAppTypeSet remembers the app_type label values seen by this process.
+type rpcRegistryAppTypeSet struct {
+	mu     sync.Mutex
+	values map[string]struct{}
+}
+
+var rpcRegistryAppTypes = &rpcRegistryAppTypeSet{
+	values: map[string]struct{}{},
+}
+
+// IncRPCRegistryCall counts one RPC method registry call with its result. Results other than the
+// RPCRegistryResult values are counted as RPCRegistryResultError. rpcMethod must be a name from the
+// registry, or "unknown" for names which are not in it.
+func IncRPCRegistryCall(rpcMethod string, result string) {
+	if RPCRegistryCallsTotal == nil {
+		return
+	}
+	RPCRegistryCallsTotal.WithLabelValues(rpcMethod, rpcRegistryResultLabel(result)).Inc()
+}
+
+// IncRPCRegistryError counts one failed RPC method registry call with its application error type.
+// The type is normalised by rpcRegistryAppTypeLabel.
+func IncRPCRegistryError(rpcMethod string, appType string) {
+	if RPCRegistryErrorsTotal == nil {
+		return
+	}
+	RPCRegistryErrorsTotal.WithLabelValues(rpcMethod, rpcRegistryAppTypeLabel(appType)).Inc()
+}
+
+// rpcRegistryResultLabel returns result when it is a known result, and RPCRegistryResultError otherwise.
+func rpcRegistryResultLabel(result string) string {
+	switch result {
+	case RPCRegistryResultOK, RPCRegistryResultError, RPCRegistryResultCancelled,
+		RPCRegistryResultTimeout, RPCRegistryResultDenied, RPCRegistryResultUnknown:
+		return result
+	default:
+		return RPCRegistryResultError
+	}
+}
+
+// rpcRegistryAppTypeLabel returns the bounded app_type label. A trailing _<digits> becomes _X, so
+// FLOOD_WAIT_17 and FLOOD_WAIT_30 share one series. Distinct values are kept up to
+// rpcRegistryMaxAppTypes per process, the rest are reported as rpcRegistryOtherAppType.
+func rpcRegistryAppTypeLabel(appType string) string {
+	if appType == "" {
+		return rpcRegistryNoAppType
+	}
+	return rpcRegistryAppTypes.label(normalizeNumericSuffix(appType))
+}
+
+// normalizeNumericSuffix replaces digits after the last underscore with X. A value without such
+// a suffix is returned unchanged.
+func normalizeNumericSuffix(value string) string {
+	index := strings.LastIndexByte(value, '_')
+	if index < 0 || index == len(value)-1 {
+		return value
+	}
+	for i := index + 1; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return value
+		}
+	}
+	return value[:index] + "_X"
+}
+
+// label returns value when it is known or still fits under the cap, and rpcRegistryOtherAppType otherwise.
+func (s *rpcRegistryAppTypeSet) label(value string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.values[value]; ok {
+		return value
+	}
+	if len(s.values) >= rpcRegistryMaxAppTypes {
+		return rpcRegistryOtherAppType
+	}
+	s.values[value] = struct{}{}
+	return value
+}

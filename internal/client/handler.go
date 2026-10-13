@@ -16,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
@@ -56,6 +57,7 @@ type Handler struct {
 	subTokenVerifier *jwtverify.VerifierJWT
 	proxyMap         *ProxyMap
 	rpcExtension     map[string]RPCExtensionFunc
+	rpcRegistry      *rpcregistry.Registry
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
 	userLimiter      *ratelimit.UserLimiter
@@ -243,7 +245,7 @@ func (h *Handler) Setup() error {
 			})
 		})
 
-		if rpcProxyHandler != nil || len(h.rpcExtension) > 0 {
+		if rpcProxyHandler != nil || len(h.rpcExtension) > 0 || h.rpcRegistry != nil {
 			client.OnRPC(func(event centrifuge.RPCEvent, cb centrifuge.RPCCallback) {
 				h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 					reply, err := h.OnRPC(client, event, rpcProxyHandler)
@@ -450,6 +452,7 @@ func (h *Handler) OnClientConnecting(
 		if token.Meta != nil {
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
+		h.storeRegistryToken(storage, e.Token)
 
 		processClientChannels = true
 	} else if connectProxyHandler != nil {
@@ -628,7 +631,7 @@ func (h *Handler) OnClientConnecting(
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
-	if h.proxyMap.UsesEmulatedHeaders && len(e.Headers) > 0 {
+	if (h.proxyMap.UsesEmulatedHeaders || h.rpcRegistry.UsesEmulatedHeaders()) && len(e.Headers) > 0 {
 		if newCtx != nil {
 			newCtx = clientcontext.SetEmulatedHeadersToContext(newCtx, e.Headers)
 		} else {
@@ -700,6 +703,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
+	h.replaceRegistryToken(c, e.Token)
 	return centrifuge.RefreshReply{
 		ExpireAt:      token.ExpireAt,
 		Info:          token.Info,
@@ -711,6 +715,9 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 func (h *Handler) OnRPC(c Client, e centrifuge.RPCEvent, rpcProxyHandler proxy.RPCHandlerFunc) (centrifuge.RPCReply, error) {
 	if handler, ok := h.rpcExtension[e.Method]; ok {
 		return handler(c, e)
+	}
+	if reply, handled, err := h.onRPCRegistry(c, e, rpcProxyHandler); handled {
+		return reply, err
 	}
 	if rpcProxyHandler != nil {
 		return rpcProxyHandler(c, e, h.cfgContainer, getPerCallData(c))

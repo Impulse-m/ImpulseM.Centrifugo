@@ -2,7 +2,7 @@ package clientstorage
 
 const (
 	KeyMeta = "meta"
-	// Reserved for the RPC method registry, not used yet.
+	// KeyToken holds the verified connection token, kept for the RPC method registry when it is enabled.
 	KeyToken     = "token"
 	KeyInstance  = "instance"
 	KeyAuthClass = "auth_class"

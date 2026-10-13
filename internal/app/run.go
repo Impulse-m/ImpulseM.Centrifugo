@@ -199,6 +199,7 @@ func Run(cmd *cobra.Command, configFile string) {
 
 	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap)
 	clientHandler.SetAccessRevoke(accessRevoke.Store, accessRevoke.Source)
+	clientHandler.SetRPCRegistry(rpcRegistry)
 	err = clientHandler.Setup()
 	if err != nil {
 		log.Fatal().Err(err).Msg("error setting up client handler")

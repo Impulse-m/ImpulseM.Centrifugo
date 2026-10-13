@@ -3,8 +3,6 @@
 package rpcregistry
 
 import (
-	"crypto/sha256"
-	"encoding/json"
 	"io"
 	"slices"
 	"time"
@@ -45,22 +43,10 @@ func ParseAuthClass(name string) (AuthClass, bool) {
 	return 0, false
 }
 
-// Target is a gRPC backend. Its fields are set at build time and never change afterwards.
-// A target is reused across reloads while its normalized config is unchanged.
+// Target is a gRPC backend. Config is its normalized config, and it never changes after build.
+// A reload reuses a target whose normalized config is equal to the new one.
 type Target struct {
-	Name          string
-	Endpoint      string
-	LoadBalancing string
-	// EmulatedHeaders are the connect-time headers forwarded to the target, sorted.
-	EmulatedHeaders []string
-	GRPC            configtypes.ProxyCommonGRPC
-	// Timeout, MaxRequestBytes and MaxResponseBytes are the target-level values which methods
-	// of this target inherit. Zero means not set.
-	Timeout          time.Duration
-	MaxRequestBytes  int
-	MaxResponseBytes int
-
-	hash [sha256.Size]byte
+	Config configtypes.RPCTarget
 	// conn is the connection to the target, made by the dial hook. Nil when no hook is set.
 	conn io.Closer
 }
@@ -98,24 +84,15 @@ func (r *Registry) Lookup(name string) *Method {
 	return t.methods[name]
 }
 
-// targetHash returns the hash of the normalized config of a target. Defaults applied by
-// the config are part of the normalized form, and the order of headers does not matter.
-func targetHash(def configtypes.RPCTarget) ([sha256.Size]byte, error) {
+// normalizeTarget returns def with the defaults applied and the headers sorted. Two targets with
+// equal normalized configs are interchangeable, which is what a reload compares.
+func normalizeTarget(def configtypes.RPCTarget) configtypes.RPCTarget {
 	normalized := def
-	normalized.LoadBalancing = loadBalancingOrDefault(def.LoadBalancing)
+	if normalized.LoadBalancing == "" {
+		normalized.LoadBalancing = configtypes.RPCLoadBalancingRoundRobin
+	}
 	normalized.EmulatedHeaders = sortedCopy(def.EmulatedHeaders)
-	data, err := json.Marshal(normalized)
-	if err != nil {
-		return [sha256.Size]byte{}, err
-	}
-	return sha256.Sum256(data), nil
-}
-
-func loadBalancingOrDefault(policy string) string {
-	if policy == "" {
-		return configtypes.RPCLoadBalancingRoundRobin
-	}
-	return policy
+	return normalized
 }
 
 // sortedCopy returns a sorted copy of names, so the caller's slice is not changed.

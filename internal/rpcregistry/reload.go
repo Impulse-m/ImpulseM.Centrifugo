@@ -3,6 +3,7 @@ package rpcregistry
 import (
 	"fmt"
 	"io"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -85,26 +86,13 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 	}
 
 	for _, def := range file.Targets {
-		hash, err := targetHash(def)
-		if err != nil {
-			return fail(fmt.Errorf("rpc registry target %q: %w", def.Name, err))
-		}
+		normalized := normalizeTarget(def)
 		prev, exists := old.targets[def.Name]
-		if exists && prev.hash == hash {
+		if exists && reflect.DeepEqual(prev.Config, normalized) {
 			next.targets[def.Name] = prev
 			continue
 		}
-		target := &Target{
-			Name:             def.Name,
-			Endpoint:         def.Endpoint,
-			LoadBalancing:    loadBalancingOrDefault(def.LoadBalancing),
-			EmulatedHeaders:  sortedCopy(def.EmulatedHeaders),
-			GRPC:             def.GRPC,
-			Timeout:          def.Timeout.ToDuration(),
-			MaxRequestBytes:  def.MaxRequestBytes,
-			MaxResponseBytes: def.MaxResponseBytes,
-			hash:             hash,
-		}
+		target := &Target{Config: normalized}
 		if r.dial != nil {
 			conn, err := r.dial(target)
 			if err != nil {
@@ -138,19 +126,19 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			AuthClass:  authClass,
 			Timeout: firstNonZero(
 				def.Timeout.ToDuration(),
-				target.Timeout,
+				target.Config.Timeout.ToDuration(),
 				defaults.Timeout.ToDuration(),
 				DefaultTimeout,
 			),
 			MaxRequestBytes: firstNonZero(
 				def.MaxRequestBytes,
-				target.MaxRequestBytes,
+				target.Config.MaxRequestBytes,
 				defaults.MaxRequestBytes,
 				DefaultMaxRequestBytes,
 			),
 			MaxResponseBytes: firstNonZero(
 				def.MaxResponseBytes,
-				target.MaxResponseBytes,
+				target.Config.MaxResponseBytes,
 				defaults.MaxResponseBytes,
 				DefaultMaxResponseBytes,
 			),

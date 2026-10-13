@@ -188,12 +188,10 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	rpcRegistry := rpcregistry.New()
-	applyRPCRegistry, err := rpcRegistry.Prepare(cfg.RPC.Registry)
+	rpcRegistry, err := rpcregistry.Start(cfg.RPC.Registry)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error loading RPC registry")
 	}
-	applyRPCRegistry()
 
 	accessRevoke := accessrevoke.Setup(node, cfg, cfgContainer)
 	serviceManager.Register(accessRevoke.Services...)

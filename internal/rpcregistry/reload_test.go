@@ -31,7 +31,7 @@ type fakeDialer struct {
 
 func (d *fakeDialer) dial(target *Target) (io.Closer, error) {
 	d.dials++
-	if target.Name == d.failOn {
+	if target.Config.Name == d.failOn {
 		return nil, errors.New("dial refused")
 	}
 	conn := &fakeConn{}
@@ -84,7 +84,7 @@ func TestChangedTargetIsReplacedAndOldRetired(t *testing.T) {
 
 	current := r.Lookup(testGetUserMethod).Target
 	require.NotSame(t, old, current)
-	require.Equal(t, "dns:///users-new.example:9000", current.Endpoint)
+	require.Equal(t, "dns:///users-new.example:9000", current.Config.Endpoint)
 	require.Equal(t, 2, dialer.dials)
 	require.Equal(t, []*Target{old}, r.retiredTargets())
 	// Closing is not done in this phase, the old connection stays open until the connection code closes it.

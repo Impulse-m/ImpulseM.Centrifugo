@@ -37,7 +37,7 @@ func testRegistry() configtypes.RPCRegistry {
 				GRPCMethod: "/example.v1.UserService/GetUser",
 				Target:     "users",
 				Idempotent: &idempotent,
-				Headers:    []string{"x-example-takeout", "x-example-a"},
+				Headers:    []string{"x-example-export", "x-example-a"},
 			},
 			{
 				Method:     "help.getConfig",
@@ -67,7 +67,7 @@ func TestPrepareApplySwapsTable(t *testing.T) {
 	require.Equal(t, "/example.v1.UserService/GetUser", method.GRPCMethod)
 	require.Equal(t, AuthClassAuthenticated, method.AuthClass)
 	require.True(t, method.Idempotent)
-	require.Equal(t, []string{"x-example-a", "x-example-takeout"}, method.Headers)
+	require.Equal(t, []string{"x-example-a", "x-example-export"}, method.Headers)
 }
 
 func TestMethodDefaultsPrecedence(t *testing.T) {
@@ -89,7 +89,7 @@ func TestMethodDefaultsPrecedence(t *testing.T) {
 	require.Equal(t, 2000, getUser.MaxResponseBytes)
 	require.Equal(t, 1000, helpMethod.MaxRequestBytes)
 	require.False(t, helpMethod.Idempotent)
-	require.Equal(t, configtypes.RPCLoadBalancingRoundRobin, getUser.Target.LoadBalancing)
+	require.Equal(t, configtypes.RPCLoadBalancingRoundRobin, getUser.Target.Config.LoadBalancing)
 }
 
 func TestBuiltInDefaultsApplyWhenNothingIsSet(t *testing.T) {
@@ -205,7 +205,7 @@ func TestPrepareFromFile(t *testing.T) {
 	method := r.Lookup("users.signIn")
 	require.NotNil(t, method)
 	require.Equal(t, AuthClassAnonymous, method.AuthClass)
-	require.Equal(t, "users", method.Target.Name)
+	require.Equal(t, "users", method.Target.Config.Name)
 	require.Equal(t, []string{"example-token"}, method.ErrorMetadata)
 	require.Equal(t, AuthClassPending2FA, r.Lookup("users.checkPassword").AuthClass)
 }

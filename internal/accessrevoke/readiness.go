@@ -2,6 +2,7 @@ package accessrevoke
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,18 +47,22 @@ type partitionProgress struct {
 // not count as lag. It is fed by per-partition observations (next consumed offset and target offset)
 // and by successful fetches. It is safe for concurrent use.
 type ReadinessTracker struct {
-	mu         sync.Mutex
-	config     ReadinessConfig
-	clock      func() time.Time
-	startedAt  time.Time
-	lastFetch  time.Time
-	partitions map[int32]*partitionProgress
-	ready      bool
-	failedOpen bool
-	caughtUp   bool
-	caughtUpAt time.Time
-	caughtUpCh chan struct{}
-	closed     bool
+	// readyFlag and laggingFlag mirror Snapshot().Ready and Snapshot().Lagging. They are refreshed under mu
+	// by every state change and by Snapshot, so Ready and Lagging are plain loads on the connect path.
+	readyFlag   atomic.Bool
+	laggingFlag atomic.Bool
+	mu          sync.Mutex
+	config      ReadinessConfig
+	clock       func() time.Time
+	startedAt   time.Time
+	lastFetch   time.Time
+	partitions  map[int32]*partitionProgress
+	ready       bool
+	failedOpen  bool
+	caughtUp    bool
+	caughtUpAt  time.Time
+	caughtUpCh  chan struct{}
+	closed      bool
 }
 
 // NewReadinessTracker creates a ReadinessTracker. The clock is used for all timing decisions, so tests
@@ -96,21 +101,41 @@ func (t *ReadinessTracker) Observe(partition int32, next int64, target int64) {
 	} else if progress.behindSince.IsZero() {
 		progress.behindSince = now
 	}
-	t.evaluateLocked(now)
+	t.refreshLocked(now)
 }
 
 // FetchSucceeded records a successful fetch response from a broker, even an empty one.
 func (t *ReadinessTracker) FetchSucceeded() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.lastFetch = t.clock()
+	now := t.clock()
+	t.lastFetch = now
+	t.refreshLocked(now)
 }
 
-// Snapshot evaluates the current state.
+// Snapshot evaluates the current state. It also refreshes the flags read by Ready and Lagging, so the
+// time based transitions (startup timeout, lag threshold) become visible to them on every call.
 func (t *ReadinessTracker) Snapshot() ReadinessSnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	now := t.clock()
+	return t.refreshLocked(t.clock())
+}
+
+// Ready reports whether the tracker is ready. See ReadinessSnapshot.Ready. It is a lock free load, the
+// value is refreshed by Observe, FetchSucceeded and Snapshot.
+func (t *ReadinessTracker) Ready() bool {
+	return t.readyFlag.Load()
+}
+
+// Lagging reports whether the tracker is lagging. See ReadinessSnapshot.Lagging. It is a lock free load,
+// the value is refreshed by Observe, FetchSucceeded and Snapshot.
+func (t *ReadinessTracker) Lagging() bool {
+	return t.laggingFlag.Load()
+}
+
+// refreshLocked evaluates the state for the given moment, publishes Ready and Lagging to their flags and
+// returns the snapshot.
+func (t *ReadinessTracker) refreshLocked(now time.Time) ReadinessSnapshot {
 	t.evaluateLocked(now)
 
 	snapshot := ReadinessSnapshot{
@@ -130,17 +155,9 @@ func (t *ReadinessTracker) Snapshot() ReadinessSnapshot {
 			snapshot.Lagging = true
 		}
 	}
+	t.readyFlag.Store(snapshot.Ready)
+	t.laggingFlag.Store(snapshot.Lagging)
 	return snapshot
-}
-
-// Ready reports whether the tracker is ready. See ReadinessSnapshot.Ready.
-func (t *ReadinessTracker) Ready() bool {
-	return t.Snapshot().Ready
-}
-
-// Lagging reports whether the tracker is lagging. See ReadinessSnapshot.Lagging.
-func (t *ReadinessTracker) Lagging() bool {
-	return t.Snapshot().Lagging
 }
 
 // CaughtUpAfterFailOpen returns a channel which is closed once the tracker catches up after it became

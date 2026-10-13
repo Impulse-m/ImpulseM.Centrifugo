@@ -99,6 +99,8 @@ func TestReadinessCaughtUpAfterFailOpenSignalsOnce(t *testing.T) {
 	tracker, clock := newReadinessTest(false)
 	tracker.Observe(0, 0, 10)
 	clock.Advance(2 * time.Minute)
+	// Time based transitions are published by Snapshot, which the watch loop calls every tick.
+	tracker.Snapshot()
 	require.True(t, tracker.Ready())
 	require.False(t, channelClosed(tracker.CaughtUpAfterFailOpen()))
 
@@ -177,6 +179,8 @@ func TestReadinessLaggingWhenNoSuccessfulFetch(t *testing.T) {
 	require.False(t, tracker.Lagging())
 
 	clock.Advance(2 * time.Second)
+	// Time based transitions are published by Snapshot, which the watch loop calls every tick.
+	tracker.Snapshot()
 	require.True(t, tracker.Lagging())
 
 	// Idle topic with successful empty fetches is not lagging.

@@ -100,28 +100,8 @@ type Registry struct {
 	connLimitReached  prometheus.Counter
 	httpRequestsTotal *prometheus.CounterVec
 
-	// Access revocation metrics
-	accessRevokeRejectsTotal            *prometheus.CounterVec
-	accessRevokeDisconnectsTotal        *prometheus.CounterVec
-	accessRevokeDisconnectsDroppedTotal prometheus.Counter
-	accessRevokeStoreSize               *prometheus.GaugeVec
-
-	// Access revocation source metrics
-	accessRevokeSourceReady              prometheus.Gauge
-	accessRevokeSourceLagging            prometheus.Gauge
-	accessRevokeSourceLagRecords         prometheus.Gauge
-	accessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
-	accessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
-	accessRevokeSourceEventsBeyondWindow prometheus.Counter
-	accessRevokeSourceCatchUpDuration    prometheus.Gauge
-	accessRevokeSourceFailOpenTotal      prometheus.Counter
-
-	// Rate limit metrics
-	rateLimitRejectsTotal          *prometheus.CounterVec
-	rateLimitErrorDisconnectsTotal prometheus.Counter
-	rateLimitUserEntries           prometheus.Gauge
-	rateLimitRedisErrorsTotal      prometheus.Counter
-	rateLimitRedisDuration         prometheus.Histogram
+	// Access revocation and rate limit metrics, see metrics_fork.go.
+	forkRegistry
 
 	// PostgreSQL-specific broker metrics. Cleanup is Postgres-specific here (only
 	// the PG stream broker prunes rows, with PG table names in the "pass" label),
@@ -165,25 +145,8 @@ func Init(cfg Config) error {
 	ConnLimitReached = reg.connLimitReached
 	HTTPRequestsTotal = reg.httpRequestsTotal
 
-	AccessRevokeRejectsTotal = reg.accessRevokeRejectsTotal
-	AccessRevokeDisconnectsTotal = reg.accessRevokeDisconnectsTotal
-	AccessRevokeDisconnectsDroppedTotal = reg.accessRevokeDisconnectsDroppedTotal
-	AccessRevokeStoreSize = reg.accessRevokeStoreSize
+	reg.setForkMetrics()
 
-	AccessRevokeSourceReady = reg.accessRevokeSourceReady
-	AccessRevokeSourceLagging = reg.accessRevokeSourceLagging
-	AccessRevokeSourceLagRecords = reg.accessRevokeSourceLagRecords
-	AccessRevokeSourceEventsAppliedTotal = reg.accessRevokeSourceEventsAppliedTotal
-	AccessRevokeSourceEventsSkippedTotal = reg.accessRevokeSourceEventsSkippedTotal
-	AccessRevokeSourceEventsBeyondWindow = reg.accessRevokeSourceEventsBeyondWindow
-	AccessRevokeSourceCatchUpDuration = reg.accessRevokeSourceCatchUpDuration
-	AccessRevokeSourceFailOpenTotal = reg.accessRevokeSourceFailOpenTotal
-
-	RateLimitRejectsTotal = reg.rateLimitRejectsTotal
-	RateLimitErrorDisconnectsTotal = reg.rateLimitErrorDisconnectsTotal
-	RateLimitUserEntries = reg.rateLimitUserEntries
-	RateLimitRedisErrorsTotal = reg.rateLimitRedisErrorsTotal
-	RateLimitRedisDuration = reg.rateLimitRedisDuration
 	BrokerPostgresCleanupRemovedTotal = reg.brokerPostgresCleanupRemovedTotal
 	BrokerPostgresOutboxCursorLagSeconds = reg.brokerPostgresOutboxCursorLagSeconds
 	MapBrokerPostgresOutboxCursorLagSeconds = reg.mapBrokerPostgresOutboxCursorLagSeconds
@@ -358,145 +321,8 @@ func newRegistry(cfg Config) (*Registry, error) {
 		[]string{"path", "method", "status"},
 	)
 
-	// Access revocation metrics
-	m.accessRevokeRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "rejects_total",
-		Help:        "Number of connections or refreshes rejected by access revocation checks.",
-		ConstLabels: constLabels,
-	}, []string{"reason", "stage"})
+	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels)
 
-	m.accessRevokeDisconnectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "disconnects_total",
-		Help:        "Number of live connections disconnected by access revocation.",
-		ConstLabels: constLabels,
-	}, []string{"reason"})
-
-	m.accessRevokeDisconnectsDroppedTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "disconnects_dropped_total",
-		Help:        "Number of live disconnects dropped because the access revocation disconnect queue was full.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeStoreSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "store_size",
-		Help:        "Number of entries in access revocation store by kind.",
-		ConstLabels: constLabels,
-	}, []string{"kind"})
-
-	m.accessRevokeSourceReady = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_ready",
-		Help:        "1 when the access revocation source is ready (caught up or failed open), 0 otherwise.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeSourceLagging = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_lagging",
-		Help:        "1 when the access revocation source is lagging behind, 0 otherwise.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeSourceLagRecords = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_lag_records",
-		Help:        "Number of records between the consumed offsets and last stable offsets of the access revocation source.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeSourceEventsAppliedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_events_applied_total",
-		Help:        "Number of access revocation events applied from the source by kind.",
-		ConstLabels: constLabels,
-	}, []string{"kind"})
-
-	m.accessRevokeSourceEventsSkippedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_events_skipped_total",
-		Help:        "Number of access revocation events skipped by the source by reason.",
-		ConstLabels: constLabels,
-	}, []string{"reason"})
-
-	m.accessRevokeSourceEventsBeyondWindow = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_events_beyond_window_total",
-		Help:        "Number of applied access revocation events which expire later than the source window allows.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeSourceCatchUpDuration = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_catch_up_duration_seconds",
-		Help:        "Time in seconds from start until the access revocation source caught up for the first time.",
-		ConstLabels: constLabels,
-	})
-
-	m.accessRevokeSourceFailOpenTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "source_fail_open_total",
-		Help:        "Number of times the node became ready before catching up with the access revocation source, after startup timeout.",
-		ConstLabels: constLabels,
-	})
-
-	m.rateLimitRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "rate_limit",
-		Name:        "rejects_total",
-		Help:        "Number of client commands rejected by rate limits.",
-		ConstLabels: constLabels,
-	}, []string{"limiter", "operation"})
-
-	m.rateLimitErrorDisconnectsTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "rate_limit",
-		Name:        "error_disconnects_total",
-		Help:        "Number of connections disconnected because of too many protocol errors.",
-		ConstLabels: constLabels,
-	})
-
-	m.rateLimitUserEntries = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "rate_limit",
-		Name:        "user_entries",
-		Help:        "Number of per-user rate limit states kept in memory.",
-		ConstLabels: constLabels,
-	})
-
-	m.rateLimitRedisErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "rate_limit",
-		Name:        "redis_errors_total",
-		Help:        "Number of Redis errors of redis_user_command rate limits. Commands are allowed on such errors.",
-		ConstLabels: constLabels,
-	})
-
-	m.rateLimitRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Namespace: metricsNamespace,
-		Subsystem: "rate_limit",
-		Name:      "redis_duration_seconds",
-		Help:      "Duration of redis_user_command rate limit script calls.",
-		Buckets: []float64{
-			0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
-		},
-		ConstLabels: constLabels,
-	})
 	// Postgres-specific broker metrics carry a postgres_ name prefix. Cleanup is
 	// Postgres-specific here: only the PG stream broker prunes rows (the "pass"
 	// label is the PG table being cleaned), so it is not the generic cleanup
@@ -560,29 +386,13 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.sharedPollProxyResponseItems,
 		m.connLimitReached,
 		m.httpRequestsTotal,
-		m.accessRevokeRejectsTotal,
-		m.accessRevokeDisconnectsTotal,
-		m.accessRevokeDisconnectsDroppedTotal,
-		m.accessRevokeStoreSize,
-		m.accessRevokeSourceReady,
-		m.accessRevokeSourceLagging,
-		m.accessRevokeSourceLagRecords,
-		m.accessRevokeSourceEventsAppliedTotal,
-		m.accessRevokeSourceEventsSkippedTotal,
-		m.accessRevokeSourceEventsBeyondWindow,
-		m.accessRevokeSourceCatchUpDuration,
-		m.accessRevokeSourceFailOpenTotal,
-		m.rateLimitRejectsTotal,
-		m.rateLimitErrorDisconnectsTotal,
-		m.rateLimitUserEntries,
-		m.rateLimitRedisErrorsTotal,
-		m.rateLimitRedisDuration,
 		m.brokerPostgresCleanupRemovedTotal,
 		m.brokerPostgresOutboxCursorLagSeconds,
 		m.mapBrokerPostgresOutboxCursorLagSeconds,
 		m.brokerPostgresPartitions,
 		m.mapBrokerPostgresPartitions,
 	}
+	collectors = append(collectors, forkCollectors...)
 
 	for _, collector := range collectors {
 		err := registerer.Register(collector)

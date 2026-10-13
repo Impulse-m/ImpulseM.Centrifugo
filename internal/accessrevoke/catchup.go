@@ -6,9 +6,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// stageSweep is the rejects metric stage of the catch-up sweep.
-const stageSweep = "sweep"
-
 // SweepConnections checks every local connection against the store and enqueues a disconnect for each
 // rejected one. It returns the number of rejected connections. Disconnects dropped by a full queue are
 // counted by the queue and still rejected by the refresh check within the token lifetime.

@@ -1,0 +1,94 @@
+package client
+
+import (
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+
+	"github.com/centrifugal/centrifuge"
+)
+
+// sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
+// lags when reject_connect_on_lag is set. Without a source it passes.
+//
+// The error is temporary, so it is never turned into a terminal close. Bidirectional clients get it as a
+// connect error and retry. Unidirectional transports (WebSocket, gRPC, SSE, HTTP stream) call Core's
+// ProtocolConnect, which turns a non-Disconnect connect error into a close with Disconnect from
+// Core's unidirectional mapping: code 1503 is not in the default mapping, so it becomes DisconnectServerError
+// (3004, reconnect range), unless the operator maps it with connect_code_to_unidirectional_disconnect.
+// SSE and HTTP stream with connect_code_to_http_response enabled answer the connect with the HTTP status
+// from that config instead. So no Disconnect is returned here: a fixed terminal code such as 4503 would
+// stop clients from reconnecting, as codes 4500-4999 are terminal.
+func (h *Handler) sourceGate() error {
+	if h.accessSource == nil {
+		return nil
+	}
+	if !h.accessSource.Ready() {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(accessrevoke.RejectNotReady, "connect").Inc()
+		return accessrevoke.ErrorNotReady
+	}
+	if h.cfgContainer.ConfigRef().AccessRevoke.Source.RejectConnectOnLag && h.accessSource.Lagging() {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(accessrevoke.RejectLagging, "connect").Inc()
+		return accessrevoke.ErrorNotReady
+	}
+	return nil
+}
+
+// checkAccess checks token identity against access revocation store and counts rejections by stage.
+// Without a store nothing is revoked.
+func (h *Handler) checkAccess(
+	userID string,
+	identity centrifuge.TokenIdentity,
+	opts accessrevoke.CheckOptions,
+	stage string,
+) accessrevoke.Result {
+	if h.accessStore == nil {
+		return accessrevoke.Result{Verdict: accessrevoke.Allowed}
+	}
+	result := h.accessStore.Check(userID, identity, opts)
+	if result.Verdict != accessrevoke.Allowed {
+		metrics.AccessRevokeRejectsTotal.WithLabelValues(string(result.Reason), stage).Inc()
+	}
+	return result
+}
+
+// isUserBlocked checks only user block for paths which have no token identity (connect and
+// refresh proxies).
+func (h *Handler) isUserBlocked(userID string, stage string) bool {
+	if !h.cfgContainer.ConfigRef().UserBlock.Enabled {
+		return false
+	}
+	result := h.checkAccess(userID, centrifuge.TokenIdentity{}, accessrevoke.CheckOptions{Block: true}, stage)
+	return result.Verdict == accessrevoke.Blocked
+}
+
+// recheckConnection checks a connection right after it was registered in the hub. Events applied
+// between the connect check and the registration are caught here. A connection with zero token
+// identity came from the connect proxy (no token), so only user block applies to it. The same is
+// true for a token which has no session, generation and iat claims, which is a deliberate
+// trade-off: the full check at connect time already ran for such a token.
+func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
+	if h.accessStore == nil {
+		return centrifuge.Disconnect{}, false
+	}
+	disconnect, _, revoked := accessrevoke.CheckConnection(
+		h.accessStore,
+		client,
+		accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()),
+		"recheck",
+	)
+	return disconnect, revoked
+}
+
+// connectRevokeError maps a failed access check made at connect to the error returned from connecting.
+func connectRevokeError(clientID string, userID string, result accessrevoke.Result) error {
+	switch result.Verdict {
+	case accessrevoke.Blocked:
+		return accessrevoke.DisconnectUserBlocked
+	case accessrevoke.Revoked:
+		return centrifuge.ErrorTokenExpired
+	case accessrevoke.LoopGuard:
+		accessrevoke.LogLoopGuard(clientID, userID, result)
+		return centrifuge.DisconnectInvalidToken
+	}
+	return nil
+}

@@ -80,7 +80,8 @@ func newRevokeTestHandler(t *testing.T, cfg config.Config) (*Handler, *accessrev
 	}, cfgContainer)
 	require.NoError(t, err)
 	store := accessrevoke.NewStore(time.Minute)
-	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{}, store, nil)
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
+	h.SetAccessRevoke(store, nil)
 	return h, store, node
 }
 

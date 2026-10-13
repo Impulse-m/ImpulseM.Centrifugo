@@ -51,7 +51,8 @@ func newRedisRateLimitHandler(t *testing.T, mutate func(cfg *config.Config)) *Ha
 	mutate(&cfg)
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{}, accessrevoke.NewStore(time.Minute), nil)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 	require.NoError(t, h.Setup())
 	return h
 }

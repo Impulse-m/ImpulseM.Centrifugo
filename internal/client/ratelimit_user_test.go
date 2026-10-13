@@ -29,7 +29,8 @@ func newUserRateLimitHandler(t *testing.T, rl configtypes.RateLimit) *Handler {
 	cfg.Client.RateLimit = rl
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{}, accessrevoke.NewStore(time.Minute), nil)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 	require.NoError(t, h.Setup())
 	return h
 }

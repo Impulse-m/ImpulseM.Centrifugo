@@ -14,7 +14,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
-	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
@@ -23,12 +22,6 @@ import (
 	"github.com/centrifugal/protocol"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
-)
-
-// Reasons of connect rejections by the access revocation source, used as metric label values.
-const (
-	rejectNotReady = "not_ready"
-	rejectLagging  = "lagging"
 )
 
 // RPCExtensionFunc ...
@@ -82,8 +75,6 @@ func NewHandler(
 	tokenVerifier *jwtverify.VerifierJWT,
 	subTokenVerifier *jwtverify.VerifierJWT,
 	proxyMap *ProxyMap,
-	accessStore *accessrevoke.Store,
-	accessSource accessrevoke.Source,
 ) *Handler {
 	return &Handler{
 		node:             node,
@@ -92,14 +83,20 @@ func NewHandler(
 		subTokenVerifier: subTokenVerifier,
 		proxyMap:         proxyMap,
 		rpcExtension:     make(map[string]RPCExtensionFunc),
-		accessStore:      accessStore,
-		accessSource:     accessSource,
 	}
 }
 
 // SetRPCExtension ...
 func (h *Handler) SetRPCExtension(method string, handler RPCExtensionFunc) {
 	h.rpcExtension[method] = handler
+}
+
+// SetAccessRevoke sets the access revocation store which checks connections and refreshes, and the
+// source which gates connects until it is ready. Without a store nothing is revoked, without a source
+// connects are not gated. Must be called before Setup.
+func (h *Handler) SetAccessRevoke(store *accessrevoke.Store, source accessrevoke.Source) {
+	h.accessStore = store
+	h.accessSource = source
 }
 
 // Setup event handlers.
@@ -339,27 +336,6 @@ func (h *Handler) Setup() error {
 		})
 	})
 	return nil
-}
-
-// connectionTokenFiltersKey is a client storage key with server tags filters of channels
-// subscribed by connection token, as they were applied on connect.
-const connectionTokenFiltersKey = "connection_token_server_tags_filters"
-
-// connectionTokenFilters returns server tags filters of connection token subscriptions, or nil when
-// none of them has a filter. Core keeps no filter per channel, so the filters are stored on connect
-// to detect their change on refresh. Connections without filters store nothing.
-func connectionTokenFilters(subs map[string]centrifuge.SubscribeOptions) map[string]*protocol.FilterNode {
-	var filters map[string]*protocol.FilterNode
-	for ch, opts := range subs {
-		if opts.Source != subsource.ConnectionToken || opts.ServerTagsFilter == nil {
-			continue
-		}
-		if filters == nil {
-			filters = make(map[string]*protocol.FilterNode)
-		}
-		filters[ch] = opts.ServerTagsFilter
-	}
-	return filters
 }
 
 func tokenChannelsChanged(client *centrifuge.Client, subs map[string]centrifuge.SubscribeOptions) bool {
@@ -738,85 +714,6 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		Info:          token.Info,
 		TokenIdentity: &identity,
 	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
-}
-
-// sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
-// lags when reject_connect_on_lag is set. Without a source it passes.
-//
-// The error is temporary, so it is never turned into a terminal close. Bidirectional clients get it as a
-// connect error and retry. Unidirectional transports (WebSocket, gRPC, SSE, HTTP stream) call Core's
-// ProtocolConnect, which turns a non-Disconnect connect error into a close with Disconnect from
-// Core's unidirectional mapping: code 1503 is not in the default mapping, so it becomes DisconnectServerError
-// (3004, reconnect range), unless the operator maps it with connect_code_to_unidirectional_disconnect.
-// SSE and HTTP stream with connect_code_to_http_response enabled answer the connect with the HTTP status
-// from that config instead. So no Disconnect is returned here: a fixed terminal code such as 4503 would
-// stop clients from reconnecting, as codes 4500-4999 are terminal.
-func (h *Handler) sourceGate() error {
-	if h.accessSource == nil {
-		return nil
-	}
-	if !h.accessSource.Ready() {
-		metrics.AccessRevokeRejectsTotal.WithLabelValues(rejectNotReady, "connect").Inc()
-		return accessrevoke.ErrorNotReady
-	}
-	if h.cfgContainer.ConfigRef().AccessRevoke.Source.RejectConnectOnLag && h.accessSource.Lagging() {
-		metrics.AccessRevokeRejectsTotal.WithLabelValues(rejectLagging, "connect").Inc()
-		return accessrevoke.ErrorNotReady
-	}
-	return nil
-}
-
-// checkAccess checks token identity against access revocation store and counts rejections by stage.
-func (h *Handler) checkAccess(
-	userID string,
-	identity centrifuge.TokenIdentity,
-	opts accessrevoke.CheckOptions,
-	stage string,
-) accessrevoke.Result {
-	result := h.accessStore.Check(userID, identity, opts)
-	if result.Verdict != accessrevoke.Allowed {
-		metrics.AccessRevokeRejectsTotal.WithLabelValues(string(result.Reason), stage).Inc()
-	}
-	return result
-}
-
-// isUserBlocked checks only user block for paths which have no token identity (connect and
-// refresh proxies).
-func (h *Handler) isUserBlocked(userID string, stage string) bool {
-	if !h.cfgContainer.ConfigRef().UserBlock.Enabled {
-		return false
-	}
-	result := h.checkAccess(userID, centrifuge.TokenIdentity{}, accessrevoke.CheckOptions{Block: true}, stage)
-	return result.Verdict == accessrevoke.Blocked
-}
-
-// recheckConnection checks a connection right after it was registered in the hub. Events applied
-// between the connect check and the registration are caught here. A connection with zero token
-// identity came from the connect proxy (no token), so only user block applies to it. The same is
-// true for a token which has no session, generation and iat claims, which is a deliberate
-// trade-off: the full check at connect time already ran for such a token.
-func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
-	disconnect, _, revoked := accessrevoke.CheckConnection(
-		h.accessStore,
-		client,
-		accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()),
-		"recheck",
-	)
-	return disconnect, revoked
-}
-
-// connectRevokeError maps a failed access check made at connect to the error returned from connecting.
-func connectRevokeError(clientID string, userID string, result accessrevoke.Result) error {
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return accessrevoke.DisconnectUserBlocked
-	case accessrevoke.Revoked:
-		return centrifuge.ErrorTokenExpired
-	case accessrevoke.LoopGuard:
-		accessrevoke.LogLoopGuard(clientID, userID, result)
-		return centrifuge.DisconnectInvalidToken
-	}
-	return nil
 }
 
 // OnRPC ...

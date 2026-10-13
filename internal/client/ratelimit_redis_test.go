@@ -38,6 +38,7 @@ func TestRedisRateLimitConfigErrorIsFatal(t *testing.T) {
 	}
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{}, accessrevoke.NewStore(time.Minute), nil)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 	require.ErrorContains(t, h.Setup(), "malformed connection address")
 }

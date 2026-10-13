@@ -16,16 +16,6 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
-// Skip reasons of source records, used as metric label values.
-const (
-	skipUnknownMethod = "unknown_method"
-	skipDecodeError   = "decode_error"
-	skipValidation    = "validation_error"
-	skipDisabled      = "disabled"
-	skipStale         = "stale"
-	skipApplyError    = "apply_error"
-)
-
 var _ Source = (*KafkaSource)(nil)
 
 // KafkaSource reads access revocation events from a Kafka topic and applies them with a Revoker.

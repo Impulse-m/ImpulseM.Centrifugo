@@ -252,51 +252,10 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 			return nil
 		}
 		return nil
-	case "block_user":
-		_, err := d.handler.handleBlockUser(ctx, payload)
-		if err != nil {
-			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Temporary {
-				return err
-			}
-			logNonRetryableConsumingError(err, method)
-			return nil
-		}
-		return nil
-	case "unblock_user":
-		_, err := d.handler.handleUnblockUser(ctx, payload)
-		if err != nil {
-			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Temporary {
-				return err
-			}
-			logNonRetryableConsumingError(err, method)
-			return nil
-		}
-		return nil
-	case "revoke_token":
-		_, err := d.handler.handleRevokeToken(ctx, payload)
-		if err != nil {
-			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Temporary {
-				return err
-			}
-			logNonRetryableConsumingError(err, method)
-			return nil
-		}
-		return nil
-	case "invalidate_user_tokens":
-		_, err := d.handler.handleInvalidateUserTokens(ctx, payload)
-		if err != nil {
-			var apiError *apiproto.Error
-			if errors.As(err, &apiError) && apiError.Temporary {
-				return err
-			}
-			logNonRetryableConsumingError(err, method)
-			return nil
-		}
-		return nil
 	default:
+		if handled, err := d.dispatchAccessRevoke(ctx, method, payload); handled {
+			return err
+		}
 		// Skip unsupported.
 		log.Info().Msg("skip unsupported API command method")
 		return nil

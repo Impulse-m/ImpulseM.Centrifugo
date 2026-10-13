@@ -179,3 +179,31 @@ func resolveAccessRevoke(operation accessrevoke.Operation, defaultTTL configtype
 	}
 	return notification, nil
 }
+
+// dispatchAccessRevoke handles access revocation commands of asynchronous consumers. handled is false
+// for methods which are not access revocation ones. Temporary errors are returned for a retry, other
+// errors are logged and skipped.
+func (d *Dispatcher) dispatchAccessRevoke(ctx context.Context, method string, payload []byte) (bool, error) {
+	var err error
+	switch method {
+	case "block_user":
+		_, err = d.handler.handleBlockUser(ctx, payload)
+	case "unblock_user":
+		_, err = d.handler.handleUnblockUser(ctx, payload)
+	case "revoke_token":
+		_, err = d.handler.handleRevokeToken(ctx, payload)
+	case "invalidate_user_tokens":
+		_, err = d.handler.handleInvalidateUserTokens(ctx, payload)
+	default:
+		return false, nil
+	}
+	if err == nil {
+		return true, nil
+	}
+	var apiError *Error
+	if errors.As(err, &apiError) && apiError.Temporary {
+		return true, err
+	}
+	logNonRetryableConsumingError(err, method)
+	return true, nil
+}

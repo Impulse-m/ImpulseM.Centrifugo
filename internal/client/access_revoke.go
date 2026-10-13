@@ -2,6 +2,8 @@ package client
 
 import (
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
 	"github.com/centrifugal/centrifuge"
@@ -79,6 +81,21 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 	return disconnect, revoked
 }
 
+// connectTokenIdentity returns the identity of a connection token, checked against the access revocation
+// store. The error is the connect error of a token which is blocked, revoked or rejected by the loop guard.
+func (h *Handler) connectTokenIdentity(
+	clientID string,
+	token jwtverify.ConnectToken,
+	cfg *config.Config,
+) (centrifuge.TokenIdentity, error) {
+	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "connect")
+	if result.Verdict != accessrevoke.Allowed {
+		return centrifuge.TokenIdentity{}, connectRevokeError(clientID, token.UserID, result)
+	}
+	return identity, nil
+}
+
 // connectRevokeError maps a failed access check made at connect to the error returned from connecting.
 func connectRevokeError(clientID string, userID string, result accessrevoke.Result) error {
 	switch result.Verdict {
@@ -91,4 +108,19 @@ func connectRevokeError(clientID string, userID string, result accessrevoke.Resu
 		return centrifuge.DisconnectInvalidToken
 	}
 	return nil
+}
+
+// refreshRevokeReply maps a failed access check made at refresh to the refresh reply and error. A revoked
+// connection gets an expired reply, a blocked or looping one a disconnect.
+func refreshRevokeReply(clientID string, userID string, result accessrevoke.Result) (centrifuge.RefreshReply, RefreshExtra, error) {
+	switch result.Verdict {
+	case accessrevoke.Blocked:
+		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
+	case accessrevoke.Revoked:
+		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
+	case accessrevoke.LoopGuard:
+		accessrevoke.LogLoopGuard(clientID, userID, result)
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
+	return centrifuge.RefreshReply{}, RefreshExtra{}, nil
 }

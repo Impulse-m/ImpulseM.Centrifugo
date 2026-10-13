@@ -422,10 +422,9 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, err
 		}
 
-		identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
-		result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "connect")
-		if result.Verdict != accessrevoke.Allowed {
-			return centrifuge.ConnectReply{}, connectRevokeError(e.ClientID, token.UserID, result)
+		identity, err := h.connectTokenIdentity(e.ClientID, token, cfg)
+		if err != nil {
+			return centrifuge.ConnectReply{}, err
 		}
 
 		if token.UserID == "" && cfg.Client.DisallowAnonymousConnectionTokens {
@@ -617,9 +616,7 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
-	if filters := connectionTokenFilters(subscriptions); filters != nil {
-		storage[connectionTokenFiltersKey] = filters
-	}
+	storeConnectionTokenFilters(storage, subscriptions)
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,
@@ -697,14 +694,8 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	}
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
-	case accessrevoke.Revoked:
-		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
-	case accessrevoke.LoopGuard:
-		accessrevoke.LogLoopGuard(c.ID(), c.UserID(), result)
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	if result.Verdict != accessrevoke.Allowed {
+		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)

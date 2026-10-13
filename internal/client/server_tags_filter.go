@@ -11,6 +11,14 @@ import (
 // subscribed by connection token, as they were applied on connect.
 const connectionTokenFiltersKey = "connection_token_server_tags_filters"
 
+// storeConnectionTokenFilters stores server tags filters of connection token subscriptions in storage. Nothing
+// is stored when none of the subscriptions has a filter.
+func storeConnectionTokenFilters(storage map[string]any, subs map[string]centrifuge.SubscribeOptions) {
+	if filters := connectionTokenFilters(subs); filters != nil {
+		storage[connectionTokenFiltersKey] = filters
+	}
+}
+
 // connectionTokenFilters returns server tags filters of connection token subscriptions, or nil when
 // none of them has a filter. Core keeps no filter per channel, so the filters are stored on connect
 // to detect their change on refresh. Connections without filters store nothing.

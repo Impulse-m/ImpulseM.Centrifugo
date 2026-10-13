@@ -3,8 +3,6 @@ package client
 import (
 	"context"
 	"io"
-	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,132 +16,49 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 const registryTestBackendMethod = "/example.v1.UserService/GetUser"
 
-// fakeRegistryClient is a client for the registry tests. Storage is shared with the test.
-type fakeRegistryClient struct {
-	id      string
-	userID  string
-	ctx     context.Context
-	storage map[string]any
-}
-
-func (c *fakeRegistryClient) ID() string {
-	return c.id
-}
-
-func (c *fakeRegistryClient) UserID() string {
-	return c.userID
-}
-
-func (c *fakeRegistryClient) IsSubscribed(string) bool {
-	return false
-}
-
-func (c *fakeRegistryClient) Context() context.Context {
-	if c.ctx == nil {
-		return context.Background()
-	}
-	return c.ctx
-}
-
-func (c *fakeRegistryClient) Transport() centrifuge.TransportInfo {
-	return nil
-}
-
-func (c *fakeRegistryClient) AcquireStorage() (map[string]any, func(map[string]any)) {
-	return c.storage, func(map[string]any) {}
-}
-
-func (c *fakeRegistryClient) Unsubscribe(string, ...centrifuge.Unsubscribe) {}
-
-func (c *fakeRegistryClient) WritePublication(string, *centrifuge.Publication, centrifuge.StreamPosition) error {
-	return nil
-}
-
-// registryTestBackend answers every call with the raw request bytes and records the metadata of each call.
-type registryTestBackend struct {
-	listener *bufconn.Listener
-	server   *grpc.Server
-
-	mu       sync.Mutex
-	received []metadata.MD
-}
-
-func newRegistryTestBackend(t *testing.T) *registryTestBackend {
+// newRegistryTestBackend starts a shared bytes backend which is closed when the test ends.
+func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
 	t.Helper()
-	b := &registryTestBackend{listener: bufconn.Listen(1 << 20)}
-	b.server = grpc.NewServer(
-		grpc.ForceServerCodec(clientBytesCodec{}),
-		grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
-			md, _ := metadata.FromIncomingContext(stream.Context())
-			var in []byte
-			err := stream.RecvMsg(&in)
-			if err != nil {
-				return err
+	backend := tools.NewGRPCBytesBackend()
+	t.Cleanup(backend.Close)
+	return backend
+}
+
+// newRegistryTestClient returns a client for the registry tests. Its storage starts with a copy of storage.
+func newRegistryTestClient(id string, userID string, ctx context.Context, storage map[string]any) *tools.TestClientMock {
+	client := &tools.TestClientMock{
+		IDFunc:     func() string { return id },
+		UserIDFunc: func() string { return userID },
+		ContextFunc: func() context.Context {
+			if ctx == nil {
+				return context.Background()
 			}
-			b.mu.Lock()
-			b.received = append(b.received, md)
-			b.mu.Unlock()
-			out := in
-			return stream.SendMsg(&out)
-		}),
-	)
-	go func() {
-		_ = b.server.Serve(b.listener)
-	}()
-	t.Cleanup(b.server.Stop)
-	return b
-}
-
-func (b *registryTestBackend) calls() []metadata.MD {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]metadata.MD(nil), b.received...)
-}
-
-func (b *registryTestBackend) conn(t *testing.T) *grpc.ClientConn {
-	t.Helper()
-	conn, err := grpc.NewClient(
-		"passthrough:///registry-test",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return b.listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
-	return conn
-}
-
-// clientBytesCodec passes message bytes through. It mirrors the codec of the proxy package, which is unexported.
-type clientBytesCodec struct{}
-
-func (clientBytesCodec) Name() string {
-	return "proto"
-}
-
-func (clientBytesCodec) Marshal(v any) ([]byte, error) {
-	if raw, ok := v.(*[]byte); ok {
-		return *raw, nil
+			return ctx
+		},
+		TransportFunc: func() centrifuge.TransportInfo { return nil },
 	}
-	return v.([]byte), nil
+	if len(storage) > 0 {
+		copied, release := client.AcquireStorage()
+		for key, value := range storage {
+			copied[key] = value
+		}
+		release(copied)
+	}
+	return client
 }
 
-func (clientBytesCodec) Unmarshal(data []byte, v any) error {
-	raw := v.(*[]byte)
-	*raw = append((*raw)[:0], data...)
-	return nil
+// registryTestStored returns the client storage value under key.
+func registryTestStored(client *tools.TestClientMock, key string) (any, bool) {
+	storage, release := client.AcquireStorage()
+	defer release(storage)
+	value, ok := storage[key]
+	return value, ok
 }
 
 // registryTestRegistryConfig returns the registry config which the handler and the registry share.
@@ -168,6 +83,12 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 				Method:     "users.get",
 				GRPCMethod: registryTestBackendMethod,
 				Target:     "backend",
+			},
+			{
+				Method:           "users.small",
+				GRPCMethod:       registryTestBackendMethod,
+				Target:           "backend",
+				MaxResponseBytes: 100,
 			},
 			{
 				Method:     "help.config",
@@ -200,9 +121,10 @@ func newRegistryTestHandler(t *testing.T, cfg config.Config, registry *rpcregist
 }
 
 // startRegistryTestRegistry returns a registry with cfg applied, whose targets use the backend.
-func startRegistryTestRegistry(t *testing.T, cfg configtypes.RPCRegistry, backend *registryTestBackend) *rpcregistry.Registry {
+func startRegistryTestRegistry(t *testing.T, cfg configtypes.RPCRegistry, backend *tools.GRPCBytesBackend) *rpcregistry.Registry {
 	t.Helper()
-	conn := backend.conn(t)
+	conn, err := backend.Conn()
+	require.NoError(t, err)
 	dial := func(*rpcregistry.Target) (io.Closer, error) {
 		return conn, nil
 	}
@@ -221,7 +143,7 @@ func stubRPCProxy(calls *int, data string) proxy.RPCHandlerFunc {
 
 func TestRPCRegistryDisabledLeavesCallsAsTheyWere(t *testing.T) {
 	cfg := config.DefaultConfig()
-	client := &fakeRegistryClient{id: "c1", userID: "42", storage: map[string]any{}}
+	client := newRegistryTestClient("c1", "42", nil, nil)
 	event := centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}
 
 	// Without a registry, RPC without a handler answers the protocol default.
@@ -250,7 +172,7 @@ func TestRPCRegistryUnknownMethodAndNamespaceFallback(t *testing.T) {
 		{Name: "ns", RpcOptions: configtypes.RpcOptions{ProxyEnabled: true}},
 	}
 	h, _ := newRegistryTestHandler(t, cfg, registry)
-	client := &fakeRegistryClient{id: "c1", userID: "42", storage: map[string]any{}}
+	client := newRegistryTestClient("c1", "42", nil, nil)
 
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "nope.method"}, nil)
 	var protoErr *centrifuge.Error
@@ -274,8 +196,8 @@ func TestRPCRegistryCallChecks(t *testing.T) {
 	cfg.RPC.Registry = registryTestRegistryConfig()
 	h, _ := newRegistryTestHandler(t, cfg, registry)
 
-	anonymous := &fakeRegistryClient{id: "c1", storage: map[string]any{}}
-	authenticated := &fakeRegistryClient{id: "c2", userID: "42", storage: map[string]any{}}
+	anonymous := newRegistryTestClient("c1", "", nil, nil)
+	authenticated := newRegistryTestClient("c2", "42", nil, nil)
 
 	// An anonymous connection cannot call an authenticated method.
 	_, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
@@ -287,13 +209,33 @@ func TestRPCRegistryCallChecks(t *testing.T) {
 	_, err = h.OnRPC(authenticated, centrifuge.RPCEvent{Method: "users.get", Data: make([]byte, 17)}, nil)
 	require.ErrorAs(t, err, &protoErr)
 	require.Equal(t, uint32(106), protoErr.Code)
-	require.Empty(t, backend.calls())
+	require.Empty(t, backend.Calls())
 
 	// An anonymous method is callable by everyone, and the raw bytes come back.
 	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("raw"), reply.Data)
-	require.Len(t, backend.calls(), 1)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A real call whose reply is over the response limit of the method maps to the request-too-large
+// error. The check pins the gRPC receive-overflow error: grpc has no typed error for it, so a
+// grpc upgrade which changes the text fails this test.
+func TestRPCRegistryResponseOverLimitIsRequestTooLarge(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	registry := startRegistryTestRegistry(t, registryTestRegistryConfig(), backend)
+
+	cfg := config.DefaultConfig()
+	cfg.RPC.Registry = registryTestRegistryConfig()
+	h, _ := newRegistryTestHandler(t, cfg, registry)
+	client := newRegistryTestClient("c1", "42", nil, nil)
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.small", Data: []byte(tools.GRPCBytesBigPayload)}, nil)
+	var protoErr *centrifuge.Error
+	require.ErrorAs(t, err, &protoErr)
+	require.Equal(t, uint32(106), protoErr.Code)
+	require.Equal(t, "limit exceeded", protoErr.Message)
+	require.Len(t, backend.Calls(), 1)
 }
 
 func TestRPCRegistryAuthorizationFollowsConnectionToken(t *testing.T) {
@@ -316,23 +258,25 @@ func TestRPCRegistryAuthorizationFollowsConnectionToken(t *testing.T) {
 	require.Equal(t, "init", connectionEmulatedHeader(t, reply.Context, "x-example-init"))
 
 	// The connection context carries the connect-time headers, as it does for a real client.
-	client := &fakeRegistryClient{id: "c1", userID: "42", ctx: reply.Context, storage: reply.Storage}
+	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.NoError(t, err)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "help.config", Data: []byte("x")}, nil)
 	require.NoError(t, err)
 
-	calls := backend.calls()
+	calls := backend.Calls()
 	require.Len(t, calls, 2)
-	require.Equal(t, []string{"Bearer " + connectToken}, calls[0].Get("authorization"))
-	require.Equal(t, []string{"init"}, calls[0].Get("x-example-init"))
-	require.Empty(t, calls[1].Get("authorization"))
+	require.Equal(t, []string{"Bearer " + connectToken}, calls[0].Metadata.Get("authorization"))
+	require.Equal(t, []string{"init"}, calls[0].Metadata.Get("x-example-init"))
+	require.Empty(t, calls[1].Metadata.Get("authorization"))
 
 	// A refresh replaces the stored token, so later calls carry the new one.
 	refreshToken := getConnTokenHS("42", time.Now().Add(time.Hour).Unix())
 	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{Token: refreshToken}, nil)
 	require.NoError(t, err)
-	require.Equal(t, refreshToken, client.storage[clientstorage.KeyToken])
+	stored, ok := registryTestStored(client, clientstorage.KeyToken)
+	require.True(t, ok)
+	require.Equal(t, refreshToken, stored)
 }
 
 // connectionEmulatedHeader returns a connect-time header kept in the connection context.

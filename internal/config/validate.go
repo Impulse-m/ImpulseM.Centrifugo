@@ -579,24 +579,9 @@ func validateStatusTransforms(transforms []configtypes.HttpStatusToCodeTransform
 		if transform.StatusCode == 0 {
 			return fmt.Errorf("status_code should be set in status_to_code_transforms[%d]", i)
 		}
-		if transform.ToDisconnect.Code == 0 && transform.ToError.Code == 0 {
-			return fmt.Errorf("no error or disconnect code set in status_to_code_transforms[%d]", i)
-		}
-		if transform.ToDisconnect.Code > 0 && transform.ToError.Code > 0 {
-			return fmt.Errorf("only error or disconnect code can be set in status_to_code_transforms[%d], but not both", i)
-		}
-		if !tools.IsASCII(transform.ToDisconnect.Reason) {
-			return fmt.Errorf("status_to_code_transforms[%d] disconnect reason must be ASCII", i)
-		}
-		if !tools.IsASCII(transform.ToError.Message) {
-			return fmt.Errorf("status_to_code_transforms[%d] error message must be ASCII", i)
-		}
-		const reasonOrMessageMaxLength = 123 // limit comes from WebSocket close reason length limit. See https://datatracker.ietf.org/doc/html/rfc6455.
-		if len(transform.ToError.Message) > reasonOrMessageMaxLength {
-			return fmt.Errorf("status_to_code_transforms[%d] item error message can be up to %d characters long", i, reasonOrMessageMaxLength)
-		}
-		if len(transform.ToDisconnect.Reason) > reasonOrMessageMaxLength {
-			return fmt.Errorf("status_to_code_transforms[%d] disconnect reason can be up to %d characters long", i, reasonOrMessageMaxLength)
+		err := validateStatusToCodeTarget(statusToCodeTransformsKey, i, transform.ToError, transform.ToDisconnect)
+		if err != nil {
+			return err
 		}
 	}
 	return nil

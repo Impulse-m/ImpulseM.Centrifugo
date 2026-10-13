@@ -10,11 +10,25 @@ const (
 	RPCAuthClassBot           = "bot"
 )
 
+// RPCAuthClasses lists every auth class name. Validation and the registry both rely on it.
+var RPCAuthClasses = []string{
+	RPCAuthClassAnonymous,
+	RPCAuthClassPending2FA,
+	RPCAuthClassAuthenticated,
+	RPCAuthClassBot,
+}
+
 // Load balancing policies a registry target can use.
 const (
 	RPCLoadBalancingRoundRobin = "round_robin"
 	RPCLoadBalancingPickFirst  = "pick_first"
 )
+
+// RPCLoadBalancingPolicies lists every load balancing policy name.
+var RPCLoadBalancingPolicies = []string{
+	RPCLoadBalancingRoundRobin,
+	RPCLoadBalancingPickFirst,
+}
 
 // RPCRegistry configures the RPC method registry: a table which maps client RPC method
 // names to gRPC methods of backend targets. Entries are either read from a separate file

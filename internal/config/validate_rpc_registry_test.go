@@ -28,7 +28,7 @@ func validInlineRegistry() configtypes.RPCRegistry {
 				Method:     "users.getUser",
 				GRPCMethod: "/example.v1.UserService/GetUser",
 				Target:     "users",
-				Headers:    []string{"x-example-takeout-id"},
+				Headers:    []string{"x-example-export-id"},
 			},
 			{
 				Method:     "help.getConfig",
@@ -164,9 +164,9 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 		{
 			name: "method header must be lower-case",
 			modify: func(reg *configtypes.RPCRegistry) {
-				reg.Methods[0].Headers = []string{"X-Example-Takeout-Id"}
+				reg.Methods[0].Headers = []string{"X-Example-Export-Id"}
 			},
-			wantErr: `method "users.getUser": headers: name "X-Example-Takeout-Id" must be lower-case`,
+			wantErr: `method "users.getUser": headers: name "X-Example-Export-Id" must be lower-case`,
 		},
 		{
 			name: "method header authorization is reserved",
@@ -254,7 +254,7 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 					{Status: "UNAUTHENTICATED"},
 				}
 			},
-			wantErr: `grpc_status_to_code_transforms[0]: no error or disconnect code set`,
+			wantErr: `no error or disconnect code set in grpc_status_to_code_transforms[0]`,
 		},
 		{
 			name: "grpc status transform takes error or disconnect, not both",
@@ -267,7 +267,7 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 					},
 				}
 			},
-			wantErr: `grpc_status_to_code_transforms[0]: only error or disconnect code can be set`,
+			wantErr: `only error or disconnect code can be set in grpc_status_to_code_transforms[0], but not both`,
 		},
 		{
 			name: "enabled registry needs entries",

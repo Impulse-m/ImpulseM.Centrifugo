@@ -4,27 +4,21 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
+	"google.golang.org/grpc/codes"
 )
+
+// rpcStatusToCodeTransformsKey is the config key of the gRPC status transforms, used in messages.
+const rpcStatusToCodeTransformsKey = "grpc_status_to_code_transforms"
 
 var (
 	rpcRegistryMethodRe     = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,128}$`)
 	rpcRegistryGRPCMethodRe = regexp.MustCompile(`^/[\w.]+/\w+$`)
 )
-
-var rpcRegistryAuthClasses = []string{
-	configtypes.RPCAuthClassAnonymous,
-	configtypes.RPCAuthClassPending2FA,
-	configtypes.RPCAuthClassAuthenticated,
-	configtypes.RPCAuthClassBot,
-}
-
-var rpcRegistryLoadBalancing = []string{
-	configtypes.RPCLoadBalancingRoundRobin,
-	configtypes.RPCLoadBalancingPickFirst,
-}
 
 // rpcRegistryReservedHeaders are names the registry sets itself. A client must not be able to
 // forward them to a target, so they are rejected in both header allow-lists.
@@ -36,27 +30,6 @@ var rpcRegistryReservedHeaders = []string{
 }
 
 const rpcRegistryReservedHeaderPrefix = "x-centrifugo-"
-
-// rpcRegistryGRPCStatuses are the gRPC status code names accepted in grpc_status_to_code_transforms.
-var rpcRegistryGRPCStatuses = []string{
-	"OK",
-	"CANCELLED",
-	"UNKNOWN",
-	"INVALID_ARGUMENT",
-	"DEADLINE_EXCEEDED",
-	"NOT_FOUND",
-	"ALREADY_EXISTS",
-	"PERMISSION_DENIED",
-	"RESOURCE_EXHAUSTED",
-	"FAILED_PRECONDITION",
-	"ABORTED",
-	"OUT_OF_RANGE",
-	"UNIMPLEMENTED",
-	"INTERNAL",
-	"UNAVAILABLE",
-	"DATA_LOSS",
-	"UNAUTHENTICATED",
-}
 
 // validateRPCRegistry validates the RPC method registry. A disabled registry is not checked. An enabled one
 // is checked in full, including the registry file, so checkconfig covers it.
@@ -120,7 +93,7 @@ func validateRPCRegistryFile(file configtypes.RPCRegistryFile) error {
 }
 
 func validateRPCMethodDefaults(defaults configtypes.RPCMethodDefaults) error {
-	if defaults.AuthClass != "" && !slices.Contains(rpcRegistryAuthClasses, defaults.AuthClass) {
+	if defaults.AuthClass != "" && !slices.Contains(configtypes.RPCAuthClasses, defaults.AuthClass) {
 		return fmt.Errorf("auth_class: unknown auth class %q", defaults.AuthClass)
 	}
 	return validateRPCLimits(defaults.Timeout, defaults.MaxRequestBytes, defaults.MaxResponseBytes)
@@ -133,7 +106,7 @@ func validateRPCTarget(target configtypes.RPCTarget) error {
 	if target.Endpoint == "" {
 		return fmt.Errorf("endpoint: must be set")
 	}
-	if target.LoadBalancing != "" && !slices.Contains(rpcRegistryLoadBalancing, target.LoadBalancing) {
+	if target.LoadBalancing != "" && !slices.Contains(configtypes.RPCLoadBalancingPolicies, target.LoadBalancing) {
 		return fmt.Errorf("load_balancing: unknown policy %q", target.LoadBalancing)
 	}
 	err := validateRPCLimits(target.Timeout, target.MaxRequestBytes, target.MaxResponseBytes)
@@ -160,7 +133,7 @@ func validateRPCMethod(method configtypes.RPCMethod, defaults configtypes.RPCMet
 		if defaults.AuthClass == "" || defaults.AuthClass == configtypes.RPCAuthClassAnonymous {
 			return fmt.Errorf("auth_class: must be set, defaults.auth_class is empty or anonymous")
 		}
-	} else if !slices.Contains(rpcRegistryAuthClasses, method.AuthClass) {
+	} else if !slices.Contains(configtypes.RPCAuthClasses, method.AuthClass) {
 		return fmt.Errorf("auth_class: unknown auth class %q", method.AuthClass)
 	}
 	err := validateRPCLimits(method.Timeout, method.MaxRequestBytes, method.MaxResponseBytes)
@@ -214,16 +187,22 @@ func validateRPCLowerCaseNames(names []string, field string) error {
 	return nil
 }
 
+// validateRPCRegistryTransforms checks grpc_status_to_code_transforms. The status name is parsed by grpc
+// itself. The quotes make grpc accept names only, not numbers. The target is checked by the same helper
+// as the HTTP status transforms.
 func validateRPCRegistryTransforms(transforms configtypes.RPCGRPCStatusToCodeTransforms) error {
 	for i, transform := range transforms {
-		if !slices.Contains(rpcRegistryGRPCStatuses, transform.Status) {
+		var code codes.Code
+		err := code.UnmarshalJSON([]byte(strconv.Quote(transform.Status)))
+		if err != nil {
 			return fmt.Errorf("grpc_status_to_code_transforms[%d]: unknown gRPC status %q", i, transform.Status)
 		}
-		if transform.ToError.Code == 0 && transform.ToDisconnect.Code == 0 {
-			return fmt.Errorf("grpc_status_to_code_transforms[%d]: no error or disconnect code set", i)
+		if code == codes.OK {
+			return fmt.Errorf("grpc_status_to_code_transforms[%d]: %s cannot be transformed", i, transform.Status)
 		}
-		if transform.ToError.Code > 0 && transform.ToDisconnect.Code > 0 {
-			return fmt.Errorf("grpc_status_to_code_transforms[%d]: only error or disconnect code can be set, not both", i)
+		err = validateStatusToCodeTarget(rpcStatusToCodeTransformsKey, i, transform.ToError, transform.ToDisconnect)
+		if err != nil {
+			return err
 		}
 	}
 	return nil

@@ -1,5 +1,27 @@
 package configtypes
 
+import (
+	"slices"
+	"strings"
+)
+
+// rpcRegistryReservedHeaders are names the registry sets itself. A client must not be able to
+// forward them to a target, so they are rejected in both header allow-lists.
+var rpcRegistryReservedHeaders = []string{
+	"authorization",
+	"traceparent",
+	"tracestate",
+	"x-forwarded-for",
+}
+
+// RPCRegistryReservedHeaderPrefix is the prefix of header names the registry sets itself.
+const RPCRegistryReservedHeaderPrefix = "x-centrifugo-"
+
+// IsRPCRegistryReservedHeader reports whether name, in lower case, is a header the registry sets itself.
+func IsRPCRegistryReservedHeader(name string) bool {
+	return slices.Contains(rpcRegistryReservedHeaders, name) || strings.HasPrefix(name, RPCRegistryReservedHeaderPrefix)
+}
+
 // Auth classes a registry method can require. The empty string means the method
 // states no class, which is allowed only when defaults.auth_class is set to a class
 // other than anonymous.

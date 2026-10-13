@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -21,17 +22,6 @@ import (
 // ErrRPCResponseTooLarge is returned by CallRegistryMethod when the target answers with a message
 // over the response limit of the method.
 var ErrRPCResponseTooLarge = errors.New("rpc registry response too large")
-
-// registryReservedHeaders are names the registry sets itself. Client headers with these names are
-// never forwarded, even when an allow-list names them.
-var registryReservedHeaders = []string{
-	"authorization",
-	"traceparent",
-	"tracestate",
-	"x-forwarded-for",
-}
-
-const registryReservedHeaderPrefix = "x-centrifugo-"
 
 // RegistryCall is one client call through the RPC method registry.
 type RegistryCall struct {
@@ -124,23 +114,18 @@ func registryRequestMetadata(ctx context.Context, m *rpcregistry.Method, call Re
 	target := m.Target.Config
 	md := requestMetadata(ctx, nil, nil, target.EmulatedHeaders, target.GRPC.StaticMetadata)
 
-	// Reserved names are removed here as well, so they are never forwarded whatever the allow-list says.
-	allowed := slices.DeleteFunc(slices.Clone(m.Headers), isRegistryReservedHeader)
-	setListedHeaders(md, call.Headers, allowed, nil)
+	// m.Headers never names a reserved header: validation rejects them. The reserved values below
+	// are written after the client headers, so they win if a client value ever gets through.
+	setListedHeaders(md, call.Headers, m.Headers, nil)
 
 	if m.AuthClass != rpcregistry.AuthClassAnonymous && call.Token != "" {
 		md.Set("authorization", "Bearer "+call.Token)
 	}
-	md.Set(registryReservedHeaderPrefix+"client", call.ClientID)
+	md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"client", call.ClientID)
 	if call.MsgID != 0 {
-		md.Set(registryReservedHeaderPrefix+"msg-id", strconv.FormatUint(call.MsgID, 10))
+		md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"msg-id", strconv.FormatUint(call.MsgID, 10))
 	}
 	return md
-}
-
-// isRegistryReservedHeader reports whether name, in lower case, is a name the registry sets itself.
-func isRegistryReservedHeader(name string) bool {
-	return slices.Contains(registryReservedHeaders, name) || strings.HasPrefix(name, registryReservedHeaderPrefix)
 }
 
 // setListedHeaders sets on md every header whose lower-case name is in allowed. It reports whether

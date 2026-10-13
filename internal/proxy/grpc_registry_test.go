@@ -3,105 +3,35 @@ package proxy
 import (
 	"context"
 	"io"
-	"net"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 const registryTestMethod = "/example.v1.UserService/GetUser"
 
-// Payloads which make the test backend slow or answer with a large reply.
-const (
-	registryTestSlowPayload = "slow"
-	registryTestBigPayload  = "big"
-	registryTestBigReply    = 1024
-)
-
-type registryTestCall struct {
-	method string
-	md     metadata.MD
-}
-
-// registryTestBackend is an in-process gRPC server. It answers every method with the raw request
-// bytes and records the method and metadata of each call.
-type registryTestBackend struct {
-	listener *bufconn.Listener
-	server   *grpc.Server
-
-	mu    sync.Mutex
-	calls []registryTestCall
-}
-
-func newRegistryTestBackend(t *testing.T) *registryTestBackend {
+// newRegistryTestBackend starts a shared bytes backend which is closed when the test ends.
+func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
 	t.Helper()
-	b := &registryTestBackend{listener: bufconn.Listen(1 << 20)}
-	b.server = grpc.NewServer(
-		grpc.ForceServerCodec(bytesCodec{}),
-		grpc.UnknownServiceHandler(b.handle),
-	)
-	go func() {
-		_ = b.server.Serve(b.listener)
-	}()
-	t.Cleanup(b.server.Stop)
-	return b
+	backend := tools.NewGRPCBytesBackend()
+	t.Cleanup(backend.Close)
+	return backend
 }
 
-func (b *registryTestBackend) handle(_ any, stream grpc.ServerStream) error {
-	method, _ := grpc.MethodFromServerStream(stream)
-	md, _ := metadata.FromIncomingContext(stream.Context())
-	var in []byte
-	err := stream.RecvMsg(&in)
-	if err != nil {
-		return err
-	}
-	b.mu.Lock()
-	b.calls = append(b.calls, registryTestCall{method: method, md: md})
-	b.mu.Unlock()
-
-	if string(in) == registryTestSlowPayload {
-		<-stream.Context().Done()
-		return stream.Context().Err()
-	}
-	out := in
-	if string(in) == registryTestBigPayload {
-		out = make([]byte, registryTestBigReply)
-	}
-	return stream.SendMsg(&out)
-}
-
-func (b *registryTestBackend) recorded() []registryTestCall {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]registryTestCall(nil), b.calls...)
-}
-
-// conn returns a client connection to the backend, closed when the test ends.
-func (b *registryTestBackend) conn(t *testing.T) *grpc.ClientConn {
+// registryTestConn returns a client connection to backend.
+func registryTestConn(t *testing.T, backend *tools.GRPCBytesBackend) *grpc.ClientConn {
 	t.Helper()
-	conn, err := grpc.NewClient(
-		"passthrough:///registry-test",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return b.listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := backend.Conn()
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = conn.Close()
-	})
 	return conn
 }
 
@@ -170,7 +100,7 @@ func startRegistryTest(t *testing.T, cfg configtypes.RPCRegistry, conn *grpc.Cli
 
 func TestRegistryCallPassesBytesThrough(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	r := startRegistryTest(t, registryTestConfig(), backend.conn(t))
+	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	payload := []byte{0x08, 0x96, 0x01, 0x00, 0xff, 0x7f}
 	data, _, err := CallRegistryMethod(context.Background(), r.Lookup("users.get"), RegistryCall{
@@ -180,29 +110,29 @@ func TestRegistryCallPassesBytesThrough(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, payload, data)
 
-	calls := backend.recorded()
+	calls := backend.Calls()
 	require.Len(t, calls, 1)
-	require.Equal(t, registryTestMethod, calls[0].method)
+	require.Equal(t, registryTestMethod, calls[0].Method)
 }
 
 func TestRegistryCallTimeoutIsDeadlineExceeded(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	r := startRegistryTest(t, registryTestConfig(), backend.conn(t))
+	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("users.slow"), RegistryCall{
 		ClientID: "client-1",
-		Data:     []byte(registryTestSlowPayload),
+		Data:     []byte(tools.GRPCBytesSlowPayload),
 	})
 	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
 }
 
 func TestRegistryCallResponseOverLimitIsReported(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	r := startRegistryTest(t, registryTestConfig(), backend.conn(t))
+	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("users.small"), RegistryCall{
 		ClientID: "client-1",
-		Data:     []byte(registryTestBigPayload),
+		Data:     []byte(tools.GRPCBytesBigPayload),
 	})
 	require.ErrorIs(t, err, ErrRPCResponseTooLarge)
 
@@ -216,7 +146,7 @@ func TestRegistryCallResponseOverLimitIsReported(t *testing.T) {
 
 func TestRegistryCallMetadataLaterSourcesWin(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	r := startRegistryTest(t, registryTestConfig(), backend.conn(t))
+	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{
 		"x-example-init":   "init",
@@ -236,7 +166,7 @@ func TestRegistryCallMetadataLaterSourcesWin(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	md := backend.recorded()[0].md
+	md := backend.Calls()[0].Metadata
 	require.Equal(t, []string{"static"}, md.Get("x-example-static"))
 	require.Equal(t, []string{"init"}, md.Get("x-example-init"))
 	require.Empty(t, md.Get("x-example-other"))
@@ -250,7 +180,7 @@ func TestRegistryCallMetadataLaterSourcesWin(t *testing.T) {
 
 func TestRegistryCallMetadataOmitsMsgIDAndAuthorization(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	r := startRegistryTest(t, registryTestConfig(), backend.conn(t))
+	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	// An anonymous method never gets the token, even on a connection which has one.
 	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("help.config"), RegistryCall{
@@ -265,22 +195,24 @@ func TestRegistryCallMetadataOmitsMsgIDAndAuthorization(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	calls := backend.recorded()
+	calls := backend.Calls()
 	require.Len(t, calls, 2)
-	require.Equal(t, []string{"client-1"}, calls[0].md.Get("x-centrifugo-client"))
-	require.Empty(t, calls[0].md.Get("x-centrifugo-msg-id"))
-	require.Empty(t, calls[0].md.Get("authorization"))
-	require.Equal(t, []string{"client-2"}, calls[1].md.Get("x-centrifugo-client"))
-	require.Empty(t, calls[1].md.Get("authorization"))
+	require.Equal(t, []string{"client-1"}, calls[0].Metadata.Get("x-centrifugo-client"))
+	require.Empty(t, calls[0].Metadata.Get("x-centrifugo-msg-id"))
+	require.Empty(t, calls[0].Metadata.Get("authorization"))
+	require.Equal(t, []string{"client-2"}, calls[1].Metadata.Get("x-centrifugo-client"))
+	require.Empty(t, calls[1].Metadata.Get("authorization"))
 }
 
-func TestRegistryRequestMetadataStripsReservedHeaders(t *testing.T) {
+// A validated method never lists a reserved header, so client values of reserved names are not
+// forwarded at all.
+func TestRegistryRequestMetadataDropsUnlistedReservedHeaders(t *testing.T) {
 	m := &rpcregistry.Method{
 		Name:       "users.get",
 		GRPCMethod: registryTestMethod,
 		Target:     &rpcregistry.Target{Config: configtypes.RPCTarget{Name: "backend"}},
 		AuthClass:  rpcregistry.AuthClassAuthenticated,
-		Headers:    []string{"authorization", "traceparent", "x-centrifugo-client", "x-example-export"},
+		Headers:    []string{"x-example-export"},
 	}
 	md := registryRequestMetadata(context.Background(), m, RegistryCall{
 		ClientID: "real-client",
@@ -295,6 +227,31 @@ func TestRegistryRequestMetadataStripsReservedHeaders(t *testing.T) {
 	require.Equal(t, []string{"real-client"}, md.Get("x-centrifugo-client"))
 	require.Empty(t, md.Get("authorization"))
 	require.Empty(t, md.Get("traceparent"))
+}
+
+// The reserved values are written after the client headers, so they win even when a method
+// lists reserved names, which validation would reject.
+func TestRegistryRequestMetadataServerValuesWinOverListedReservedHeaders(t *testing.T) {
+	m := &rpcregistry.Method{
+		Name:       "users.get",
+		GRPCMethod: registryTestMethod,
+		Target:     &rpcregistry.Target{Config: configtypes.RPCTarget{Name: "backend"}},
+		AuthClass:  rpcregistry.AuthClassAuthenticated,
+		Headers:    []string{"authorization", "x-centrifugo-client", "x-centrifugo-msg-id"},
+	}
+	md := registryRequestMetadata(context.Background(), m, RegistryCall{
+		ClientID: "real-client",
+		Token:    "good",
+		MsgID:    9,
+		Headers: map[string]string{
+			"authorization":       "client-value",
+			"x-centrifugo-client": "client-value",
+			"x-centrifugo-msg-id": "client-value",
+		},
+	})
+	require.Equal(t, []string{"Bearer good"}, md.Get("authorization"))
+	require.Equal(t, []string{"real-client"}, md.Get("x-centrifugo-client"))
+	require.Equal(t, []string{"9"}, md.Get("x-centrifugo-msg-id"))
 }
 
 func TestDialRegistryTargetBuildsConnection(t *testing.T) {

@@ -20,17 +20,6 @@ var (
 	rpcRegistryGRPCMethodRe = regexp.MustCompile(`^/[\w.]+/\w+$`)
 )
 
-// rpcRegistryReservedHeaders are names the registry sets itself. A client must not be able to
-// forward them to a target, so they are rejected in both header allow-lists.
-var rpcRegistryReservedHeaders = []string{
-	"authorization",
-	"traceparent",
-	"tracestate",
-	"x-forwarded-for",
-}
-
-const rpcRegistryReservedHeaderPrefix = "x-centrifugo-"
-
 // validateRPCRegistry validates the RPC method registry. A disabled registry is not checked. An enabled one
 // is checked in full, including the registry file, so checkconfig covers it.
 func validateRPCRegistry(c Config) error {
@@ -168,7 +157,7 @@ func validateRPCHeaderNames(names []string, field string) error {
 		return err
 	}
 	for _, name := range names {
-		if slices.Contains(rpcRegistryReservedHeaders, name) || strings.HasPrefix(name, rpcRegistryReservedHeaderPrefix) {
+		if configtypes.IsRPCRegistryReservedHeader(name) {
 			return fmt.Errorf("%s: header %q is reserved", field, name)
 		}
 	}

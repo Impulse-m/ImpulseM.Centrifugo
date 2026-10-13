@@ -112,6 +112,8 @@ func NewRedisUserLimiter(
 		run:          runRedisScript,
 		backoffMin:   redisRetryMin,
 		backoffMax:   redisRetryMax,
+		// A zero Sometimes runs only once, so the interval must be set.
+		errorLog: rate.Sometimes{Interval: redisErrorLogInterval},
 	}
 }
 

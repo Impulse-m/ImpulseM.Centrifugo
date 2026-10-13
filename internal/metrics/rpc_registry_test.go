@@ -85,8 +85,8 @@ func TestIncRPCRegistryHelpersWithoutInit(t *testing.T) {
 
 func TestNormalizeNumericSuffix(t *testing.T) {
 	tests := map[string]string{
-		"FLOOD_WAIT_17":   "FLOOD_WAIT_X",
-		"FLOOD_WAIT_0":    "FLOOD_WAIT_X",
+		"QUOTA_EXCEEDED_17":   "QUOTA_EXCEEDED_X",
+		"QUOTA_EXCEEDED_0":    "QUOTA_EXCEEDED_X",
 		"PLAIN":           "PLAIN",
 		"TRAILING_":       "TRAILING_",
 		"MIXED_1A":        "MIXED_1A",

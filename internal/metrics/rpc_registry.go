@@ -66,7 +66,7 @@ func rpcRegistryResultLabel(result string) string {
 }
 
 // rpcRegistryAppTypeLabel returns the bounded app_type label. A trailing _<digits> becomes _X, so
-// FLOOD_WAIT_17 and FLOOD_WAIT_30 share one series. Distinct values are kept up to
+// QUOTA_EXCEEDED_17 and QUOTA_EXCEEDED_30 share one series. Distinct values are kept up to
 // rpcRegistryMaxAppTypes per process, the rest are reported as rpcRegistryOtherAppType.
 func rpcRegistryAppTypeLabel(appType string) string {
 	if appType == "" {

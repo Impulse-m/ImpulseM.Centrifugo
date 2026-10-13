@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,20 +15,11 @@ import (
 // has changed. Nil means no connections are made.
 type DialFunc func(target *Target) (io.Closer, error)
 
-// retiredTarget is a target which is no longer in the table. Its connection is closed after closeAt.
-type retiredTarget struct {
-	target  *Target
-	closeAt time.Time
-}
-
 // Registry is the RPC method registry. Lookup may run concurrently with a reload. Prepare and
 // apply must not run concurrently with each other: reloads run one at a time.
 type Registry struct {
 	current atomic.Pointer[table]
 	dial    DialFunc
-
-	retireMu sync.Mutex
-	retired  []retiredTarget
 }
 
 // New returns an empty registry. Prepare fills it.
@@ -187,46 +177,12 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 	return next, removed, created, nil
 }
 
-// retire records targets which left the table. Their connections are closed once the drain
-// timeout has passed, so calls which still hold the old method can finish.
+// retire closes the connections of targets which left the table once the drain timeout has
+// passed, so calls which still hold the old method can finish.
 func (r *Registry) retire(removed []*Target, drain time.Duration) {
-	if len(removed) == 0 {
-		return
-	}
-	closeAt := time.Now().Add(drain)
-	r.retireMu.Lock()
-	for _, target := range removed {
-		r.retired = append(r.retired, retiredTarget{target: target, closeAt: closeAt})
-	}
-	r.retireMu.Unlock()
 	for _, target := range removed {
 		time.AfterFunc(drain, func() {
-			r.closeRetired(target)
+			closeTargets([]*Target{target})
 		})
 	}
-}
-
-// closeRetired drops target from the retired list and closes its connection.
-func (r *Registry) closeRetired(target *Target) {
-	r.retireMu.Lock()
-	kept := r.retired[:0]
-	for _, item := range r.retired {
-		if item.target != target {
-			kept = append(kept, item)
-		}
-	}
-	r.retired = kept
-	r.retireMu.Unlock()
-	closeTargets([]*Target{target})
-}
-
-// retiredTargets returns the targets recorded as removed and not yet closed.
-func (r *Registry) retiredTargets() []*Target {
-	r.retireMu.Lock()
-	defer r.retireMu.Unlock()
-	out := make([]*Target, 0, len(r.retired))
-	for _, item := range r.retired {
-		out = append(out, item.target)
-	}
-	return out
 }

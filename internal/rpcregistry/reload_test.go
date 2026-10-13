@@ -69,13 +69,14 @@ func TestUnchangedTargetIsReusedWithItsConnection(t *testing.T) {
 	require.Same(t, first, r.Lookup(testGetUserMethod).Target)
 	require.Equal(t, 1, dialer.dials)
 	require.Equal(t, int32(0), dialer.conns[0].closed.Load())
-	require.Empty(t, r.retiredTargets())
+	require.Len(t, dialer.conns, 1)
 }
 
 func TestChangedTargetIsReplacedAndOldRetired(t *testing.T) {
 	dialer := &fakeDialer{}
 	r := newRegistryWithDialer(t, dialer)
 	reg := testRegistry()
+	reg.DrainTimeout = configtypes.Duration(time.Minute)
 	reloadWith(t, r, reg)
 	old := r.Lookup(testGetUserMethod).Target
 
@@ -86,8 +87,7 @@ func TestChangedTargetIsReplacedAndOldRetired(t *testing.T) {
 	require.NotSame(t, old, current)
 	require.Equal(t, "dns:///users-new.example:9000", current.Config.Endpoint)
 	require.Equal(t, 2, dialer.dials)
-	require.Equal(t, []*Target{old}, r.retiredTargets())
-	// Closing is not done in this phase, the old connection stays open until the connection code closes it.
+	// The old connection is retired, and stays open during the drain.
 	require.Equal(t, int32(0), dialer.conns[0].closed.Load())
 }
 
@@ -111,8 +111,8 @@ func TestRemovedTargetIsRetired(t *testing.T) {
 	dialer := &fakeDialer{}
 	r := newRegistryWithDialer(t, dialer)
 	reg := testRegistry()
+	reg.DrainTimeout = configtypes.Duration(time.Minute)
 	reloadWith(t, r, reg)
-	old := r.Lookup(testGetUserMethod).Target
 
 	reg.Targets = []configtypes.RPCTarget{{Name: "files", Endpoint: "dns:///files:9000"}}
 	reg.Methods = []configtypes.RPCMethod{
@@ -121,7 +121,8 @@ func TestRemovedTargetIsRetired(t *testing.T) {
 	reloadWith(t, r, reg)
 
 	require.Nil(t, r.Lookup(testGetUserMethod))
-	require.Equal(t, []*Target{old}, r.retiredTargets())
+	// The removed target is retired, and its connection stays open during the drain.
+	require.Equal(t, int32(0), dialer.conns[0].closed.Load())
 }
 
 func TestDialFailureClosesNewConnectionsAndKeepsOldTable(t *testing.T) {
@@ -148,19 +149,21 @@ func TestDialFailureClosesNewConnectionsAndKeepsOldTable(t *testing.T) {
 	require.Equal(t, int32(0), dialer.conns[1].closed.Load())
 	require.Equal(t, int32(1), dialer.conns[2].closed.Load())
 	require.Same(t, before, r.Lookup(testGetUserMethod))
-	require.Empty(t, r.retiredTargets())
+	require.Equal(t, int32(0), dialer.conns[0].closed.Load())
 }
 
 func TestDrainTimeoutIsUsedForRetiredTargets(t *testing.T) {
-	r := New()
+	dialer := &fakeDialer{}
+	r := newRegistryWithDialer(t, dialer)
 	reg := testRegistry()
 	reg.DrainTimeout = configtypes.Duration(time.Minute)
 	reloadWith(t, r, reg)
-	old := r.Lookup(testGetUserMethod).Target
 
 	reg.Targets[0].Endpoint = "dns:///users-new.example:9000"
 	reloadWith(t, r, reg)
 
-	require.Equal(t, []*Target{old}, r.retiredTargets())
-	require.True(t, r.retired[0].closeAt.After(time.Now().Add(50*time.Second)))
+	// Well past a zero drain, the retired connection is still open: the drain timeout applies.
+	require.Never(t, func() bool {
+		return dialer.conns[0].closed.Load() == 1
+	}, 100*time.Millisecond, 10*time.Millisecond)
 }

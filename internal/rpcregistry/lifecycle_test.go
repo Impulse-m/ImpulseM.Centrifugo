@@ -1,6 +1,7 @@
 package rpcregistry
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestRetiredTargetConnectionClosesAfterDrain(t *testing.T) {
 	dialer := &fakeDialer{}
 	r := newRegistryWithDialer(t, dialer)
 	reg := testRegistry()
-	reg.DrainTimeout = configtypes.Duration(50 * time.Millisecond)
+	reg.DrainTimeout = configtypes.Duration(300 * time.Millisecond)
 	reloadWith(t, r, reg)
 
 	reg.Targets[0].Endpoint = "dns:///users-new.example:9000"
@@ -67,9 +68,26 @@ func TestRetiredTargetConnectionClosesAfterDrain(t *testing.T) {
 		return dialer.conns[0].closed.Load() == 1
 	}, 2*time.Second, 5*time.Millisecond)
 	require.Equal(t, int32(0), dialer.conns[1].closed.Load())
-	require.Eventually(t, func() bool {
-		return len(r.retiredTargets()) == 0
-	}, 2*time.Second, 5*time.Millisecond)
+}
+
+func TestServiceClosesCurrentTargetsOnStop(t *testing.T) {
+	dialer := &fakeDialer{}
+	r := newRegistryWithDialer(t, dialer)
+	reloadWith(t, r, testRegistry())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Service().Run(ctx)
+	}()
+	require.Never(t, func() bool {
+		return dialer.conns[0].closed.Load() != 0
+	}, 50*time.Millisecond, 5*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+	require.Equal(t, int32(1), dialer.conns[0].closed.Load())
 }
 
 func TestEnabledFollowsConfig(t *testing.T) {

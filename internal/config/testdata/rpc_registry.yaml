@@ -30,7 +30,7 @@ methods:
     grpc_method: /example.v1.UserService/GetUser
     target: users
     idempotent: true
-    headers: [x-example-takeout-id]
+    headers: [x-example-export-id]
   - method: users.signIn
     grpc_method: /example.v1.UserService/SignIn
     target: users

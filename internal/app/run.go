@@ -187,37 +187,11 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	accessStore := accessrevoke.NewStore(cfg.AccessRevoke.DefaultTTL.ToDuration())
-	accessDisconnectQueue := accessrevoke.NewDisconnectQueue(cfg.AccessRevoke.DisconnectRate, cfg.AccessRevoke.DisconnectQueueSize)
-	serviceManager.Register(
-		accessrevoke.NewSweeper(accessStore, cfg.AccessRevoke.SweepInterval.ToDuration()),
-		accessDisconnectQueue,
-	)
-	accessRevoker := accessrevoke.NewRevoker(accessStore, node.Hub(), accessDisconnectQueue)
-	accessNotifier := accessrevoke.NewNotifier(node, cfg.AccessRevoke.NotifyRate)
+	accessRevoke := accessrevoke.Setup(node, cfg, cfgContainer)
+	serviceManager.Register(accessRevoke.Services...)
 
-	// Access revocation source is optional: nil means no source, and nothing gates connections or health.
-	var accessSource accessrevoke.Source
-	var healthReady func() bool
-	if cfg.AccessRevoke.Source.Type == "kafka" {
-		kafkaSource := accessrevoke.NewKafkaSource(cfg.AccessRevoke.Source, cfgContainer, accessRevoker)
-		accessSource = kafkaSource
-		healthReady = kafkaSource.Ready
-		serviceManager.Register(
-			kafkaSource,
-			accessrevoke.NewCatchUpSweeper(
-				kafkaSource.CaughtUpAfterFailOpen(),
-				node.Hub(),
-				accessStore,
-				accessDisconnectQueue,
-				func() accessrevoke.CheckOptions {
-					return accessrevoke.OptionsFromConfig(cfgContainer.ConfigRef())
-				},
-			),
-		)
-	}
-
-	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap, accessStore, accessSource)
+	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap)
+	clientHandler.SetAccessRevoke(accessRevoke.Store, accessRevoke.Source)
 	err = clientHandler.Setup()
 	if err != nil {
 		log.Fatal().Err(err).Msg("error setting up client handler")
@@ -238,20 +212,20 @@ func Run(cmd *cobra.Command, configFile string) {
 	httpAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "http",
 		UseOpenTelemetry: useAPIOpentelemetry,
-		AccessRevoker:    accessRevoker,
-		AccessNotifier:   accessNotifier,
+		AccessRevoker:    accessRevoke.Revoker,
+		AccessNotifier:   accessRevoke.Notifier,
 	})
 	grpcAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "grpc",
 		UseOpenTelemetry: useAPIOpentelemetry,
-		AccessRevoker:    accessRevoker,
-		AccessNotifier:   accessNotifier,
+		AccessRevoker:    accessRevoke.Revoker,
+		AccessNotifier:   accessRevoke.Notifier,
 	})
 	consumingAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "consuming",
 		UseOpenTelemetry: useConsumingOpentelemetry,
-		AccessRevoker:    accessRevoker,
-		AccessNotifier:   accessNotifier,
+		AccessRevoker:    accessRevoke.Revoker,
+		AccessNotifier:   accessRevoke.Notifier,
 	})
 
 	consumingHandler := api.NewConsumingHandler(node, consumingAPIExecutor, api.ConsumingHandlerConfig{
@@ -312,7 +286,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		serviceManager.Register(statsSender)
 	}
 
-	notify.RegisterHandlers(node, statsSender, accessRevoker)
+	notify.RegisterHandlers(node, statsSender, accessRevoke.Revoker)
 
 	if err = node.Run(); err != nil {
 		log.Fatal().Err(err).Msg("error running node")
@@ -339,7 +313,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext, healthReady)
+	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext, accessRevoke.Ready)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error running HTTP server")
 	}

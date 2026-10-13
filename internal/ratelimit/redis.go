@@ -14,6 +14,7 @@ import (
 
 	"github.com/redis/rueidis"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -85,8 +86,8 @@ type RedisUserLimiter struct {
 	// shards is set once, by a successful Connect. Its shard count never changes, so the user-to-shard
 	// mapping stays the same for the life of the process. Nil means not connected.
 	shards atomic.Pointer[[]*redisshard.RedisShard]
-	// lastErrorLog is the time of the last logged Redis error in Unix nanoseconds.
-	lastErrorLog atomic.Int64
+	// errorLog limits how often Redis errors are logged to once per redisErrorLogInterval.
+	errorLog rate.Sometimes
 }
 
 // NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
@@ -226,15 +227,9 @@ func (l *RedisUserLimiter) check(userID string, s *scope) bool {
 
 // logError logs a Redis error at most once per redisErrorLogInterval.
 func (l *RedisUserLimiter) logError(err error) {
-	now := time.Now().UnixNano()
-	last := l.lastErrorLog.Load()
-	if now-last < int64(redisErrorLogInterval) {
-		return
-	}
-	if !l.lastErrorLog.CompareAndSwap(last, now) {
-		return
-	}
-	log.Error().Err(err).Msg("redis_user_command rate limit: Redis error, command allowed")
+	l.errorLog.Do(func() {
+		log.Error().Err(err).Msg("redis_user_command rate limit: Redis error, command allowed")
+	})
 }
 
 // retryDelay returns a random delay in [backoff/2, backoff], so nodes started together do not retry in lockstep.

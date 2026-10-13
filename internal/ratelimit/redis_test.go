@@ -1,9 +1,11 @@
 package ratelimit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +15,8 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -281,13 +285,17 @@ func TestRedisLimiterFailOpen(t *testing.T) {
 func TestRedisLimiterLogsErrorsRateLimited(t *testing.T) {
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, errors.New("boom"), &calls))
-	first := l.lastErrorLog.Load()
+
+	var logBuf bytes.Buffer
+	savedLogger := log.Logger
+	log.Logger = zerolog.New(&logBuf)
+	defer func() { log.Logger = savedLogger }()
+
 	l.logError(errors.New("boom"))
-	logged := l.lastErrorLog.Load()
-	require.Greater(t, logged, first)
-	// The second error within the interval is not logged, so the timestamp does not change.
+	require.Equal(t, 1, strings.Count(logBuf.String(), "\n"))
+	// The second error within the interval is not logged.
 	l.logError(errors.New("boom"))
-	require.Equal(t, logged, l.lastErrorLog.Load())
+	require.Equal(t, 1, strings.Count(logBuf.String(), "\n"))
 }
 
 func TestRedisLimiterNeedsKey(t *testing.T) {

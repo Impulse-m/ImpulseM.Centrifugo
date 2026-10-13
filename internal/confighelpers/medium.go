@@ -8,8 +8,7 @@ import (
 
 // MediumEnabled reports whether channel options enable any channel medium feature.
 func MediumEnabled(chOpts configtypes.ChannelOptions) bool {
-	opts := MediumOptionsFromChannelOptions(chOpts)
-	return opts.SharedPositionSync || opts.KeepLatestPublication
+	return MediumOptionsFromChannelOptions(chOpts).SharedPositionSync
 }
 
 // MediumOptionsFromChannelOptions converts channel options into centrifuge channel medium options.

@@ -3,7 +3,6 @@ package accessrevoke
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 // NotifyOp is an operation name of access revocation notifications sent to all nodes.
@@ -42,27 +41,4 @@ func DecodeNotification(data []byte) (Notification, error) {
 	var notification Notification
 	err := json.Unmarshal(data, &notification)
 	return notification, err
-}
-
-// Apply applies the notification to local state. It is used both for operations received through
-// the API and for notifications from other nodes. Only local connections are disconnected.
-func (r *Revoker) Apply(notification Notification) error {
-	switch notification.Kind {
-	case KindBlockUser:
-		return r.BlockUser(notification.User, notification.ExpireAt)
-	case KindUnblockUser:
-		return r.UnblockUser(notification.User)
-	case KindRevokeToken:
-		return r.RevokeSession(notification.User, notification.Session, notification.RevokedAt, notification.ExpireAt)
-	case KindInvalidateUserTokens:
-		return r.InvalidateUser(
-			notification.User,
-			notification.Generation,
-			notification.IssuedBefore,
-			notification.RevokedAt,
-			notification.ExpireAt,
-		)
-	default:
-		return fmt.Errorf("%w: %q", ErrUnknownKind, notification.Kind)
-	}
 }

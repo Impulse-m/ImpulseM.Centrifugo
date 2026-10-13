@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"hash/maphash"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -182,12 +183,10 @@ func (s *userStore) sweep(now time.Time) int {
 	return evicted
 }
 
-// userShardIndex returns the shard of userID using FNV-1a, without allocations.
+// userShardSeed seeds userShardIndex. The shards are local to the process, so the seed may be random.
+var userShardSeed = maphash.MakeSeed()
+
+// userShardIndex returns the shard of userID. It does not allocate.
 func userShardIndex(userID string) int {
-	var hash uint32 = 2166136261
-	for i := 0; i < len(userID); i++ {
-		hash ^= uint32(userID[i])
-		hash *= 16777619
-	}
-	return int(hash & (userShardCount - 1))
+	return int(maphash.String(userShardSeed, userID) & (userShardCount - 1))
 }

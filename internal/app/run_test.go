@@ -6,6 +6,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 
 	"github.com/cristalhq/jwt/v5"
 	"github.com/stretchr/testify/require"
@@ -69,7 +70,7 @@ func TestReloadConfigAllOrNothing(t *testing.T) {
 			newCfg := newConfig()
 			tc.modify(&newCfg)
 			require.NoError(t, newCfg.Validate())
-			err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier)
+			err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcregistry.New())
 			reloaded := err == nil
 			require.Equal(t, tc.name == "ok", reloaded)
 

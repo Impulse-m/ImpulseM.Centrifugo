@@ -25,6 +25,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/notify"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 	"github.com/centrifugal/centrifugo/v6/internal/survey"
 	"github.com/centrifugal/centrifugo/v6/internal/telemetry"
@@ -187,6 +188,13 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
+	rpcRegistry := rpcregistry.New()
+	applyRPCRegistry, err := rpcRegistry.Prepare(cfg.RPC.Registry)
+	if err != nil {
+		log.Fatal().Err(err).Msg("error loading RPC registry")
+	}
+	applyRPCRegistry()
+
 	accessRevoke := accessrevoke.Setup(node, cfg, cfgContainer)
 	serviceManager.Register(accessRevoke.Services...)
 
@@ -321,7 +329,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	logStartWarnings(cfg, cfgMeta)
 
 	handleSignals(
-		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier,
+		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry,
 		httpServers, grpcAPIServer, grpcUniServer,
 		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
@@ -349,6 +357,7 @@ func runServices(ctx context.Context, manager *service.Manager) chan struct{} {
 func reloadConfig(
 	newCfg config.Config, cfgContainer *config.Container,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
+	rpcRegistry *rpcregistry.Registry,
 ) error {
 	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
 	if err != nil {
@@ -370,17 +379,23 @@ func reloadConfig(
 			return err
 		}
 	}
+	applyRPCRegistry, err := rpcRegistry.Prepare(newCfg.RPC.Registry)
+	if err != nil {
+		return err
+	}
 	if err = cfgContainer.Reload(newCfg); err != nil {
 		return err
 	}
 	applyTokenVerifier()
 	applySubTokenVerifier()
+	applyRPCRegistry()
 	return nil
 }
 
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
-	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, httpServers []*http.Server,
+	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, rpcRegistry *rpcregistry.Registry,
+	httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
 	serviceCancel context.CancelFunc, ingestDone chan struct{}, ingestCancel context.CancelFunc,
 ) {
@@ -405,7 +420,7 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier); err != nil {
+			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}

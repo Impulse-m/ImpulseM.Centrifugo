@@ -46,43 +46,73 @@ func New() *Registry {
 // publishes it. Apply cannot fail. A failed Prepare leaves the registry as it was. A disabled
 // registry prepares an empty table, so applying it removes all methods.
 func (r *Registry) Prepare(cfg configtypes.RPCRegistry) (func(), error) {
+	apply, _, err := r.PrepareReload(cfg)
+	return apply, err
+}
+
+// PrepareReload is Prepare which also returns discard. Discard closes the connections this
+// prepare dialed, for a reload which fails after Prepare. It does nothing once apply ran, and
+// apply does nothing once discard ran.
+func (r *Registry) PrepareReload(cfg configtypes.RPCRegistry) (func(), func(), error) {
 	var file configtypes.RPCRegistryFile
 	if cfg.Enabled {
 		resolved, err := config.ResolveRPCRegistry(cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		file = resolved
 	}
 
 	old := r.current.Load()
-	next, removed, err := r.buildTable(file, old)
+	next, removed, created, err := r.buildTable(file, old)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	next.enabled = cfg.Enabled
+	for _, target := range next.targets {
+		if len(target.Config.EmulatedHeaders) > 0 {
+			next.usesEmulatedHeaders = true
+		}
 	}
 	drain := cfg.DrainTimeout.ToDuration()
-	return func() {
+	var settled atomic.Bool
+	apply := func() {
+		if !settled.CompareAndSwap(false, true) {
+			return
+		}
 		r.current.Store(next)
 		r.retire(removed, drain)
-	}, nil
+	}
+	discard := func() {
+		if !settled.CompareAndSwap(false, true) {
+			return
+		}
+		closeTargets(created)
+	}
+	return apply, discard, nil
+}
+
+// closeTargets closes the connections of targets which have one.
+func closeTargets(targets []*Target) {
+	for _, target := range targets {
+		if target.conn != nil {
+			_ = target.conn.Close()
+		}
+	}
 }
 
 // buildTable builds the table for file. A target whose normalized config is unchanged since old is
-// reused, with its connection. Targets of old which are not reused are returned as removed.
-// On error, connections dialed so far are closed.
-func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*table, []*Target, error) {
+// reused, with its connection. Targets of old which are not reused are returned as removed, and
+// targets dialed by this call as created. On error, connections dialed so far are closed.
+func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*table, []*Target, []*Target, error) {
 	next := &table{
 		methods: make(map[string]*Method, len(file.Methods)),
 		targets: make(map[string]*Target, len(file.Targets)),
 	}
 	var created []*Target
-	fail := func(err error) (*table, []*Target, error) {
-		for _, target := range created {
-			if target.conn != nil {
-				_ = target.conn.Close()
-			}
-		}
-		return nil, nil, err
+	fail := func(err error) (*table, []*Target, []*Target, error) {
+		closeTargets(created)
+		return nil, nil, nil, err
 	}
 
 	for _, def := range file.Targets {
@@ -154,21 +184,40 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			removed = append(removed, prev)
 		}
 	}
-	return next, removed, nil
+	return next, removed, created, nil
 }
 
-// retire records targets which left the table. Their connections are to be closed once the drain
-// timeout has passed. Closing is not done yet: it comes with the connection code.
+// retire records targets which left the table. Their connections are closed once the drain
+// timeout has passed, so calls which still hold the old method can finish.
 func (r *Registry) retire(removed []*Target, drain time.Duration) {
 	if len(removed) == 0 {
 		return
 	}
 	closeAt := time.Now().Add(drain)
 	r.retireMu.Lock()
-	defer r.retireMu.Unlock()
 	for _, target := range removed {
 		r.retired = append(r.retired, retiredTarget{target: target, closeAt: closeAt})
 	}
+	r.retireMu.Unlock()
+	for _, target := range removed {
+		time.AfterFunc(drain, func() {
+			r.closeRetired(target)
+		})
+	}
+}
+
+// closeRetired drops target from the retired list and closes its connection.
+func (r *Registry) closeRetired(target *Target) {
+	r.retireMu.Lock()
+	kept := r.retired[:0]
+	for _, item := range r.retired {
+		if item.target != target {
+			kept = append(kept, item)
+		}
+	}
+	r.retired = kept
+	r.retireMu.Unlock()
+	closeTargets([]*Target{target})
 }
 
 // retiredTargets returns the targets recorded as removed and not yet closed.

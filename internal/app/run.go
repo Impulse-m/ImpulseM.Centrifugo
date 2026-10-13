@@ -25,6 +25,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/notify"
+	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 	"github.com/centrifugal/centrifugo/v6/internal/survey"
@@ -188,7 +189,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	rpcRegistry, err := rpcregistry.Start(cfg.RPC.Registry)
+	rpcRegistry, err := rpcregistry.Start(cfg.RPC.Registry, proxy.DialRegistryTarget)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error loading RPC registry")
 	}
@@ -377,11 +378,12 @@ func reloadConfig(
 			return err
 		}
 	}
-	applyRPCRegistry, err := rpcRegistry.Prepare(newCfg.RPC.Registry)
+	applyRPCRegistry, discardRPCRegistry, err := rpcRegistry.PrepareReload(newCfg.RPC.Registry)
 	if err != nil {
 		return err
 	}
 	if err = cfgContainer.Reload(newCfg); err != nil {
+		discardRPCRegistry()
 		return err
 	}
 	applyTokenVerifier()

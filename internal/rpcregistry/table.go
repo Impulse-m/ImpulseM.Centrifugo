@@ -69,10 +69,19 @@ type Method struct {
 	ErrorMetadata []string
 }
 
+// Conn returns the connection made for the target by the dial hook, or nil when there is none.
+func (t *Target) Conn() io.Closer {
+	return t.conn
+}
+
 // table is one complete registry. It is built once and published with an atomic swap.
 type table struct {
 	methods map[string]*Method
 	targets map[string]*Target
+	// enabled is the enabled flag of the config the table was built from.
+	enabled bool
+	// usesEmulatedHeaders is true when a target forwards connect-time headers.
+	usesEmulatedHeaders bool
 }
 
 // Lookup returns the method registered under name, or nil. It does a single map read and does not allocate.
@@ -82,6 +91,25 @@ func (r *Registry) Lookup(name string) *Method {
 		return nil
 	}
 	return t.methods[name]
+}
+
+// Enabled reports whether the current table comes from an enabled config. A nil registry is disabled.
+func (r *Registry) Enabled() bool {
+	if r == nil {
+		return false
+	}
+	t := r.current.Load()
+	return t != nil && t.enabled
+}
+
+// UsesEmulatedHeaders reports whether a target of the enabled registry forwards connect-time
+// headers, so the connection must keep them. A nil registry does not.
+func (r *Registry) UsesEmulatedHeaders() bool {
+	if r == nil {
+		return false
+	}
+	t := r.current.Load()
+	return t != nil && t.enabled && t.usesEmulatedHeaders
 }
 
 // normalizeTarget returns def with the defaults applied and the headers sorted. Two targets with

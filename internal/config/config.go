@@ -13,7 +13,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config/envconfig"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/hashicorp/go-envparse"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -183,13 +182,7 @@ func DefineFlags(rootCmd *cobra.Command) {
 }
 
 func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
-	v := viper.NewWithOptions(viper.WithDecodeHook(mapstructure.ComposeDecodeHookFunc(
-		mapstructure.StringToTimeDurationHookFunc(),
-		configtypes.StringToDurationHookFunc(),
-		configtypes.StringToPEMDataHookFunc(),
-		configtypes.StringToMapStringStringHookFunc(),
-		configtypes.StringToStringKeyValuesHookFunc(),
-	)))
+	v := viper.NewWithOptions(viper.WithDecodeHook(decodeHooks()))
 
 	// Access revocation features are on by default. Defaults are set here rather than with
 	// default tags: envconfig applies a default tag to any zero field, which would turn an
@@ -197,6 +190,7 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	v.SetDefault("user_block.enabled", true)
 	v.SetDefault("token_revoke.enabled", true)
 	v.SetDefault("user_tokens_invalidate.enabled", true)
+	setRPCRegistryDefaults(v)
 
 	if cmd != nil {
 		bindPFlags := []string{

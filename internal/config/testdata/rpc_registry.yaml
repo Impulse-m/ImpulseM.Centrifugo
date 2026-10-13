@@ -1,0 +1,51 @@
+# Example RPC method registry file. Names are neutral placeholders.
+version: 1
+defaults:
+  auth_class: authenticated
+  timeout: 5s
+  max_request_bytes: 65536
+  max_response_bytes: 1048576
+  idempotent: false
+targets:
+  - name: users
+    endpoint: dns:///users.example.svc.cluster.local:9000
+    load_balancing: round_robin
+    timeout: 3s
+    emulated_headers: [x-example-init-connection-bin]
+    grpc:
+      tls: {enabled: false}
+      static_metadata: {x-example-edge: centrifugo}
+  - name: files
+    endpoint: dns:///files.example.svc.cluster.local:9000
+    timeout: 30s
+    max_request_bytes: 1048576
+    max_response_bytes: 1048576
+methods:
+  - method: help.getConfig
+    grpc_method: /example.v1.HelpService/GetConfig
+    target: users
+    auth_class: anonymous
+    idempotent: true
+  - method: users.getUser
+    grpc_method: /example.v1.UserService/GetUser
+    target: users
+    idempotent: true
+    headers: [x-example-takeout-id]
+  - method: users.signIn
+    grpc_method: /example.v1.UserService/SignIn
+    target: users
+    auth_class: anonymous
+    error_metadata: [example-token]
+  - method: users.checkPassword
+    grpc_method: /example.v1.UserService/CheckPassword
+    target: users
+    auth_class: pending_2fa
+  - method: files.saveFilePart
+    grpc_method: /example.v1.FileService/SaveFilePart
+    target: files
+    idempotent: true
+    max_request_bytes: 524288
+  - method: bots.answerQuery
+    grpc_method: /example.v1.BotService/AnswerQuery
+    target: users
+    auth_class: bot

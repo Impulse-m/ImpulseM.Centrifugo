@@ -104,24 +104,8 @@ func transformHTTPStatusError(err error, transforms []configtypes.HttpStatusToCo
 	if !errors.As(err, &statusErr) {
 		return nil, nil
 	}
-	for _, t := range transforms {
-		if t.StatusCode == statusErr.Code {
-			if t.ToError.Code > 0 {
-				return &proxyproto.Error{
-					Code:      t.ToError.Code,
-					Message:   t.ToError.Message,
-					Temporary: t.ToError.Temporary,
-				}, nil
-			}
-			if t.ToDisconnect.Code > 0 {
-				return nil, &proxyproto.Disconnect{
-					Code:   t.ToDisconnect.Code,
-					Reason: t.ToDisconnect.Reason,
-				}
-			}
-		}
-	}
-	return nil, nil
+	protocolError, protocolDisconnect, _ := matchStatusRule(statusErr.Code, httpStatusRules(transforms))
+	return protocolError, protocolDisconnect
 }
 
 func httpRequestHeaders(ctx context.Context, proxy Config) http.Header {

@@ -52,8 +52,10 @@ func connectUserRateLimitClient(t *testing.T, node *centrifuge.Node, userID stri
 func TestUserRateLimitSharedBetweenConnections(t *testing.T) {
 	h := newUserRateLimitHandler(t, configtypes.RateLimit{
 		UserCommand: configtypes.RateLimitUserCommand{
-			Enabled:     true,
-			Unsubscribe: rateLimitChannelOf(time.Minute, 2),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 2),
+			},
 		},
 	})
 	first, firstTransport := connectUserRateLimitClient(t, h.node, "42")
@@ -89,8 +91,10 @@ func TestUserRateLimitSharedBetweenConnections(t *testing.T) {
 func TestUserRateLimitAnonymousBypass(t *testing.T) {
 	h := newUserRateLimitHandler(t, configtypes.RateLimit{
 		UserCommand: configtypes.RateLimitUserCommand{
-			Enabled:     true,
-			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		},
 	})
 	client, transport := connectRateLimitClient(t, h.node)

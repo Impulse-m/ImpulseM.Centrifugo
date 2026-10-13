@@ -78,8 +78,10 @@ func TestRedisRateLimitUnreachableRedisStartsAndAllows(t *testing.T) {
 					Redis:  configtypes.Redis{Address: []string{address}},
 				},
 			},
-			Connect:     rateLimitBucketsOf(time.Minute, 1),
-			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			Connect: rateLimitBucketsOf(time.Minute, 1),
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		}
 	})
 	require.NotNil(t, h.redisLimiter)
@@ -102,9 +104,11 @@ func TestRedisRateLimitUnreachableRedisStartsAndAllows(t *testing.T) {
 func TestRedisRateLimitSharedBetweenConnections(t *testing.T) {
 	h := newRedisRateLimitHandler(t, func(cfg *config.Config) {
 		cfg.Client.RateLimit.RedisUserCommand = configtypes.RateLimitRedisUserCommand{
-			Enabled:     true,
-			Redis:       redisRateLimitOf(uniqueRedisPrefix()),
-			Unsubscribe: rateLimitChannelOf(time.Minute, 2),
+			Enabled: true,
+			Redis:   redisRateLimitOf(uniqueRedisPrefix()),
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 2),
+			},
 		}
 	})
 	first, firstTransport := connectUserRateLimitClient(t, h.node, "42")
@@ -137,9 +141,11 @@ func TestRedisRateLimitSharedBetweenConnections(t *testing.T) {
 func TestRedisRateLimitAnonymousBypass(t *testing.T) {
 	h := newRedisRateLimitHandler(t, func(cfg *config.Config) {
 		cfg.Client.RateLimit.RedisUserCommand = configtypes.RateLimitRedisUserCommand{
-			Enabled:     true,
-			Redis:       redisRateLimitOf(uniqueRedisPrefix()),
-			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			Enabled: true,
+			Redis:   redisRateLimitOf(uniqueRedisPrefix()),
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		}
 	})
 	client, transport := connectRateLimitClient(t, h.node)
@@ -187,7 +193,9 @@ func TestRedisRateLimitReuseFromEngine(t *testing.T) {
 				ReuseFromEngine: true,
 				RedisPrefixed:   configtypes.RedisPrefixed{Prefix: "ignored"},
 			},
-			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		}
 	})
 	require.NotNil(t, h.redisLimiter)

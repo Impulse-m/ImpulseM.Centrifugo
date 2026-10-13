@@ -72,11 +72,13 @@ func TestCommandPlanMultiBucketAllOrNothing(t *testing.T) {
 	base := time.Now()
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: configtypes.RateLimitBucketList{
-				{Interval: configtypes.Duration(time.Second), Rate: 5},
-				{Interval: configtypes.Duration(10 * time.Second), Rate: 6},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: configtypes.RateLimitBucketList{
+					{Interval: configtypes.Duration(time.Second), Rate: 5},
+					{Interval: configtypes.Duration(10 * time.Second), Rate: 6},
+				},
 			},
 		},
 	}
@@ -105,8 +107,10 @@ func TestCommandPlanTotalOrdering(t *testing.T) {
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
 		Total:   testContainer(time.Second, 3),
-		Default: testContainer(time.Second, 10),
-		Publish: testChannel(time.Second, 1),
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+			Publish: testChannel(time.Second, 1),
+		},
 	}
 	p := newCommandPlan(cfg)
 	slots := make([]int64, p.numSlots)
@@ -132,7 +136,9 @@ func TestCommandPlanDefaultIsShared(t *testing.T) {
 	base := time.Now()
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Default: testContainer(time.Second, 2),
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 2),
+		},
 	}
 	p := newCommandPlan(cfg)
 	slots := make([]int64, p.numSlots)
@@ -147,31 +153,33 @@ func TestCommandPlanDefaultIsShared(t *testing.T) {
 func TestCommandPlanResolution(t *testing.T) {
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Default: testContainer(time.Second, 10),
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 5),
-			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-				// Replaces base buckets.
-				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
-				// Enabled without buckets is treated as no override: base applies.
-				{NamespaceName: "notif", Enabled: true},
-				// Disabled override is ignored.
-				{NamespaceName: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 5),
+				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+					// Replaces base buckets.
+					{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
+					// Enabled without buckets is treated as no override: base applies.
+					{NamespaceName: "notif", Enabled: true},
+					// Disabled override is ignored.
+					{NamespaceName: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+				},
 			},
-		},
-		Subscribe: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 3),
-		},
-		Refresh: testContainer(time.Second, 7),
-		RPC: configtypes.RateLimitRPCBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 4),
-			MethodOverrides: configtypes.RateLimitMethodOverrides{
-				{Method: "slow", Enabled: true, Buckets: testList(20*time.Second, 1)},
-				{Method: "empty", Enabled: true},
-				{Method: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+			Subscribe: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 3),
+			},
+			Refresh: testContainer(time.Second, 7),
+			RPC: configtypes.RateLimitRPCBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 4),
+				MethodOverrides: configtypes.RateLimitMethodOverrides{
+					{Method: "slow", Enabled: true, Buckets: testList(20*time.Second, 1)},
+					{Method: "empty", Enabled: true},
+					{Method: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+				},
 			},
 		},
 	}
@@ -221,9 +229,11 @@ func TestCommandPlanResolution(t *testing.T) {
 func TestCommandPlanResolutionUnlimited(t *testing.T) {
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{
-			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-				{NamespaceName: "chat", Enabled: true},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{
+				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+					{NamespaceName: "chat", Enabled: true},
+				},
 			},
 		},
 	}
@@ -240,11 +250,13 @@ func TestCommandPlanNamespaceOverrideReplacesBase(t *testing.T) {
 	base := time.Now()
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 2),
-			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 5)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 2),
+				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+					{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 5)},
+				},
 			},
 		},
 	}
@@ -268,16 +280,18 @@ func TestCommandPlanSlotsAreStaticAndUnique(t *testing.T) {
 	cfg := configtypes.RateLimitClientCommand{
 		Enabled: true,
 		Total:   testContainer(time.Second, 100),
-		Default: testContainer(time.Second, 10),
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 5),
-			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
-				{NamespaceName: "a", Enabled: true, Buckets: configtypes.RateLimitBucketList{
-					{Interval: configtypes.Duration(time.Second), Rate: 1},
-					{Interval: configtypes.Duration(time.Minute), Rate: 2},
-				}},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 5),
+				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+					{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
+					{NamespaceName: "a", Enabled: true, Buckets: configtypes.RateLimitBucketList{
+						{Interval: configtypes.Duration(time.Second), Rate: 1},
+						{Interval: configtypes.Duration(time.Minute), Rate: 2},
+					}},
+				},
 			},
 		},
 	}
@@ -367,11 +381,13 @@ func TestClientLimiterCommandAllowedAndNeedsKey(t *testing.T) {
 	cfg := configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
-			Publish: configtypes.RateLimitChannelBuckets{
-				Enabled: true,
-				Buckets: testList(time.Second, 1),
-				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-					{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 2)},
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testList(time.Second, 1),
+					NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+						{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 2)},
+					},
 				},
 			},
 		},

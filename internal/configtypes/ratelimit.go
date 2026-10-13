@@ -127,12 +127,9 @@ type RateLimitRPCBuckets struct {
 	MethodOverride RateLimitMethodOverrideMap `mapstructure:"method_override" json:"method_override" envconfig:"method_override" yaml:"method_override" toml:"method_override" doc:"A deprecated map form of MethodOverrides. Use MethodOverrides instead. Can't be used together with it."`
 }
 
-// RateLimitClientCommand configures per-connection rate limits of client commands.
-type RateLimitClientCommand struct {
-	// Enabled enables per-connection command rate limits.
-	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables per-connection command rate limits."`
-	// Total caps the combined rate of all limited commands from a connection.
-	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Total caps the combined rate of all limited commands from a connection."`
+// RateLimitOperations are the operation buckets shared by client command, user command and Redis user
+// command limits. Each limit embeds it, so the keys are the same in every section.
+type RateLimitOperations struct {
 	// Default buckets are used for operations which have no explicit buckets.
 	Default RateLimitBuckets `mapstructure:"default" json:"default" envconfig:"default" yaml:"default" toml:"default" doc:"Default buckets are used for operations which have no explicit buckets."`
 	// Subscribe operation buckets.
@@ -163,42 +160,26 @@ type RateLimitClientCommand struct {
 	Untrack RateLimitChannelBuckets `mapstructure:"untrack" json:"untrack" envconfig:"untrack" yaml:"untrack" toml:"untrack" doc:"Untrack operation buckets. Not supported in this build."`
 }
 
+// RateLimitClientCommand configures per-connection rate limits of client commands.
+type RateLimitClientCommand struct {
+	// Enabled enables per-connection command rate limits.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables per-connection command rate limits."`
+	// Total caps the combined rate of all limited commands from a connection.
+	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Total caps the combined rate of all limited commands from a connection."`
+	// RateLimitOperations are the operation buckets of client commands.
+	RateLimitOperations `mapstructure:",squash" yaml:",inline"`
+}
+
 // RateLimitUserCommand configures per-user in-memory rate limits of client commands.
 type RateLimitUserCommand struct {
 	// Enabled enables per-user command rate limits.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables per-user command rate limits."`
 	// Total caps the combined rate of all limited commands from a user.
 	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Total caps the combined rate of all limited commands from a user."`
-	// Default buckets are used for operations which have no explicit buckets.
-	Default RateLimitBuckets `mapstructure:"default" json:"default" envconfig:"default" yaml:"default" toml:"default" doc:"Default buckets are used for operations which have no explicit buckets."`
 	// Connect operation buckets.
 	Connect RateLimitBuckets `mapstructure:"connect" json:"connect" envconfig:"connect" yaml:"connect" toml:"connect" doc:"Connect operation buckets."`
-	// Subscribe operation buckets.
-	Subscribe RateLimitChannelBuckets `mapstructure:"subscribe" json:"subscribe" envconfig:"subscribe" yaml:"subscribe" toml:"subscribe" doc:"Subscribe operation buckets."`
-	// Unsubscribe operation buckets.
-	Unsubscribe RateLimitChannelBuckets `mapstructure:"unsubscribe" json:"unsubscribe" envconfig:"unsubscribe" yaml:"unsubscribe" toml:"unsubscribe" doc:"Unsubscribe operation buckets."`
-	// Publish operation buckets.
-	Publish RateLimitChannelBuckets `mapstructure:"publish" json:"publish" envconfig:"publish" yaml:"publish" toml:"publish" doc:"Publish operation buckets."`
-	// History operation buckets.
-	History RateLimitChannelBuckets `mapstructure:"history" json:"history" envconfig:"history" yaml:"history" toml:"history" doc:"History operation buckets."`
-	// Presence operation buckets.
-	Presence RateLimitChannelBuckets `mapstructure:"presence" json:"presence" envconfig:"presence" yaml:"presence" toml:"presence" doc:"Presence operation buckets."`
-	// PresenceStats operation buckets.
-	PresenceStats RateLimitChannelBuckets `mapstructure:"presence_stats" json:"presence_stats" envconfig:"presence_stats" yaml:"presence_stats" toml:"presence_stats" doc:"PresenceStats operation buckets."`
-	// Refresh operation buckets.
-	Refresh RateLimitBuckets `mapstructure:"refresh" json:"refresh" envconfig:"refresh" yaml:"refresh" toml:"refresh" doc:"Refresh operation buckets."`
-	// SubRefresh operation buckets.
-	SubRefresh RateLimitChannelBuckets `mapstructure:"sub_refresh" json:"sub_refresh" envconfig:"sub_refresh" yaml:"sub_refresh" toml:"sub_refresh" doc:"SubRefresh operation buckets."`
-	// RPC operation buckets.
-	RPC RateLimitRPCBuckets `mapstructure:"rpc" json:"rpc" envconfig:"rpc" yaml:"rpc" toml:"rpc" doc:"RPC operation buckets."`
-	// MapPublish operation buckets. Not supported in this build.
-	MapPublish RateLimitChannelBuckets `mapstructure:"map_publish" json:"map_publish" envconfig:"map_publish" yaml:"map_publish" toml:"map_publish" doc:"MapPublish operation buckets. Not supported in this build."`
-	// MapRemove operation buckets. Not supported in this build.
-	MapRemove RateLimitChannelBuckets `mapstructure:"map_remove" json:"map_remove" envconfig:"map_remove" yaml:"map_remove" toml:"map_remove" doc:"MapRemove operation buckets. Not supported in this build."`
-	// Track operation buckets. Not supported in this build.
-	Track RateLimitChannelBuckets `mapstructure:"track" json:"track" envconfig:"track" yaml:"track" toml:"track" doc:"Track operation buckets. Not supported in this build."`
-	// Untrack operation buckets. Not supported in this build.
-	Untrack RateLimitChannelBuckets `mapstructure:"untrack" json:"untrack" envconfig:"untrack" yaml:"untrack" toml:"untrack" doc:"Untrack operation buckets. Not supported in this build."`
+	// RateLimitOperations are the operation buckets of client commands of a user.
+	RateLimitOperations `mapstructure:",squash" yaml:",inline"`
 }
 
 // RateLimitRedis is a Redis configuration of per-user Redis rate limits.
@@ -217,36 +198,10 @@ type RateLimitRedisUserCommand struct {
 	Redis RateLimitRedis `mapstructure:"redis" json:"redis" envconfig:"redis" yaml:"redis" toml:"redis" doc:"A Redis configuration of rate limits."`
 	// Total is not supported for Redis rate limits. Setting it is a configuration error.
 	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Not supported for Redis rate limits. Setting it is a configuration error."`
-	// Default buckets are used for operations which have no explicit buckets.
-	Default RateLimitBuckets `mapstructure:"default" json:"default" envconfig:"default" yaml:"default" toml:"default" doc:"Default buckets are used for operations which have no explicit buckets."`
 	// Connect operation buckets.
 	Connect RateLimitBuckets `mapstructure:"connect" json:"connect" envconfig:"connect" yaml:"connect" toml:"connect" doc:"Connect operation buckets."`
-	// Subscribe operation buckets.
-	Subscribe RateLimitChannelBuckets `mapstructure:"subscribe" json:"subscribe" envconfig:"subscribe" yaml:"subscribe" toml:"subscribe" doc:"Subscribe operation buckets."`
-	// Unsubscribe operation buckets.
-	Unsubscribe RateLimitChannelBuckets `mapstructure:"unsubscribe" json:"unsubscribe" envconfig:"unsubscribe" yaml:"unsubscribe" toml:"unsubscribe" doc:"Unsubscribe operation buckets."`
-	// Publish operation buckets.
-	Publish RateLimitChannelBuckets `mapstructure:"publish" json:"publish" envconfig:"publish" yaml:"publish" toml:"publish" doc:"Publish operation buckets."`
-	// History operation buckets.
-	History RateLimitChannelBuckets `mapstructure:"history" json:"history" envconfig:"history" yaml:"history" toml:"history" doc:"History operation buckets."`
-	// Presence operation buckets.
-	Presence RateLimitChannelBuckets `mapstructure:"presence" json:"presence" envconfig:"presence" yaml:"presence" toml:"presence" doc:"Presence operation buckets."`
-	// PresenceStats operation buckets.
-	PresenceStats RateLimitChannelBuckets `mapstructure:"presence_stats" json:"presence_stats" envconfig:"presence_stats" yaml:"presence_stats" toml:"presence_stats" doc:"PresenceStats operation buckets."`
-	// Refresh operation buckets.
-	Refresh RateLimitBuckets `mapstructure:"refresh" json:"refresh" envconfig:"refresh" yaml:"refresh" toml:"refresh" doc:"Refresh operation buckets."`
-	// SubRefresh operation buckets.
-	SubRefresh RateLimitChannelBuckets `mapstructure:"sub_refresh" json:"sub_refresh" envconfig:"sub_refresh" yaml:"sub_refresh" toml:"sub_refresh" doc:"SubRefresh operation buckets."`
-	// RPC operation buckets.
-	RPC RateLimitRPCBuckets `mapstructure:"rpc" json:"rpc" envconfig:"rpc" yaml:"rpc" toml:"rpc" doc:"RPC operation buckets."`
-	// MapPublish operation buckets. Not supported in this build.
-	MapPublish RateLimitChannelBuckets `mapstructure:"map_publish" json:"map_publish" envconfig:"map_publish" yaml:"map_publish" toml:"map_publish" doc:"MapPublish operation buckets. Not supported in this build."`
-	// MapRemove operation buckets. Not supported in this build.
-	MapRemove RateLimitChannelBuckets `mapstructure:"map_remove" json:"map_remove" envconfig:"map_remove" yaml:"map_remove" toml:"map_remove" doc:"MapRemove operation buckets. Not supported in this build."`
-	// Track operation buckets. Not supported in this build.
-	Track RateLimitChannelBuckets `mapstructure:"track" json:"track" envconfig:"track" yaml:"track" toml:"track" doc:"Track operation buckets. Not supported in this build."`
-	// Untrack operation buckets. Not supported in this build.
-	Untrack RateLimitChannelBuckets `mapstructure:"untrack" json:"untrack" envconfig:"untrack" yaml:"untrack" toml:"untrack" doc:"Untrack operation buckets. Not supported in this build."`
+	// RateLimitOperations are the operation buckets of client commands of a user, kept in Redis.
+	RateLimitOperations `mapstructure:",squash" yaml:",inline"`
 }
 
 // RateLimitClientError configures per-connection limits of protocol errors.

@@ -228,6 +228,42 @@ type rateLimitSection struct {
 	rpc         *configtypes.RateLimitRPCBuckets
 }
 
+// rateLimitOperationsSection returns the validation view of a section with the shared operation buckets.
+// connect is nil for sections without connect buckets. It is validated before refresh, as before.
+func rateLimitOperationsSection(
+	name string,
+	total *configtypes.RateLimitBuckets,
+	ops *configtypes.RateLimitOperations,
+	connect *configtypes.RateLimitBuckets,
+) rateLimitSection {
+	section := rateLimitSection{
+		name:     name,
+		total:    total,
+		defaults: &ops.Default,
+		plain:    []rateLimitBucketsEntry{{name: "refresh", buckets: &ops.Refresh}},
+		channels: []rateLimitChannelEntry{
+			{name: "subscribe", buckets: &ops.Subscribe},
+			{name: "unsubscribe", buckets: &ops.Unsubscribe},
+			{name: "publish", buckets: &ops.Publish},
+			{name: "history", buckets: &ops.History},
+			{name: "presence", buckets: &ops.Presence},
+			{name: "presence_stats", buckets: &ops.PresenceStats},
+			{name: "sub_refresh", buckets: &ops.SubRefresh},
+		},
+		unsupported: []rateLimitChannelEntry{
+			{name: "map_publish", buckets: &ops.MapPublish},
+			{name: "map_remove", buckets: &ops.MapRemove},
+			{name: "track", buckets: &ops.Track},
+			{name: "untrack", buckets: &ops.Untrack},
+		},
+		rpc: &ops.RPC,
+	}
+	if connect != nil {
+		section.plain = append([]rateLimitBucketsEntry{{name: "connect", buckets: connect}}, section.plain...)
+	}
+	return section
+}
+
 func validateRateLimit(c Config) error {
 	nsNames := make([]string, 0, len(c.Channel.Namespaces))
 	for _, ns := range c.Channel.Namespaces {
@@ -235,89 +271,18 @@ func validateRateLimit(c Config) error {
 	}
 
 	rl := &c.Client.RateLimit
-	cc := &rl.ClientCommand
-	ccSection := rateLimitSection{
-		name:     "client_command",
-		total:    &cc.Total,
-		defaults: &cc.Default,
-		plain:    []rateLimitBucketsEntry{{name: "refresh", buckets: &cc.Refresh}},
-		channels: []rateLimitChannelEntry{
-			{name: "subscribe", buckets: &cc.Subscribe},
-			{name: "unsubscribe", buckets: &cc.Unsubscribe},
-			{name: "publish", buckets: &cc.Publish},
-			{name: "history", buckets: &cc.History},
-			{name: "presence", buckets: &cc.Presence},
-			{name: "presence_stats", buckets: &cc.PresenceStats},
-			{name: "sub_refresh", buckets: &cc.SubRefresh},
-		},
-		unsupported: []rateLimitChannelEntry{
-			{name: "map_publish", buckets: &cc.MapPublish},
-			{name: "map_remove", buckets: &cc.MapRemove},
-			{name: "track", buckets: &cc.Track},
-			{name: "untrack", buckets: &cc.Untrack},
-		},
-		rpc: &cc.RPC,
-	}
+	ccSection := rateLimitOperationsSection("client_command", &rl.ClientCommand.Total, &rl.ClientCommand.RateLimitOperations, nil)
 	if err := validateRateLimitSection(ccSection, nsNames); err != nil {
 		return err
 	}
 
-	uc := &rl.UserCommand
-	ucSection := rateLimitSection{
-		name:     "user_command",
-		total:    &uc.Total,
-		defaults: &uc.Default,
-		plain: []rateLimitBucketsEntry{
-			{name: "connect", buckets: &uc.Connect},
-			{name: "refresh", buckets: &uc.Refresh},
-		},
-		channels: []rateLimitChannelEntry{
-			{name: "subscribe", buckets: &uc.Subscribe},
-			{name: "unsubscribe", buckets: &uc.Unsubscribe},
-			{name: "publish", buckets: &uc.Publish},
-			{name: "history", buckets: &uc.History},
-			{name: "presence", buckets: &uc.Presence},
-			{name: "presence_stats", buckets: &uc.PresenceStats},
-			{name: "sub_refresh", buckets: &uc.SubRefresh},
-		},
-		unsupported: []rateLimitChannelEntry{
-			{name: "map_publish", buckets: &uc.MapPublish},
-			{name: "map_remove", buckets: &uc.MapRemove},
-			{name: "track", buckets: &uc.Track},
-			{name: "untrack", buckets: &uc.Untrack},
-		},
-		rpc: &uc.RPC,
-	}
+	ucSection := rateLimitOperationsSection("user_command", &rl.UserCommand.Total, &rl.UserCommand.RateLimitOperations, &rl.UserCommand.Connect)
 	if err := validateRateLimitSection(ucSection, nsNames); err != nil {
 		return err
 	}
 
 	rc := &rl.RedisUserCommand
-	rcSection := rateLimitSection{
-		name:     "redis_user_command",
-		total:    &rc.Total,
-		defaults: &rc.Default,
-		plain: []rateLimitBucketsEntry{
-			{name: "connect", buckets: &rc.Connect},
-			{name: "refresh", buckets: &rc.Refresh},
-		},
-		channels: []rateLimitChannelEntry{
-			{name: "subscribe", buckets: &rc.Subscribe},
-			{name: "unsubscribe", buckets: &rc.Unsubscribe},
-			{name: "publish", buckets: &rc.Publish},
-			{name: "history", buckets: &rc.History},
-			{name: "presence", buckets: &rc.Presence},
-			{name: "presence_stats", buckets: &rc.PresenceStats},
-			{name: "sub_refresh", buckets: &rc.SubRefresh},
-		},
-		unsupported: []rateLimitChannelEntry{
-			{name: "map_publish", buckets: &rc.MapPublish},
-			{name: "map_remove", buckets: &rc.MapRemove},
-			{name: "track", buckets: &rc.Track},
-			{name: "untrack", buckets: &rc.Untrack},
-		},
-		rpc: &rc.RPC,
-	}
+	rcSection := rateLimitOperationsSection("redis_user_command", &rc.Total, &rc.RateLimitOperations, &rc.Connect)
 	if err := validateRateLimitSection(rcSection, nsNames); err != nil {
 		return err
 	}

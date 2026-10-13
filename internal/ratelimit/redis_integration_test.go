@@ -47,7 +47,9 @@ func firstShard(l *RedisUserLimiter) *redisshard.RedisShard {
 func redisIntegrationConfig(interval time.Duration, rate int) configtypes.RateLimitRedisUserCommand {
 	return configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(interval, rate)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(interval, rate)},
+		},
 	}
 }
 
@@ -92,12 +94,14 @@ func TestRedisLimiterMultiBucketAllOrNothing(t *testing.T) {
 	prefix := uniquePrefix()
 	cfg := configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			// The first bucket allows 10 operations, the second only 1.
-			Buckets: configtypes.RateLimitBucketList{
-				{Interval: configtypes.Duration(time.Minute), Rate: 10},
-				{Interval: configtypes.Duration(time.Minute), Rate: 1},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				// The first bucket allows 10 operations, the second only 1.
+				Buckets: configtypes.RateLimitBucketList{
+					{Interval: configtypes.Duration(time.Minute), Rate: 10},
+					{Interval: configtypes.Duration(time.Minute), Rate: 1},
+				},
 			},
 		},
 	}

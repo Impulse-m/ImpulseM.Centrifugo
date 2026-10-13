@@ -16,16 +16,7 @@ func newRedisUserPlan(cfg configtypes.RateLimitRedisUserCommand) *redisPlan {
 	alloc := &slotAllocator{}
 	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
 	p := &redisPlan{}
-
 	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
-	p.ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
-	p.ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
-	p.ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
-	p.ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
-	p.ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
-	p.ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
-	p.ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
-	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
-	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 	return p
 }

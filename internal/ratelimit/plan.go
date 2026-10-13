@@ -192,20 +192,30 @@ func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 	p := &CommandPlan{}
 	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
 	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
-
-	p.ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
-	p.ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
-	p.ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
-	p.ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
-	p.ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
-	p.ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
-	p.ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
-	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
-	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 
 	p.numSlots = alloc.next
 	p.maxInterval = alloc.maxInterval
 	return p
+}
+
+// wireOperations compiles the operations shared by client command and user command limits into ops.
+// Slots are assigned in the order of the calls, so it must be the same for all limits.
+func wireOperations(
+	alloc *slotAllocator,
+	ops *[operationCount]opLimit,
+	cfg *configtypes.RateLimitOperations,
+	def *scope,
+) {
+	ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
+	ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
+	ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
+	ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
+	ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
+	ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
+	ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
+	ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
+	ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
 }
 
 // newUserPlan compiles user command rate limits. Resolution is the same as for client commands,
@@ -215,17 +225,8 @@ func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 	p := &CommandPlan{}
 	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
 	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
-
 	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
-	p.ops[OperationSubscribe] = alloc.channelLimit(OperationSubscribe, cfg.Subscribe, def)
-	p.ops[OperationUnsubscribe] = alloc.channelLimit(OperationUnsubscribe, cfg.Unsubscribe, def)
-	p.ops[OperationPublish] = alloc.channelLimit(OperationPublish, cfg.Publish, def)
-	p.ops[OperationHistory] = alloc.channelLimit(OperationHistory, cfg.History, def)
-	p.ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
-	p.ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
-	p.ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
-	p.ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
-	p.ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 
 	p.numSlots = alloc.next
 	p.maxInterval = alloc.maxInterval

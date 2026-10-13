@@ -167,8 +167,10 @@ func rateLimitChannelOf(interval time.Duration, rate int) configtypes.RateLimitC
 func TestRateLimitSubscribeOverLimit(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
-			Enabled:   true,
-			Subscribe: rateLimitChannelOf(time.Minute, 2),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Subscribe: rateLimitChannelOf(time.Minute, 2),
+			},
 		},
 	})
 	client, transport := connectRateLimitClient(t, node)
@@ -196,10 +198,12 @@ func TestRateLimitSubscribeOverLimit(t *testing.T) {
 func TestRateLimitUnsubscribeHistoryPresence(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
-			Enabled:     true,
-			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
-			History:     rateLimitChannelOf(time.Minute, 1),
-			Presence:    rateLimitChannelOf(time.Minute, 1),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+				History:     rateLimitChannelOf(time.Minute, 1),
+				Presence:    rateLimitChannelOf(time.Minute, 1),
+			},
 		},
 	})
 	client, transport := connectRateLimitClient(t, node)
@@ -225,7 +229,9 @@ func TestRateLimitTotalOrdering(t *testing.T) {
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
 			Total:   rateLimitBucketsOf(time.Minute, 3),
-			Publish: rateLimitChannelOf(time.Minute, 1),
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: rateLimitChannelOf(time.Minute, 1),
+			},
 		},
 	})
 	client, transport := connectRateLimitClient(t, node)
@@ -249,11 +255,13 @@ func TestRateLimitRPCMethodOverride(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
-			RPC: configtypes.RateLimitRPCBuckets{
-				Enabled: true,
-				Buckets: rateLimitBucketsOf(time.Minute, 10).Buckets,
-				MethodOverrides: configtypes.RateLimitMethodOverrides{
-					{Method: "slow", Enabled: true, Buckets: rateLimitBucketsOf(time.Minute, 1).Buckets},
+			RateLimitOperations: configtypes.RateLimitOperations{
+				RPC: configtypes.RateLimitRPCBuckets{
+					Enabled: true,
+					Buckets: rateLimitBucketsOf(time.Minute, 10).Buckets,
+					MethodOverrides: configtypes.RateLimitMethodOverrides{
+						{Method: "slow", Enabled: true, Buckets: rateLimitBucketsOf(time.Minute, 1).Buckets},
+					},
 				},
 			},
 		},
@@ -277,7 +285,9 @@ func TestRateLimitNamespaceOverride(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
-			Publish: publish,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: publish,
+			},
 		},
 	}, "chat")
 	client, transport := connectRateLimitClient(t, node)
@@ -322,8 +332,10 @@ func TestRateLimitClientErrorDisconnect(t *testing.T) {
 func TestRateLimitClientErrorCountsRateLimitErrors(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
-			Enabled:   true,
-			Subscribe: rateLimitChannelOf(time.Minute, 1),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Subscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		},
 		ClientError: configtypes.RateLimitClientError{
 			Enabled: true,
@@ -379,8 +391,10 @@ func TestRateLimitClientErrorInternalNotCounted(t *testing.T) {
 func TestRateLimitRepeatedConnectKeepsState(t *testing.T) {
 	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
-			Enabled:   true,
-			Subscribe: rateLimitChannelOf(time.Minute, 1),
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Subscribe: rateLimitChannelOf(time.Minute, 1),
+			},
 		},
 	})
 	client, _ := connectRateLimitClient(t, node)

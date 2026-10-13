@@ -25,22 +25,24 @@ import (
 func redisTestConfig() configtypes.RateLimitRedisUserCommand {
 	return configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Default: testContainer(time.Second, 10),
-		Publish: configtypes.RateLimitChannelBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 5),
-			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
-				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
-				{NamespaceName: "notif", Enabled: true},
-				{NamespaceName: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+			Publish: configtypes.RateLimitChannelBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 5),
+				NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+					{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 20)},
+					{NamespaceName: "notif", Enabled: true},
+					{NamespaceName: "off", Enabled: false, Buckets: testList(time.Second, 1)},
+				},
 			},
-		},
-		RPC: configtypes.RateLimitRPCBuckets{
-			Enabled: true,
-			Buckets: testList(time.Second, 4),
-			MethodOverrides: configtypes.RateLimitMethodOverrides{
-				{Method: "slow", Enabled: true, Buckets: testList(20*time.Second, 1)},
-				{Method: "empty", Enabled: true},
+			RPC: configtypes.RateLimitRPCBuckets{
+				Enabled: true,
+				Buckets: testList(time.Second, 4),
+				MethodOverrides: configtypes.RateLimitMethodOverrides{
+					{Method: "slow", Enabled: true, Buckets: testList(20*time.Second, 1)},
+					{Method: "empty", Enabled: true},
+				},
 			},
 		},
 		Connect: testContainer(time.Minute, 3),
@@ -81,7 +83,9 @@ func TestRedisPlanScopeNames(t *testing.T) {
 func TestRedisPlanNoLimitWithoutBuckets(t *testing.T) {
 	p := newRedisUserPlan(configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(time.Second, 1)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(time.Second, 1)},
+		},
 	})
 	require.Nil(t, p.ops[OperationHistory].resolve(""))
 	require.Nil(t, p.ops[OperationConnect].resolve(""))
@@ -91,7 +95,9 @@ func TestRedisPlanNoLimitWithoutBuckets(t *testing.T) {
 func TestRedisPlanConnectFallsBackToDefault(t *testing.T) {
 	p := newRedisUserPlan(configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Default: testContainer(time.Second, 10),
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+		},
 	})
 	s := p.ops[OperationConnect].base
 	require.NotNil(t, s)
@@ -101,7 +107,9 @@ func TestRedisPlanConnectFallsBackToDefault(t *testing.T) {
 func TestRedisPlanDefaultScopeIsShared(t *testing.T) {
 	p := newRedisUserPlan(configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Default: testContainer(time.Second, 10),
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+		},
 	})
 	history := p.ops[OperationHistory].resolve("")
 	presence := p.ops[OperationPresence].resolve("")
@@ -238,7 +246,9 @@ func TestRedisLimiterNoLimitNoRedisCall(t *testing.T) {
 
 	noDefault := configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
-		Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(time.Second, 1)},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Publish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(time.Second, 1)},
+		},
 	}
 	calls = nil
 	l = newFakeRedisLimiter(noDefault, fakeRedisRunner(false, nil, &calls))
@@ -263,7 +273,12 @@ func TestRedisLimiterConnectUsesConnectScope(t *testing.T) {
 
 func TestRedisLimiterConnectFallsBackToDefault(t *testing.T) {
 	var calls []string
-	cfg := configtypes.RateLimitRedisUserCommand{Enabled: true, Default: testContainer(time.Second, 10)}
+	cfg := configtypes.RateLimitRedisUserCommand{
+		Enabled: true,
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(time.Second, 10),
+		},
+	}
 	l := newFakeRedisLimiter(cfg, fakeRedisRunner(true, nil, &calls))
 	require.True(t, l.ConnectAllowed("42"))
 	require.Equal(t, []string{"p.rl.{42}.default"}, calls)

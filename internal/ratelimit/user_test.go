@@ -26,7 +26,9 @@ func TestMain(m *testing.M) {
 func userConfig(interval time.Duration, rate int) configtypes.RateLimitUserCommand {
 	return configtypes.RateLimitUserCommand{
 		Enabled: true,
-		Default: testContainer(interval, rate),
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: testContainer(interval, rate),
+		},
 	}
 }
 

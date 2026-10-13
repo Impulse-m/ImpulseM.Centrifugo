@@ -21,7 +21,9 @@ func bucketsForBench(n int) configtypes.RateLimitClientCommand {
 	}
 	return configtypes.RateLimitClientCommand{
 		Enabled: true,
-		Default: configtypes.RateLimitBuckets{Enabled: true, Buckets: list},
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Default: configtypes.RateLimitBuckets{Enabled: true, Buckets: list},
+		},
 	}
 }
 

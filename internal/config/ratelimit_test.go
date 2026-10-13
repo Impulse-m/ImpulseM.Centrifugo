@@ -54,6 +54,79 @@ func TestGetConfigRateLimitFromFile(t *testing.T) {
 	require.Equal(t, 20, conf.Client.RateLimit.ClientError.Total.Buckets[0].Rate)
 }
 
+func TestGetConfigRateLimitAllSectionsFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	content := `{
+  "channel": {"namespaces": [{"name": "chat"}]},
+  "engine": {"type": "redis"},
+  "client": {
+    "rate_limit": {
+      "client_command": {
+        "enabled": true,
+        "total": {"enabled": true, "buckets": [{"interval": "1s", "rate": 30}]},
+        "subscribe": {"enabled": true, "buckets": [{"interval": "1m", "rate": 4}]},
+        "refresh": {"enabled": true, "buckets": [{"interval": "1m", "rate": 6}]}
+      },
+      "user_command": {
+        "enabled": true,
+        "default": {"enabled": true, "buckets": [{"interval": "1s", "rate": 11}]},
+        "connect": {"enabled": true, "buckets": [{"interval": "1m", "rate": 3}]},
+        "publish": {
+          "enabled": true,
+          "buckets": [{"interval": "1s", "rate": 7}],
+          "namespace_overrides": [{"namespace_name": "chat", "enabled": true, "buckets": [{"interval": "1s", "rate": 17}]}]
+        },
+        "rpc": {"enabled": true, "buckets": [{"interval": "1s", "rate": 9}]}
+      },
+      "redis_user_command": {
+        "enabled": true,
+        "redis": {"reuse_from_engine": false, "prefix": "rl", "address": ["redis://127.0.0.1:6380"]},
+        "default": {"enabled": true, "buckets": [{"interval": "1s", "rate": 13}]},
+        "connect": {"enabled": true, "buckets": [{"interval": "1m", "rate": 2}]},
+        "history": {"enabled": true, "buckets": [{"interval": "1s", "rate": 5}]},
+        "sub_refresh": {"enabled": true, "buckets": [{"interval": "1s", "rate": 8}]}
+      },
+      "client_error": {"enabled": true, "total": {"enabled": true, "buckets": [{"interval": "5s", "rate": 21}]}}
+    }
+  }
+}`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	conf, _, err := GetConfig(nil, path)
+	require.NoError(t, err)
+	require.NoError(t, conf.Validate())
+	rl := conf.Client.RateLimit
+
+	cc := rl.ClientCommand
+	require.True(t, cc.Enabled)
+	require.Equal(t, 30, cc.Total.Buckets[0].Rate)
+	require.Equal(t, 4, cc.Subscribe.Buckets[0].Rate)
+	require.Equal(t, time.Minute, cc.Subscribe.Buckets[0].Interval.ToDuration())
+	require.Equal(t, 6, cc.Refresh.Buckets[0].Rate)
+	require.Empty(t, cc.Publish.Buckets)
+
+	uc := rl.UserCommand
+	require.True(t, uc.Enabled)
+	require.Equal(t, 11, uc.Default.Buckets[0].Rate)
+	require.Equal(t, 3, uc.Connect.Buckets[0].Rate)
+	require.Equal(t, 7, uc.Publish.Buckets[0].Rate)
+	require.Equal(t, 17, uc.Publish.NamespaceOverrides[0].Buckets[0].Rate)
+	require.Equal(t, 9, uc.RPC.Buckets[0].Rate)
+	require.Empty(t, uc.Total.Buckets)
+
+	rc := rl.RedisUserCommand
+	require.True(t, rc.Enabled)
+	require.Equal(t, "rl", rc.Redis.RedisPrefixed.Prefix)
+	require.Equal(t, []string{"redis://127.0.0.1:6380"}, rc.Redis.RedisPrefixed.Redis.Address)
+	require.Equal(t, 13, rc.Default.Buckets[0].Rate)
+	require.Equal(t, 2, rc.Connect.Buckets[0].Rate)
+	require.Equal(t, 5, rc.History.Buckets[0].Rate)
+	require.Equal(t, 8, rc.SubRefresh.Buckets[0].Rate)
+	require.Empty(t, rc.Publish.Buckets)
+
+	require.Equal(t, 21, rl.ClientError.Total.Buckets[0].Rate)
+}
+
 func testRateLimitBuckets(interval time.Duration, rate int) configtypes.RateLimitBucketList {
 	return configtypes.RateLimitBucketList{{Interval: configtypes.Duration(interval), Rate: rate}}
 }

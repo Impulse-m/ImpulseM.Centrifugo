@@ -194,22 +194,12 @@ type VerifierJWT struct {
 	generationClaim                 string
 }
 
-const defaultSessionClaim = "jti"
-
-func sessionClaimOrDefault(claim string) string {
-	if claim == "" {
-		return defaultSessionClaim
-	}
-	return claim
-}
-
 var (
 	ErrTokenExpired         = errors.New("token expired")
 	ErrInvalidToken         = errors.New("invalid token")
 	errPublicKeyInvalid     = errors.New("public key is invalid")
 	errUnsupportedAlgorithm = errors.New("unsupported JWT algorithm")
 	errDisabledAlgorithm    = errors.New("disabled JWT algorithm")
-	errUnknownEd25519KeyID  = errors.New("unknown Ed25519 key ID")
 )
 
 // BoolValue allows override boolean option.
@@ -456,49 +446,6 @@ func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPub
 	}
 
 	return alg, nil
-}
-
-// verifyEd25519 selects Ed25519 key by token kid header and verifies the token with it.
-// Token without kid is verified only when exactly one Ed25519 key is configured.
-func (s *algorithms) verifyEd25519(token *jwt.Token) error {
-	if len(s.Ed25519) == 0 {
-		return fmt.Errorf("%w: %s", errDisabledAlgorithm, string(token.Header().Algorithm))
-	}
-	var verifier jwt.Verifier
-	kid := token.Header().KeyID
-	if kid == "" {
-		if len(s.Ed25519) != 1 {
-			return fmt.Errorf("%w: token without kid and %d Ed25519 keys configured", errUnknownEd25519KeyID, len(s.Ed25519))
-		}
-		for _, v := range s.Ed25519 {
-			verifier = v
-		}
-	} else {
-		verifier = s.Ed25519[kid]
-		if verifier == nil {
-			return fmt.Errorf("%w: %q", errUnknownEd25519KeyID, kid)
-		}
-	}
-	return verifier.Verify(token)
-}
-
-// setEd25519Keys creates Ed25519 verifiers for the given keys, keyed by kid.
-func (s *algorithms) setEd25519Keys(ed25519PubKeys map[string]ed25519.PublicKey) error {
-	if len(ed25519PubKeys) == 0 {
-		s.Ed25519 = nil
-		return nil
-	}
-	ed25519Verifiers := make(map[string]jwt.Verifier, len(ed25519PubKeys))
-	for kid, pubKey := range ed25519PubKeys {
-		verifierEdDSA, err := jwt.NewVerifierEdDSA(pubKey)
-		if err != nil {
-			return fmt.Errorf("error initializing Ed25519 verifier for kid %q: %w", kid, err)
-		}
-		ed25519Verifiers[kid] = verifierEdDSA
-	}
-	s.Ed25519 = ed25519Verifiers
-	log.Info().Int("keys", len(ed25519PubKeys)).Msg("enabled EdDSA verifiers")
-	return nil
 }
 
 func (s *algorithms) verify(token *jwt.Token) error {
@@ -794,28 +741,6 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 		ct.IssuedAt = claims.RegisteredClaims.IssuedAt.Unix()
 	}
 	return ct, nil
-}
-
-// sessionFromClaims returns session ID of the token. The "jti" claim is taken from registered
-// claims, any other claim is read from raw claims.
-func (verifier *VerifierJWT) sessionFromClaims(rawClaims []byte, registered jwt.RegisteredClaims) string {
-	if verifier.sessionClaim == defaultSessionClaim {
-		return registered.ID
-	}
-	return gjson.GetBytes(rawClaims, verifier.sessionClaim).String()
-}
-
-// generationFromClaims returns revocation generation of the token. Non-numeric or negative
-// values and absent claim give zero generation.
-func (verifier *VerifierJWT) generationFromClaims(rawClaims []byte) uint64 {
-	if verifier.generationClaim == "" {
-		return 0
-	}
-	value := gjson.GetBytes(rawClaims, verifier.generationClaim)
-	if value.Type != gjson.Number || value.Int() < 0 {
-		return 0
-	}
-	return uint64(value.Int())
 }
 
 func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (SubscribeToken, error) {

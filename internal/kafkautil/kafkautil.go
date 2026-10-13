@@ -38,7 +38,8 @@ type Config struct {
 	AssumeRoleARN string
 }
 
-// Options returns franz-go options for seed brokers, logging, TLS and SASL.
+// Options returns franz-go options for seed brokers, logging, TLS and SASL. It mirrors the SASL, TLS and
+// MSK IAM client setup of upstream internal/consuming/kafka.go (initClient); keep the two in sync on upstream merges.
 func Options(config Config, log zerolog.Logger) ([]kgo.Opt, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(config.Brokers...),

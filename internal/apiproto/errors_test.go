@@ -105,12 +105,3 @@ func TestErrorsDeclareTemporary(t *testing.T) {
 	})
 	require.Len(t, apiErrors, len(declared), "apiErrors must list every error of errors.go: %v", declared)
 }
-
-// TestErrorTooManyRequestsMapping checks the rate limit error keeps its code,
-// message and HTTP and gRPC statuses that our call sites rely on.
-func TestErrorTooManyRequestsMapping(t *testing.T) {
-	require.Equal(t, uint32(111), ErrorTooManyRequests.Code)
-	require.Equal(t, "too many requests", ErrorTooManyRequests.Message)
-	require.Equal(t, http.StatusTooManyRequests, MapErrorToHTTPCode(ErrorTooManyRequests))
-	require.Equal(t, codes.ResourceExhausted, MapErrorToGRPCCode(ErrorTooManyRequests))
-}

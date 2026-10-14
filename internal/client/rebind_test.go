@@ -353,8 +353,9 @@ func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {
 				tt.revoke(store)
 			}
 
+			// The token is issued before the revocation, so the revocation is not a loop guard case.
 			_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
-				Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+				Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"iat": now - 10}),
 			}, nil)
 			require.Equal(t, tt.wantErr, err)
 			require.Len(t, state.rebinds, 1)

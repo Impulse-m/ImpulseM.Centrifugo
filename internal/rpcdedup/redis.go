@@ -1,0 +1,330 @@
+package rpcdedup
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
+
+	"github.com/redis/rueidis"
+	"github.com/rs/zerolog/log"
+)
+
+// InflightGrace is the time an in-flight record is kept beyond the method timeout of its call. The owner
+// completes the record within the method timeout, so the grace only matters when the owner node died.
+const InflightGrace = 10 * time.Second
+
+// defaultRedisTimeout bounds each Redis call of the shared tier when the configuration has no IO timeout.
+const defaultRedisTimeout = 4 * time.Second
+
+// ErrNotConnected is returned by the Redis backend while its connector has no shards.
+var ErrNotConnected = errors.New("not connected to Redis")
+
+// BeginState is the state of a key which Backend.Begin found, or started.
+type BeginState uint8
+
+const (
+	// BeginMiss means the key was free, and the call was started by the caller.
+	BeginMiss BeginState = iota
+	// BeginDone means the key holds an answer, which BeginResult.Record carries.
+	BeginDone
+	// BeginInFlight means the call runs on the node BeginResult.Owner.
+	BeginInFlight
+	// BeginMismatch means the key holds a call with another fingerprint.
+	BeginMismatch
+)
+
+// BeginResult is the result of Backend.Begin.
+type BeginResult struct {
+	State  BeginState
+	Record Record
+	Owner  string
+}
+
+// CancelState is the state of a key which Backend.Cancel found, or left.
+type CancelState uint8
+
+const (
+	// CancelTombstone means nothing was held, and the key now holds the cancelled error.
+	CancelTombstone CancelState = iota
+	// CancelInFlight means the call runs on the node CancelResult.Owner.
+	CancelInFlight
+	// CancelDone means the key holds an answer, which is left as it is.
+	CancelDone
+)
+
+// CancelResult is the result of Backend.Cancel.
+type CancelResult struct {
+	State CancelState
+	Owner string
+}
+
+// PollState is the state of a key which Backend.Poll found.
+type PollState uint8
+
+const (
+	// PollInFlight means the call still runs.
+	PollInFlight PollState = iota
+	// PollDone means the call is done, and PollResult.Record is its answer.
+	PollDone
+	// PollMissing means the key is gone: the owner abandoned the call, or died, and its record expired.
+	PollMissing
+)
+
+// PollResult is the result of Backend.Poll.
+type PollResult struct {
+	State  PollState
+	Record Record
+}
+
+// ScopeAcks are the msg_ids of one scope which the client acknowledged.
+type ScopeAcks struct {
+	Scope  string
+	MsgIDs []uint64
+}
+
+// Backend is the shared tier of a Shared store. Redis implements it; tests use a fake.
+type Backend interface {
+	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration) (BeginResult, error)
+	Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error)
+	Cancel(ctx context.Context, key Key, failure *centrifuge.Error, ttl time.Duration) (CancelResult, error)
+	Poll(ctx context.Context, key Key) (PollResult, error)
+	Ack(ctx context.Context, acks []ScopeAcks) error
+	Connected() bool
+}
+
+// BackendObserver observes the Redis calls of the shared tier: the duration of every call, and every failed one.
+// Methods may be called from any goroutine.
+type BackendObserver interface {
+	RedisCall(seconds float64)
+	RedisError()
+}
+
+// Redis is the Backend over the shards of a Connector. Every record of a scope is on the shard of the scope, and
+// every script touches the keys of one scope only.
+type Redis struct {
+	prefix    string
+	connector *redisshard.Connector
+	timeout   time.Duration
+	observer  BackendObserver
+}
+
+// NewRedis returns the Redis backend of the keys with prefix. The connector may not be connected yet: calls made
+// while it is not connected fail with ErrNotConnected. ioTimeout bounds each call, zero means the default. observer
+// may be nil.
+func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Duration, observer BackendObserver) *Redis {
+	if ioTimeout <= 0 {
+		ioTimeout = defaultRedisTimeout
+	}
+	return &Redis{
+		prefix:    prefix,
+		connector: connector,
+		timeout:   ioTimeout,
+		observer:  observer,
+	}
+}
+
+// Begin implements Backend with the begin script.
+func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration) (BeginResult, error) {
+	var result BeginResult
+	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
+		args := []string{string(fingerprint[:]), nodeID, redisTTLMillis(inflightTTL)}
+		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
+			return beginScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
+		})
+		parts, err := replyStrings(res)
+		if err != nil {
+			return err
+		}
+		result, err = parseBegin(parts)
+		return err
+	})
+	return result, err
+}
+
+// Complete implements Backend with the complete script. It returns false when this node does not own the in-flight
+// record, which is counted as a Redis error and logged at debug: the record of the call is then kept locally only.
+func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error) {
+	reply, errJSON, uncached := recordArgs(rec)
+	abandoned := "0"
+	if rec.Abandoned {
+		abandoned = "1"
+	}
+	args := []string{nodeID, reply, errJSON, uncached, redisTTLMillis(ttl), abandoned}
+	var owned bool
+	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
+		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
+			return completeScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
+		})
+		n, err := res.AsInt64()
+		if err != nil {
+			return err
+		}
+		owned = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if !owned {
+		r.countError()
+		log.Debug().Msg("exactly-once RPC: the in-flight record is not owned by this node, the record is kept locally")
+	}
+	return owned, nil
+}
+
+// Cancel implements Backend with the cancel script.
+func (r *Redis) Cancel(ctx context.Context, key Key, failure *centrifuge.Error, ttl time.Duration) (CancelResult, error) {
+	args := []string{encodeError(failure), redisTTLMillis(ttl)}
+	var result CancelResult
+	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
+		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
+			return cancelScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
+		})
+		parts, err := replyStrings(res)
+		if err != nil {
+			return err
+		}
+		result, err = parseCancel(parts)
+		return err
+	})
+	return result, err
+}
+
+// Poll implements Backend with HMGET of the fields the watcher reads.
+func (r *Redis) Poll(ctx context.Context, key Key) (PollResult, error) {
+	var result PollResult
+	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
+		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
+			return client.Do(callCtx, client.B().Hmget().Key(RedisKey(r.prefix, key)).Field(
+				redisFieldState, redisFieldReply, redisFieldError, redisFieldUncached,
+			).Build())
+		})
+		parts, err := replyStrings(res)
+		if err != nil {
+			return err
+		}
+		if len(parts) != 4 {
+			return errMalformedReply
+		}
+		result, err = parsePoll(parts[0], parts[1], parts[2], parts[3])
+		return err
+	})
+	return result, err
+}
+
+// Ack implements Backend. The acks of each shard are one pipeline, with one ack script per scope. A failed shard
+// is counted, and the first error is returned; the records of the failed keys expire at their TTL.
+func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
+	shards := r.connector.Shards()
+	if shards == nil {
+		r.countError()
+		return ErrNotConnected
+	}
+	groups := make(map[int][]rueidis.LuaExec)
+	for i := range acks {
+		if len(acks[i].MsgIDs) == 0 {
+			continue
+		}
+		index := redisshard.ShardIndex(acks[i].Scope, len(shards))
+		groups[index] = append(groups[index], ackExec(r.prefix, acks[i]))
+	}
+	var firstErr error
+	for index, execs := range groups {
+		err := r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
+			results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
+				return ackScript.ExecMulti(callCtx, client, execs...)
+			})
+			for i := range results {
+				if err := results[i].Error(); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// Connected reports whether the connector has shards.
+func (r *Redis) Connected() bool {
+	return r.connector.Shards() != nil
+}
+
+// ackExec returns the ack script call of the keys of one scope.
+func ackExec(prefix string, acks ScopeAcks) rueidis.LuaExec {
+	keys := make([]string, len(acks.MsgIDs))
+	for i, msgID := range acks.MsgIDs {
+		keys[i] = RedisKey(prefix, Key{Scope: acks.Scope, MsgID: msgID})
+	}
+	return rueidis.LuaExec{Keys: keys}
+}
+
+// exec runs op on the shard of scope. A scope on no shard, which means the connector is not connected, is a
+// Redis error.
+func (r *Redis) exec(ctx context.Context, scope string, op func(callCtx context.Context, shard *redisshard.RedisShard) error) error {
+	shard, err := r.shardOf(scope)
+	if err != nil {
+		r.countError()
+		return err
+	}
+	return r.call(ctx, shard, op)
+}
+
+// call runs op on shard with the IO timeout. It observes the duration of the call, and counts a failure.
+func (r *Redis) call(ctx context.Context, shard *redisshard.RedisShard, op func(callCtx context.Context, shard *redisshard.RedisShard) error) error {
+	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	start := time.Now()
+	err := op(callCtx, shard)
+	if r.observer != nil {
+		r.observer.RedisCall(time.Since(start).Seconds())
+	}
+	if err != nil {
+		r.countError()
+		return err
+	}
+	return nil
+}
+
+// shardOf returns the shard of scope, or ErrNotConnected while the connector has no shards.
+func (r *Redis) shardOf(scope string) (*redisshard.RedisShard, error) {
+	shards := r.connector.Shards()
+	if shards == nil {
+		return nil, ErrNotConnected
+	}
+	return shards[redisshard.ShardIndex(scope, len(shards))], nil
+}
+
+// countError counts a failed Redis call.
+func (r *Redis) countError() {
+	if r.observer != nil {
+		r.observer.RedisError()
+	}
+}
+
+// replyStrings returns the elements of an array reply as strings. A nil element is "", which is how a missing
+// field of a record reads.
+func replyStrings(res rueidis.RedisResult) ([]string, error) {
+	msgs, err := res.ToArray()
+	if err != nil {
+		return nil, err
+	}
+	parts := make([]string, len(msgs))
+	for i := range msgs {
+		if msgs[i].IsNil() {
+			continue
+		}
+		s, err := msgs[i].ToString()
+		if err != nil {
+			return nil, err
+		}
+		parts[i] = s
+	}
+	return parts, nil
+}

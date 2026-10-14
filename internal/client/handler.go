@@ -16,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
@@ -60,6 +61,7 @@ type Handler struct {
 	rpcExtension     map[string]RPCExtensionFunc
 	rpcRegistry      *rpcregistry.Registry
 	rpcDedup         rpcdedup.Store
+	rpcDedupMetrics  *metrics.RPCRegistryDedupMetrics
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
 	userLimiter      *ratelimit.UserLimiter
@@ -89,6 +91,7 @@ func NewHandler(
 		rpcExtension:     make(map[string]RPCExtensionFunc),
 	}
 	h.rpcDedup = newRPCDedupStore(cfgContainer)
+	h.rpcDedupMetrics = metrics.NewRPCRegistryDedupMetrics()
 	return h
 }
 
@@ -251,7 +254,12 @@ func (h *Handler) Setup() error {
 
 		if rpcProxyHandler != nil || len(h.rpcExtension) > 0 || h.rpcRegistry != nil {
 			client.OnRPC(func(event centrifuge.RPCEvent, cb centrifuge.RPCCallback) {
-				h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
+				bounded := concurrency
+				if event.Call.Cancel != 0 {
+					// A cancel does not wait for the semaphore: it would queue behind the calls it cancels.
+					bounded = 0
+				}
+				h.runConcurrentlyIfNeeded(client.Context(), bounded, semaphore, func() {
 					reply, err := h.OnRPC(client, event, rpcProxyHandler)
 					cb(reply, err)
 				})

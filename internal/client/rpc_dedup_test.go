@@ -44,11 +44,16 @@ func newRPCDedupTestClient(userID string, session [16]byte, storage map[string]a
 	return client
 }
 
+// testScopeOf returns the dedup scope of client with storage.
+func testScopeOf(client *tools.TestClientMock, storage map[string]any) string {
+	return rpcDedupScope(client.UserID(), client.TokenIdentity(), storage)
+}
+
 func TestRPCDedupScopePrefersSession(t *testing.T) {
 	var session [16]byte = [16]byte{1, 2, 3}
 	var storage map[string]any = map[string]any{clientstorage.KeyInstance: testInstance}
 
-	var scope string = rpcDedupScope(newRPCDedupTestClient("42", session, storage), storage)
+	var scope string = testScopeOf(newRPCDedupTestClient("42", session, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("s", "42", session[:]), scope)
 	require.NotEqual(t, rpcdedup.ScopeOf("i", "42", []byte(testInstance)), scope)
 }
@@ -56,7 +61,7 @@ func TestRPCDedupScopePrefersSession(t *testing.T) {
 func TestRPCDedupScopeFallsBackToInstance(t *testing.T) {
 	var storage map[string]any = map[string]any{clientstorage.KeyInstance: testInstance}
 
-	var scope string = rpcDedupScope(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	var scope string = testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("i", "42", []byte(testInstance)), scope)
 }
 
@@ -64,9 +69,9 @@ func TestRPCDedupScopeFallsBackToInstance(t *testing.T) {
 func TestRPCDedupScopeBoundToUser(t *testing.T) {
 	var storage map[string]any = map[string]any{clientstorage.KeyInstance: testInstance}
 
-	var first string = rpcDedupScope(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
-	var second string = rpcDedupScope(newRPCDedupTestClient("43", [16]byte{}, storage), storage)
-	var anonymous string = rpcDedupScope(newRPCDedupTestClient("", [16]byte{}, storage), storage)
+	var first string = testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	var second string = testScopeOf(newRPCDedupTestClient("43", [16]byte{}, storage), storage)
+	var anonymous string = testScopeOf(newRPCDedupTestClient("", [16]byte{}, storage), storage)
 	require.NotEqual(t, first, second)
 	require.NotEqual(t, first, anonymous)
 }
@@ -74,7 +79,7 @@ func TestRPCDedupScopeBoundToUser(t *testing.T) {
 func TestRPCDedupScopeNoneWithoutSessionOrInstance(t *testing.T) {
 	var storage map[string]any = map[string]any{}
 
-	var scope string = rpcDedupScope(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	var scope string = testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	require.Empty(t, scope)
 }
 

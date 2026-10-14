@@ -38,6 +38,12 @@ func (h *Handler) onRPCRegistry(c Client, e centrifuge.RPCEvent, rpcProxyHandler
 		}
 		return centrifuge.RPCReply{}, false, nil
 	}
+	track := h.rpcTrackCall(c, e.Call)
+	h.rpcAck(track, e.Call.Ack)
+	if e.Call.Cancel != 0 {
+		// A cancel command names no method, and is answered before the lookup.
+		return h.cancelRPCRegistry(track, e.Call.Cancel), true, nil
+	}
 	m := h.rpcRegistry.Lookup(e.Method)
 	if m == nil {
 		if rpcProxyHandler != nil && h.namespaceRPCProxyEnabled(e.Method) {
@@ -47,7 +53,7 @@ func (h *Handler) onRPCRegistry(c Client, e centrifuge.RPCEvent, rpcProxyHandler
 		metrics.IncRPCRegistryCall(registryUnknownMethod, metrics.RPCRegistryResultUnknown)
 		return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
 	}
-	reply, err := h.callRPCRegistry(c, e, m)
+	reply, err := h.callRPCRegistry(c, e, m, track)
 	return reply, true, err
 }
 
@@ -81,8 +87,9 @@ func (h *Handler) registryConnectFlags() int64 {
 	return centrifuge.ConnectionFlagRPCOptions
 }
 
-// callRPCRegistry checks the connection against the method and calls its gRPC target.
-func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method) (centrifuge.RPCReply, error) {
+// callRPCRegistry checks the connection against the method, and calls its gRPC target. A call with a msg_id is
+// tracked when the dedup is on, see callRPCTracked. track is nil when the dedup is off.
+func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, track *rpcTrack) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()
 	connToken, connClass := registryConnection(c, cfg.AuthClassClaim)
 	// The class of the connection decides whether it may call the method, see AuthClass.Admits.
@@ -94,6 +101,15 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 		sizeErr := registryError(cfg.Errors.RequestTooLarge)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, sizeErr)
 	}
+	if track != nil && e.Call.MsgID != 0 {
+		return h.callRPCTracked(c, e, m, cfg, connToken, track)
+	}
+	return h.invokeRPCRegistry(c.Context(), c, e, m, cfg, connToken)
+}
+
+// invokeRPCRegistry calls the gRPC target of m for the client, on ctx, and maps a failure to the error the client
+// receives. The context of the call is the client context, unless a tracked call gave its own.
+func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string) (centrifuge.RPCReply, error) {
 	var token string
 	if m.AuthClass != rpcregistry.AuthClassAnonymous {
 		token = connToken
@@ -101,17 +117,17 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 	started := time.Now()
 	m.Target.Metrics.IncInflight()
 	defer m.Target.Metrics.DecInflight()
-	data, trailers, err := proxy.CallRegistryMethod(c.Context(), m, proxy.RegistryCall{
+	data, trailers, err := proxy.CallRegistryMethod(ctx, m, proxy.RegistryCall{
 		ClientID: c.ID(),
 		Token:    token,
 		Data:     e.Data,
 		Headers:  e.Call.Headers,
 		MsgID:    e.Call.MsgID,
 	})
-	// The client context decides whether the call was cancelled. A CANCELLED status sent by the
+	// The context decides whether the call was cancelled. A CANCELLED status sent by the
 	// backend on a live connection is an ordinary failure of the target. A call cancelled by the
 	// client is not observed in the proxy metrics, as the proxy handler does for a closed client.
-	cancelled := errors.Is(c.Context().Err(), context.Canceled)
+	cancelled := errors.Is(ctx.Err(), context.Canceled)
 	if !cancelled {
 		m.Target.Metrics.ObserveCall(time.Since(started).Seconds(), err != nil)
 	}
@@ -176,6 +192,11 @@ func registryFailure(method string, result string, err error) error {
 
 // registryError returns the protocol error configured for a registry-originated failure.
 func registryError(e configtypes.RPCRegistryError) error {
+	return registryErrorValue(e)
+}
+
+// registryErrorValue is registryError with the concrete protocol error, for the dedup records.
+func registryErrorValue(e configtypes.RPCRegistryError) *centrifuge.Error {
 	return &centrifuge.Error{
 		Code:    e.Code,
 		Message: e.Message,

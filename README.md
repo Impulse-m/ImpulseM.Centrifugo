@@ -73,13 +73,12 @@ The registry lets clients call existing gRPC methods of backend services through
   "registry": {
     "enabled": true,
     "file": "/etc/centrifugo/rpc_registry.yaml",
-    "poll_interval": "10s",
     "drain_timeout": "30s",
     "errors": {
       "unknown_method": {"code": 104, "message": "method not found", "app_code": 400, "app_type": "UNKNOWN_METHOD"},
       "auth_class": {"code": 103, "message": "permission denied", "app_code": 401, "app_type": "ACCESS_DENIED"},
       "request_too_large": {"code": 106, "message": "limit exceeded", "app_code": 400, "app_type": "REQUEST_TOO_LARGE"},
-      "cancelled": {"code": 107, "message": "bad request", "app_code": 400, "app_type": "CALL_CANCELLED"}
+      "cancelled": {"code": 107, "message": "call cancelled", "app_code": 400, "app_type": "CALL_CANCELLED"}
     },
     "app_error": {"code_key": "app-code", "type_key": "app-type"},
     "grpc_status_to_code_transforms": []
@@ -88,7 +87,7 @@ The registry lets clients call existing gRPC methods of backend services through
 ```
 
 * `file`: path to the registry file, JSON or YAML, chosen by extension. Entries are read from this file only: combining `file` with inline `defaults`, `targets` or `methods` is an error.
-* `poll_interval`: how often the file is checked for changes. `0` means the file is reloaded on SIGHUP only. A changed file is applied as a whole: if it fails validation, the previous registry stays active.
+* `poll_interval`: accepted, but has no effect yet. The file is read at start and again on a configuration reload (SIGHUP). A changed file is applied as a whole: if it fails validation, the previous registry stays active. See [Planned](#planned).
 * `drain_timeout`: how long connections of removed or replaced targets stay open before they are closed, so calls in flight can finish. Default `30s`.
 * `errors`: protocol errors returned for failures of the registry itself: unknown method, auth class mismatch, request too large, and a call cancelled by the client. Each has `code`, `message`, and optional `app_code` and `app_type`.
 * `app_error`: names of the gRPC trailers which carry the application error code and type. Defaults are `app-code` and `app-type`.
@@ -137,9 +136,9 @@ The same tree works as JSON. Each method and target field left unset inherits fr
 Auth classes say which connections can call a method:
 
 * `anonymous`: any connection. The connection token is never forwarded, even when the connection is authenticated.
-* `pending_2fa`: a connection in the partially authenticated state, which forwards its connection token.
-* `authenticated`: an authenticated connection, which forwards its connection token.
-* `bot`: a bot connection, which forwards its connection token.
+* `pending_2fa`: planned, see [Planned](#planned). For now it is checked like `authenticated`.
+* `authenticated`: a connection with a user ID, which forwards its connection token.
+* `bot`: planned, see [Planned](#planned). For now it is checked like `authenticated`.
 
 A method without `auth_class` takes `defaults.auth_class`. If that is empty or `anonymous`, every method must state its class, so a missing class never makes a method public. A connection which does not satisfy the class gets `errors.auth_class`.
 
@@ -148,8 +147,8 @@ Metadata sent with each call. Later sources win:
 1. static metadata of the target (`grpc.static_metadata`);
 2. connect-time headers listed in the target's `emulated_headers`;
 3. per-call headers listed in the method's `headers`;
-4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods, `x-centrifugo-client` with the client ID, `x-centrifugo-msg-id` and `x-centrifugo-retransmit` for calls with a message ID, and `x-centrifugo-without-updates` when set;
-5. `x-forwarded-for` set to the address of the client connection, never the value sent by the client;
+4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods when the connection has a token, `x-centrifugo-client` with the client ID, and `x-centrifugo-msg-id` for calls with a message ID;
+5. `x-forwarded-for` is planned, see [Planned](#planned). Until then no `x-forwarded-for` is sent. Clients cannot set it: the name is reserved;
 6. `traceparent` and `tracestate` from the trace context of the call.
 
 #### Error mapping
@@ -173,7 +172,7 @@ A failed gRPC call becomes a protocol error with the default mapping below. The 
     {"status": "UNAUTHENTICATED", "to_error": {"code": 150, "message": "sign in again"}}
   ]
   ```
-* The protocol error `message` is the gRPC status message, cut to 256 bytes.
+* With the default mapping, the protocol error `message` is the gRPC status message, cut to 256 bytes.
 * The application error code comes from the `app_error.code_key` trailer as a decimal `int32`. Without it, the code is 401 for `UNAUTHENTICATED`, 403 for `PERMISSION_DENIED`, 420 for `RESOURCE_EXHAUSTED`, 400 for `INVALID_ARGUMENT`, and 500 otherwise.
 * The application error type comes from the `app_error.type_key` trailer and must match `^[A-Z0-9_]{1,64}$`. Without a valid trailer, the status message is used when it matches that pattern.
 * Protocol error `metadata` holds only the trailers listed in the method's `error_metadata`, nothing else.
@@ -183,6 +182,17 @@ Check the registry in CI with the usual config check. It validates the registry 
 ```bash
 centrifugo checkconfig -c config.json
 ```
+
+#### Planned
+
+Not implemented yet:
+
+* `x-forwarded-for` from the PROXY protocol address of the client connection, with one trusted-proxy policy shared with the listener.
+* File polling: the `poll_interval` option is accepted but not used.
+* `pending_2fa` and `bot` class claims. Both are checked like `authenticated` for now.
+* The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
+* Cancelling an in-flight call by its `msg_id`.
+* Deduplication of calls with a message ID. `idempotent` is accepted, but it has no effect yet.
 
 ### Not implemented (yet)
 

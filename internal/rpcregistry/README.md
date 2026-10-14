@@ -87,7 +87,11 @@ The `anonymous` method class is open to everyone, and its connection token is ne
 
 A connection gets its class from the connection token at connect, and a refresh replaces it. The claim named by `rpc.registry.auth_class_claim` holds the class, with one of the values `pending_2fa`, `bot`, `authenticated` or `anonymous`. Each value must agree with the user of the connection: `anonymous` only without a user, `authenticated` and `bot` only with one, and `pending_2fa` with or without one. A claim with any other value, a claim which is not a string, or a value which does not agree with the user, makes the token invalid, so the connect or the refresh is rejected. A refresh with a full token upgrades a pending connection.
 
-When `auth_class_claim` is empty, a connection is `anonymous` without a user and `authenticated` with one. A connection without a token, such as one made through a connect proxy, has no stored class and gets the class of its user the same way.
+When `auth_class_claim` is empty, a connection is `anonymous` without a user and `authenticated` with one.
+
+When `auth_class_claim` is set, issuers put the claim on every connection token which is not a full session, and leave it out of full sessions. A token without the claim is taken as a full session: `authenticated` with a user, `anonymous` without one. So a half-logged-in token must carry the claim.
+
+A stored class is valid only under the claim it was derived under. After a reload which changes `auth_class_claim`, a connection which was connected under the old claim is `anonymous` for non-anonymous methods, until its next refresh derives the class again. A connection without a token, such as one made through a connect proxy, has no class: without a claim it gets the class of its user, and with a claim it is `anonymous`.
 
 A method without `auth_class` takes `defaults.auth_class`. If that is empty or `anonymous`, every method must state its class, so a missing class never makes a method public. When the registry is enabled, a method or `defaults.auth_class` of class `pending_2fa` or `bot` needs `rpc.registry.auth_class_claim`, and `auth_class_claim` must be a name of the form `[a-zA-Z_]+`. The rule applies at config validation and on reload, and a reload which breaks it is rejected, keeping the current registry. A connection which does not satisfy the class gets `errors.auth_class`.
 
@@ -146,6 +150,7 @@ Not implemented yet:
 
 * `x-forwarded-for` from the PROXY protocol address of the client connection, with one trusted-proxy policy shared with the listener.
 * File polling: `poll_interval` is accepted and reserved for it. It has no effect yet.
+* A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
 * Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
 * The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
 * Cancelling an in-flight call by its `msg_id`.

@@ -335,7 +335,7 @@ func TestRPCDedupCancelOutsideWindowIsRefused(t *testing.T) {
 	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(107), protoErr.Code)
 	require.Equal(t, "invalid msg_id", protoErr.Message)
-	require.Equal(t, 0, h.rpcDedup.store.Len())
+	require.Equal(t, 0, testStoreEntries(h.rpcDedup.store))
 }
 
 // With the dedup off, a cancel command is an ordinary call: it is not answered before the lookup.

@@ -99,8 +99,6 @@ type Store interface {
 	Cancel(key Key, failure *centrifuge.Error) error
 	// Ack forgets the done records of the msg_ids of scope. In-flight calls are not affected.
 	Ack(scope string, msgIDs []uint64) error
-	// Len returns the number of records kept.
-	Len() int
 	// Stats returns the gauges of the store, without taking its locks.
 	Stats() Stats
 }

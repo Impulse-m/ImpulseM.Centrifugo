@@ -114,6 +114,11 @@ func testDone(t *testing.T, store Store, key Key) (Record, bool) {
 	return lookup.Record, lookup.Outcome == OutcomeDone
 }
 
+// testEntries returns the number of records the store keeps, read from its gauges.
+func testEntries(store Store) int {
+	return int(store.Stats().Entries)
+}
+
 // testRecordCount returns the number of records kept for scope.
 func testRecordCount(store *Memory, scope string) int {
 	s := store.shardOf(scope)
@@ -161,7 +166,7 @@ func checkInvariants(t *testing.T, store *Memory) {
 	stats := store.Stats()
 	require.Equal(t, entries, stats.Entries)
 	require.Equal(t, bytes, stats.Bytes)
-	require.Equal(t, int(entries), store.Len())
+	require.Equal(t, int(entries), testEntries(store))
 }
 
 // poolTotals are the counts of one pool, summed by checkInvariants.
@@ -265,7 +270,7 @@ func TestMemoryMissCompleteDone(t *testing.T) {
 	lookup = testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Equal(t, []byte("ok"), lookup.Record.Reply)
-	require.Equal(t, 1, store.Len())
+	require.Equal(t, 1, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -380,7 +385,7 @@ func TestMemoryAbandonedCallIsNotKept(t *testing.T) {
 	// Nothing is kept, so a retransmit runs the call again, and the scope is released.
 	lookup := testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
-	require.Equal(t, 0, store.Len())
+	require.Equal(t, 0, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -402,7 +407,7 @@ func TestMemoryAckRemovesDoneRecordsOnly(t *testing.T) {
 	lookup = testBegin(t, store, running, NewFlight())
 	require.Equal(t, OutcomeInFlight, lookup.Outcome)
 	// In-flight calls are not records: the acked done record was the only one kept.
-	require.Equal(t, 0, store.Len())
+	require.Equal(t, 0, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -418,7 +423,7 @@ func TestMemoryEntryBound(t *testing.T) {
 	for msgID := uint64(1); msgID <= 3; msgID++ {
 		testAnswer(t, store, Key{Scope: scope, MsgID: msgID}, "ok")
 	}
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testEntries(store))
 
 	// The oldest record of the scope is the one evicted.
 	require.True(t, testIsMiss(t, store, Key{Scope: scope, MsgID: 1}))
@@ -436,7 +441,7 @@ func TestMemoryTTLExpiresRecords(t *testing.T) {
 
 	clock.advance(time.Nanosecond)
 	require.True(t, testIsMiss(t, store, key), "the record is no answer once its TTL has passed")
-	require.Equal(t, 0, store.Len())
+	require.Equal(t, 0, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -509,7 +514,7 @@ func TestMemoryByteBudget(t *testing.T) {
 	}
 	// 8 KiB holds 32 records of 256 bytes, and each of the eight scopes keeps its four records.
 	require.LessOrEqual(t, store.Stats().Bytes, int64(8*1024))
-	require.Equal(t, 32, store.Len())
+	require.Equal(t, 32, testEntries(store))
 	for _, scope := range scopes {
 		require.Equal(t, 4, testRecordCount(store, scope))
 	}
@@ -526,7 +531,7 @@ func TestMemoryPerScopeCap(t *testing.T) {
 	for msgID := uint64(1); msgID <= 10; msgID++ {
 		testAnswer(t, store, Key{Scope: scope, MsgID: msgID}, "ok")
 	}
-	require.Equal(t, 4, store.Len())
+	require.Equal(t, 4, testEntries(store))
 	require.True(t, testIsMiss(t, store, Key{Scope: scope, MsgID: 1}))
 	_, done := testDone(t, store, Key{Scope: scope, MsgID: 10})
 	require.True(t, done)
@@ -550,7 +555,7 @@ func TestMemoryFloodDoesNotEvictOtherScope(t *testing.T) {
 	record, done := testDone(t, store, victim)
 	require.True(t, done)
 	require.Equal(t, []byte("kept"), record.Reply)
-	require.LessOrEqual(t, store.Len(), 5)
+	require.LessOrEqual(t, testEntries(store), 5)
 	checkInvariants(t, store)
 }
 
@@ -564,7 +569,7 @@ func TestMemoryCancelTombstonesCountTowardCap(t *testing.T) {
 	for msgID := uint64(1); msgID <= 5; msgID++ {
 		require.NoError(t, store.Cancel(Key{Scope: scope, MsgID: msgID}, testCancelled))
 	}
-	require.Equal(t, 4, store.Len())
+	require.Equal(t, 4, testEntries(store))
 	require.True(t, testIsMiss(t, store, Key{Scope: scope, MsgID: 1}))
 	checkInvariants(t, store)
 }
@@ -598,7 +603,7 @@ func TestMemoryReserveSurvivesFlood(t *testing.T) {
 	}
 	// The victim holds 4 records and the flooder fills the other 28. The 972 later records of the flooder each evict
 	// its own oldest, as the flooder is over its reserve while the pool is full.
-	require.Equal(t, 32, store.Len())
+	require.Equal(t, 32, testEntries(store))
 	require.Equal(t, 972, observer.counts[EvictionOverReserve])
 	checkInvariants(t, store)
 
@@ -606,7 +611,7 @@ func TestMemoryReserveSurvivesFlood(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		testAnswer(t, store, Key{Scope: testScope("one"+strconv.Itoa(i), "a"), MsgID: 1}, "one")
 	}
-	require.Equal(t, 32, store.Len())
+	require.Equal(t, 32, testEntries(store))
 	require.Equal(t, 6, observer.counts[EvictionSurplus])
 	require.Equal(t, 972, observer.counts[EvictionOverReserve])
 
@@ -628,7 +633,7 @@ func TestMemoryReserveSurvivesFlood(t *testing.T) {
 	lookup, err := store.Begin(Key{Scope: testScope("nine", "a"), MsgID: 1}, NewFlight())
 	require.Equal(t, Lookup{}, lookup)
 	require.Equal(t, RefusalPool, testRefused(t, err))
-	require.Equal(t, 32, store.Len())
+	require.Equal(t, 32, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -690,7 +695,7 @@ func TestMemorySurplusDrainsLongestFirst(t *testing.T) {
 		testAnswer(t, store, Key{Scope: scopeB, MsgID: msgID}, "b")
 	}
 	testAnswer(t, store, Key{Scope: scopeC, MsgID: 1}, "c")
-	require.Equal(t, 12, store.Len())
+	require.Equal(t, 12, testEntries(store))
 
 	testAnswer(t, store, Key{Scope: scopeC, MsgID: 2}, "c")
 	testAnswer(t, store, Key{Scope: scopeC, MsgID: 3}, "c")
@@ -760,7 +765,7 @@ func TestMemoryWithinReserveKeepsRecordsWhenFull(t *testing.T) {
 	for msgID := uint64(1); msgID <= 8; msgID++ {
 		testAnswer(t, store, Key{Scope: flood, MsgID: msgID}, "flood")
 	}
-	require.Equal(t, 12, store.Len())
+	require.Equal(t, 12, testEntries(store))
 	require.Empty(t, observer.counts[EvictionSurplus])
 
 	testAnswer(t, store, Key{Scope: newcomer, MsgID: 1}, "new")
@@ -879,12 +884,12 @@ func TestMemoryCancelTombstoneRefusedWhenFull(t *testing.T) {
 	store := NewMemory(options)
 	testAnswer(t, store, Key{Scope: testScope("a", "a"), MsgID: 1}, "ok")
 	testAnswer(t, store, Key{Scope: testScope("b", "a"), MsgID: 1}, "ok")
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testEntries(store))
 
 	key := Key{Scope: testScope("c", "a"), MsgID: 1}
 	err := store.Cancel(key, testCancelled)
 	require.Equal(t, RefusalPool, testRefused(t, err))
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testEntries(store))
 	_, err = store.Begin(key, NewFlight())
 	require.Equal(t, RefusalPool, testRefused(t, err))
 
@@ -895,7 +900,7 @@ func TestMemoryCancelTombstoneRefusedWhenFull(t *testing.T) {
 	testAnswer(t, store, Key{Scope: testScope("u", "1"), MsgID: 1}, "ok")
 	err = store.Cancel(Key{Scope: testScope("u", "2"), MsgID: 1}, testCancelled)
 	require.Equal(t, RefusalUser, testRefused(t, err))
-	require.Equal(t, 1, store.Len())
+	require.Equal(t, 1, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -932,19 +937,19 @@ func TestMemorySweepIsCapped(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		testAnswer(t, store, Key{Scope: testScope("u"+strconv.Itoa(i/4), "a"), MsgID: uint64(i)}, "ok")
 	}
-	require.Equal(t, 200, store.Len())
+	require.Equal(t, 200, testEntries(store))
 
 	// Every record has expired. One Begin removes at most sweepLimit of them, and it is the Begin that removes them.
 	clock.advance(time.Minute)
 	fresh := Key{Scope: testScope("fresh", "a"), MsgID: 1}
 	flight := NewFlight()
 	require.Equal(t, OutcomeMiss, testBegin(t, store, fresh, flight).Outcome)
-	require.Equal(t, 200-sweepLimit, store.Len())
+	require.Equal(t, 200-sweepLimit, testEntries(store))
 
 	// The next access removes the next batch, and no more.
 	require.NoError(t, store.Complete(fresh, flight, Record{Abandoned: true}))
 	require.True(t, testIsMiss(t, store, Key{Scope: testScope("fresh", "a"), MsgID: 2}))
-	require.Equal(t, 200-2*sweepLimit, store.Len())
+	require.Equal(t, 200-2*sweepLimit, testEntries(store))
 	checkInvariants(t, store)
 }
 
@@ -970,7 +975,7 @@ func TestMemoryInsertFreesExpiredBeforeLive(t *testing.T) {
 	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte("new")}))
 
 	require.Empty(t, observer.counts, "expired records make room without an eviction")
-	require.Equal(t, 8, store.Len(), "seven expired records and the new one")
+	require.Equal(t, 8, testEntries(store), "seven expired records and the new one")
 	record, done := testDone(t, store, key)
 	require.True(t, done)
 	require.Equal(t, []byte("new"), record.Reply)
@@ -986,7 +991,7 @@ func TestMemoryCompleteOverwriteKeepsCounters(t *testing.T) {
 	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte("first")}))
 	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte("second")}))
 
-	require.Equal(t, 1, store.Len())
+	require.Equal(t, 1, testEntries(store))
 	require.Equal(t, int64(RecordOverhead+len("first")), store.Stats().Bytes)
 	record, _ := testDone(t, store, key)
 	require.Equal(t, []byte("first"), record.Reply)
@@ -1005,7 +1010,7 @@ func TestMemoryKeepReplacesExistingRecord(t *testing.T) {
 	s.keep(sc, key, Record{Reply: []byte("second")}, clock.now())
 	s.mu.Unlock()
 
-	require.Equal(t, 1, store.Len())
+	require.Equal(t, 1, testEntries(store))
 	require.Equal(t, int64(RecordOverhead+len("second")), store.Stats().Bytes)
 	record, _ := testDone(t, store, key)
 	require.Equal(t, []byte("second"), record.Reply)
@@ -1073,7 +1078,7 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 		}
 		if op%1000 == 0 {
 			stats := store.Stats()
-			require.LessOrEqual(t, store.Len(), options.MaxEntries)
+			require.LessOrEqual(t, testEntries(store), options.MaxEntries)
 			require.LessOrEqual(t, stats.Bytes, options.MaxBytes)
 			checkInvariants(t, store)
 		}

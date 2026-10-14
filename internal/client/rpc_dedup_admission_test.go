@@ -14,6 +14,11 @@ import (
 // otherTestInstance is a second valid install instance, for a second scope of one user.
 const otherTestInstance = "other_install_0123456789ab"
 
+// testStoreEntries returns the number of records the store keeps, read from its gauges.
+func testStoreEntries(store rpcdedup.Store) int {
+	return int(store.Stats().Entries)
+}
+
 // testSmallDedupStore replaces the store of h with a one-shard store of maxEntries records, which admits
 // maxEntries/4 scopes, and of maxScopesPerUser scopes per user. The metrics of h are kept. It returns the store.
 func testSmallDedupStore(h *Handler, maxEntries int, maxScopesPerUser int) *rpcdedup.Memory {
@@ -56,7 +61,7 @@ func TestRPCDedupRefusedScopeFailsClosed(t *testing.T) {
 	require.Equal(t, uint32(108), protoErr.Code)
 	require.True(t, protoErr.Temporary)
 	require.Len(t, backend.Calls(), 2)
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testStoreEntries(store))
 	require.Equal(t, float64(1), testDedupCount(vec, "refused_pool"))
 	require.Zero(t, testDedupCount(vec, "store_error"))
 }
@@ -75,7 +80,7 @@ func TestRPCDedupRefusedScopeFailsOpen(t *testing.T) {
 	require.NoError(t, r.err)
 	require.False(t, r.reply.Cached)
 	require.Len(t, backend.Calls(), 3)
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testStoreEntries(store))
 	require.Equal(t, float64(1), testDedupCount(vec, "refused_pool"))
 }
 
@@ -91,7 +96,7 @@ func TestRPCDedupRefusedUserIsCounted(t *testing.T) {
 	protoErr := requireProtocolError(t, refused.err)
 	require.Equal(t, uint32(108), protoErr.Code)
 	require.Len(t, backend.Calls(), 1)
-	require.Equal(t, 1, store.Len())
+	require.Equal(t, 1, testStoreEntries(store))
 	require.Equal(t, float64(1), testDedupCount(vec, "refused_user"))
 	require.Zero(t, testDedupCount(vec, "refused_pool"))
 }
@@ -109,7 +114,7 @@ func TestRPCDedupRefusedCancelRecordsNothing(t *testing.T) {
 	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
 	require.NoError(t, err)
 	require.Empty(t, reply.Data)
-	require.Equal(t, 2, store.Len())
+	require.Equal(t, 2, testStoreEntries(store))
 	require.Equal(t, float64(1), testDedupCount(vec, "refused_pool"))
 	require.Zero(t, testDedupCount(vec, "store_error"))
 }

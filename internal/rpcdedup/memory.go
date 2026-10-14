@@ -442,12 +442,6 @@ func (m *Memory) Ack(scope string, msgIDs []uint64) error {
 	return nil
 }
 
-// Len implements Store. It is the number of records kept, which may include records which expired, until their
-// shard is next accessed.
-func (m *Memory) Len() int {
-	return int(m.Stats().Entries)
-}
-
 // Stats implements Store. It reads the gauges of the pools without taking the shard locks.
 func (m *Memory) Stats() Stats {
 	var out Stats

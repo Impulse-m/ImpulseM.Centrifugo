@@ -26,6 +26,12 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 	v.SetDefault(prefix+"request_too_large.message", "limit exceeded")
 	v.SetDefault(prefix+"cancelled.code", 107)
 	v.SetDefault(prefix+"cancelled.message", "bad request")
+	v.SetDefault(prefix+"msg_id_invalid.code", 107)
+	v.SetDefault(prefix+"msg_id_invalid.message", "invalid msg_id")
+	v.SetDefault(prefix+"result_evicted.code", 110)
+	v.SetDefault(prefix+"result_evicted.message", "result expired")
+	v.SetDefault(prefix+"dedup_unavailable.code", 108)
+	v.SetDefault(prefix+"dedup_unavailable.message", "dedup unavailable")
 }
 
 // LoadRPCRegistryFile reads the RPC registry file at path. The format is chosen by the

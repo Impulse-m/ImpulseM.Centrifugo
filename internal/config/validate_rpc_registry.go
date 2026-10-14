@@ -1,11 +1,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -27,6 +29,10 @@ func validateRPCRegistry(c Config) error {
 	if err != nil {
 		return fmt.Errorf("in rpc.registry: %w", err)
 	}
+	err = validateRPCDedup(c)
+	if err != nil {
+		return fmt.Errorf("in rpc.registry: %w", err)
+	}
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}
@@ -35,6 +41,40 @@ func validateRPCRegistry(c Config) error {
 	}
 	_, err = ResolveRPCRegistry(c.RPC.Registry)
 	return err
+}
+
+// validateRPCDedup checks the exactly-once RPC config. A disabled dedup is not checked. Dedup needs the
+// enabled registry, and the server time in replies, which the SDK uses to correct its msg_id clock.
+func validateRPCDedup(c Config) error {
+	var dedup configtypes.RPCDedup = c.RPC.Registry.Dedup
+	if !dedup.Enabled {
+		return nil
+	}
+	if !c.RPC.Registry.Enabled {
+		return errors.New("rpc.registry.dedup.enabled: requires rpc.registry.enabled")
+	}
+	if !c.Client.ReplyIncludeServerTime {
+		return errors.New("rpc.registry.dedup.enabled: requires client.reply_include_server_time")
+	}
+	if dedup.Window.ToDuration() < time.Second {
+		return fmt.Errorf("rpc.registry.dedup.window: must be at least 1s, got %s", dedup.Window.ToDuration())
+	}
+	if dedup.MaxSkew.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_skew: must not be negative, got %s", dedup.MaxSkew.ToDuration())
+	}
+	if dedup.Window.ToDuration() <= dedup.MaxSkew.ToDuration() {
+		return fmt.Errorf("rpc.registry.dedup.window: must be greater than max_skew, got window %s and max_skew %s", dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration())
+	}
+	if dedup.MaxReplySize <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_reply_size: must be positive, got %d", dedup.MaxReplySize)
+	}
+	if dedup.LocalMaxEntries <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.local_max_entries: must be positive, got %d", dedup.LocalMaxEntries)
+	}
+	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
+		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)
+	}
+	return nil
 }
 
 // validateRPCAuthClassClaim checks auth_class_claim against the entries of the registry. Methods of class

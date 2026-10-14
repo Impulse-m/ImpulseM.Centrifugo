@@ -74,6 +74,8 @@ type RPCRegistry struct {
 	AppError RPCRegistryAppError `mapstructure:"app_error" json:"app_error" envconfig:"app_error" yaml:"app_error" toml:"app_error" doc:"Names of gRPC trailers which carry the application error code and type returned by the backend."`
 	// GRPCStatusToCodeTransforms overrides the default mapping of gRPC status codes to protocol errors.
 	GRPCStatusToCodeTransforms RPCGRPCStatusToCodeTransforms `mapstructure:"grpc_status_to_code_transforms" json:"grpc_status_to_code_transforms" envconfig:"grpc_status_to_code_transforms" yaml:"grpc_status_to_code_transforms" toml:"grpc_status_to_code_transforms" doc:"Rules overriding the default mapping of gRPC status codes from backend targets to protocol errors or disconnects."`
+	// Dedup configures exactly-once RPC: the records of non-idempotent calls with a msg_id.
+	Dedup RPCDedup `mapstructure:"dedup" json:"dedup" envconfig:"dedup" yaml:"dedup" toml:"dedup" doc:"Exactly-once RPC: a retransmitted call of a non-idempotent method is answered from the record of its first call. Off by default."`
 
 	// Defaults are applied to every method which does not set the field itself.
 	Defaults RPCMethodDefaults `mapstructure:"defaults" json:"defaults" envconfig:"defaults" yaml:"defaults" toml:"defaults" doc:"Defaults applied to methods and targets which do not set the field themselves. Set <<auth_class>> here, or every method must state its own class."`
@@ -93,6 +95,12 @@ type RPCRegistryErrors struct {
 	RequestTooLarge RPCRegistryError `mapstructure:"request_too_large" json:"request_too_large" envconfig:"request_too_large" yaml:"request_too_large" toml:"request_too_large" doc:"Error returned when the request exceeds the max request size of the method."`
 	// Cancelled is returned when the client cancels a call.
 	Cancelled RPCRegistryError `mapstructure:"cancelled" json:"cancelled" envconfig:"cancelled" yaml:"cancelled" toml:"cancelled" doc:"Error returned when the client cancels the call."`
+	// MsgIDInvalid is returned when the msg_id of a call is outside the dedup window.
+	MsgIDInvalid RPCRegistryError `mapstructure:"msg_id_invalid" json:"msg_id_invalid" envconfig:"msg_id_invalid" yaml:"msg_id_invalid" toml:"msg_id_invalid" doc:"Error returned when the msg_id of a call is outside the dedup window or above 53 bits. The reply carries the server time, so the client can correct its clock."`
+	// ResultEvicted is returned to a retransmit whose answer was not kept, because the reply was over the size limit.
+	ResultEvicted RPCRegistryError `mapstructure:"result_evicted" json:"result_evicted" envconfig:"result_evicted" yaml:"result_evicted" toml:"result_evicted" doc:"Error returned to a retransmit whose call ran, but whose reply was not kept: the reply was over the dedup size limit. The call is not run again."`
+	// DedupUnavailable is returned to a tracked call when the dedup store fails. It is sent as temporary.
+	DedupUnavailable RPCRegistryError `mapstructure:"dedup_unavailable" json:"dedup_unavailable" envconfig:"dedup_unavailable" yaml:"dedup_unavailable" toml:"dedup_unavailable" doc:"Temporary error returned to a tracked call when the dedup store fails, with on_store_error fail_closed. Clients retry it later."`
 }
 
 // RPCRegistryError is a protocol error with optional application-level code and type.
@@ -138,8 +146,8 @@ type RPCMethodDefaults struct {
 	MaxRequestBytes int `mapstructure:"max_request_bytes" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Request size limit in bytes for methods which do not set one. Zero means the built-in default of 64 KiB."`
 	// MaxResponseBytes is the response size limit of methods and targets which do not set one.
 	MaxResponseBytes int `mapstructure:"max_response_bytes" json:"max_response_bytes" envconfig:"max_response_bytes" yaml:"max_response_bytes" toml:"max_response_bytes" doc:"Response size limit in bytes for methods and targets which do not set one. Zero means the built-in default of 1 MiB."`
-	// Idempotent is the default idempotency of methods. It is accepted and reserved for an upcoming feature, and has no effect yet.
-	Idempotent bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Accepted and reserved for an upcoming feature, with no effect yet: calls are not retried or deduplicated by it. Default for methods which do not set idempotent."`
+	// Idempotent is the default idempotency of methods. Calls of non-idempotent methods are deduplicated when rpc.registry.dedup is enabled.
+	Idempotent bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Default for methods which do not set idempotent. A call of a non-idempotent method with a msg_id is deduplicated when rpc.registry.dedup is enabled; an idempotent one is re-executed on retransmit and cancelled on disconnect."`
 }
 
 // RPCTarget is a gRPC backend the registry methods call.
@@ -178,8 +186,8 @@ type RPCMethod struct {
 	MaxRequestBytes int `mapstructure:"max_request_bytes" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Request size limit in bytes of the method. Zero inherits the defaults."`
 	// MaxResponseBytes is the response size limit of the method.
 	MaxResponseBytes int `mapstructure:"max_response_bytes" json:"max_response_bytes" envconfig:"max_response_bytes" yaml:"max_response_bytes" toml:"max_response_bytes" doc:"Response size limit in bytes of the method. Zero inherits the target or defaults."`
-	// Idempotent overrides the default idempotency of the method. Nil inherits defaults.idempotent. It is accepted and reserved for an upcoming feature, and has no effect yet.
-	Idempotent *bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Accepted and reserved for an upcoming feature, with no effect yet. Unset inherits defaults.idempotent."`
+	// Idempotent overrides the default idempotency of the method. Nil inherits defaults.idempotent.
+	Idempotent *bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Idempotency of the method: a call of a non-idempotent method with a msg_id is deduplicated when rpc.registry.dedup is enabled. Unset inherits defaults.idempotent."`
 	// Headers are per-call client headers forwarded to the target.
 	Headers []string `mapstructure:"headers" json:"headers" envconfig:"headers" yaml:"headers" toml:"headers" expose:"full" doc:"Names of per-call client headers forwarded to the target. Lower-case. Reserved names are rejected."`
 	// ErrorMetadata lists backend trailer keys copied into the protocol error metadata.

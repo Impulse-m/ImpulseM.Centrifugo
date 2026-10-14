@@ -5,8 +5,9 @@ import (
 	"sync"
 )
 
-// sessionShards is the number of shards of SessionConnections. It is a power of two, so a shard is picked with a mask.
-const sessionShards = 64
+// indexShards is the number of shards of each array of SessionConnections. It is a power of two, so a shard is picked
+// with a mask.
+const indexShards = 64
 
 // SessionConnections indexes local connections which have no user and carry a token session. Such a connection is
 // not in the user index of the hub, so session revocation reaches it only through this index. It holds every
@@ -18,8 +19,8 @@ const sessionShards = 64
 // shard. Nothing takes the locks in the other order, so the two kinds of shard cannot deadlock.
 type SessionConnections struct {
 	seed          maphash.Seed
-	idShards      [sessionShards]connectionIDShard
-	sessionShards [sessionShards]sessionConnectionShard
+	idShards      [indexShards]connectionIDShard
+	sessionShards [indexShards]sessionConnectionShard
 }
 
 // connectionIDShard holds the session of each connection indexed under its ID.
@@ -90,26 +91,14 @@ func (s *SessionConnections) Connections(session [16]byte) []Connection {
 	return out
 }
 
-// count returns the number of indexed connections.
-func (s *SessionConnections) count() int {
-	total := 0
-	for i := range s.idShards {
-		shard := &s.idShards[i]
-		shard.mu.Lock()
-		total += len(shard.sessionOf)
-		shard.mu.Unlock()
-	}
-	return total
-}
-
 // idShard returns the shard of the connection ID.
 func (s *SessionConnections) idShard(id string) *connectionIDShard {
-	return &s.idShards[maphash.String(s.seed, id)&(sessionShards-1)]
+	return &s.idShards[maphash.String(s.seed, id)&(indexShards-1)]
 }
 
 // sessionShard returns the shard of the session key.
 func (s *SessionConnections) sessionShard(session [16]byte) *sessionConnectionShard {
-	return &s.sessionShards[session[0]&(sessionShards-1)]
+	return &s.sessionShards[session[0]&(indexShards-1)]
 }
 
 // addToSession adds the connection with id to session. The caller holds the ID shard lock.

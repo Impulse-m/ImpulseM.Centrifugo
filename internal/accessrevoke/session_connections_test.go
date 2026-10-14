@@ -11,6 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// count returns the number of connections indexed under any ID, for the tests only.
+func (s *SessionConnections) count() int {
+	total := 0
+	for i := range s.idShards {
+		shard := &s.idShards[i]
+		shard.mu.Lock()
+		total += len(shard.sessionOf)
+		shard.mu.Unlock()
+	}
+	return total
+}
+
 // sessionIDForTest returns a UUID session ID for the test sessions with index i.
 func sessionIDForTest(i int) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", i)

@@ -68,6 +68,28 @@ Topic guidance:
 
 Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [internal/rpcregistry/README.md](internal/rpcregistry/README.md).
 
+### Client address behind trusted proxies
+
+Behind a load balancer or a reverse proxy the server sees the proxy as the peer. `client_address` resolves the real client address from two sources, and both are believed only from the proxies listed in `trusted_proxies`:
+
+* the forwarded header (`header`, `x-forwarded-for` by default), walked from right to left, skipping trusted proxies; an entry which is not an address makes the peer the client;
+* a PROXY protocol v1 or v2 header (`proxy_protocol.enabled`) on the external HTTP port and the `uni_grpc` port. The header is read before TLS. A peer outside `trusted_proxies` is rejected by default, or its header is ignored with `untrusted_peers: ignore`.
+
+```json
+"client_address": {
+  "enabled": true,
+  "trusted_proxies": ["10.0.0.0/8", "192.0.2.7"],
+  "header": "x-forwarded-for",
+  "proxy_protocol": {
+    "enabled": false,
+    "untrusted_peers": "reject",
+    "read_header_timeout": "10s"
+  }
+}
+```
+
+Off by default, and then the auth throttle and the request log keep their previous rules. When on, the resolved address is used by the auth throttle and the request log, and sent to RPC registry targets as `x-forwarded-for`, or omitted when it is unknown. Not yet exposed to the connect proxy or the connections API. PROXY protocol does not apply to HTTP/3 or WebTransport, which are UDP; the header walk still does. Internal HTTP and gRPC API ports do not read PROXY headers unless they share the external port.
+
 ### Not implemented (yet)
 
 * Redis and PostgreSQL persistence for revocation.

@@ -25,12 +25,6 @@ type ConnState struct {
 	user           atomic.Pointer[UserState]
 }
 
-// UserAttached reports whether the user state of the connection is attached by UserLimiter.Attach and not
-// yet detached.
-func (st *ConnState) UserAttached() bool {
-	return st.user.Load() != nil
-}
-
 // MarkErrorExhausted marks the connection as over its error limit. It returns true only for the
 // first call, so the caller disconnects and counts the connection once.
 func (st *ConnState) MarkErrorExhausted() bool {

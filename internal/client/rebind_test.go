@@ -108,10 +108,20 @@ func registryTestClass(name string) rpcregistry.AuthClass {
 // rateLimited is set. The access revocation store is empty.
 func newRebindTestHandler(t *testing.T, rebind configtypes.Rebind, rateLimited bool) (*Handler, *accessrevoke.Store) {
 	t.Helper()
+	return newRebindTestHandlerWithUserCommand(t, rebind, configtypes.RateLimitUserCommand{Enabled: rateLimited})
+}
+
+// newRebindTestHandlerWithUserCommand is newRebindTestHandler with the user command rate limits of userCommand.
+func newRebindTestHandlerWithUserCommand(
+	t *testing.T,
+	rebind configtypes.Rebind,
+	userCommand configtypes.RateLimitUserCommand,
+) (*Handler, *accessrevoke.Store) {
+	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.Client.Rebind = rebind
 	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
-	cfg.Client.RateLimit.UserCommand.Enabled = rateLimited
+	cfg.Client.RateLimit.UserCommand = userCommand
 	cfg.Channel.UserBoundary = "#"
 	cfg.Channel.WithoutNamespace.SubscribeForAnonymous = true
 	cfg.Channel.WithoutNamespace.UserLimitedChannels = true
@@ -341,6 +351,26 @@ func TestRebindDowngradeDropsUserAndTokenChannels(t *testing.T) {
 	require.Contains(t, state.channels, "news")
 }
 
+// TestRebindPendingDowngradeToAnonymousDropsTokenChannels checks a pending connection, which Core sees as anonymous,
+// refreshing to an anonymous token: its token and personal channels go, and its anonymous client channel stays.
+func TestRebindPendingDowngradeToAnonymousDropsTokenChannels(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
+	state.channels = map[string]centrifuge.ChannelContext{
+		"#42":  {Source: subsource.UserPersonal},
+		"news": {Source: subsource.ClientAllowed},
+		"tok":  {Source: subsource.ConnectionToken},
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Empty(t, state.user)
+	require.Equal(t, map[string]bool{"#42": true, "tok": true}, unsubscribedSet(state))
+	require.Contains(t, state.channels, "news")
+}
+
 func unsubscribedSet(state *rebindTestState) map[string]bool {
 	out := make(map[string]bool, len(state.unsubscribed))
 	for channel := range state.unsubscribed {
@@ -369,37 +399,65 @@ func TestRebindUpgradeAddsPersonalAndTokenSubscriptions(t *testing.T) {
 	require.Contains(t, state.subscribed, "tok-sub")
 }
 
+// rebindBudgetUserCommand returns user command limits with one unsubscribe per minute, a budget a test can spend.
+func rebindBudgetUserCommand() configtypes.RateLimitUserCommand {
+	return configtypes.RateLimitUserCommand{
+		Enabled: true,
+		RateLimitOperations: configtypes.RateLimitOperations{
+			Unsubscribe: rateLimitChannelOf(time.Minute, 1),
+		},
+	}
+}
+
+// budgetAllowed takes one unsubscribe from the user budget of the connection state. It is allowed when the state
+// has no user, and when the user budget has a command left.
+func budgetAllowed(h *Handler, st *ratelimit.ConnState) bool {
+	return h.userLimiter.CommandAllowed(st, time.Now(), ratelimit.OperationUnsubscribe, "")
+}
+
+// TestRebindRateLimitStateFollowsUser checks that the rate limit state of a connection draws on the budget of its
+// user: after an upgrade the budget of the new user is spent by the connection, and after a downgrade it is not.
 func TestRebindRateLimitStateFollowsUser(t *testing.T) {
-	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, true)
+	h, _ := newRebindTestHandlerWithUserCommand(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, rebindBudgetUserCommand())
 	client, state := newRebindTestClient("", "anonymous")
-	state.state = &ratelimit.ConnState{}
+	st := &ratelimit.ConnState{}
+	state.state = st
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
 	}, nil)
 	require.NoError(t, err)
-	require.True(t, state.state.UserAttached())
+	require.True(t, budgetAllowed(h, st))
+	probe := &ratelimit.ConnState{}
+	h.userLimiter.Attach(probe, "42")
+	require.False(t, budgetAllowed(h, probe), "the budget of 42 is shared with the connection")
 
 	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
 	}, nil)
 	require.NoError(t, err)
-	require.False(t, state.state.UserAttached())
+	require.True(t, budgetAllowed(h, st), "after a downgrade the connection is not limited by the budget of 42")
 }
 
+// TestRebindFailureKeepsRateLimitStateOfOldUser checks that a rebind which fails leaves the rate limit state on the
+// old user.
 func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
-	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, true)
+	h, _ := newRebindTestHandlerWithUserCommand(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, rebindBudgetUserCommand())
 	client, state := newRebindTestClient("42", "authenticated")
-	state.state = &ratelimit.ConnState{}
-	h.userLimiter.Attach(state.state, "42")
+	st := &ratelimit.ConnState{}
+	state.state = st
+	h.userLimiter.Attach(st, "42")
 	state.rebindErr = centrifuge.ErrRebindUserLimit
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
 	}, nil)
 	require.Equal(t, centrifuge.DisconnectConnectionLimit, err)
-	require.True(t, state.state.UserAttached())
 	require.Equal(t, "42", state.user)
+	require.True(t, budgetAllowed(h, st))
+	probe := &ratelimit.ConnState{}
+	h.userLimiter.Attach(probe, "42")
+	require.False(t, budgetAllowed(h, probe), "the connection still draws on the budget of 42")
 }
 
 func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {

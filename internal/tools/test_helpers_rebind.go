@@ -5,29 +5,12 @@ import (
 )
 
 // RebindMockStubs are the client methods the rebind path of the client handler calls, with settable behaviour.
-// Unset functions return the zero value, except Disconnect and Unsubscribe, which panic so that an unexpected call
-// fails the test.
+// Unset functions return the zero value.
 type RebindMockStubs struct {
-	ExtStateFunc    func() any
-	DisconnectFunc  func(disconnect ...centrifuge.Disconnect)
-	RebindFunc      func(opts centrifuge.RebindOptions) error
-	SubscribeFunc   func(channel string, opts ...centrifuge.SubscribeOption) error
-	ChannelsFunc    func() map[string]centrifuge.ChannelContext
-	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
-}
-
-func (m *RebindMockStubs) Disconnect(disconnect ...centrifuge.Disconnect) {
-	if m.DisconnectFunc == nil {
-		panic("RebindMockStubs: DisconnectFunc not set")
-	}
-	m.DisconnectFunc(disconnect...)
-}
-
-func (m *RebindMockStubs) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
-	if m.UnsubscribeFunc == nil {
-		panic("RebindMockStubs: UnsubscribeFunc not set")
-	}
-	m.UnsubscribeFunc(ch, unsubscribe...)
+	ExtStateFunc  func() any
+	RebindFunc    func(opts centrifuge.RebindOptions) error
+	SubscribeFunc func(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsFunc  func() map[string]centrifuge.ChannelContext
 }
 
 func (m *RebindMockStubs) ExtState() any {
@@ -58,16 +41,25 @@ func (m *RebindMockStubs) ChannelsWithContext() map[string]centrifuge.ChannelCon
 	return nil
 }
 
-// RebindClientMock is a TestClientMock whose Disconnect and Unsubscribe call the rebind stubs. TestClientMock keeps
-// its own methods of those names, which shadow the stubs, so they are forwarded here.
+// RebindClientMock is a TestClientMock whose Disconnect and Unsubscribe call the functions of this type.
+// TestClientMock keeps its own methods of those names, which shadow the embedded stubs, so the methods are defined
+// here. Disconnect and Unsubscribe panic when their function is not set, so that an unexpected call fails the test.
 type RebindClientMock struct {
 	TestClientMock
+	DisconnectFunc  func(disconnect ...centrifuge.Disconnect)
+	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
 }
 
 func (m *RebindClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
-	m.TestClientMock.RebindMockStubs.Disconnect(disconnect...)
+	if m.DisconnectFunc == nil {
+		panic("RebindClientMock: DisconnectFunc not set")
+	}
+	m.DisconnectFunc(disconnect...)
 }
 
 func (m *RebindClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
-	m.TestClientMock.RebindMockStubs.Unsubscribe(ch, unsubscribe...)
+	if m.UnsubscribeFunc == nil {
+		panic("RebindClientMock: UnsubscribeFunc not set")
+	}
+	m.UnsubscribeFunc(ch, unsubscribe...)
 }

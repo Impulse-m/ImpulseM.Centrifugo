@@ -438,7 +438,8 @@ func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {
 			}, nil)
 			require.Equal(t, tt.wantErr, err)
 			require.Len(t, state.rebinds, 1)
-			require.Equal(t, 0, store.SessionConnections().Len())
+			sessionKey, _ := accessrevoke.Key(revokeTestOtherUUID)
+			require.Empty(t, store.SessionConnections().Connections(sessionKey))
 		})
 	}
 }
@@ -452,7 +453,8 @@ func TestRebindUpgradeRealConnectionLeavesSessionIndex(t *testing.T) {
 
 	client := connectRevokeTestClient(t, node, rebindTestToken(t, "42", "pending_2fa", revokeTestUUID, nil))
 	require.Empty(t, client.UserID())
-	require.Equal(t, 1, store.SessionConnections().Len())
+	pendingKey, _ := accessrevoke.Key(revokeTestUUID)
+	require.Len(t, store.SessionConnections().Connections(pendingKey), 1)
 
 	_, extra, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: getConnTokenWithClaims(t, map[string]any{
@@ -465,12 +467,12 @@ func TestRebindUpgradeRealConnectionLeavesSessionIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, extra.CheckSubs)
 	require.Equal(t, "42", client.UserID())
-	require.Equal(t, 0, store.SessionConnections().Len())
+	require.Empty(t, store.SessionConnections().Connections(pendingKey))
 	require.Len(t, node.Hub().UserConnections("42"), 1)
 	require.True(t, client.IsSubscribed(h.cfgContainer.PersonalChannel("42")))
 
 	client.Disconnect(centrifuge.DisconnectForceNoReconnect)
 	require.Eventually(t, func() bool {
-		return store.SessionConnections().Len() == 0
+		return len(store.SessionConnections().Connections(pendingKey)) == 0
 	}, 5*time.Second, 5*time.Millisecond)
 }

@@ -1,60 +1,88 @@
 package accessrevoke
 
 import (
+	"hash/maphash"
 	"sync"
 )
 
-// SessionConnections indexes local connections which have no user by the session of their token. The
-// user index of the hub does not hold such connections, so session revocation reaches them only through
-// this index. Only connections with a token session are kept, which in practice are the pending ones:
-// they are short-lived, so the index stays small.
+// sessionShards is the number of shards of SessionConnections. It is a power of two, so a shard is picked with a mask.
+const sessionShards = 64
+
+// SessionConnections indexes local connections which have no user and carry a token session. Such a connection is
+// not in the user index of the hub, so session revocation reaches it only through this index. It holds every
+// user-less connection with a token session, anonymous ones included. A connection leaves the index when it gets a
+// user or disconnects.
+//
+// The index is sharded: the session of a connection is found by its ID, so the IDs are sharded by hash, and the
+// connections are sharded by session key. An operation holds the lock of the ID shard while it updates the session
+// shard. Nothing takes the locks in the other order, so the two kinds of shard cannot deadlock.
 type SessionConnections struct {
-	mu sync.Mutex
-	// bySession holds the connections of each session, by connection ID.
-	bySession map[[16]byte]map[string]Connection
-	// sessionOf holds the session each indexed connection is stored under.
+	seed          maphash.Seed
+	idShards      [sessionShards]connectionIDShard
+	sessionShards [sessionShards]sessionConnectionShard
+}
+
+// connectionIDShard holds the session of each connection indexed under its ID.
+type connectionIDShard struct {
+	mu        sync.Mutex
 	sessionOf map[string][16]byte
+}
+
+// sessionConnectionShard holds the connections of each session, by connection ID.
+type sessionConnectionShard struct {
+	mu        sync.Mutex
+	bySession map[[16]byte]map[string]Connection
 }
 
 // newSessionConnections creates an empty index.
 func newSessionConnections() *SessionConnections {
-	return &SessionConnections{
-		bySession: make(map[[16]byte]map[string]Connection),
-		sessionOf: make(map[string][16]byte),
+	s := &SessionConnections{seed: maphash.MakeSeed()}
+	for i := range s.idShards {
+		s.idShards[i].sessionOf = make(map[string][16]byte)
 	}
+	for i := range s.sessionShards {
+		s.sessionShards[i].bySession = make(map[[16]byte]map[string]Connection)
+	}
+	return s
 }
 
-// Track sets the session of the connection with id to session. A zero session removes the connection
-// from the index. Track is called on connect, and on every refresh and rebind of a connection without a user.
+// Track sets the session of the connection with id to session, and adds the connection to the index. A zero
+// session removes it. Track is called on connect, and on every refresh and rebind of a connection without a user.
 func (s *SessionConnections) Track(id string, conn Connection, session [16]byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.untrackLocked(id)
+	shard := s.idShard(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if old, ok := shard.sessionOf[id]; ok {
+		s.removeFromSession(old, id)
+		delete(shard.sessionOf, id)
+	}
 	if session == ([16]byte{}) {
 		return
 	}
-	connections, ok := s.bySession[session]
-	if !ok {
-		connections = make(map[string]Connection)
-		s.bySession[session] = connections
-	}
-	connections[id] = conn
-	s.sessionOf[id] = session
+	shard.sessionOf[id] = session
+	s.addToSession(session, id, conn)
 }
 
-// Untrack removes the connection with id from the index. It is called on disconnect and when the
-// connection gets a user.
+// Untrack removes the connection with id from the index. It is called on disconnect and when the connection
+// gets a user.
 func (s *SessionConnections) Untrack(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.untrackLocked(id)
+	shard := s.idShard(id)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	old, ok := shard.sessionOf[id]
+	if !ok {
+		return
+	}
+	delete(shard.sessionOf, id)
+	s.removeFromSession(old, id)
 }
 
 // Connections returns the indexed connections of session.
 func (s *SessionConnections) Connections(session [16]byte) []Connection {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	connections := s.bySession[session]
+	shard := s.sessionShard(session)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	connections := shard.bySession[session]
 	out := make([]Connection, 0, len(connections))
 	for _, conn := range connections {
 		out = append(out, conn)
@@ -62,23 +90,49 @@ func (s *SessionConnections) Connections(session [16]byte) []Connection {
 	return out
 }
 
-// Len returns the number of indexed connections.
-func (s *SessionConnections) Len() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.sessionOf)
+// count returns the number of indexed connections.
+func (s *SessionConnections) count() int {
+	total := 0
+	for i := range s.idShards {
+		shard := &s.idShards[i]
+		shard.mu.Lock()
+		total += len(shard.sessionOf)
+		shard.mu.Unlock()
+	}
+	return total
 }
 
-// untrackLocked removes the connection with id from the index. Lock must be held.
-func (s *SessionConnections) untrackLocked(id string) {
-	session, ok := s.sessionOf[id]
+// idShard returns the shard of the connection ID.
+func (s *SessionConnections) idShard(id string) *connectionIDShard {
+	return &s.idShards[maphash.String(s.seed, id)&(sessionShards-1)]
+}
+
+// sessionShard returns the shard of the session key.
+func (s *SessionConnections) sessionShard(session [16]byte) *sessionConnectionShard {
+	return &s.sessionShards[session[0]&(sessionShards-1)]
+}
+
+// addToSession adds the connection with id to session. The caller holds the ID shard lock.
+func (s *SessionConnections) addToSession(session [16]byte, id string, conn Connection) {
+	shard := s.sessionShard(session)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	connections, ok := shard.bySession[session]
 	if !ok {
-		return
+		connections = make(map[string]Connection)
+		shard.bySession[session] = connections
 	}
-	delete(s.sessionOf, id)
-	connections := s.bySession[session]
+	connections[id] = conn
+}
+
+// removeFromSession removes the connection with id from session. The caller holds the ID shard lock.
+func (s *SessionConnections) removeFromSession(session [16]byte, id string) {
+	shard := s.sessionShard(session)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	connections := shard.bySession[session]
 	delete(connections, id)
 	if len(connections) == 0 {
-		delete(s.bySession, session)
+		delete(shard.bySession, session)
 	}
 }

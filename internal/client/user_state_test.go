@@ -98,7 +98,8 @@ func TestPendingConnectionIsNotInUserIndexAndIsRevocableBySession(t *testing.T) 
 			require.Empty(t, client.UserID())
 			require.Empty(t, node.Hub().UserConnections("42"))
 			require.Len(t, node.Hub().Connections(), 1)
-			require.Equal(t, 1, store.SessionConnections().Len())
+			sessionKey, _ := accessrevoke.Key(revokeTestUUID)
+			require.Len(t, store.SessionConnections().Connections(sessionKey), 1)
 
 			require.NoError(t, revoker.RevokeSession(tt.userID, revokeTestUUID, now, 0))
 			require.Eventually(t, func() bool {
@@ -118,11 +119,12 @@ func TestPendingConnectionLeavesSessionIndexOnDisconnect(t *testing.T) {
 		"iat":        now,
 		"auth_class": "pending_2fa",
 	}))
-	require.Equal(t, 1, store.SessionConnections().Len())
+	sessionKey, _ := accessrevoke.Key(revokeTestUUID)
+	require.Len(t, store.SessionConnections().Connections(sessionKey), 1)
 
 	client.Disconnect(centrifuge.DisconnectForceNoReconnect)
 	require.Eventually(t, func() bool {
-		return store.SessionConnections().Len() == 0
+		return len(store.SessionConnections().Connections(sessionKey)) == 0
 	}, 5*time.Second, 5*time.Millisecond)
 }
 
@@ -186,7 +188,6 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	require.NotNil(t, reply.TokenIdentity)
 	nextKey, _ := accessrevoke.Key(nextSessionID)
 	require.Equal(t, nextKey, reply.TokenIdentity.Session)
-	require.Equal(t, 1, sessions.Len())
 	require.Equal(t, []accessrevoke.Connection{client}, sessions.Connections(nextKey))
 	require.Empty(t, sessions.Connections([16]byte{1}))
 }

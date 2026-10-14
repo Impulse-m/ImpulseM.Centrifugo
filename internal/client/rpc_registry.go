@@ -208,6 +208,7 @@ func (h *Handler) storeConnectClass(
 	if coreUserID(authClass, verified.UserID) != verified.UserID {
 		storage[storageKeyTokenUser] = verified.UserID
 	}
+	storage[storageKeyAccountUser] = verified.UserID
 	h.setRegistryStorage(storage, token, authClass)
 	return authClass, true
 }

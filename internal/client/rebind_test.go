@@ -69,6 +69,7 @@ func newRebindTestClientWithToken(user string, tokenUser string, class string) (
 	if class != "" {
 		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim}
 		storage[storageKeyTokenUser] = tokenUser
+		storage[storageKeyAccountUser] = tokenUser
 	}
 	client := newRebindRegistryClient("c1", user, storage)
 	client.UserIDFunc = func() string { return state.user }

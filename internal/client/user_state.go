@@ -1,6 +1,7 @@
 package client
 
 import (
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
@@ -11,6 +12,9 @@ import (
 // storageKeyTokenUser is the storage key of the user of the connection token. A pending connection keeps it, as Core
 // sees no user for it. It is stored for a pending connection at connect, and by a rebind.
 const storageKeyTokenUser = "token_user"
+
+// storageKeyAccountUser is the storage key of the account of the connection, see storedAccountUser.
+const storageKeyAccountUser = "account_user"
 
 // coreUserID returns the user Core sees for a connection of class with userID. A pending_2fa connection keeps
 // its user for the registry, but is anonymous to Core: it gets no personal channel, no user channels and no
@@ -45,6 +49,52 @@ func storeTokenUser(c Client, userID string) {
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	storage[storageKeyTokenUser] = userID
+}
+
+// storedAccountUser returns the account of the connection: the user of its last token with a user. A downgrade to an
+// anonymous token keeps it, so a connection which logged out may not take another account. Without a stored account
+// it is the user of the token, or the Core user of a connection made through a connect proxy.
+func storedAccountUser(c Client) string {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	if user, ok := storage[storageKeyAccountUser].(string); ok {
+		return user
+	}
+	if user, ok := storage[storageKeyTokenUser].(string); ok {
+		return user
+	}
+	return c.UserID()
+}
+
+// storeAccountUser stores the account of the connection.
+func storeAccountUser(c Client, userID string) {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	storage[storageKeyAccountUser] = userID
+}
+
+// storedIdentity returns the token identity the server keeps for the connection. It is the zero identity when none is
+// kept, as for a connection made through a connect proxy.
+func storedIdentity(c Client) centrifuge.TokenIdentity {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	identity, _ := storage[accessrevoke.StorageKeyIdentity].(centrifuge.TokenIdentity)
+	return identity
+}
+
+// setStoredIdentity stores the token identity the server keeps for the connection. Access revocation reads it, see
+// accessrevoke.IdentityOf.
+func setStoredIdentity(c Client, identity centrifuge.TokenIdentity) {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	storage[accessrevoke.StorageKeyIdentity] = identity
+}
+
+// setReplyIdentity sets the user and the auth class which a connect reply reports. A pending connection reports the
+// user of its token, which Core does not see.
+func (h *Handler) setReplyIdentity(reply *centrifuge.ConnectReply, userID string, class rpcregistry.AuthClass) {
+	reply.User = userID
+	reply.AuthClass = h.authClassName(class)
 }
 
 // personalChannelSubscription returns the personal channel of userID with the options it is subscribed with.

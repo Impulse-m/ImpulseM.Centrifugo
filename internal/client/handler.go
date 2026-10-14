@@ -411,6 +411,9 @@ func (h *Handler) OnClientConnecting(
 	// replyUser is the user of the token or of the connect proxy, which the reply reports. Core may see no
 	// user for the connection, see coreUserID.
 	var replyUser string
+	// replyClass is the auth class of the token, as storeConnectClass returns it. A connection without a token gets its
+	// class when the reply is built.
+	var replyClass rpcregistry.AuthClass
 
 	if e.Token != "" {
 		token, err := h.tokenVerifier.VerifyConnectToken(e.Token, cfg.Client.InsecureSkipTokenSignatureVerify)
@@ -455,11 +458,13 @@ func (h *Handler) OnClientConnecting(
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
 		replyUser = token.UserID
+		storage[accessrevoke.StorageKeyIdentity] = identity
 		authClass, ok := h.storeConnectClass(storage, e.Token, token)
 		if !ok {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
+		replyClass = authClass
 		credentials.UserID = coreUserID(authClass, token.UserID)
 
 		processClientChannels = true
@@ -609,8 +614,10 @@ func (h *Handler) OnClientConnecting(
 		ClientSideRefresh: !refreshProxyEnabled,
 		Flags:             h.registryConnectFlags(),
 	}
-	finalReply.User = replyUser
-	finalReply.AuthClass = h.authClassName(authClassOf(storage, h.registryConfig().AuthClassClaim, replyUser))
+	if replyClass == 0 {
+		replyClass = authClassOf(storage, h.registryConfig().AuthClassClaim, replyUser)
+	}
+	h.setReplyIdentity(&finalReply, replyUser, replyClass)
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
@@ -662,31 +669,7 @@ func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refre
 		}
 		return r, RefreshExtra{}, err
 	}
-	if !beginRefresh(c) {
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
-	}
-	defer endRefresh(c)
-	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
-	if err != nil {
-		if errors.Is(err, jwtverify.ErrTokenExpired) {
-			return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
-		}
-		if errors.Is(err, jwtverify.ErrInvalidToken) {
-			log.Info().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token")
-			return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-		}
-		log.Error().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("error verifying refresh token")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, err
-	}
-	class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
-	if !ok {
-		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-	}
-	if changesIdentity(c, token.UserID, class) {
-		return h.onRefreshRebind(c, e.Token, token, class)
-	}
-	return h.refreshSameIdentity(c, e.Token, token, class)
+	return h.onRefreshToken(c, e)
 }
 
 // OnRPC ...

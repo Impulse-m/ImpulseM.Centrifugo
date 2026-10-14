@@ -17,6 +17,23 @@ func OptionsFromConfig(cfg *config.Config) CheckOptions {
 	}
 }
 
+// StorageKeyIdentity is the storage key of the token identity the server keeps for a connection. Core sets the identity
+// of a connection only when its token has an expiry, so the server keeps the identity of every token it accepts here,
+// and IdentityOf reads it.
+const StorageKeyIdentity = "token_identity"
+
+// IdentityOf returns the token identity of a connection: the one the server kept for it, or the one Core holds when the
+// server kept none, as for a connection made through a connect proxy.
+func IdentityOf(client *centrifuge.Client) centrifuge.TokenIdentity {
+	storage, release := client.AcquireStorage()
+	identity, ok := storage[StorageKeyIdentity].(centrifuge.TokenIdentity)
+	release(storage)
+	if ok {
+		return identity
+	}
+	return client.TokenIdentity()
+}
+
 // CheckConnection checks a connection registered in the hub against the store. It returns the
 // disconnect for a rejected connection and the reason of the rejection. Stage labels the rejects metric.
 // A connection with zero token identity came from the connect proxy (no token), so only user block
@@ -28,7 +45,7 @@ func CheckConnection(
 	opts CheckOptions,
 	stage string,
 ) (centrifuge.Disconnect, Reason, bool) {
-	identity := client.TokenIdentity()
+	identity := IdentityOf(client)
 	if identity == (centrifuge.TokenIdentity{}) {
 		opts = CheckOptions{Block: opts.Block}
 	}

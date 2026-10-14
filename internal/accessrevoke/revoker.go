@@ -140,7 +140,7 @@ func (r *Revoker) disconnectMatching(
 	disconnect centrifuge.Disconnect,
 ) {
 	for _, client := range r.hub.UserConnections(userID) {
-		reason := reasonOf(client.TokenIdentity())
+		reason := reasonOf(IdentityOf(client))
 		if reason == "" {
 			continue
 		}

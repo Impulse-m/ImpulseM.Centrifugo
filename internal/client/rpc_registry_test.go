@@ -301,12 +301,13 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 }
 
 func TestRegistryCallErrorMapping(t *testing.T) {
-	errs := registryTestRegistryConfig().Errors
+	cfg := registryTestRegistryConfig()
+	method := &rpcregistry.Method{}
 
 	temporary := []codes.Code{codes.Unavailable, codes.DeadlineExceeded}
 	for _, code := range temporary {
 		var protoErr *centrifuge.Error
-		err := registryCallError(status.Error(code, "backend said so"), errs)
+		err := registryCallError(status.Error(code, "backend said so"), nil, method, cfg)
 		require.ErrorAs(t, err, &protoErr)
 		require.Equal(t, uint32(100), protoErr.Code)
 		require.Equal(t, "backend said so", protoErr.Message)
@@ -314,12 +315,12 @@ func TestRegistryCallErrorMapping(t *testing.T) {
 	}
 
 	var protoErr *centrifuge.Error
-	err := registryCallError(status.Error(codes.Internal, "boom"), errs)
+	err := registryCallError(status.Error(codes.Internal, "boom"), nil, method, cfg)
 	require.ErrorAs(t, err, &protoErr)
 	require.Equal(t, uint32(100), protoErr.Code)
 	require.False(t, protoErr.Temporary)
 
-	err = registryCallError(proxy.ErrRPCResponseTooLarge, errs)
+	err = registryCallError(proxy.ErrRPCResponseTooLarge, nil, method, cfg)
 	require.ErrorAs(t, err, &protoErr)
 	require.Equal(t, uint32(106), protoErr.Code)
 }

@@ -194,3 +194,73 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	require.Equal(t, []accessrevoke.Connection{client}, sessions.Connections(nextKey))
 	require.Empty(t, sessions.Connections([16]byte{1}))
 }
+
+// TestConnectStoresTokenUserOnlyForPending checks that a connect stores the token user only for a pending connection,
+// which Core sees with no user. A connection of any other class reads its token user from its Core user. A pending
+// renewal of a connection with rebind off keeps the unchanged path.
+func TestConnectStoresTokenUserOnlyForPending(t *testing.T) {
+	tests := []struct {
+		name       string
+		sub        string
+		class      string
+		wantStored bool
+	}{
+		{name: "anonymous", class: "anonymous"},
+		{name: "authenticated", sub: "42", class: "authenticated"},
+		{name: "pending", sub: "42", class: "pending_2fa", wantStored: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _, _ := newPendingTestHandler(t)
+			claims := map[string]any{
+				"jti":        revokeTestUUID,
+				"iat":        time.Now().Unix(),
+				"auth_class": tt.class,
+			}
+			if tt.sub != "" {
+				claims["sub"] = tt.sub
+			}
+			reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+				ClientID: "c1",
+				Token:    getConnTokenWithClaims(t, claims),
+			}, nil, false)
+			require.NoError(t, err)
+			tokenUser, stored := reply.Storage[clientstorage.KeyTokenUser]
+			require.Equal(t, tt.wantStored, stored)
+			if tt.wantStored {
+				require.Equal(t, tt.sub, tokenUser)
+			}
+		})
+	}
+}
+
+func TestPendingRenewalWithRebindOffKeepsUnchangedPath(t *testing.T) {
+	h, _, _ := newPendingTestHandler(t)
+	now := time.Now().Unix()
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		ClientID: "c1",
+		Token: getConnTokenWithClaims(t, map[string]any{
+			"sub":        "42",
+			"jti":        revokeTestUUID,
+			"iat":        now,
+			"auth_class": "pending_2fa",
+		}),
+	}, nil, false)
+	require.NoError(t, err)
+
+	client := newRebindRegistryClient("c1", "", reply.Storage)
+	client.RebindFunc = func(centrifuge.RebindOptions) error {
+		t.Fatal("a pending renewal must not rebind")
+		return nil
+	}
+	_, extra, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{
+			"sub":        "42",
+			"jti":        revokeTestOtherUUID,
+			"iat":        now,
+			"auth_class": "pending_2fa",
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, extra.CheckSubs)
+}

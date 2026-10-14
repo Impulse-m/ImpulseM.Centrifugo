@@ -203,7 +203,11 @@ func (h *Handler) storeConnectClass(
 	if !ok {
 		return 0, false
 	}
-	storage[clientstorage.KeyTokenUser] = verified.UserID
+	// Only a pending connection has a Core user other than the token user, storedTokenUser reads the Core user for any
+	// other connection.
+	if coreUserID(authClass, verified.UserID) != verified.UserID {
+		storage[clientstorage.KeyTokenUser] = verified.UserID
+	}
 	h.setRegistryStorage(storage, token, authClass)
 	return authClass, true
 }

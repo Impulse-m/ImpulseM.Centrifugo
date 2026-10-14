@@ -29,6 +29,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/nats-io/nats.go v1.54.0
 	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/prometheus/client_golang v1.25.0
 	github.com/quic-go/quic-go v0.63.0

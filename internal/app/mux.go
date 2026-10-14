@@ -594,7 +594,11 @@ func runHTTPServers(
 				}
 				defer func() { _ = tcpConn.Close() }()
 
-				tlsConn := tls.NewListener(tcpConn, addrTLSConfig)
+				proxyConn, err := clientaddr.Wrap(tcpConn, cfg.ClientAddress)
+				if err != nil {
+					log.Fatal().Err(err).Msg("can not start HTTP/3, client address")
+				}
+				tlsConn := tls.NewListener(proxyConn, addrTLSConfig)
 				defer func() { _ = tlsConn.Close() }()
 
 				hErr := make(chan error)
@@ -625,14 +629,23 @@ func runHTTPServers(
 					log.Fatal().Err(err).Msg("error ListenAndServe HTTP/3")
 				}
 			} else {
+				listenCfg := cfg.ClientAddress
+				if addr != externalAddr {
+					// PROXY protocol is for the client-facing port only.
+					listenCfg.ProxyProtocol.Enabled = false
+				}
+				ln, err := clientaddr.Listen("tcp", addr, listenCfg)
+				if err != nil {
+					log.Fatal().Err(err).Msg("error ListenAndServe")
+				}
 				if addrTLSConfig != nil {
-					if err := server.ListenAndServeTLS("", ""); err != nil {
+					if err := server.ServeTLS(ln, "", ""); err != nil {
 						if !errors.Is(err, http.ErrServerClosed) {
 							log.Fatal().Err(err).Msg("error ListenAndServeTLS")
 						}
 					}
 				} else {
-					if err := server.ListenAndServe(); err != nil {
+					if err := server.Serve(ln); err != nil {
 						if !errors.Is(err, http.ErrServerClosed) {
 							log.Fatal().Err(err).Msgf("error ListenAndServe")
 						}

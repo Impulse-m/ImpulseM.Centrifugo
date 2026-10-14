@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -31,15 +33,29 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 // here, see ResolveRPCRegistry.
 func LoadRPCRegistryFile(path string) (configtypes.RPCRegistryFile, error) {
 	var file configtypes.RPCRegistryFile
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json", ".yaml", ".yml":
-	default:
-		return file, fmt.Errorf("rpc registry file %s: extension must be .json, .yaml or .yml", path)
+	_, err := rpcRegistryFormat(path)
+	if err != nil {
+		return file, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return file, fmt.Errorf("error reading rpc registry file %s: %w", path, err)
+	}
+	return DecodeRPCRegistryFile(path, data)
+}
+
+// DecodeRPCRegistryFile decodes data, the content of the RPC registry file at path. The format
+// is chosen by the extension of path, as in LoadRPCRegistryFile.
+func DecodeRPCRegistryFile(path string, data []byte) (configtypes.RPCRegistryFile, error) {
+	var file configtypes.RPCRegistryFile
+	format, err := rpcRegistryFormat(path)
+	if err != nil {
+		return file, err
 	}
 
 	v := viper.NewWithOptions(viper.WithDecodeHook(decodeHooks()))
-	v.SetConfigFile(path)
-	err := v.ReadInConfig()
+	v.SetConfigType(format)
+	err = v.ReadConfig(bytes.NewReader(data))
 	if err != nil {
 		return file, fmt.Errorf("error reading rpc registry file %s: %w", path, err)
 	}
@@ -54,17 +70,45 @@ func LoadRPCRegistryFile(path string) (configtypes.RPCRegistryFile, error) {
 	return file, nil
 }
 
+// rpcRegistryFormat returns the viper config type of the registry file at path, chosen by its extension.
+func rpcRegistryFormat(path string) (string, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json":
+		return "json", nil
+	case ".yaml", ".yml":
+		return "yaml", nil
+	}
+	return "", fmt.Errorf("rpc registry file %s: extension must be .json, .yaml or .yml", path)
+}
+
 // ResolveRPCRegistry returns the registry entries of reg, read from the file or taken from the
 // inline fields, and validates them. Inline entries get the only supported format version.
 // It is the single source of registry entries for config validation and for the registry itself.
 func ResolveRPCRegistry(reg configtypes.RPCRegistry) (configtypes.RPCRegistryFile, error) {
+	return resolveRPCRegistry(reg, LoadRPCRegistryFile)
+}
+
+// ResolveRPCRegistryContent is ResolveRPCRegistry for a registry file whose content the caller has
+// read already. content is the content of reg.File, and it is decoded instead of reading the file
+// again, so the entries are the ones the caller holds.
+func ResolveRPCRegistryContent(reg configtypes.RPCRegistry, content []byte) (configtypes.RPCRegistryFile, error) {
+	return resolveRPCRegistry(reg, func(path string) (configtypes.RPCRegistryFile, error) {
+		return DecodeRPCRegistryFile(path, content)
+	})
+}
+
+// resolveRPCRegistry is ResolveRPCRegistry with the file loaded by loadFile.
+func resolveRPCRegistry(
+	reg configtypes.RPCRegistry,
+	loadFile func(path string) (configtypes.RPCRegistryFile, error),
+) (configtypes.RPCRegistryFile, error) {
 	var file configtypes.RPCRegistryFile
 	inline := reg.Defaults != (configtypes.RPCMethodDefaults{}) || len(reg.Targets) > 0 || len(reg.Methods) > 0
 	if reg.File != "" && inline {
 		return file, errors.New("rpc registry: file cannot be combined with inline defaults, targets or methods")
 	}
 	if reg.File != "" {
-		loaded, err := LoadRPCRegistryFile(reg.File)
+		loaded, err := loadFile(reg.File)
 		if err != nil {
 			return file, err
 		}

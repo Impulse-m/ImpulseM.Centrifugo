@@ -717,6 +717,34 @@ func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {
 	require.False(t, found)
 }
 
+func TestSharedRunFlushesOnShutdown(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	scope := testScope("u1", "a")
+	for msgID := uint64(1); msgID <= 500; msgID++ {
+		testAnswer(t, fx.local, Key{Scope: scope, MsgID: msgID}, "ok")
+	}
+	msgIDs := make([]uint64, 0, 500)
+	for msgID := uint64(1); msgID <= 500; msgID++ {
+		msgIDs = append(msgIDs, msgID)
+	}
+	require.NoError(t, fx.shared.Ack(scope, msgIDs))
+	require.Empty(t, fx.backend.ackBatches(), "nothing is flushed before Run")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fx.shared.Run(ctx) }()
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	var flushed int
+	for _, batch := range fx.backend.ackBatches() {
+		for _, acks := range batch {
+			flushed += len(acks.MsgIDs)
+		}
+	}
+	require.Equal(t, 500, flushed, "the acks queued before shutdown reach the shared tier")
+}
+
 func TestSharedAckFlushesOnTicker(t *testing.T) {
 	fx := newSharedFixture(t, false)
 	fx.shared.ackFlushEvery = time.Millisecond

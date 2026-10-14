@@ -139,11 +139,8 @@ func (h *Handler) Services() []service.Service {
 	if h.redisLimiter != nil {
 		services = append(services, h.redisLimiter)
 	}
-	if h.rpcDedup != nil && h.rpcDedup.connector != nil {
-		services = append(services, h.rpcDedup.connector)
-	}
 	if h.rpcDedup != nil && h.rpcDedup.shared != nil {
-		services = append(services, h.rpcDedup.shared)
+		services = append(services, newRPCDedupRedisService(h.rpcDedup.connector, h.rpcDedup.shared))
 	}
 	return services
 }

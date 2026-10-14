@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/centrifugal/centrifuge"
@@ -53,6 +54,34 @@ func (h *Handler) setupRPCDedupRedis() error {
 	h.rpcDedup.shared = shared
 	h.rpcDedup.connector = connector
 	return nil
+}
+
+// rpcDedupRedisService runs the shared tier as one service. The store flushes its acks until the service is stopped,
+// and the connector closes the shards only after that, so the last acks reach Redis.
+type rpcDedupRedisService struct {
+	connector *redisshard.Connector
+	shared    *rpcdedup.Shared
+}
+
+// newRPCDedupRedisService returns the service of the connector and the store of the shared tier.
+func newRPCDedupRedisService(connector *redisshard.Connector, shared *rpcdedup.Shared) *rpcDedupRedisService {
+	return &rpcDedupRedisService{connector: connector, shared: shared}
+}
+
+// Run runs the store until ctx is done, flushing its acks, and then stops the connector, which closes the shards. It
+// implements service.Service.
+func (s *rpcDedupRedisService) Run(ctx context.Context) error {
+	connCtx, stopConnector := context.WithCancel(context.Background())
+	defer stopConnector()
+	connDone := make(chan struct{})
+	go func() {
+		defer close(connDone)
+		_ = s.connector.Run(connCtx)
+	}()
+	err := s.shared.Run(ctx)
+	stopConnector()
+	<-connDone
+	return err
 }
 
 // rpcDedupConnectLog returns the log of the connect attempts of the shared tier. A failure says what the calls do

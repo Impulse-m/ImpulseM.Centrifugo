@@ -59,14 +59,21 @@ func parseTrusted(entry string) (netip.Prefix, error) {
 	return normalizePrefix(netip.PrefixFrom(addr, addr.BitLen()))
 }
 
+// normalizePrefix converts a range to its canonical form. A range which matches every address,
+// such as 0.0.0.0/0, ::/0 or ::ffff:0:0/96, is refused: trusting every address would let any client
+// set the client address.
 func normalizePrefix(prefix netip.Prefix) (netip.Prefix, error) {
-	if !prefix.Addr().Is4In6() {
-		return prefix.Masked(), nil
+	if prefix.Addr().Is4In6() {
+		if prefix.Bits() < 96 {
+			return netip.Prefix{}, fmt.Errorf("IPv4-mapped IPv6 range %q is too wide", prefix.String())
+		}
+		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 	}
-	if prefix.Bits() < 96 {
-		return netip.Prefix{}, fmt.Errorf("IPv4-mapped IPv6 range %q is too wide", prefix.String())
+	prefix = prefix.Masked()
+	if prefix.Bits() == 0 {
+		return netip.Prefix{}, fmt.Errorf("range %s matches every address: list the proxies, not every address", prefix)
 	}
-	return netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96).Masked(), nil
+	return prefix, nil
 }
 
 // isTrusted reports whether addr is inside one of the trusted ranges. addr must be unmapped.

@@ -66,6 +66,43 @@ var rpcRegistryResults = [...]string{
 	RPCRegistryResultUnknown,
 }
 
+// Triggers of a RPC method registry reload, the values of the trigger label.
+const (
+	RPCRegistryReloadTriggerSignal = "signal"
+	RPCRegistryReloadTriggerPoll   = "poll"
+)
+
+// RPCRegistryReloadMetrics holds the reloads_total children of one trigger, one for each result. They are
+// resolved once, when the registry is created. A nil value does nothing.
+type RPCRegistryReloadMetrics struct {
+	ok    prometheus.Counter
+	error prometheus.Counter
+}
+
+// NewRPCRegistryReloadMetrics resolves the reloads_total children of trigger. It returns nil when the
+// registry metrics are not initialised.
+func NewRPCRegistryReloadMetrics(trigger string) *RPCRegistryReloadMetrics {
+	if RPCRegistryReloadsTotal == nil {
+		return nil
+	}
+	return &RPCRegistryReloadMetrics{
+		ok:    RPCRegistryReloadsTotal.WithLabelValues(trigger, RPCRegistryResultOK),
+		error: RPCRegistryReloadsTotal.WithLabelValues(trigger, RPCRegistryResultError),
+	}
+}
+
+// Inc counts one reload which succeeded when ok is true, and one which failed otherwise.
+func (m *RPCRegistryReloadMetrics) Inc(ok bool) {
+	if m == nil {
+		return
+	}
+	if ok {
+		m.ok.Inc()
+		return
+	}
+	m.error.Inc()
+}
+
 // rpcRegistryResultErrorIndex is the index of RPCRegistryResultError in rpcRegistryResults, the
 // result of values which are not a result.
 const rpcRegistryResultErrorIndex = 1

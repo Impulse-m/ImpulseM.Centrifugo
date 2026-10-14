@@ -31,8 +31,9 @@ type forkRegistry struct {
 	rateLimitRedisDuration         prometheus.Histogram
 
 	// RPC method registry metrics
-	rpcRegistryCallsTotal  *prometheus.CounterVec
-	rpcRegistryErrorsTotal *prometheus.CounterVec
+	rpcRegistryCallsTotal   *prometheus.CounterVec
+	rpcRegistryErrorsTotal  *prometheus.CounterVec
+	rpcRegistryReloadsTotal *prometheus.CounterVec
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -193,6 +194,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"rpc_method", "app_type"})
 
+	m.rpcRegistryReloadsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "reloads_total",
+		Help:        "Number of RPC method registry reloads by trigger and result.",
+		ConstLabels: constLabels,
+	}, []string{"trigger", "result"})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -213,6 +222,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rateLimitRedisDuration,
 		m.rpcRegistryCallsTotal,
 		m.rpcRegistryErrorsTotal,
+		m.rpcRegistryReloadsTotal,
 	}
 }
 
@@ -264,4 +274,5 @@ func (m *Registry) setForkMetrics() {
 
 	RPCRegistryCallsTotal = m.rpcRegistryCallsTotal
 	RPCRegistryErrorsTotal = m.rpcRegistryErrorsTotal
+	RPCRegistryReloadsTotal = m.rpcRegistryReloadsTotal
 }

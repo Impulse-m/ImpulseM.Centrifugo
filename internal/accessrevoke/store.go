@@ -84,6 +84,8 @@ type Store struct {
 
 	usersMu sync.RWMutex
 	users   map[[16]byte]userEntry
+
+	sessionConns *SessionConnections
 }
 
 // NewStore creates an empty Store. defaultTTL is used for entries which come without expiration time.
@@ -93,10 +95,17 @@ func NewStore(defaultTTL time.Duration) *Store {
 		nowUnix: func() int64 {
 			return time.Now().Unix()
 		},
-		blocked:  make(map[[16]byte]int64),
-		sessions: make(map[[16]byte]sessionEntry),
-		users:    make(map[[16]byte]userEntry),
+		blocked:      make(map[[16]byte]int64),
+		sessions:     make(map[[16]byte]sessionEntry),
+		users:        make(map[[16]byte]userEntry),
+		sessionConns: newSessionConnections(),
 	}
+}
+
+// SessionConnections returns the index of connections without a user, by token session. The client
+// handler keeps it up to date, and session revocation disconnects through it.
+func (s *Store) SessionConnections() *SessionConnections {
+	return s.sessionConns
 }
 
 // BlockUser blocks the user until expireAt (Unix seconds). Zero expireAt means now plus default TTL.

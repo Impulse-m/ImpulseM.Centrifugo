@@ -1,7 +1,7 @@
 package client
 
 import (
-	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
+	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
@@ -10,21 +10,32 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// coreUserID returns the user a connection token gives to Core. A pending_2fa token keeps its user for the
-// registry, but the connection is anonymous to Core: it gets no personal channel, no user channels and no
-// entry in the user index of the hub. Any other token gives its user.
-func coreUserID(token jwtverify.ConnectToken) string {
-	class, _ := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
+// coreUserID returns the user Core sees for a connection of class with userID. A pending_2fa connection keeps
+// its user for the registry, but is anonymous to Core: it gets no personal channel, no user channels and no
+// entry in the user index of the hub. Any other class gives its user.
+func coreUserID(class rpcregistry.AuthClass, userID string) string {
 	if class == rpcregistry.AuthClassPending2FA {
 		return ""
 	}
-	return token.UserID
+	return userID
 }
 
-// tokenAuthClassName returns the auth class name a refresh reply reports for the verified token.
-func (h *Handler) tokenAuthClassName(token jwtverify.ConnectToken) string {
-	class, _ := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
-	return h.authClassName(class)
+// storedTokenUser returns the user of the token the connection holds. A connection without a stored token user,
+// such as one made through a connect proxy, is identified by its Core user.
+func storedTokenUser(c Client) string {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	if user, ok := storage[clientstorage.KeyTokenUser].(string); ok {
+		return user
+	}
+	return c.UserID()
+}
+
+// storeTokenUser stores the user of the token the connection holds now.
+func storeTokenUser(c Client, userID string) {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	storage[clientstorage.KeyTokenUser] = userID
 }
 
 // personalChannelSubscription returns the personal channel of userID with the options it is subscribed with.

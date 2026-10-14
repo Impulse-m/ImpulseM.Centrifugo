@@ -204,7 +204,8 @@ func (h *Handler) storeRegistryToken(
 	if !ok {
 		return false
 	}
-	credentials.UserID = coreUserID(verified)
+	credentials.UserID = coreUserID(authClass, verified.UserID)
+	storage[clientstorage.KeyTokenUser] = verified.UserID
 	if h.rpcRegistry.Enabled() {
 		storage[clientstorage.KeyToken] = token
 	}
@@ -221,15 +222,10 @@ func (h *Handler) keepsAuthClass() bool {
 }
 
 // replaceRegistryToken replaces the connection token and auth class of the client with the ones of a
-// refresh. It reports false, and changes nothing, when the auth class of the refresh token is invalid for
-// its user.
-func (h *Handler) replaceRegistryToken(c Client, token string, verified jwtverify.ConnectToken) bool {
-	authClass, ok := rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
-	if !ok {
-		return false
-	}
+// refresh. The caller has validated the class of the token.
+func (h *Handler) replaceRegistryToken(c Client, token string, authClass rpcregistry.AuthClass) {
 	if !h.keepsAuthClass() {
-		return true
+		return
 	}
 	claim := h.registryConfig().AuthClassClaim
 	storage, release := c.AcquireStorage()
@@ -238,7 +234,6 @@ func (h *Handler) replaceRegistryToken(c Client, token string, verified jwtverif
 		storage[clientstorage.KeyToken] = token
 	}
 	storage[clientstorage.KeyAuthClass] = registryAuthClass{class: authClass, claim: claim}
-	return true
 }
 
 // registryConnection returns the connection token stored for the client, and the effective auth class of

@@ -32,18 +32,28 @@ type rebindTestState struct {
 	state        *ratelimit.ConnState
 }
 
-// newRebindTestClient returns a fake connection of user with class in its storage. Its rebinds, subscribes and
-// unsubscribes are recorded in the state.
+// newRebindTestClient returns a fake connection of user with class in its storage, whose token user is user. Its
+// rebinds, subscribes and unsubscribes are recorded in the state.
 func newRebindTestClient(user string, class string) (*tools.TestClientMock, *rebindTestState) {
+	return newRebindTestClientWithToken(user, user, class)
+}
+
+// newRebindTestClientWithToken returns a fake connection of Core user, with the token user and the class stored as
+// a connection established by a token keeps them. A connection with no class stores no token user either, as a
+// connection made through a connect proxy.
+func newRebindTestClientWithToken(user string, tokenUser string, class string) (*tools.TestClientMock, *rebindTestState) {
 	state := &rebindTestState{
 		user:         user,
 		channels:     map[string]centrifuge.ChannelContext{},
 		subscribed:   map[string]centrifuge.SubscribeOptions{},
 		unsubscribed: map[string]centrifuge.Unsubscribe{},
 	}
-	client := newRegistryTestClient("c1", user, nil, map[string]any{
-		clientstorage.KeyAuthClass: registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim},
-	})
+	storage := map[string]any{}
+	if class != "" {
+		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim}
+		storage[clientstorage.KeyTokenUser] = tokenUser
+	}
+	client := newRegistryTestClient("c1", user, nil, storage)
 	client.UserIDFunc = func() string { return state.user }
 	client.ExtStateFunc = func() any {
 		if state.state == nil {
@@ -142,12 +152,14 @@ func TestRebindFlagOffKeepsDisconnect(t *testing.T) {
 	require.Empty(t, state.rebinds)
 }
 
-// rebindCase is a transition of a refresh: from the class and user of the connection to the class and user of the
-// token of the refresh.
+// rebindCase is a transition of a refresh: from the class, Core user and token user of the connection to the class
+// and user of the token of the refresh. An empty fromTokenUser is the Core user, as for a connection with no pending
+// class.
 type rebindCase struct {
 	name           string
 	fromClass      string
 	fromUser       string
+	fromTokenUser  string
 	toClass        string
 	toUser         string
 	allowDowngrade bool
@@ -160,12 +172,13 @@ func TestRebindTransitionMatrix(t *testing.T) {
 	tests := []rebindCase{
 		{name: "anonymous to authenticated", fromClass: "anonymous", fromUser: "", toClass: "authenticated", toUser: "42", wantRebind: true, wantRebindUser: "42"},
 		{name: "anonymous to bot", fromClass: "anonymous", fromUser: "", toClass: "bot", toUser: "42", wantRebind: true, wantRebindUser: "42"},
-		{name: "anonymous to pending keeps the unchanged path", fromClass: "anonymous", fromUser: "", toClass: "pending_2fa", toUser: "42"},
+		{name: "anonymous to pending of a user is a rebind with the Core user kept", fromClass: "anonymous", fromUser: "", toClass: "pending_2fa", toUser: "42", wantRebind: true, wantRebindUser: ""},
 		{name: "anonymous to anonymous keeps the unchanged path", fromClass: "anonymous", fromUser: "", toClass: "anonymous", toUser: ""},
-		{name: "pending to authenticated", fromClass: "pending_2fa", fromUser: "", toClass: "authenticated", toUser: "42", wantRebind: true, wantRebindUser: "42"},
-		{name: "pending to anonymous keeps the unchanged path", fromClass: "pending_2fa", fromUser: "", toClass: "anonymous", toUser: ""},
-		{name: "pending to bot is denied", fromClass: "pending_2fa", fromUser: "", toClass: "bot", toUser: "42", wantErr: centrifuge.ErrorPermissionDenied},
-		{name: "pending renewal keeps the unchanged path", fromClass: "pending_2fa", fromUser: "", toClass: "pending_2fa", toUser: "42"},
+		{name: "pending to authenticated of the same user", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "authenticated", toUser: "42", wantRebind: true, wantRebindUser: "42"},
+		{name: "pending to anonymous", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "anonymous", toUser: "", wantRebind: true, wantRebindUser: ""},
+		{name: "pending to bot is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "bot", toUser: "42", wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "pending renewal keeps the unchanged path", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "pending_2fa", toUser: "42"},
+		{name: "pending of one user to pending of another is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "pending_2fa", toUser: "43", wantErr: centrifuge.ErrorPermissionDenied},
 		{name: "authenticated logout is a disconnect without allow_downgrade", fromClass: "authenticated", fromUser: "42", toClass: "anonymous", toUser: "", wantErr: centrifuge.DisconnectInvalidToken},
 		{name: "authenticated logout with allow_downgrade", fromClass: "authenticated", fromUser: "42", toClass: "anonymous", toUser: "", allowDowngrade: true, wantRebind: true, wantRebindUser: ""},
 		{name: "bot logout is a disconnect without allow_downgrade", fromClass: "bot", fromUser: "42", toClass: "anonymous", toUser: "", wantErr: centrifuge.DisconnectInvalidToken},
@@ -186,7 +199,11 @@ func TestRebindTransitionMatrix(t *testing.T) {
 func runRebindCase(t *testing.T, tt rebindCase) {
 	t.Helper()
 	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: tt.allowDowngrade}, false)
-	client, state := newRebindTestClient(tt.fromUser, tt.fromClass)
+	tokenUser := tt.fromTokenUser
+	if tokenUser == "" {
+		tokenUser = tt.fromUser
+	}
+	client, state := newRebindTestClientWithToken(tt.fromUser, tokenUser, tt.fromClass)
 	token := rebindTestToken(t, tt.toUser, tt.toClass, revokeTestOtherUUID, nil)
 
 	reply, extra, err := h.OnRefresh(client, centrifuge.RefreshEvent{Token: token}, nil)
@@ -211,6 +228,40 @@ func runRebindCase(t *testing.T, tt rebindCase) {
 		release(storage)
 		require.Equal(t, registryAuthClass{class: registryTestClass(tt.fromClass), claim: rebindTestClaim}, stored)
 		require.Equal(t, tt.fromUser, state.user)
+	}
+}
+
+// TestRebindFlagOffRoutesAnyTokenUserChangeToDisconnect checks that with rebind off, a change of the token user
+// disconnects as upstream does, even when Core sees no user for the connection.
+func TestRebindFlagOffRoutesAnyTokenUserChangeToDisconnect(t *testing.T) {
+	tests := []struct {
+		name          string
+		fromUser      string
+		fromTokenUser string
+		fromClass     string
+		toClass       string
+		toUser        string
+		wantErr       error
+	}{
+		{name: "anonymous to pending of a user", fromClass: "anonymous", toClass: "pending_2fa", toUser: "42", wantErr: centrifuge.DisconnectInvalidToken},
+		{name: "pending of one user to pending of another", fromClass: "pending_2fa", fromTokenUser: "42", toClass: "pending_2fa", toUser: "43", wantErr: centrifuge.DisconnectInvalidToken},
+		{name: "pending renewal of the same user keeps the unchanged path", fromClass: "pending_2fa", fromTokenUser: "42", toClass: "pending_2fa", toUser: "42"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newRebindTestHandler(t, configtypes.Rebind{}, false)
+			tokenUser := tt.fromTokenUser
+			if tokenUser == "" {
+				tokenUser = tt.fromUser
+			}
+			client, state := newRebindTestClientWithToken(tt.fromUser, tokenUser, tt.fromClass)
+
+			_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+				Token: rebindTestToken(t, tt.toUser, tt.toClass, revokeTestOtherUUID, nil),
+			}, nil)
+			require.Equal(t, tt.wantErr, err)
+			require.Empty(t, state.rebinds)
+		})
 	}
 }
 

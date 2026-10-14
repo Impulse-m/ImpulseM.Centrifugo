@@ -677,18 +677,22 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Error().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("error verifying refresh token")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
-	if coreUserID(token) != c.UserID() {
-		return h.onRefreshRebind(c, e.Token, token)
+	class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
+	if !ok {
+		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
+	// A change of the token user, or of the user Core sees, is a rebind, decided by rebind or by disconnect.
+	// Core is anonymous for a pending connection, so the token user is compared as well.
+	if storedTokenUser(c) != token.UserID || coreUserID(class, token.UserID) != c.UserID() {
+		return h.onRefreshRebind(c, e.Token, token, class)
 	}
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
-	if !h.replaceRegistryToken(c, e.Token, token) {
-		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-	}
+	h.replaceRegistryToken(c, e.Token, class)
 	h.syncSessionConnection(c, c.UserID(), identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
@@ -698,7 +702,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		Info:          token.Info,
 		TokenIdentity: &identity,
 		User:          token.UserID,
-		AuthClass:     h.tokenAuthClassName(token),
+		AuthClass:     h.authClassName(class),
 	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
 }
 

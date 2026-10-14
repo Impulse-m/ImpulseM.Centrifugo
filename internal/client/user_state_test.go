@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
@@ -132,6 +133,10 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 		IDFunc:     func() string { return "c1" },
 		UserIDFunc: func() string { return "" },
 	}
+	// A pending connection established by a token has its token user stored.
+	storage, release := client.AcquireStorage()
+	storage[clientstorage.KeyTokenUser] = "42"
+	release(storage)
 	sessions := store.SessionConnections()
 	sessions.Track("c1", client, [16]byte{1})
 

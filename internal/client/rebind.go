@@ -15,15 +15,15 @@ import (
 // onRefreshRebind answers a refresh whose token user is not the user Core has for the connection. With
 // rebind disabled the connection is disconnected, as before. Otherwise the connection moves to the identity of
 // the token in place: its user, token, expiration and channels follow the transition between auth classes.
-func (h *Handler) onRefreshRebind(c Client, token string, verified jwtverify.ConnectToken) (centrifuge.RefreshReply, RefreshExtra, error) {
+func (h *Handler) onRefreshRebind(
+	c Client,
+	token string,
+	verified jwtverify.ConnectToken,
+	nextClass rpcregistry.AuthClass,
+) (centrifuge.RefreshReply, RefreshExtra, error) {
 	cfg := h.cfgContainer.ConfigRef()
 	if !cfg.Client.Rebind.Enabled {
 		log.Info().Str("token_user", verified.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-	}
-	nextClass, ok := rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
-	if !ok {
-		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	_, currentClass := registryConnection(c, h.registryConfig().AuthClassClaim)
@@ -39,7 +39,7 @@ func (h *Handler) onRefreshRebind(c Client, token string, verified jwtverify.Con
 		return centrifuge.RefreshReply{}, RefreshExtra{}, connectRevokeError(c.ID(), verified.UserID, result)
 	}
 
-	newUser := coreUserID(verified)
+	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
 	h.detachRateLimit(c)
 	err := c.Rebind(centrifuge.RebindOptions{
@@ -52,9 +52,8 @@ func (h *Handler) onRefreshRebind(c Client, token string, verified jwtverify.Con
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
 	h.attachRateLimit(c, newUser)
-	if !h.replaceRegistryToken(c, token, verified) {
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-	}
+	h.replaceRegistryToken(c, token, nextClass)
+	storeTokenUser(c, verified.UserID)
 	h.syncSessionConnection(c, newUser, identity)
 
 	// A revocation applied between the check above and the rebind is caught here, as a connection is
@@ -77,7 +76,7 @@ func (h *Handler) onRefreshRebind(c Client, token string, verified jwtverify.Con
 		Info:          verified.Info,
 		TokenIdentity: &identity,
 		User:          verified.UserID,
-		AuthClass:     h.tokenAuthClassName(verified),
+		AuthClass:     h.authClassName(nextClass),
 	}, RefreshExtra{}, nil
 }
 

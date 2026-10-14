@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/netip"
 
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
 	"github.com/justinas/alice"
 	"google.golang.org/grpc/peer"
 )
@@ -27,6 +29,19 @@ func Middleware(r *Resolver) alice.Constructor {
 			next.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), stateKey{}, state{addr: addr})))
 		})
 	}
+}
+
+// Middlewares returns the middlewares which resolve the client address of HTTP requests, or nil when
+// the feature is disabled. An error is returned for a configuration which New refuses.
+func Middlewares(cfg configtypes.ClientAddress) ([]alice.Constructor, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	resolver, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return []alice.Constructor{Middleware(resolver)}, nil
 }
 
 // WithPeer stores the address of the gRPC peer in ctx. The peer of a connection on a PROXY protocol

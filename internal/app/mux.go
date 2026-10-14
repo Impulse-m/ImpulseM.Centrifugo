@@ -106,20 +106,12 @@ func (flags HandlerFlag) String() string {
 // Mux returns a mux including set of default handlers for Centrifugo server.
 func Mux(
 	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, flags HandlerFlag, keepHeadersInContext bool, wtServer *webtransport.Server,
-	healthReady func() bool,
+	healthReady func() bool, clientMiddlewares []alice.Constructor,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	cfg := cfgContainer.Config()
 
-	var commonMiddlewares []alice.Constructor
-
-	if cfg.ClientAddress.Enabled {
-		clientAddrResolver, err := clientaddr.New(cfg.ClientAddress)
-		if err != nil {
-			log.Fatal().Err(err).Msg("can not configure client address")
-		}
-		commonMiddlewares = append(commonMiddlewares, clientaddr.Middleware(clientAddrResolver))
-	}
+	commonMiddlewares := append([]alice.Constructor{}, clientMiddlewares...)
 
 	useLoggingMW := zerolog.GlobalLevel() <= zerolog.DebugLevel
 	if useLoggingMW {
@@ -475,6 +467,11 @@ func runHTTPServers(
 
 	var servers []*http.Server
 
+	clientMiddlewares, err := clientaddr.Middlewares(cfg.ClientAddress)
+	if err != nil {
+		return nil, err
+	}
+
 	tlsConfig, err := GetTLSConfig(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("can not get TLS config")
@@ -512,7 +509,7 @@ func runHTTPServers(
 			}
 		}
 
-		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer, healthReady)
+		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer, healthReady, clientMiddlewares)
 
 		var h3Server *http3.Server
 		if useHTTP3 {
@@ -584,21 +581,13 @@ func runHTTPServers(
 				}
 				defer func() { _ = udpConn.Close() }()
 
-				tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-				if err != nil {
-					log.Fatal().Err(err).Msg("can not start HTTP/3, resolve TCP")
-				}
-				tcpConn, err := net.ListenTCP("tcp", tcpAddr)
+				tcpConn, err := clientaddr.ListenHTTP(addr, cfg.ClientAddress, true)
 				if err != nil {
 					log.Fatal().Err(err).Msg("can not start HTTP/3, listen TCP")
 				}
 				defer func() { _ = tcpConn.Close() }()
 
-				proxyConn, err := clientaddr.Wrap(tcpConn, cfg.ClientAddress)
-				if err != nil {
-					log.Fatal().Err(err).Msg("can not start HTTP/3, client address")
-				}
-				tlsConn := tls.NewListener(proxyConn, addrTLSConfig)
+				tlsConn := tls.NewListener(tcpConn, addrTLSConfig)
 				defer func() { _ = tlsConn.Close() }()
 
 				hErr := make(chan error)
@@ -629,12 +618,7 @@ func runHTTPServers(
 					log.Fatal().Err(err).Msg("error ListenAndServe HTTP/3")
 				}
 			} else {
-				listenCfg := cfg.ClientAddress
-				if addr != externalAddr {
-					// PROXY protocol is for the client-facing port only.
-					listenCfg.ProxyProtocol.Enabled = false
-				}
-				ln, err := clientaddr.Listen("tcp", addr, listenCfg)
+				ln, err := clientaddr.ListenHTTP(addr, cfg.ClientAddress, addr == externalAddr)
 				if err != nil {
 					log.Fatal().Err(err).Msg("error ListenAndServe")
 				}

@@ -24,6 +24,15 @@ func Listen(network, addr string, cfg configtypes.ClientAddress) (net.Listener, 
 	return wrapped, nil
 }
 
+// ListenHTTP is Listen for an HTTP server port. PROXY protocol applies only to a client-facing port,
+// so the other ports are listened on as they were before the feature.
+func ListenHTTP(addr string, cfg configtypes.ClientAddress, clientFacing bool) (net.Listener, error) {
+	if !clientFacing {
+		cfg.ProxyProtocol.Enabled = false
+	}
+	return Listen("tcp", addr, cfg)
+}
+
 // Wrap returns ln with PROXY protocol handling when cfg enables it, and ln unchanged otherwise.
 // Peers in trusted_proxies must send a header, and other peers are rejected or have their header
 // ignored, as untrusted_peers says.

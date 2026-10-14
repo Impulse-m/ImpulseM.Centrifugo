@@ -216,6 +216,30 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 	}
 }
 
+// ProxyCallChildren holds the proxy metric children of one proxy name. They are resolved once by
+// NewProxyCallChildren, so a call does no label lookup.
+type ProxyCallChildren struct {
+	Duration prometheus.Observer
+	Summary  prometheus.Observer
+	Errors   prometheus.Counter
+	Inflight prometheus.Gauge
+}
+
+// NewProxyCallChildren resolves the proxy metric children with the labels protocol, kind and name. It
+// returns nil when the proxy metrics are not initialised.
+func NewProxyCallChildren(protocol string, kind string, name string) *ProxyCallChildren {
+	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
+		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
+		return nil
+	}
+	return &ProxyCallChildren{
+		Duration: ProxyCallDurationHistogram.WithLabelValues(protocol, kind, name),
+		Summary:  ProxyCallDurationSummary.WithLabelValues(protocol, kind, name),
+		Errors:   ProxyCallErrorCount.WithLabelValues(protocol, kind, name),
+		Inflight: ProxyCallInflightRequests.WithLabelValues(protocol, kind, name),
+	}
+}
+
 // setForkMetrics assigns the fork metrics created by initForkMetrics to the package level variables.
 func (m *Registry) setForkMetrics() {
 	AccessRevokeRejectsTotal = m.accessRevokeRejectsTotal

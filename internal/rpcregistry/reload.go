@@ -115,7 +115,7 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 		}
 		target := &Target{
 			Config:  normalized,
-			Metrics: metrics.NewRPCRegistryTargetMetrics(def.Name),
+			Metrics: newTargetMetrics(def.Name),
 		}
 		if r.dial != nil {
 			conn, err := r.dial(target)

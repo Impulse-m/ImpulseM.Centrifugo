@@ -49,7 +49,7 @@ func ParseAuthClass(name string) (AuthClass, bool) {
 type Target struct {
 	Config configtypes.RPCTarget
 	// Metrics are the proxy metric children of the target, nil when the metrics are not initialised.
-	Metrics *metrics.RPCRegistryTargetMetrics
+	Metrics *TargetMetrics
 	// conn is the connection to the target, made by the dial hook. Nil when no hook is set.
 	conn io.Closer
 }

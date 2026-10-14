@@ -38,3 +38,28 @@ func TestMsgIDInWindow(t *testing.T) {
 		})
 	}
 }
+
+// A call is recorded for RecordTTL, so the record answers a retransmit whose msg_id is ahead by the skew, up to the
+// last instant the window accepts it. The store is driven by the clock of the test.
+func TestRecordTTLCoversAcceptedMsgIDs(t *testing.T) {
+	window := 120 * time.Second
+	maxSkew := 30 * time.Second
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.TTL = RecordTTL(window, maxSkew)
+	store := NewMemory(options)
+	key := Key{Scope: testScope("u1", "a"), MsgID: testMsgID(clock.now().Add(maxSkew).Unix(), 1)}
+	testAnswer(t, store, key, "ok")
+
+	// The window accepts the msg_id until its second plus the window, plus one second: the last instant is one
+	// nanosecond before that, and the record must still answer then.
+	clock.advance(window + maxSkew + time.Second - time.Nanosecond)
+	require.True(t, MsgIDInWindow(key.MsgID, clock.now(), window, maxSkew))
+	record, done := testDone(t, store, key)
+	require.True(t, done)
+	require.Equal(t, []byte("ok"), record.Reply)
+
+	clock.advance(time.Nanosecond)
+	require.False(t, MsgIDInWindow(key.MsgID, clock.now(), window, maxSkew))
+	checkInvariants(t, store)
+}

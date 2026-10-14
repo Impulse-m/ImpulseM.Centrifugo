@@ -21,3 +21,11 @@ func MsgIDInWindow(msgID uint64, now time.Time, window time.Duration, maxSkew ti
 	nowSec := now.Unix()
 	return sec >= nowSec-int64(window/time.Second) && sec <= nowSec+int64(maxSkew/time.Second)
 }
+
+// RecordTTL returns how long the record of a call is kept, for the window and the skew of the msg_ids. A msg_id
+// whose second is at most maxSkew ahead of the server time is accepted until that second plus the window, and
+// MsgIDInWindow compares whole seconds, so the record is kept one second longer. A record kept this long answers
+// every retransmit which the window accepts.
+func RecordTTL(window time.Duration, maxSkew time.Duration) time.Duration {
+	return window + maxSkew + time.Second
+}

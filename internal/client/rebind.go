@@ -114,6 +114,35 @@ func (h *Handler) onRefreshRebind(
 	}, RefreshExtra{}, nil
 }
 
+// refreshSameIdentity answers a refresh whose token keeps the identity of the connection. The session is tracked before
+// the check. A revocation applied after the check then finds the connection in the index, and one applied before it is
+// seen by the check.
+func (h *Handler) refreshSameIdentity(
+	c Client,
+	refreshToken string,
+	verified jwtverify.ConnectToken,
+	class rpcregistry.AuthClass,
+) (centrifuge.RefreshReply, RefreshExtra, error) {
+	identity := accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt)
+	h.syncSessionConnection(c, c.UserID(), identity)
+	runTestHook(&testHookRefreshTracked, c)
+	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
+	if result.Verdict != accessrevoke.Allowed {
+		return refreshRevokeReply(c.ID(), c.UserID(), result)
+	}
+	h.replaceRegistryToken(c, refreshToken, class)
+	if verified.Meta != nil {
+		setStorageMeta(c, verified.Meta)
+	}
+	return centrifuge.RefreshReply{
+		ExpireAt:      verified.ExpireAt,
+		Info:          verified.Info,
+		TokenIdentity: &identity,
+		User:          verified.UserID,
+		AuthClass:     h.authClassName(class),
+	}, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+}
+
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an
 // authenticated connection are checked by rebindTransitionError.
 func rebindAllowed(from rpcregistry.AuthClass, to rpcregistry.AuthClass) bool {

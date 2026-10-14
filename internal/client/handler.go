@@ -682,26 +682,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	if changesIdentity(c, token.UserID, class) {
 		return h.onRefreshRebind(c, e.Token, token, class)
 	}
-	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
-	// The session is tracked before the check. A revocation applied after the check then finds the connection in the
-	// index, and one applied before it is seen by the check.
-	h.syncSessionConnection(c, c.UserID(), identity)
-	runTestHook(&testHookRefreshTracked, c)
-	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
-	if result.Verdict != accessrevoke.Allowed {
-		return refreshRevokeReply(c.ID(), c.UserID(), result)
-	}
-	h.replaceRegistryToken(c, e.Token, class)
-	if token.Meta != nil {
-		setStorageMeta(c, token.Meta)
-	}
-	return centrifuge.RefreshReply{
-		ExpireAt:      token.ExpireAt,
-		Info:          token.Info,
-		TokenIdentity: &identity,
-		User:          token.UserID,
-		AuthClass:     h.authClassName(class),
-	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+	return h.refreshSameIdentity(c, e.Token, token, class)
 }
 
 // OnRPC ...

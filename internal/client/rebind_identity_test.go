@@ -59,7 +59,7 @@ func TestRebindStoresNewIdentityBeforeCoreUser(t *testing.T) {
 		defer release(storage)
 		stored, _ := storage[clientstorage.KeyAuthClass].(registryAuthClass)
 		storedClass = stored.class
-		storedTokenUser, _ = storage[clientstorage.KeyTokenUser].(string)
+		storedTokenUser, _ = storage[storageKeyTokenUser].(string)
 	}
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{

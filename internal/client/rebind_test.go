@@ -69,7 +69,7 @@ func newRebindTestClientWithToken(user string, tokenUser string, class string) (
 	storage := map[string]any{}
 	if class != "" {
 		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim}
-		storage[clientstorage.KeyTokenUser] = tokenUser
+		storage[storageKeyTokenUser] = tokenUser
 	}
 	client := newRebindRegistryClient("c1", user, storage)
 	client.UserIDFunc = func() string { return state.user }
@@ -479,7 +479,7 @@ func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
 	// The class and the token user stored before the rebind are restored with the user.
 	storage, release := client.AcquireStorage()
 	stored, _ := storage[clientstorage.KeyAuthClass].(registryAuthClass)
-	tokenUser, _ := storage[clientstorage.KeyTokenUser].(string)
+	tokenUser, _ := storage[storageKeyTokenUser].(string)
 	release(storage)
 	require.Equal(t, registryTestClass("authenticated"), stored.class)
 	require.Equal(t, "42", tokenUser)

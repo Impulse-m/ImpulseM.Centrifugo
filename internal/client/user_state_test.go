@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
@@ -172,7 +171,7 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	}
 	// A pending connection established by a token has its token user stored.
 	storage, release := client.AcquireStorage()
-	storage[clientstorage.KeyTokenUser] = "42"
+	storage[storageKeyTokenUser] = "42"
 	release(storage)
 	sessions := store.SessionConnections()
 	sessions.Track("c1", client, [16]byte{1})
@@ -225,7 +224,7 @@ func TestConnectStoresTokenUserOnlyForPending(t *testing.T) {
 				Token:    getConnTokenWithClaims(t, claims),
 			}, nil, false)
 			require.NoError(t, err)
-			tokenUser, stored := reply.Storage[clientstorage.KeyTokenUser]
+			tokenUser, stored := reply.Storage[storageKeyTokenUser]
 			require.Equal(t, tt.wantStored, stored)
 			if tt.wantStored {
 				require.Equal(t, tt.sub, tokenUser)

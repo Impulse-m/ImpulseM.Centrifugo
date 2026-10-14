@@ -1,13 +1,16 @@
 package client
 
 import (
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
 )
+
+// storageKeyTokenUser is the storage key of the user of the connection token. A pending connection keeps it, as Core
+// sees no user for it. It is stored for a pending connection at connect, and by a rebind.
+const storageKeyTokenUser = "token_user"
 
 // coreUserID returns the user Core sees for a connection of class with userID. A pending_2fa connection keeps
 // its user for the registry, but is anonymous to Core: it gets no personal channel, no user channels and no
@@ -31,7 +34,7 @@ func changesIdentity(c Client, tokenUser string, class rpcregistry.AuthClass) bo
 func storedTokenUser(c Client) string {
 	storage, release := c.AcquireStorage()
 	defer release(storage)
-	if user, ok := storage[clientstorage.KeyTokenUser].(string); ok {
+	if user, ok := storage[storageKeyTokenUser].(string); ok {
 		return user
 	}
 	return c.UserID()
@@ -41,7 +44,7 @@ func storedTokenUser(c Client) string {
 func storeTokenUser(c Client, userID string) {
 	storage, release := c.AcquireStorage()
 	defer release(storage)
-	storage[clientstorage.KeyTokenUser] = userID
+	storage[storageKeyTokenUser] = userID
 }
 
 // personalChannelSubscription returns the personal channel of userID with the options it is subscribed with.

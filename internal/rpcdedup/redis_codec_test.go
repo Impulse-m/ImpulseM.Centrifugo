@@ -96,7 +96,7 @@ func TestParseBeginReplies(t *testing.T) {
 	require.Nil(t, res.Record.Err)
 	require.False(t, res.Record.Uncached)
 
-	// A tombstone answers with its error and no reply.
+	// A done call which failed answers with its error and no reply.
 	res, err = parseBegin([]string{"done", "", `{"c":107,"m":"cancelled"}`, ""})
 	require.NoError(t, err)
 	require.Equal(t, BeginDone, res.State)
@@ -105,6 +105,13 @@ func TestParseBeginReplies(t *testing.T) {
 	res, err = parseBegin([]string{"done", "", "", "1"})
 	require.NoError(t, err)
 	require.True(t, res.Record.Uncached)
+
+	// A tombstone answers with its error, and keeps no fingerprint.
+	res, err = parseBegin([]string{"cancelled", `{"c":107,"m":"cancelled"}`})
+	require.NoError(t, err)
+	require.Equal(t, BeginCancelled, res.State)
+	require.Equal(t, &centrifuge.Error{Code: 107, Message: "cancelled"}, res.Record.Err)
+	require.Equal(t, [32]byte{}, res.Record.Fingerprint)
 }
 
 func TestParseBeginMalformed(t *testing.T) {
@@ -113,6 +120,8 @@ func TestParseBeginMalformed(t *testing.T) {
 		{"unknown"},
 		{"inflight"},
 		{"inflight", "a", "b"},
+		{"cancelled"},
+		{"cancelled", "{bad"},
 		{"done", "reply"},
 		{"done", "", "{bad", ""},
 	} {

@@ -161,7 +161,8 @@ func TestRedisBackendTombstoneAnswersAnyFingerprint(t *testing.T) {
 
 	begin, err := backend.Begin(ctx, key, Fingerprint("users.put", []byte("z")), "node-a", integrationTTL)
 	require.NoError(t, err)
-	require.Equal(t, BeginDone, begin.State)
+	require.Equal(t, BeginCancelled, begin.State)
+	require.Equal(t, [32]byte{}, begin.Record.Fingerprint)
 	require.Equal(t, testCancelled.Code, begin.Record.Err.Code)
 	require.Equal(t, testCancelled.Message, begin.Record.Err.Message)
 }

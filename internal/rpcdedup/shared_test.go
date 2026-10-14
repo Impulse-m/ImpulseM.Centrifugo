@@ -127,7 +127,7 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 		return BeginResult{State: BeginMiss}, nil
 	}
 	if e.state == 'c' {
-		return BeginResult{State: BeginDone, Record: e.rec}, nil
+		return BeginResult{State: BeginCancelled, Record: e.rec}, nil
 	}
 	if e.fingerprint != fingerprint {
 		return BeginResult{State: BeginMismatch}, nil
@@ -447,6 +447,23 @@ func TestSharedCancelBeforeRemoteMarkIsSentToOwner(t *testing.T) {
 
 	fx.backend.finish(sharedKey, Record{Reply: []byte("answer")})
 	waitDone(t, owner)
+}
+
+func TestSharedRestoredTombstoneAnswersAnyFingerprint(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'c', [32]byte{}, "", Record{Err: testCancelled})
+
+	lookup, err := fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+
+	// The tombstone is cached on this node without the fingerprint of the first caller, so a duplicate with another
+	// fingerprint is answered with it too, and not refused as a reuse of the msg_id.
+	lookup = testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintB))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	checkInvariants(t, fx.local)
 }
 
 func TestSharedRemoteKeyVanishingAbandonsFlight(t *testing.T) {

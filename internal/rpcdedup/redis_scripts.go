@@ -6,9 +6,9 @@ import (
 
 // beginScript looks a key up and starts a call in it. KEYS[1] is the key of the call. ARGV[1] is the fingerprint,
 // ARGV[2] the node id of the owner and ARGV[3] the in-flight TTL in milliseconds. It returns {'miss'} when it started
-// the call, {'done', reply, error, uncached} for a kept answer (a tombstone answers any fingerprint), {'mismatch'} for
-// another fingerprint, and {'inflight', owner} for a call which runs. Scripts read before they write and never call
-// TIME, so they replicate and run on Redis 6 and later.
+// the call, {'cancelled', error} for a tombstone, which answers any fingerprint, {'done', reply, error, uncached} for a
+// kept answer, {'mismatch'} for another fingerprint, and {'inflight', owner} for a call which runs. Scripts read before
+// they write and never call TIME, so they replicate and run on Redis 6 and later.
 var beginScript = rueidis.NewLuaScript(`
 local r = redis.call('HMGET', KEYS[1], 's', 'f', 'n', 'r', 'e', 'u')
 if r[1] == false then
@@ -17,7 +17,7 @@ if r[1] == false then
 	return {'miss'}
 end
 if r[1] == 'c' then
-	return {'done', '', r[5], ''}
+	return {'cancelled', r[5]}
 end
 if r[2] ~= ARGV[1] then
 	return {'mismatch'}

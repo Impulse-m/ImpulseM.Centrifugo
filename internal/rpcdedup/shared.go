@@ -178,6 +178,10 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	case BeginDone:
 		_ = s.local.Complete(key, flight, res.Record)
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
+	case BeginCancelled:
+		// The tombstone keeps no fingerprint, so this node answers any duplicate with it, as the shared tier does.
+		s.local.finish(key, flight, res.Record)
+		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginMismatch:
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
 		return Lookup{Outcome: OutcomeMismatch}, nil

@@ -34,6 +34,9 @@ const (
 	BeginInFlight
 	// BeginMismatch means the key holds a call with another fingerprint.
 	BeginMismatch
+	// BeginCancelled means the key holds a tombstone, which answers any fingerprint. BeginResult.Record carries the
+	// cancelled error, and no fingerprint.
+	BeginCancelled
 )
 
 // BeginResult is the result of Backend.Begin.

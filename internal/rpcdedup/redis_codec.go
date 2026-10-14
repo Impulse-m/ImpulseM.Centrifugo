@@ -111,6 +111,15 @@ func parseBegin(parts []string) (BeginResult, error) {
 		return BeginResult{State: BeginMiss}, nil
 	case "mismatch":
 		return BeginResult{State: BeginMismatch}, nil
+	case "cancelled":
+		if len(parts) != 2 {
+			return BeginResult{}, errMalformedReply
+		}
+		rec, err := parseRecord("", parts[1], "")
+		if err != nil {
+			return BeginResult{}, err
+		}
+		return BeginResult{State: BeginCancelled, Record: rec}, nil
 	case "inflight":
 		if len(parts) != 2 {
 			return BeginResult{}, errMalformedReply

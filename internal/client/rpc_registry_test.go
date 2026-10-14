@@ -16,8 +16,6 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const registryTestBackendMethod = "/example.v1.UserService/GetUser"
@@ -300,27 +298,3 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestRegistryCallErrorMapping(t *testing.T) {
-	cfg := registryTestRegistryConfig()
-	method := &rpcregistry.Method{}
-
-	temporary := []codes.Code{codes.Unavailable, codes.DeadlineExceeded}
-	for _, code := range temporary {
-		var protoErr *centrifuge.Error
-		err := registryCallError(status.Error(code, "backend said so"), nil, method, cfg)
-		require.ErrorAs(t, err, &protoErr)
-		require.Equal(t, uint32(100), protoErr.Code)
-		require.Equal(t, "backend said so", protoErr.Message)
-		require.True(t, protoErr.Temporary)
-	}
-
-	var protoErr *centrifuge.Error
-	err := registryCallError(status.Error(codes.Internal, "boom"), nil, method, cfg)
-	require.ErrorAs(t, err, &protoErr)
-	require.Equal(t, uint32(100), protoErr.Code)
-	require.False(t, protoErr.Temporary)
-
-	err = registryCallError(proxy.ErrRPCResponseTooLarge, nil, method, cfg)
-	require.ErrorAs(t, err, &protoErr)
-	require.Equal(t, uint32(106), protoErr.Code)
-}

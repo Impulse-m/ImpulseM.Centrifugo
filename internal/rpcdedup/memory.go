@@ -121,7 +121,7 @@ type shard struct {
 	scopes           map[string]*scopeState
 	users            map[string]int
 	pools            [poolCount]pool
-	order            recordList
+	order            intrusiveList[storedRecord]
 	ttl              time.Duration
 	maxScope         int
 	maxScopesPerUser int
@@ -141,22 +141,23 @@ type pool struct {
 	entries        int
 	bytes          int64
 	scopes         int
-	surplus        scopeList
+	surplus        intrusiveList[scopeState]
 	stats          *poolStats
 }
 
-// recordLinks are the neighbours of a record in one of its lists.
-type recordLinks struct {
-	prev *storedRecord
-	next *storedRecord
+// linkPair are the neighbours of an item in one of the intrusive lists which hold it.
+type linkPair[T any] struct {
+	prev *T
+	next *T
 }
 
-// recordList is a list of records, linked through the links which links returns for each record.
-type recordList struct {
-	head  *storedRecord
-	tail  *storedRecord
+// intrusiveList is a doubly linked list of items of type T, whose links are kept in the items. links returns the
+// links of an item in this list.
+type intrusiveList[T any] struct {
+	head  *T
+	tail  *T
 	len   int
-	links func(*storedRecord) *recordLinks
+	links func(*T) *linkPair[T]
 }
 
 // storedRecord is a done record in a shard, with its place in the shard order and in the order of its scope.
@@ -166,27 +167,20 @@ type storedRecord struct {
 	expireAt time.Time
 	size     int64
 	scope    *scopeState
-	byAge    recordLinks
-	byScope  recordLinks
+	byAge    linkPair[storedRecord]
+	byScope  linkPair[storedRecord]
 }
 
 // scopeState is an admitted scope: its records, oldest first, and its running calls.
 type scopeState struct {
-	scope       string
-	user        string
-	pool        *pool
-	records     recordList
-	bytes       int64
-	flights     int
-	surplus     bool
-	surplusPrev *scopeState
-	surplusNext *scopeState
-}
-
-// scopeList is the list of the surplus scopes of a pool, linked through their surplus neighbours.
-type scopeList struct {
-	head *scopeState
-	tail *scopeState
+	scope        string
+	user         string
+	pool         *pool
+	records      intrusiveList[storedRecord]
+	bytes        int64
+	flights      int
+	surplus      bool
+	surplusLinks linkPair[scopeState]
 }
 
 // NewMemory returns an empty node-local store.
@@ -214,7 +208,7 @@ func NewMemory(opts MemoryOptions) *Memory {
 		s.flights = map[Key]*Flight{}
 		s.scopes = map[string]*scopeState{}
 		s.users = map[string]int{}
-		s.order = recordList{links: byAgeLinks}
+		s.order = intrusiveList[storedRecord]{links: byAgeLinks}
 		s.ttl = opts.TTL
 		s.maxScope = opts.MaxRecordsPerScope
 		s.maxScopesPerUser = opts.MaxScopesPerUser
@@ -252,37 +246,43 @@ func newPool(entries int64, bytes int64, opts MemoryOptions, stats *poolStats) p
 		reserveEntries: reserveEntries,
 		reserveBytes:   reserveBytes,
 		recordBytes:    reserveBytes / int64(reserveEntries),
+		surplus:        intrusiveList[scopeState]{links: surplusLinks},
 		stats:          stats,
 	}
 }
 
 // byAgeLinks returns the links of a record in the order of the shard.
-func byAgeLinks(r *storedRecord) *recordLinks {
+func byAgeLinks(r *storedRecord) *linkPair[storedRecord] {
 	return &r.byAge
 }
 
 // byScopeLinks returns the links of a record in the order of its scope.
-func byScopeLinks(r *storedRecord) *recordLinks {
+func byScopeLinks(r *storedRecord) *linkPair[storedRecord] {
 	return &r.byScope
 }
 
-// pushBack appends r to the list.
-func (l *recordList) pushBack(r *storedRecord) {
-	links := l.links(r)
+// surplusLinks returns the links of a scope in the surplus scopes of its pool.
+func surplusLinks(sc *scopeState) *linkPair[scopeState] {
+	return &sc.surplusLinks
+}
+
+// pushBack appends item to the list.
+func (l *intrusiveList[T]) pushBack(item *T) {
+	links := l.links(item)
 	links.prev = l.tail
 	links.next = nil
 	if l.tail != nil {
-		l.links(l.tail).next = r
+		l.links(l.tail).next = item
 	} else {
-		l.head = r
+		l.head = item
 	}
-	l.tail = r
+	l.tail = item
 	l.len++
 }
 
-// remove unlinks r, which is in the list.
-func (l *recordList) remove(r *storedRecord) {
-	links := l.links(r)
+// remove unlinks item, which is in the list.
+func (l *intrusiveList[T]) remove(item *T) {
+	links := l.links(item)
 	if links.prev != nil {
 		l.links(links.prev).next = links.next
 	} else {
@@ -298,41 +298,8 @@ func (l *recordList) remove(r *storedRecord) {
 	l.len--
 }
 
-// front returns the oldest record of the list, or nil when it is empty.
-func (l *recordList) front() *storedRecord {
-	return l.head
-}
-
-// pushBack appends sc to the surplus scopes.
-func (l *scopeList) pushBack(sc *scopeState) {
-	sc.surplusPrev = l.tail
-	sc.surplusNext = nil
-	if l.tail != nil {
-		l.tail.surplusNext = sc
-	} else {
-		l.head = sc
-	}
-	l.tail = sc
-}
-
-// remove unlinks sc, which is in the surplus scopes.
-func (l *scopeList) remove(sc *scopeState) {
-	if sc.surplusPrev != nil {
-		sc.surplusPrev.surplusNext = sc.surplusNext
-	} else {
-		l.head = sc.surplusNext
-	}
-	if sc.surplusNext != nil {
-		sc.surplusNext.surplusPrev = sc.surplusPrev
-	} else {
-		l.tail = sc.surplusPrev
-	}
-	sc.surplusPrev = nil
-	sc.surplusNext = nil
-}
-
-// front returns the surplus scope which has been over its reserve the longest, or nil when there is none.
-func (l *scopeList) front() *scopeState {
+// front returns the first item of the list, the oldest one, or nil when it is empty.
+func (l *intrusiveList[T]) front() *T {
 	return l.head
 }
 
@@ -487,7 +454,7 @@ func (s *shard) admit(scope string) (*scopeState, error) {
 		scope:   scope,
 		user:    user,
 		pool:    p,
-		records: recordList{links: byScopeLinks},
+		records: intrusiveList[storedRecord]{links: byScopeLinks},
 	}
 	s.scopes[scope] = sc
 	p.scopes++

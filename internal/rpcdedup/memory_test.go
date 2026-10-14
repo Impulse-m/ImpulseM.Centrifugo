@@ -246,7 +246,7 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 		require.LessOrEqual(t, p.bytes, p.maxBytes)
 
 		listed := 0
-		for sc := p.surplus.head; sc != nil; sc = sc.surplusNext {
+		for sc := p.surplus.head; sc != nil; sc = sc.surplusLinks.next {
 			require.True(t, sc.surplus)
 			listed++
 		}

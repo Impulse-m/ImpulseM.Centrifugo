@@ -143,6 +143,7 @@ func dedupRegistryConfig() configtypes.RPCRegistry {
 	reg.Methods = append(reg.Methods,
 		configtypes.RPCMethod{Method: "users.read", GRPCMethod: registryTestBackendMethod, Target: "backend", Idempotent: &idempotent},
 		configtypes.RPCMethod{Method: "users.put", GRPCMethod: registryTestBackendMethod, Target: "backend"},
+		configtypes.RPCMethod{Method: "users.anon", GRPCMethod: registryTestBackendMethod, Target: "backend", AuthClass: configtypes.RPCAuthClassAnonymous},
 	)
 	reg.Errors.MsgIDInvalid = configtypes.RPCRegistryError{Code: 107, Message: "invalid msg_id"}
 	reg.Errors.MsgIDReused = configtypes.RPCRegistryError{Code: 107, Message: "msg_id reused"}

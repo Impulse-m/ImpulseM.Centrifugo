@@ -286,14 +286,14 @@ func TestRegistryCallMetricsLabels(t *testing.T) {
 	unknownCalls := callsBefore("unknown", "unknown")
 	unknownErrors := errorsBefore("unknown", "none")
 	_, err := h.OnRPC(authenticated, centrifuge.RPCEvent{Method: "metrics.missing"}, nil)
-	requireProtocolError(t, err)
+	_ = requireProtocolError(t, err)
 	require.Equal(t, unknownCalls+1, callsBefore("unknown", "unknown"))
 	require.Equal(t, unknownErrors+1, errorsBefore("unknown", "none"))
 
 	// An anonymous connection calling an authenticated method is denied by the class gate.
 	deniedCalls := callsBefore("metrics.authed", "denied")
 	_, err = h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "metrics.authed", Data: []byte("x")}, nil)
-	requireProtocolError(t, err)
+	_ = requireProtocolError(t, err)
 	require.Equal(t, deniedCalls+1, callsBefore("metrics.authed", "denied"))
 
 	okCalls := callsBefore("metrics.ok", "ok")
@@ -305,7 +305,7 @@ func TestRegistryCallMetricsLabels(t *testing.T) {
 	quotaCalls := callsBefore("metrics.quota", "error")
 	quotaErrors := errorsBefore("metrics.quota", "QUOTA_EXCEEDED_X")
 	_, err = h.OnRPC(authenticated, centrifuge.RPCEvent{Method: "metrics.quota", Data: []byte("x")}, nil)
-	requireProtocolError(t, err)
+	_ = requireProtocolError(t, err)
 	require.Equal(t, quotaCalls+1, callsBefore("metrics.quota", "error"))
 	require.Equal(t, quotaErrors+1, errorsBefore("metrics.quota", "QUOTA_EXCEEDED_X"))
 	require.Equal(t, proxyErrorsBefore+1, testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("grpc", "rpc", "backend")))
@@ -313,7 +313,7 @@ func TestRegistryCallMetricsLabels(t *testing.T) {
 	// A call over its timeout counts as timeout.
 	timeoutCalls := callsBefore("metrics.timeout", "timeout")
 	_, err = h.OnRPC(authenticated, centrifuge.RPCEvent{Method: "metrics.timeout", Data: []byte(tools.GRPCBytesSlowPayload)}, nil)
-	requireProtocolError(t, err)
+	_ = requireProtocolError(t, err)
 	require.Equal(t, timeoutCalls+1, callsBefore("metrics.timeout", "timeout"))
 }
 
@@ -338,7 +338,7 @@ func TestRegistryCancelledCallIsNotAProxyError(t *testing.T) {
 	}()
 	require.Eventually(t, func() bool { return len(backend.Calls()) == 1 }, 5*time.Second, 5*time.Millisecond)
 	cancel()
-	requireProtocolError(t, <-errCh)
+	_ = requireProtocolError(t, <-errCh)
 
 	require.Equal(t, cancelledCalls+1, testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("metrics.cancel", "cancelled")))
 	require.Equal(t, proxyErrors, testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("grpc", "rpc", "backend")))

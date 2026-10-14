@@ -160,6 +160,12 @@ The connect result and the refresh result carry two fields:
 * `user`: the user of the token, which is also the user of a pending connection. Empty for an anonymous token;
 * `auth_class`: the class name (`anonymous`, `pending_2fa`, `authenticated` or `bot`). Empty when the registry is disabled.
 
+### Known gaps
+
+* A refresh with the same user whose class changes, such as `authenticated` to `bot`, takes the refresh path without the transition table. The token is still verified, and the class is taken from it.
+* An account switch between two users is denied: a refresh from one `authenticated` user to another gets a permission error. The client must log out, and then connect.
+* An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
+
 ## Error mapping
 
 A failed gRPC call becomes a protocol error with the default mapping below. The `code` is the Centrifugo protocol error code.
@@ -206,7 +212,6 @@ centrifugo checkconfig -c config.json
 Not implemented yet:
 
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
-* A change of auth class with the same user, such as `authenticated` to `bot`, takes the refresh path without the transition table of [Connection identity](#connection-identity). Such a refresh is accepted as before.
 * The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
 * Cancelling an in-flight call by its `msg_id`.
 * Deduplication of calls with a message ID. `idempotent` is accepted and reserved for it. It has no effect yet.

@@ -64,9 +64,7 @@ func (h *Handler) checkAccess(
 		return accessrevoke.Result{Verdict: accessrevoke.Allowed}
 	}
 	result := h.accessStore.Check(userID, identity, opts)
-	if result.Verdict != accessrevoke.Allowed {
-		metrics.AccessRevokeRejectsTotal.WithLabelValues(string(result.Reason), stage).Inc()
-	}
+	accessrevoke.CountReject(result, stage)
 	return result
 }
 
@@ -181,16 +179,17 @@ func (h *Handler) connectTokenIdentity(
 // revokeError maps a failed access check made by a connect or a refresh to the error returned from it. A revoked
 // connection gets the error revoked, which the caller chooses: a connect and a rebind differ in it.
 func revokeError(clientID string, userID string, result accessrevoke.Result, revoked error) error {
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return accessrevoke.DisconnectUserBlocked
-	case accessrevoke.Revoked:
+	if result.Verdict == accessrevoke.Revoked {
 		return revoked
-	case accessrevoke.LoopGuard:
-		accessrevoke.LogLoopGuard(clientID, userID, result)
-		return centrifuge.DisconnectInvalidToken
 	}
-	return nil
+	if result.Verdict == accessrevoke.LoopGuard {
+		accessrevoke.LogLoopGuard(clientID, userID, result)
+	}
+	disconnect, rejected := accessrevoke.RejectDisconnect(result, centrifuge.Disconnect{})
+	if !rejected {
+		return nil
+	}
+	return disconnect
 }
 
 // refreshRevokeReply maps a failed access check made at refresh to the refresh reply and error. A revoked

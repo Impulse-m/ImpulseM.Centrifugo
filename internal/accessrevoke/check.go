@@ -33,19 +33,36 @@ func CheckConnection(
 		opts = CheckOptions{Block: opts.Block}
 	}
 	result := store.Check(client.UserID(), identity, opts)
+	CountReject(result, stage)
+	if result.Verdict == LoopGuard {
+		LogLoopGuard(client.ID(), client.UserID(), result)
+	}
+	disconnect, rejected := RejectDisconnect(result, centrifuge.DisconnectExpired)
+	if !rejected {
+		return centrifuge.Disconnect{}, "", false
+	}
+	return disconnect, result.Reason, true
+}
+
+// RejectDisconnect returns the disconnect of a check result which rejects a connection, and reports whether the result
+// rejects. A revoked connection gets revoked, which the caller chooses. An allowed result is not a rejection.
+func RejectDisconnect(result Result, revoked centrifuge.Disconnect) (centrifuge.Disconnect, bool) {
+	switch result.Verdict {
+	case Blocked:
+		return DisconnectUserBlocked, true
+	case Revoked:
+		return revoked, true
+	case LoopGuard:
+		return centrifuge.DisconnectInvalidToken, true
+	}
+	return centrifuge.Disconnect{}, false
+}
+
+// CountReject counts a rejected check result in the rejects metric under stage. An allowed result is not counted.
+func CountReject(result Result, stage string) {
 	if result.Verdict != Allowed {
 		metrics.AccessRevokeRejectsTotal.WithLabelValues(string(result.Reason), stage).Inc()
 	}
-	switch result.Verdict {
-	case Blocked:
-		return DisconnectUserBlocked, result.Reason, true
-	case Revoked:
-		return centrifuge.DisconnectExpired, result.Reason, true
-	case LoopGuard:
-		LogLoopGuard(client.ID(), client.UserID(), result)
-		return centrifuge.DisconnectInvalidToken, result.Reason, true
-	}
-	return centrifuge.Disconnect{}, "", false
 }
 
 // LogLoopGuard logs a token which was issued after the revocation it is checked against.

@@ -159,7 +159,10 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(node.Hub().Connections()) == 0
 	}, 5*time.Second, 5*time.Millisecond)
-	require.Empty(t, store.SessionConnections().Connections(sessionKey))
+	// The index is released by the disconnect handler, which runs after the connection leaves the hub.
+	require.Eventually(t, func() bool {
+		return len(store.SessionConnections().Connections(sessionKey)) == 0
+	}, 5*time.Second, 5*time.Millisecond)
 }
 
 func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {

@@ -218,7 +218,11 @@ func (h *Handler) Setup() error {
 			client.Disconnect(disconnect)
 			return
 		}
-		h.attachUserRateLimit(client)
+		h.attachRateLimit(client, client.UserID())
+		h.syncSessionConnection(client, client.UserID(), client.TokenIdentity())
+		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
+			h.onClientDisconnect(client)
+		})
 
 		var semaphore chan struct{}
 		if concurrency > 1 {
@@ -452,7 +456,7 @@ func (h *Handler) OnClientConnecting(
 		if token.Meta != nil {
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
-		if !h.storeRegistryToken(storage, e.Token, token) {
+		if !h.storeRegistryToken(storage, credentials, e.Token, token) {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
@@ -495,49 +499,18 @@ func (h *Handler) OnClientConnecting(
 
 	// Handle single connection enforcement before establishing connection.
 	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
-		personalChannel := h.cfgContainer.PersonalChannel(credentials.UserID)
-		presenceStats, err := h.node.PresenceStats(personalChannel)
-		if err != nil {
-			log.Error().Err(err).Str("channel", personalChannel).Str("user", credentials.UserID).Str("client", e.ClientID).Msg("error calling presence stats in connecting")
-			return centrifuge.ConnectReply{}, centrifuge.DisconnectServerError
-		}
-		if presenceStats.NumClients >= 1 {
-			err = h.node.Disconnect(
-				credentials.UserID,
-				centrifuge.WithCustomDisconnect(centrifuge.DisconnectConnectionLimit),
-				centrifuge.WithDisconnectClientWhitelist([]string{e.ClientID}),
-			)
-			if err != nil {
-				log.Error().Err(err).Str("user", credentials.UserID).Str("client", e.ClientID).Msg("error disconnecting user in connecting")
-				return centrifuge.ConnectReply{}, centrifuge.DisconnectServerError
-			}
+		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
+			return centrifuge.ConnectReply{}, err
 		}
 	}
 
 	// Automatically subscribe on personal server-side channel.
 	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && credentials.UserID != "" {
-		personalChannel := h.cfgContainer.PersonalChannel(credentials.UserID)
-		_, _, chOpts, found, err := h.cfgContainer.ChannelOptions(personalChannel)
+		personalChannel, personalOptions, err := h.personalChannelSubscription(credentials.UserID)
 		if err != nil {
-			log.Error().Err(err).Str("channel", personalChannel).Msg("error getting personal channel options")
 			return centrifuge.ConnectReply{}, err
 		}
-		if !found {
-			log.Info().Str("channel", personalChannel).Msg("subscribe unknown personal channel")
-			return centrifuge.ConnectReply{}, centrifuge.ErrorUnknownChannel
-		}
-		subscriptions[personalChannel] = centrifuge.SubscribeOptions{
-			EmitPresence:      chOpts.Presence,
-			EmitJoinLeave:     chOpts.JoinLeave,
-			PushJoinLeave:     chOpts.ForcePushJoinLeave,
-			EnableRecovery:    chOpts.ForceRecovery,
-			EnablePositioning: chOpts.ForcePositioning,
-			RecoveryMode:      chOpts.GetRecoveryMode(),
-			Source:            subsource.UserPersonal,
-			HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
-			AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-			AllowTagsFilter:   chOpts.AllowTagsFilter,
-		}
+		subscriptions[personalChannel] = personalOptions
 	}
 
 	if processClientChannels {
@@ -695,7 +668,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Error().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("error verifying refresh token")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
-	if token.UserID != c.UserID() {
+	if coreUserID(token) != c.UserID() {
 		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
@@ -708,6 +681,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	h.syncSessionConnection(c, c.UserID(), identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}

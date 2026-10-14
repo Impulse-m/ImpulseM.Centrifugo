@@ -16,4 +16,6 @@ type Client interface {
 	AcquireStorage() (map[string]any, func(map[string]any))
 	Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe)
 	WritePublication(channel string, publication *centrifuge.Publication, sp centrifuge.StreamPosition) error
+	Disconnect(disconnect ...centrifuge.Disconnect)
+	ExtState() any
 }

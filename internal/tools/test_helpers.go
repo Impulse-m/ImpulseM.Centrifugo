@@ -216,6 +216,8 @@ type TestClientMock struct {
 	IsSubscribedFunc func(string) bool
 	ContextFunc      func() context.Context
 	TransportFunc    func() centrifuge.TransportInfo
+	ExtStateFunc     func() any
+	DisconnectFunc   func(disconnect ...centrifuge.Disconnect)
 	storageMu        sync.Mutex
 	storage          map[string]any
 }
@@ -226,8 +228,16 @@ func (m *TestClientMock) Send(bytes []byte) error {
 }
 
 func (m *TestClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
-	//TODO implement me
-	panic("implement me")
+	if m.DisconnectFunc != nil {
+		m.DisconnectFunc(disconnect...)
+	}
+}
+
+func (m *TestClientMock) ExtState() any {
+	if m.ExtStateFunc != nil {
+		return m.ExtStateFunc()
+	}
+	return nil
 }
 
 func (m *TestClientMock) WritePublication(channel string, publication *centrifuge.Publication, sp centrifuge.StreamPosition) error {

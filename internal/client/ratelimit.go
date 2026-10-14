@@ -142,24 +142,6 @@ func (h *Handler) Services() []service.Service {
 	return services
 }
 
-// attachUserRateLimit attaches the user state to a connected client. The state is resolved once
-// per connection and released on disconnect. Anonymous connections are not attached.
-func (h *Handler) attachUserRateLimit(c *centrifuge.Client) {
-	if h.userLimiter == nil || c.UserID() == "" {
-		return
-	}
-	st, ok := c.ExtState().(*ratelimit.ConnState)
-	if !ok {
-		return
-	}
-	h.userLimiter.Attach(st, c.UserID())
-	// Core keeps a single disconnect handler per client. If another one is ever set in OnConnect,
-	// it must call Detach too, otherwise user states are never evicted.
-	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
-		h.userLimiter.Detach(st)
-	})
-}
-
 // userConnectAllowed checks and consumes the user_command and redis_user_command connect limits of userID.
 // Anonymous users are not limited. Over the limit the rejection is counted.
 func (h *Handler) userConnectAllowed(userID string) bool {

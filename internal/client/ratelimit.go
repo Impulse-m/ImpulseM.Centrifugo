@@ -142,6 +142,32 @@ func (h *Handler) Services() []service.Service {
 	return services
 }
 
+// attachRateLimit attaches the user state of the rate limits to the connection. Connections without a user
+// are not attached. A rebind attaches the state of the new user after it detaches the old one.
+func (h *Handler) attachRateLimit(c Client, userID string) {
+	if h.userLimiter == nil || userID == "" {
+		return
+	}
+	st, ok := c.ExtState().(*ratelimit.ConnState)
+	if !ok {
+		return
+	}
+	h.userLimiter.Attach(st, userID)
+}
+
+// detachRateLimit releases the user state of the rate limits attached to the connection. It is safe to call
+// for a connection which is not attached.
+func (h *Handler) detachRateLimit(c Client) {
+	if h.userLimiter == nil {
+		return
+	}
+	st, ok := c.ExtState().(*ratelimit.ConnState)
+	if !ok {
+		return
+	}
+	h.userLimiter.Detach(st)
+}
+
 // userConnectAllowed checks and consumes the user_command and redis_user_command connect limits of userID.
 // Anonymous users are not limited. Over the limit the rejection is counted.
 func (h *Handler) userConnectAllowed(userID string) bool {

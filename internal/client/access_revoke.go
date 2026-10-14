@@ -85,6 +85,29 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 	return disconnect, revoked
 }
 
+// syncSessionConnection keeps the session index of access revocation up to date for the connection. A
+// connection without a user is indexed by the session of its token, a connection with a user is not.
+func (h *Handler) syncSessionConnection(c Client, userID string, identity centrifuge.TokenIdentity) {
+	if h.accessStore == nil {
+		return
+	}
+	sessions := h.accessStore.SessionConnections()
+	if userID != "" {
+		sessions.Untrack(c.ID())
+		return
+	}
+	sessions.Track(c.ID(), c, identity.Session)
+}
+
+// onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
+// session index entry. Core keeps one disconnect handler per client, so this is the only one set in OnConnect.
+func (h *Handler) onClientDisconnect(c Client) {
+	h.detachRateLimit(c)
+	if h.accessStore != nil {
+		h.accessStore.SessionConnections().Untrack(c.ID())
+	}
+}
+
 // connectTokenIdentity returns the identity of a connection token, checked against the access revocation
 // store. The error is the connect error of a token which is blocked, revoked or rejected by the loop guard.
 func (h *Handler) connectTokenIdentity(

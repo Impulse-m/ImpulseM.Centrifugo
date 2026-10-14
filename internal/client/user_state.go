@@ -2,7 +2,6 @@ package client
 
 import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
-	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
@@ -85,53 +84,4 @@ func (h *Handler) enforceSingleUserConnection(clientID string, userID string) er
 		}
 	}
 	return nil
-}
-
-// attachRateLimit attaches the user state of the rate limits to the connection. Connections without a user
-// are not attached.
-func (h *Handler) attachRateLimit(c Client, userID string) {
-	if h.userLimiter == nil || userID == "" {
-		return
-	}
-	st, ok := c.ExtState().(*ratelimit.ConnState)
-	if !ok {
-		return
-	}
-	h.userLimiter.Attach(st, userID)
-}
-
-// detachRateLimit releases the user state of the rate limits attached to the connection. It is safe to call
-// for a connection which is not attached.
-func (h *Handler) detachRateLimit(c Client) {
-	if h.userLimiter == nil {
-		return
-	}
-	st, ok := c.ExtState().(*ratelimit.ConnState)
-	if !ok {
-		return
-	}
-	h.userLimiter.Detach(st)
-}
-
-// syncSessionConnection keeps the session index of access revocation up to date for the connection. A
-// connection without a user is indexed by the session of its token, a connection with a user is not.
-func (h *Handler) syncSessionConnection(c Client, userID string, identity centrifuge.TokenIdentity) {
-	if h.accessStore == nil {
-		return
-	}
-	sessions := h.accessStore.SessionConnections()
-	if userID != "" {
-		sessions.Untrack(c.ID())
-		return
-	}
-	sessions.Track(c.ID(), c, identity.Session)
-}
-
-// onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
-// session index entry. Core keeps one disconnect handler per client, so this is the only one set in OnConnect.
-func (h *Handler) onClientDisconnect(c Client) {
-	h.detachRateLimit(c)
-	if h.accessStore != nil {
-		h.accessStore.SessionConnections().Untrack(c.ID())
-	}
 }

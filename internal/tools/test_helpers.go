@@ -226,6 +226,11 @@ func (m *TestClientMock) Send(bytes []byte) error {
 	panic("implement me")
 }
 
+func (m *TestClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
+	//TODO implement me
+	panic("implement me")
+}
+
 func (m *TestClientMock) WritePublication(channel string, publication *centrifuge.Publication, sp centrifuge.StreamPosition) error {
 	//TODO implement me
 	panic("implement me")
@@ -275,4 +280,9 @@ func (m *TestClientMock) AcquireStorage() (map[string]any, func(map[string]any))
 		m.storage = updatedStorage
 		m.storageMu.Unlock()
 	}
+}
+
+func (m *TestClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
+	//TODO implement me
+	panic("implement me")
 }

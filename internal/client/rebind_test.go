@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -32,16 +33,33 @@ type rebindTestState struct {
 	state        *ratelimit.ConnState
 }
 
+// newRebindRegistryClient returns a fake connection with the storage given, as newRegistryTestClient does, with the
+// rebind stubs.
+func newRebindRegistryClient(id string, userID string, storage map[string]any) *tools.RebindClientMock {
+	client := &tools.RebindClientMock{}
+	client.IDFunc = func() string { return id }
+	client.UserIDFunc = func() string { return userID }
+	client.ContextFunc = func() context.Context { return context.Background() }
+	if len(storage) > 0 {
+		copied, release := client.AcquireStorage()
+		for key, value := range storage {
+			copied[key] = value
+		}
+		release(copied)
+	}
+	return client
+}
+
 // newRebindTestClient returns a fake connection of user with class in its storage, whose token user is user. Its
 // rebinds, subscribes and unsubscribes are recorded in the state.
-func newRebindTestClient(user string, class string) (*tools.TestClientMock, *rebindTestState) {
+func newRebindTestClient(user string, class string) (*tools.RebindClientMock, *rebindTestState) {
 	return newRebindTestClientWithToken(user, user, class)
 }
 
 // newRebindTestClientWithToken returns a fake connection of Core user, with the token user and the class stored as
 // a connection established by a token keeps them. A connection with no class stores no token user either, as a
 // connection made through a connect proxy.
-func newRebindTestClientWithToken(user string, tokenUser string, class string) (*tools.TestClientMock, *rebindTestState) {
+func newRebindTestClientWithToken(user string, tokenUser string, class string) (*tools.RebindClientMock, *rebindTestState) {
 	state := &rebindTestState{
 		user:         user,
 		channels:     map[string]centrifuge.ChannelContext{},
@@ -53,7 +71,7 @@ func newRebindTestClientWithToken(user string, tokenUser string, class string) (
 		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim}
 		storage[clientstorage.KeyTokenUser] = tokenUser
 	}
-	client := newRegistryTestClient("c1", user, nil, storage)
+	client := newRebindRegistryClient("c1", user, storage)
 	client.UserIDFunc = func() string { return state.user }
 	client.ExtStateFunc = func() any {
 		if state.state == nil {

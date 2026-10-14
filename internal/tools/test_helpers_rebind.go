@@ -6,7 +6,7 @@ import (
 
 // RebindMockStubs are the client methods the rebind path of the client handler calls, with settable behaviour.
 // Unset functions return the zero value, except Disconnect and Unsubscribe, which panic so that an unexpected call
-// fails the test. It is embedded in TestClientMock.
+// fails the test.
 type RebindMockStubs struct {
 	ExtStateFunc    func() any
 	DisconnectFunc  func(disconnect ...centrifuge.Disconnect)
@@ -18,16 +18,14 @@ type RebindMockStubs struct {
 
 func (m *RebindMockStubs) Disconnect(disconnect ...centrifuge.Disconnect) {
 	if m.DisconnectFunc == nil {
-		//TODO implement me
-		panic("implement me")
+		panic("RebindMockStubs: DisconnectFunc not set")
 	}
 	m.DisconnectFunc(disconnect...)
 }
 
 func (m *RebindMockStubs) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 	if m.UnsubscribeFunc == nil {
-		//TODO implement me
-		panic("implement me")
+		panic("RebindMockStubs: UnsubscribeFunc not set")
 	}
 	m.UnsubscribeFunc(ch, unsubscribe...)
 }
@@ -58,4 +56,18 @@ func (m *RebindMockStubs) ChannelsWithContext() map[string]centrifuge.ChannelCon
 		return m.ChannelsFunc()
 	}
 	return nil
+}
+
+// RebindClientMock is a TestClientMock whose Disconnect and Unsubscribe call the rebind stubs. TestClientMock keeps
+// its own methods of those names, which shadow the stubs, so they are forwarded here.
+type RebindClientMock struct {
+	TestClientMock
+}
+
+func (m *RebindClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
+	m.TestClientMock.RebindMockStubs.Disconnect(disconnect...)
+}
+
+func (m *RebindClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
+	m.TestClientMock.RebindMockStubs.Unsubscribe(ch, unsubscribe...)
 }

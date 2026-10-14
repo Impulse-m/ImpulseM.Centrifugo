@@ -99,17 +99,20 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 }
 
 // trackConnect sets up a connection which has just connected, and returns the disconnect of a connection which must
-// be closed. The disconnect handler is set first, so a close from here on releases what the connection holds. A
-// connection without a user is indexed by the session of its token before the recheck, so a revocation applied from
-// then on reaches it through the index. Core runs the disconnect handler of a connection closed while it connects
-// after the connect completes, so the connection closed here is released then.
+// be closed. With the access store or the user limiter, the disconnect handler is set first, so a close from here on
+// releases what the connection holds; without them a connection holds nothing to release. A connection without a user
+// is indexed by the session of its token before the recheck, so a revocation applied from then on reaches it through
+// the index. Core runs the disconnect handler of a connection closed while it connects after the connect completes, so
+// the connection closed here is released then.
 func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
-	if connStateOf(client) == nil {
-		client.SetExtState(&connState{})
+	if h.accessStore != nil || h.userLimiter != nil {
+		if connStateOf(client) == nil {
+			client.SetExtState(&connState{})
+		}
+		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
+			h.onClientDisconnect(client)
+		})
 	}
-	client.OnDisconnect(func(centrifuge.DisconnectEvent) {
-		h.onClientDisconnect(client)
-	})
 	identity := client.TokenIdentity()
 	if h.accessStore != nil && client.UserID() == "" && identity.Session != ([16]byte{}) {
 		h.trackSession(client, identity.Session)

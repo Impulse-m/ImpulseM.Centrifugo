@@ -263,3 +263,24 @@ func TestPendingRenewalWithRebindOffKeepsUnchangedPath(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, extra.CheckSubs)
 }
+
+// TestConnectWithoutRevokeOrUserLimitsHoldsNoState checks that a connection of a handler with neither access revocation
+// nor user limits gets no connection state, as it has nothing to release.
+func TestConnectWithoutRevokeOrUserLimitsHoldsNoState(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+	cfgContainer, err := config.NewContainer(config.DefaultConfig())
+	require.NoError(t, err)
+	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{
+		HMACSecretKey:   "secret",
+		GenerationClaim: "gen",
+		AuthClassClaim:  "auth_class",
+	}, cfgContainer)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
+	require.NoError(t, h.Setup())
+
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"sub": "42"}))
+	require.Equal(t, "42", client.UserID())
+	require.Nil(t, client.ExtState())
+}

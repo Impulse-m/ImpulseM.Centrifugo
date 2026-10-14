@@ -17,6 +17,29 @@ import (
 // tracked. Tests use it to close the connection at that point.
 var testHookRebound atomic.Pointer[func(c Client)]
 
+// storageKeyRefreshing marks a connection whose refresh is in progress. See beginRefresh.
+const storageKeyRefreshing = "refreshing"
+
+// beginRefresh marks the connection as refreshing, and returns false when another refresh of it is in progress. The
+// refreshes of a connection run one at a time, as a rebind changes its identity in several steps which must not
+// overlap. A refresh which finds the mark is rejected, not queued, so a refresh never waits for another one.
+func beginRefresh(c Client) bool {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	if _, busy := storage[storageKeyRefreshing]; busy {
+		return false
+	}
+	storage[storageKeyRefreshing] = true
+	return true
+}
+
+// endRefresh clears the mark which beginRefresh set.
+func endRefresh(c Client) {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	delete(storage, storageKeyRefreshing)
+}
+
 // onRefreshRebind answers a refresh whose token changes the identity of the connection. With rebind disabled the
 // connection is disconnected, as before. Otherwise the connection moves to the identity of the token in place: its
 // user, token, expiration and channels follow the transition between auth classes.

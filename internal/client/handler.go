@@ -662,6 +662,10 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		}
 		return r, RefreshExtra{}, err
 	}
+	if !beginRefresh(c) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
+	}
+	defer endRefresh(c)
 	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
 	if err != nil {
 		if errors.Is(err, jwtverify.ErrTokenExpired) {

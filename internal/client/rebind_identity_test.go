@@ -167,3 +167,32 @@ func TestRefreshRevokedAfterTrackExpiresConnection(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, reply.Expired)
 }
+
+// TestRefreshWhileAnotherIsInProgressIsRejected runs a second refresh of a connection from the rebind of the first one.
+// The second is rejected, and the connection keeps the identity of the first. A refresh after both is answered.
+func TestRefreshWhileAnotherIsInProgressIsRejected(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClient("", "anonymous")
+	var secondErr error
+	hook := func(c Client) {
+		_, _, secondErr = h.OnRefresh(c, centrifuge.RefreshEvent{
+			Token: rebindTestToken(t, "43", "authenticated", revokeTestUUID, nil),
+		}, nil)
+	}
+	testHookRebound.Store(&hook)
+	t.Cleanup(func() { testHookRebound.Store(nil) })
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, centrifuge.ErrorTooManyRequests, secondErr)
+	require.Equal(t, "42", state.user)
+	require.Len(t, state.rebinds, 1)
+
+	testHookRebound.Store(nil)
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+}

@@ -996,7 +996,8 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 4096)
 	options.Shards = 4
-	options.MaxEntries = 120
+	// Sixty entries are fifteen per shard, so each shard fills whatever the placement of its scopes.
+	options.MaxEntries = 60
 	options.MaxBytes = 200 * 1024
 	options.ScopeReserveBytes = 1024
 	options.MaxScopesPerUser = 8
@@ -1015,6 +1016,10 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 	var issued []Key
 	for op := 1; op <= 20000; op++ {
 		scope := scopes[random.IntN(len(scopes))]
+		// Most calls go to eight hot scopes, which get admitted and go over their reserve, so the budgets fill.
+		if random.IntN(10) < 7 {
+			scope = scopes[random.IntN(8)]
+		}
 		switch random.IntN(10) {
 		case 0, 1, 2, 3, 4, 5:
 			key := Key{Scope: scope, MsgID: uint64(random.IntN(64))}

@@ -2,7 +2,6 @@ package ratelimit
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"time"
 
@@ -21,9 +20,6 @@ const (
 	// redisErrorLogInterval is the minimum time between two logged Redis errors of a node.
 	redisErrorLogInterval = 10 * time.Second
 )
-
-// errRedisNotConnected is the error of checks made before the limiter connected to Redis.
-var errRedisNotConnected = errors.New("not connected to Redis")
 
 // rateLimitScript is the rate limit check which runs in Redis. KEYS[1] is a hash with one theoretical
 // arrival time (TAT, microseconds) per bucket of a scope, fields are bucket indexes starting from 0.
@@ -99,7 +95,10 @@ func NewRedisUserLimiter(
 		run:      runRedisScript,
 		errorLog: tools.NewIntervalLimiter(redisErrorLogInterval),
 	}
-	limiter.connector = redisshard.NewConnector(shardConfigs, limiter.logConnect)
+	limiter.connector = redisshard.NewConnector(shardConfigs, redisshard.LogConnect(
+		"redis_user_command rate limit",
+		"commands are allowed until it is reachable",
+	))
 	return limiter
 }
 
@@ -145,15 +144,6 @@ func (l *RedisUserLimiter) Connect() {
 	_ = l.connector.Connect()
 }
 
-// logConnect logs the result of every connect attempt of the connector.
-func (l *RedisUserLimiter) logConnect(err error, shards int) {
-	if err != nil {
-		log.Warn().Err(err).Msg("redis_user_command rate limit: Redis is unreachable, commands are allowed until it is reachable")
-		return
-	}
-	log.Info().Int("shards", shards).Msg("redis_user_command rate limit: connected to Redis")
-}
-
 // Run connects to Redis in the background while the limiter is not connected, see redisshard.Connector.Run.
 // When the context is done, Run closes the connected shards. It implements service.Service.
 func (l *RedisUserLimiter) Run(ctx context.Context) error {
@@ -171,7 +161,7 @@ func (l *RedisUserLimiter) check(userID string, s *scope) bool {
 	list := l.connector.Shards()
 	if list == nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
-		l.logError(errRedisNotConnected)
+		l.logError(redisshard.ErrNotConnected)
 		return true
 	}
 	key := redisKey(l.prefix, userID, s.name)

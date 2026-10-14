@@ -2,9 +2,13 @@ package redisshard
 
 import (
 	"context"
-	"math/rand/v2"
+	"errors"
 	"sync/atomic"
 	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
+
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -13,11 +17,27 @@ const (
 	connectRetryMax = 30 * time.Second
 )
 
+// ErrNotConnected is returned by the checks and the calls made while a connector has no shards.
+var ErrNotConnected = errors.New("not connected to Redis")
+
 // ConnectFunc makes all shards of configs, all-or-nothing: on failure no shard is kept.
 type ConnectFunc func(configs []RedisShardConfig) ([]*RedisShard, error)
 
 // ConnectLog is called after every connect attempt. err is nil on success, shards is the number of connected shards.
 type ConnectLog func(err error, shards int)
+
+// LogConnect returns the ConnectLog of a connector of subject, which names the caller in the log, for example
+// "redis_user_command rate limit". A failed attempt is logged as a warning with what the caller does meanwhile, which
+// completes the sentence "Redis is unreachable, ...". A connected attempt is logged as info.
+func LogConnect(subject string, unreachable string) ConnectLog {
+	return func(err error, shards int) {
+		if err != nil {
+			log.Warn().Err(err).Msg(subject + ": Redis is unreachable, " + unreachable)
+			return
+		}
+		log.Info().Int("shards", shards).Msg(subject + ": connected to Redis")
+	}
+}
 
 // Connector connects to the Redis shards of a configuration once and keeps them for the life of the process.
 // Connecting is retried in Run with exponential backoff, so a Redis which is down at start does not stop the
@@ -80,7 +100,7 @@ func (c *Connector) Connect() error {
 func (c *Connector) Run(ctx context.Context) error {
 	backoff := c.backoffMin
 	for c.Shards() == nil {
-		if !sleepContext(ctx, retryDelay(backoff)) {
+		if !sleepContext(ctx, tools.HalfJitter(backoff)) {
 			break
 		}
 		// The failure is reported by the connect log, and the next attempt is made after the backoff.
@@ -112,13 +132,6 @@ func (c *Connector) Close() {
 			shard.Close()
 		}
 	}
-}
-
-// retryDelay returns a random delay in [backoff/2, backoff], so nodes started together do not retry in lockstep.
-// The same half-jitter backoff exists in internal/pgschema/pgschema.go (schemaExecBackoff).
-func retryDelay(backoff time.Duration) time.Duration {
-	half := backoff / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // Jitter of retries, not a secret.
 }
 
 // sleepContext waits for d. It returns false when the context is done first.

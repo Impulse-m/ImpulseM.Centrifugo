@@ -25,12 +25,7 @@ func (h *Handler) setupRPCDedupRedis() error {
 	if !dedup.Redis.Enabled {
 		return nil
 	}
-	redisConf := dedup.Redis.Redis
-	prefix := dedup.Redis.Prefix
-	if dedup.Redis.ReuseFromEngine {
-		redisConf = cfg.Engine.Redis.Redis
-		prefix = cfg.Engine.Redis.Prefix
-	}
+	redisConf, prefix := redisConfigOf(dedup.Redis.ReuseFromEngine, dedup.Redis.RedisPrefixed, cfg.Engine.Redis.RedisPrefixed)
 	configs, err := redisshard.ParseRedisShardConfigs(redisConf)
 	if err != nil {
 		return fmt.Errorf("rpc.registry.dedup.redis: %w", err)
@@ -87,17 +82,10 @@ func (s *rpcDedupRedisService) Run(ctx context.Context) error {
 // rpcDedupConnectLog returns the log of the connect attempts of the shared tier. A failure says what the calls do
 // meanwhile, which depends on on_store_error.
 func rpcDedupConnectLog(failOpen bool) redisshard.ConnectLog {
-	return func(err error, shards int) {
-		if err != nil {
-			if failOpen {
-				log.Warn().Err(err).Msg("exactly-once RPC: Redis is unreachable, calls run with node-local dedup until it is reachable")
-				return
-			}
-			log.Warn().Err(err).Msg("exactly-once RPC: Redis is unreachable, tracked calls are answered with dedup_unavailable until it is reachable")
-			return
-		}
-		log.Info().Int("shards", shards).Msg("exactly-once RPC: connected to Redis")
+	if failOpen {
+		return redisshard.LogConnect("exactly-once RPC", "calls run with node-local dedup until it is reachable")
 	}
+	return redisshard.LogConnect("exactly-once RPC", "tracked calls are answered with dedup_unavailable until it is reachable")
 }
 
 // notifyRPCDedupCancel asks the node nodeID to cancel the call of key, which runs there. A failure is logged at most

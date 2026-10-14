@@ -2,7 +2,6 @@ package rpcdedup
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/centrifugal/centrifuge"
@@ -18,9 +17,6 @@ const InflightGrace = 10 * time.Second
 
 // defaultRedisTimeout bounds each Redis call of the shared tier when the configuration has no IO timeout.
 const defaultRedisTimeout = 4 * time.Second
-
-// ErrNotConnected is returned by the Redis backend while its connector has no shards.
-var ErrNotConnected = errors.New("not connected to Redis")
 
 // BeginState is the state of a key which Backend.Begin found, or started.
 type BeginState uint8
@@ -115,8 +111,8 @@ type Redis struct {
 }
 
 // NewRedis returns the Redis backend of the keys with prefix. The connector may not be connected yet: calls made
-// while it is not connected fail with ErrNotConnected. ioTimeout bounds each call, zero means the default. observer
-// may be nil.
+// while it is not connected fail with redisshard.ErrNotConnected. ioTimeout bounds each call, zero means the
+// default. observer may be nil.
 func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Duration, observer BackendObserver) *Redis {
 	if ioTimeout <= 0 {
 		ioTimeout = defaultRedisTimeout
@@ -224,7 +220,7 @@ func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 	shards := r.connector.Shards()
 	if shards == nil {
 		r.countError()
-		return ErrNotConnected
+		return redisshard.ErrNotConnected
 	}
 	groups := make(map[int][]rueidis.LuaExec)
 	for i := range acks {
@@ -295,11 +291,11 @@ func (r *Redis) call(ctx context.Context, shard *redisshard.RedisShard, op func(
 	return nil
 }
 
-// shardOf returns the shard of scope, or ErrNotConnected while the connector has no shards.
+// shardOf returns the shard of scope, or redisshard.ErrNotConnected while the connector has no shards.
 func (r *Redis) shardOf(scope string) (*redisshard.RedisShard, error) {
 	shards := r.connector.Shards()
 	if shards == nil {
-		return nil, ErrNotConnected
+		return nil, redisshard.ErrNotConnected
 	}
 	return shards[redisshard.ShardIndex(scope, len(shards))], nil
 }

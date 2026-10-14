@@ -11,9 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"math/rand/v2"
 	"time"
 	"unicode"
+
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
@@ -249,8 +250,7 @@ func schemaExecBackoff(attempt int) time.Duration {
 	if d > schemaExecMaxBackoff {
 		d = schemaExecMaxBackoff
 	}
-	//nolint:gosec // it's a jitter.
-	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+	return tools.HalfJitter(d)
 }
 
 // ApplyMigrationInTx applies one migration step. For each variant in the

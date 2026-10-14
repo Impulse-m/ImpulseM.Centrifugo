@@ -359,14 +359,14 @@ func TestRedisBackendNotConnected(t *testing.T) {
 
 	require.False(t, backend.Connected())
 	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
-	require.ErrorIs(t, err, ErrNotConnected)
+	require.ErrorIs(t, err, redisshard.ErrNotConnected)
 
 	require.NoError(t, connector.Connect())
 	require.True(t, backend.Connected())
 	connector.Close()
 	require.False(t, backend.Connected())
 	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
-	require.ErrorIs(t, err, ErrNotConnected)
+	require.ErrorIs(t, err, redisshard.ErrNotConnected)
 }
 
 func TestRedisBackendKeyFormatInRedis(t *testing.T) {

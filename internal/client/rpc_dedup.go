@@ -41,7 +41,7 @@ const (
 // store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
 // joined, when set, is called each time a duplicate joins a call in flight on this node, before it waits. Tests set
 // it to learn of a join. afterBackend, when set, is called by the owner of a dedup call once its backend returned,
-// before the record is kept. Tests set it to fail after the backend committed.
+// before the record is kept. Tests set it to fail after the backend committed. It is test-only: production leaves it nil.
 type rpcDedupState struct {
 	store        rpcdedup.Store
 	metrics      *metrics.RPCRegistryDedupMetrics
@@ -307,12 +307,13 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 	release := track.inflight.Add(e.Call.MsgID, cancel)
 	defer release()
 	// The owner always completes its flight, so its duplicates never wait on a call which ended without an answer.
-	// A panic in the call leaves the flight abandoned, with no record: the call may have run, so the duplicates get
-	// the error without the retry signal.
+	// A panic in the call keeps a record of the temporary dedup error, without the retry signal: the call may have
+	// run, so its duplicates and its retransmits get the error, and the call is not run again.
 	completed := false
 	defer func() {
 		if !completed {
-			h.completeRPCRecord(key, flight, rpcdedup.Record{Abandoned: true})
+			failure := registryRetryError(cfg.Errors.DedupUnavailable, true, "")
+			h.completeRPCRecord(key, flight, rpcdedup.Record{Err: failure})
 		}
 	}()
 	reply, callErr := h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
@@ -401,7 +402,8 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	h.rpcDedup.metrics.ObserveWait(time.Since(started).Seconds())
 	rec := flight.Record()
 	if rec.Abandoned {
-		// The call did not answer, and was not kept. It may have run, so no retry signal is sent: the app decides.
+		// The owner left no answer and kept no record, so the call may have run: no retry signal is sent, and the app
+		// decides. The owner of a call does not leave such a record itself, see callRPCRecorded.
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, ""))
 	}
 	return h.rpcRecordedReply(rec, cfg)

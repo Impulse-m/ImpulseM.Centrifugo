@@ -968,6 +968,39 @@ func TestRPCDedupPanicAfterBackendCarriesNoSignal(t *testing.T) {
 	require.Len(t, backend.Calls(), 1)
 }
 
+// A retransmit of a call whose owner panicked after the backend committed gets the error which the panic left in the
+// record, without the signal, and the backend is not called again.
+func TestRPCDedupPanicAfterBackendRetransmitIsNotRerun(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.afterBackend = func() {
+		panic("reply mapping failed")
+	}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(30)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	backend.waitEntered(t)
+	backend.releaseGate()
+	require.NotNil(t, <-ownerPanic)
+
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("gate"),
+		Call:   centrifuge.RPCCallOptions{MsgID: msgID, Retransmit: true},
+	}, nil)
+	require.True(t, reply.Cached)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireNoRetrySignal(t, err)
+	require.Len(t, backend.Calls(), 1)
+}
+
 // A retransmit on the same connection, while a call runs untracked under fail_open, is refused without the signal:
 // the call is running, and a resend would run it again.
 func TestRPCDedupStoreFailureFailsOpenRetransmitCarriesNoSignal(t *testing.T) {

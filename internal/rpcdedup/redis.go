@@ -140,8 +140,8 @@ func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID
 }
 
 // Complete implements Backend with the complete script. It returns false, and no error, when this node does not own the
-// in-flight record. That is not a failed call: a retried write finds the record done by its first attempt, whose reply
-// was lost, so the owner counts it as a Redis error only when the call fails. The caller logs the ownership it lost.
+// in-flight record. That is not a failed call, so it is not counted as a Redis error: a retried write finds the record
+// done by its first attempt, whose reply was lost. The caller logs the ownership it lost.
 func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error) {
 	reply, errJSON, uncached := recordArgs(rec)
 	abandoned := "0"

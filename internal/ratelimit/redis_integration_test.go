@@ -34,7 +34,7 @@ func newIntegrationLimiter(tb testing.TB, cfg configtypes.RateLimitRedisUserComm
 	l := NewRedisUserLimiter(cfg, prefix, configs, 0)
 	l.Connect()
 	require.True(tb, l.connected())
-	tb.Cleanup(l.closeShards)
+	tb.Cleanup(l.connector.Close)
 	return l
 }
 

@@ -165,11 +165,6 @@ func (l *RedisUserLimiter) connected() bool {
 	return l.connector.Shards() != nil
 }
 
-// closeShards closes the connected shards and forgets them, so later checks are made while not connected.
-func (l *RedisUserLimiter) closeShards() {
-	l.connector.Close()
-}
-
 // check runs the script for scope s of userID. Redis errors are counted and logged, and allow the operation.
 // While not connected, the operation is allowed and counted as an error.
 func (l *RedisUserLimiter) check(userID string, s *scope) bool {

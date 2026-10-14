@@ -21,7 +21,7 @@ type cancelNotification struct {
 // EncodeCancel returns the payload of CancelNotificationOp for key.
 func EncodeCancel(key Key) []byte {
 	// Marshalling a struct of a string and an integer does not fail.
-	data, _ := json.Marshal(cancelNotification{Scope: key.Scope, MsgID: key.MsgID})
+	data, _ := json.Marshal(cancelNotification(key))
 	return data
 }
 
@@ -34,5 +34,5 @@ func DecodeCancel(data []byte) (Key, error) {
 	if n.Scope == "" {
 		return Key{}, errMalformedCancel
 	}
-	return Key{Scope: n.Scope, MsgID: n.MsgID}, nil
+	return Key(n), nil
 }

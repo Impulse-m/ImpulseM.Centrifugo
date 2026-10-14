@@ -26,6 +26,7 @@ The registry lets clients call existing gRPC methods of backend services through
 * `errors`: protocol errors returned for failures of the registry itself: unknown method, auth class mismatch, request too large, and a call cancelled by the client. Each has `code`, `message`, and optional `app_code` and `app_type`.
 * `app_error`: names of the gRPC trailers which carry the application error code and type. Defaults are `app-code` and `app-type`.
 * `grpc_status_to_code_transforms`: overrides for the default mapping of gRPC status codes to protocol errors, see [error mapping](#error-mapping).
+* When the registry is enabled, the server advertises the RPC options capability (bit 32) in the connect reply, so SDKs can send per-call headers. Clients which do not ask for the capability are unaffected.
 
 Registry file:
 

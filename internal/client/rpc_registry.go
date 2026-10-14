@@ -71,6 +71,16 @@ func (h *Handler) registryErrors() configtypes.RPCRegistryErrors {
 	return h.registryConfig().Errors
 }
 
+// registryConnectFlags returns the connect reply flags advertising the RPC options capability.
+// Core applies a flag only where the client advertised it, so an enabled registry is announced
+// to every client and clients without the capability simply ignore it.
+func (h *Handler) registryConnectFlags() int64 {
+	if !h.rpcRegistry.Enabled() {
+		return 0
+	}
+	return centrifuge.ConnectionFlagRPCOptions
+}
+
 // callRPCRegistry checks the connection against the method and calls its gRPC target.
 func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()

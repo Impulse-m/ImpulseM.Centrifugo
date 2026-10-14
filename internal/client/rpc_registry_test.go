@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -309,6 +311,52 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	_, ok := reply.Storage[clientstorage.KeyToken]
 	require.False(t, ok)
+}
+
+// connectRegistryFlagClient connects a client through a real Core node which uses registry, and returns
+// the connect result. The client advertises clientFlag in its connect request, as an SDK does.
+func connectRegistryFlagClient(t *testing.T, registry *rpcregistry.Registry, clientFlag int64) *protocol.ConnectResult {
+	t.Helper()
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+
+	cfg := config.DefaultConfig()
+	cfg.Client.Insecure = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, emptyJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+	h.SetRPCRegistry(registry)
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+	require.NoError(t, h.Setup())
+
+	transport := newRecordingTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{Flag: clientFlag}})
+	reply := transport.waitReply(t, 1)
+	require.Nil(t, reply.Error)
+	require.NotNil(t, reply.Connect)
+	return reply.Connect
+}
+
+func TestRPCRegistryConnectAdvertisesRPCOptionsWhenClientAsksForIt(t *testing.T) {
+	registry := startRegistryTestRegistry(t, registryTestRegistryConfig(), newRegistryTestBackend(t))
+
+	result := connectRegistryFlagClient(t, registry, centrifuge.ConnectionFlagRPCOptions)
+	require.NotZero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
+}
+
+func TestRPCRegistryConnectNoRPCOptionsWhenClientDoesNotAskForIt(t *testing.T) {
+	registry := startRegistryTestRegistry(t, registryTestRegistryConfig(), newRegistryTestBackend(t))
+
+	result := connectRegistryFlagClient(t, registry, 0)
+	require.Zero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
+}
+
+func TestRPCRegistryConnectNoRPCOptionsWhenRegistryDisabled(t *testing.T) {
+	result := connectRegistryFlagClient(t, nil, centrifuge.ConnectionFlagRPCOptions)
+	require.Zero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
 }
 
 // registryAuthClassTestRegistry returns the registry config of the auth class tests: the test registry

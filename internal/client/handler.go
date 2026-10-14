@@ -630,6 +630,7 @@ func (h *Handler) OnClientConnecting(
 		Subscriptions:     subscriptions,
 		Data:              data,
 		ClientSideRefresh: !refreshProxyEnabled,
+		Flags:             h.registryConnectFlags(),
 	}
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole

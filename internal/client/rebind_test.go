@@ -77,7 +77,7 @@ func newRebindTestClientWithToken(user string, tokenUser string, class string) (
 		if state.state == nil {
 			return nil
 		}
-		return state.state
+		return &connState{limits: state.state}
 	}
 	client.RebindFunc = func(opts centrifuge.RebindOptions) error {
 		state.rebinds = append(state.rebinds, opts)

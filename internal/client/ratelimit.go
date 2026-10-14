@@ -91,15 +91,15 @@ func (h *Handler) rateLimitCommandRead(
 		if e.Command.Connect != nil {
 			// Keep existing state: a repeated connect must not reset the buckets of the connection.
 			if c.ExtState() == nil {
-				c.SetExtState(limiter.NewConnState())
+				c.SetExtState(&connState{limits: limiter.NewConnState()})
 			}
 			return nil
 		}
 		if !checkCommands && userLimiter == nil && redisLimiter == nil {
 			return nil
 		}
-		st, ok := c.ExtState().(*ratelimit.ConnState)
-		if !ok {
+		st := rateLimitStateOf(c)
+		if st == nil {
 			return nil
 		}
 		op, name, ok := rateLimitOperation(e.Command)
@@ -148,8 +148,8 @@ func (h *Handler) attachRateLimit(c Client, userID string) {
 	if h.userLimiter == nil || userID == "" {
 		return
 	}
-	st, ok := c.ExtState().(*ratelimit.ConnState)
-	if !ok {
+	st := rateLimitStateOf(c)
+	if st == nil {
 		return
 	}
 	h.userLimiter.Attach(st, userID)
@@ -161,8 +161,8 @@ func (h *Handler) detachRateLimit(c Client) {
 	if h.userLimiter == nil {
 		return
 	}
-	st, ok := c.ExtState().(*ratelimit.ConnState)
-	if !ok {
+	st := rateLimitStateOf(c)
+	if st == nil {
 		return
 	}
 	h.userLimiter.Detach(st)
@@ -196,8 +196,8 @@ func (h *Handler) rateLimitCommandProcessed(limiter *ratelimit.ClientLimiter) ce
 		if !errors.As(e.Error, &clientErr) || clientErr.Code == centrifuge.ErrorInternal.Code {
 			return
 		}
-		st, ok := c.ExtState().(*ratelimit.ConnState)
-		if !ok {
+		st := rateLimitStateOf(c)
+		if st == nil {
 			return
 		}
 		if limiter.ErrorAllowed(st, e.Started) {

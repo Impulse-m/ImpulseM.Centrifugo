@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // Resolver resolves client addresses with one trusted-proxy list and one forwarded header name.
@@ -22,7 +24,7 @@ type Resolver struct {
 // CIDR range, and on a header which is not a header name.
 func New(cfg configtypes.ClientAddress) (*Resolver, error) {
 	header := strings.ToLower(cfg.Header)
-	if !isHeaderName(header) {
+	if !httpguts.ValidHeaderFieldName(header) {
 		return nil, fmt.Errorf("invalid header %q: must be a header name", cfg.Header)
 	}
 	trusted := make([]netip.Prefix, 0, len(cfg.TrustedProxies))
@@ -86,26 +88,3 @@ func (r *Resolver) isTrusted(addr netip.Addr) bool {
 	return false
 }
 
-// isHeaderName reports whether name, already lower-case, is a valid HTTP header field name
-// (an RFC 9110 token).
-func isHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if !isTokenChar(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isTokenChar(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return true
-	case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
-		return true
-	}
-	return false
-}

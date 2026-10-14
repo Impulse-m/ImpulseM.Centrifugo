@@ -101,7 +101,7 @@ Metadata sent with each call. Later sources win:
 1. static metadata of the target (`grpc.static_metadata`);
 2. connect-time headers listed in the target's `emulated_headers`;
 3. per-call headers listed in the method's `headers`;
-4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods when the connection has a token, `x-centrifugo-client` with the client ID, and `x-centrifugo-msg-id` for calls with a message ID;
+4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods when the connection has a token, `x-centrifugo-client` with the client ID, `x-centrifugo-msg-id` for calls with a message ID, and `x-centrifugo-retransmit: 1` and `x-centrifugo-without-updates: 1` when the client set them;
 5. `x-forwarded-for` with the client address, as resolved by `client_address`. When the address is not resolved, no `x-forwarded-for` is sent, even if a source above carried one. Clients cannot set it: the name is reserved;
 6. `traceparent` and `tracestate` from the trace context of the call.
 
@@ -138,12 +138,45 @@ Check the registry in CI with the usual config check. It validates the registry 
 centrifugo checkconfig -c config.json
 ```
 
+## Exactly-once calls
+
+Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.registry.enabled` and `client.reply_include_server_time`, and a change of it takes effect after a restart.
+
+```json
+"rpc": {"registry": {"dedup": {"enabled": true, "window": "120s", "max_skew": "30s", "max_reply_size": 65536, "local_max_entries": 200000, "on_store_error": "fail_closed"}}}
+```
+
+* `window` is how long an answer is kept, and how far in the past a `msg_id` may be. `max_skew` is how far in the future it may be. `window` is at least 1s and greater than `max_skew`.
+* A call with a `msg_id` is checked against the window. The `msg_id` is the Unix second shifted left by 20 bits, plus a sequence, so it fits in 53 bits. Outside the window the call answers `errors.msg_id_invalid`. The reply carries the server time, so the SDK corrects its clock and sends the call again. A `msg_id` of 0 is not deduplicated.
+* Scope. A connection with a token session is scoped to its user and session. Otherwise it is scoped to its user and its install `instance`, which the client sends on connect. An instance must match `^[A-Za-z0-9_-]{16,64}$`, and any other value is dropped. A connection with neither has no scope: its calls are not deduplicated, and count as `no_scope`. Scope keys are hashed, so they do not show the instance.
+* Only calls of non-idempotent methods are recorded. An idempotent method is executed again on retransmit, and is cancelled on disconnect.
+* A recorded call keeps its answer, or its protocol error, for the window, on this node, in an LRU bounded by `local_max_entries`. A retransmit with the same method and data gets the answer with `cached: true`. A duplicate which arrives while the call runs waits for it. A duplicate with another method or other data gets `errors.msg_id_reused`, and neither joins the running call nor gets its answer.
+* Errors of the registry's own gates (unknown method, auth class, request size) are not recorded.
+* A reply over `max_reply_size` is not kept. A retransmit of it gets `errors.result_evicted`, and the call is not executed again.
+* Cancel. The client sends a call with `cancel: <msg_id>` and no method. It cancels the call of that `msg_id` on the connection, and in its scope, and it is answered with an empty reply. The cancelled call answers `errors.cancelled`, and so does a later retransmit. A cancel which arrives before its call keeps a record, so the call never runs. Cancel commands do not wait for `client.concurrency`. With dedup off a cancel is answered with an empty reply, and nothing is cancelled.
+* Ack. A call lists in `ack` the `msg_id`s whose replies it received. Their records are removed.
+* Mutations and disconnects. A recorded call runs on a context which a disconnect does not cancel, so a backend commit completes, and its retransmit gets the record. A call which ends with a disconnect is not kept, so its retransmit runs again.
+* A store failure answers a tracked call with the temporary `errors.dedup_unavailable` under `on_store_error: fail_closed`, the default. Under `fail_open` the call runs without dedup. Idempotent calls do not use the store.
+* Records are node-local. A retransmit which reaches another node runs again.
+* Secrecy. The instance is a secret: a random value of at least 128 bits, made by the application, kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit calls in its scope. The server never logs the instance or a scope.
+
+| Error | Default `code` | `temporary` |
+|---|---|---|
+| `msg_id_invalid` | 107 | no |
+| `msg_id_reused` | 107 | no |
+| `result_evicted` | 110 | no |
+| `dedup_unavailable` | 108 | yes |
+
 ## Metrics
 
 * `centrifugo_rpc_registry_calls_total{rpc_method, result}`: calls by method and result (`ok`, `error`, `cancelled`, `timeout`, `denied`, `unknown`). A call to a name which is not in the registry counts as `unknown`.
 * `centrifugo_rpc_registry_errors_total{rpc_method, app_type}`: failed calls with an application error type. Cancelled calls are not counted here.
 * `centrifugo_rpc_registry_reloads_total{trigger, result}`: reloads of the registry. `trigger` is `signal` for a configuration reload on SIGHUP, and `poll` for a change of the registry file found by the poll. `result` is `ok` or `error`. A touch without a change of content is not a reload. A reload which fails, on a content or a dial error, counts as `error`. A file which cannot be read is logged and not counted.
 * Per target, the proxy metrics with protocol `grpc` and type `rpc`: `centrifugo_proxy_duration_seconds`, `centrifugo_proxy_duration_seconds_histogram`, `centrifugo_proxy_errors` and `centrifugo_proxy_inflight_requests`. A call cancelled by the client is not observed in them, as the proxy handler does for a closed client; `centrifugo_proxy_inflight_requests` still counts it while it runs.
+* `centrifugo_rpc_registry_dedup_total{outcome}`: exactly-once calls by outcome (`miss`, `hit_done`, `hit_inflight_local`, `evicted`, `cancelled`, `store_error`, `msg_id_invalid`, `msg_id_reused`, `no_scope`). `cancelled` counts cancel commands. Answers from a record are counted here and not in `calls_total`, which counts backend calls. No ID is in any label.
+* `centrifugo_rpc_registry_dedup_wait_seconds`: time a duplicate waited for the call it joined.
+* `centrifugo_rpc_registry_dedup_entries`: answers the node keeps.
+* `centrifugo_rpc_registry_retransmit_total{rpc_method}`: calls which the client sent again after a transport loss.
 * The series are created when the registry is built. Each registry method exports one zero-valued `calls_total` series per result, so N methods export 6·N series. Each target exports its four proxy series, the same way. The `unknown` method label is the exception: its series are created on the first call to an unknown name.
 
 ## Planned
@@ -152,6 +185,5 @@ Not implemented yet:
 
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
 * Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
-* The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
-* Cancelling an in-flight call by its `msg_id`.
-* Deduplication of calls with a message ID. `idempotent` is accepted and reserved for it. It has no effect yet.
+* Shared exactly-once records across nodes. Until then a retransmit which reaches another node runs again.
+* The `after` field, which orders a call after other `msg_id`s, and the wakeup of duplicates across nodes by notification.

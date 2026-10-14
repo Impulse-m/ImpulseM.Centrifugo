@@ -213,6 +213,9 @@ func (h *Handler) Setup() error {
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err
 	}
+	if err := h.setupRPCDedupRedis(); err != nil {
+		return err
+	}
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
 		disconnect, revoked := h.recheckConnection(client)

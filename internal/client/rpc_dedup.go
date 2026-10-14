@@ -9,8 +9,10 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
@@ -18,6 +20,9 @@ import (
 
 // rpcInflightKey is the connection storage key of the in-flight map of exactly-once RPC.
 const rpcInflightKey = "rpc_inflight"
+
+// rpcDedupNotifyLogInterval is the minimum time between two logged failures of a cancel notification.
+const rpcDedupNotifyLogInterval = 10 * time.Second
 
 // rpcScopeKey is the connection storage key of the dedup scope of the connection. It is computed at connect, and
 // again at refresh, from the user and the identity of the connection, and each call reads it.
@@ -28,13 +33,20 @@ const rpcScopeKey = "rpc_scope"
 // store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
 // joined, when set, is called each time a duplicate joins a call in flight on this node, before it waits. Tests set
 // it to learn of a join.
+// memory is the node-local store. With the shared tier on, store is the shared store over it, and shared and connector
+// are set: see setupRPCDedupRedis.
 type rpcDedupState struct {
 	store     rpcdedup.Store
+	memory    *rpcdedup.Memory
+	shared    *rpcdedup.Shared
+	connector *redisshard.Connector
 	metrics   *metrics.RPCRegistryDedupMetrics
 	window    time.Duration
 	maxSkew   time.Duration
 	anonymous bool
 	joined    func()
+	// notifyLog limits how often a failed cancel notification is logged.
+	notifyLog *tools.IntervalLimiter
 }
 
 // newRPCDedupState returns the exactly-once RPC state of the config, or nil when the dedup is off. The state is
@@ -63,10 +75,12 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 	})
 	return &rpcDedupState{
 		store:     store,
+		memory:    store,
 		metrics:   dedupMetrics,
 		window:    dedup.Window.ToDuration(),
 		maxSkew:   dedup.MaxSkew.ToDuration(),
 		anonymous: dedup.LocalAnonymousMaxEntries > 0,
+		notifyLog: tools.NewIntervalLimiter(rpcDedupNotifyLogInterval),
 	}
 }
 
@@ -260,7 +274,7 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 // owner, and a cancel of the msg_id reaches the owner, which then answers the duplicate too.
 func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack) (centrifuge.RPCReply, error) {
 	key := rpcdedup.Key{Scope: track.scope, MsgID: e.Call.MsgID}
-	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint(e.Method, e.Data))
+	flight := rpcdedup.NewCallFlight(rpcdedup.Fingerprint(e.Method, e.Data), m.Timeout)
 	lookup, err := h.rpcDedup.store.Begin(key, flight)
 	if err != nil {
 		return h.rpcStoreFailure(ctx, cancel, c, e, m, cfg, connToken, track, err)
@@ -271,10 +285,10 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 		return h.rpcRecordedReply(lookup.Record, cfg)
 	case rpcdedup.OutcomeInFlight:
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupHitInFlightLocal)
-		if h.rpcDedup.joined != nil {
-			h.rpcDedup.joined()
-		}
-		return h.rpcJoin(c, m, cfg, lookup.Flight)
+		return h.joinRPCFlight(c, m, cfg, lookup.Flight)
+	case rpcdedup.OutcomeInFlightRemote:
+		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupHitInFlightRemote)
+		return h.joinRPCFlight(c, m, cfg, lookup.Flight)
 	case rpcdedup.OutcomeMismatch:
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDReused)
 		reusedErr := registryError(cfg.Errors.MsgIDReused)
@@ -296,6 +310,15 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 	completed = true
 	h.completeRPCRecord(key, flight, rpcRecordOf(reply, callErr))
 	return reply, callErr
+}
+
+// joinRPCFlight makes a duplicate wait for the call of flight, which runs on this node or on another one. The
+// joined hook, when set, is called before the wait.
+func (h *Handler) joinRPCFlight(c Client, m *rpcregistry.Method, cfg configtypes.RPCRegistry, flight *rpcdedup.Flight) (centrifuge.RPCReply, error) {
+	if h.rpcDedup.joined != nil {
+		h.rpcDedup.joined()
+	}
+	return h.rpcJoin(c, m, cfg, flight)
 }
 
 // completeRPCRecord keeps the record of the call which flight owns, and wakes its duplicates.

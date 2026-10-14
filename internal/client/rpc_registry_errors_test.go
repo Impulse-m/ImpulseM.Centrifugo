@@ -8,6 +8,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -214,6 +215,52 @@ func TestRegistryAppErrorFromTrailersWithCustomKeys(t *testing.T) {
 	protoErr = requireProtocolError(t, err)
 	require.Equal(t, int32(1234), protoErr.AppCode)
 	require.Nil(t, protoErr.Metadata)
+}
+
+// A backend cannot set the retry signal. Its trailer named x-centrifugo-retry is not copied, as the method does not
+// list it, so the client never resends a call which ran.
+func TestRegistryBackendTrailerCannotSetRetrySignal(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	grpcMethod := registryStatusService + "FailedPreconditionRetry"
+	backend.FailMethod(grpcMethod, tools.GRPCBytesFailure{
+		Err: status.Error(codes.FailedPrecondition, "ignored"),
+		Trailers: metadata.Pairs(
+			"x-centrifugo-retry", "new_msg_id",
+			"x-detail", "more",
+		),
+	})
+
+	cfg := registryErrorTestRegistry([]configtypes.RPCMethod{
+		{
+			Method:        "users.put",
+			GRPCMethod:    grpcMethod,
+			Target:        "backend",
+			ErrorMetadata: []string{"x-detail"},
+		},
+	})
+	h := registryErrorTestHandler(t, backend, cfg)
+	client := newRegistryTestClient("c1", "42", nil, nil)
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.put", Data: []byte("x")}, nil)
+	requireNoRetrySignal(t, err)
+	require.Equal(t, map[string]string{"x-detail": "more"}, requireProtocolError(t, err).Metadata)
+}
+
+// The mapping drops the retry signal even when the method names its key in error_metadata. Validation refuses such
+// a config, so this guards a method which was not validated: a backend trailer never carries the signal.
+func TestRegistryCallErrorDropsRetrySignalNamedInErrorMetadata(t *testing.T) {
+	trailers := metadata.Pairs(
+		"x-centrifugo-retry", "new_msg_id",
+		"x-detail", "more",
+	)
+	m := &rpcregistry.Method{
+		Name:          "users.put",
+		ErrorMetadata: []string{rpcRetryMetadataKey, "x-detail"},
+	}
+	cfg := registryErrorTestRegistry(nil)
+	err := registryCallError(status.Error(codes.FailedPrecondition, "ignored"), trailers, m, cfg, false)
+	requireNoRetrySignal(t, err)
+	require.Equal(t, map[string]string{"x-detail": "more"}, requireProtocolError(t, err).Metadata)
 }
 
 func TestRegistryAppTypeFallsBackToStatusMessage(t *testing.T) {

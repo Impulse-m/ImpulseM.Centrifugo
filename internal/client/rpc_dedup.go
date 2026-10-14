@@ -251,7 +251,14 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 	msgID := e.Call.MsgID
 	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), h.rpcDedup.window, h.rpcDedup.maxSkew) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDInvalid)
-		msgIDErr := registryRetryError(cfg.Errors.MsgIDInvalid, false, rpcRetryNewMsgID)
+		// A retransmit may be a call which ran, and whose record is outside the window: its msg_id is refused, and
+		// the client must not send the call again with a new one. Only a call refused on its first transmission gets
+		// the signal.
+		retry := rpcRetryNewMsgID
+		if e.Call.Retransmit {
+			retry = ""
+		}
+		msgIDErr := registryRetryError(cfg.Errors.MsgIDInvalid, false, retry)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, msgIDErr)
 	}
 	if m.Idempotent || track.scope == "" {

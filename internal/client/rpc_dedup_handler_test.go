@@ -836,6 +836,24 @@ func TestRPCDedupMsgIDOutsideWindowCarriesNewMsgIDSignal(t *testing.T) {
 	require.Empty(t, backend.Calls())
 }
 
+// A retransmit whose msg_id is outside the window is refused without the signal: its call may have run, so the client
+// must not send it again with a new msg_id. Nothing runs.
+func TestRPCDedupRetransmitOutsideWindowCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	past := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("x"),
+		Call:   centrifuge.RPCCallOptions{MsgID: past, Retransmit: true},
+	}, nil)
+	require.Equal(t, "invalid msg_id", requireProtocolError(t, err).Message)
+	requireNoRetrySignal(t, err)
+	require.Empty(t, backend.Calls())
+}
+
 // A msg_id above 53 bits is refused with the new_msg_id signal, though its time part is in the window, and nothing runs.
 func TestRPCDedupMsgIDAbove53BitsCarriesNewMsgIDSignal(t *testing.T) {
 	backend := newDedupBackend(t)

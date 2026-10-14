@@ -72,6 +72,12 @@ func validateRPCDedup(c Config) error {
 	if err := validateRPCDedupBudgets(dedup); err != nil {
 		return err
 	}
+	// A cancel records its message as an answer, which is kept only up to a share of a record, so the message must fit it.
+	share := dedup.ScopeReserveBytes / dedup.ScopeReserve
+	messageLen := len(c.RPC.Registry.Errors.Cancelled.Message)
+	if rpcdedup.RecordOverhead+messageLen > share {
+		return fmt.Errorf("rpc.registry.errors.cancelled.message: must fit a record share of scope_reserve_bytes / scope_reserve, %d bytes with the %d bytes of overhead, got %d bytes", share, rpcdedup.RecordOverhead, messageLen)
+	}
 	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
 		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)
 	}
@@ -106,9 +112,6 @@ func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
 	}
 	if dedup.MaxRecordsPerScope < dedup.ScopeReserve {
 		return fmt.Errorf("rpc.registry.dedup.max_records_per_scope: must be at least scope_reserve %d, got %d", dedup.ScopeReserve, dedup.MaxRecordsPerScope)
-	}
-	if dedup.MaxReplySize > dedup.LocalMaxBytes/rpcdedup.DefaultShards {
-		return fmt.Errorf("rpc.registry.dedup.max_reply_size: must fit a shard share of local_max_bytes, at most %d, got %d", dedup.LocalMaxBytes/rpcdedup.DefaultShards, dedup.MaxReplySize)
 	}
 	if dedup.LocalAnonymousMaxEntries < 0 || dedup.LocalAnonymousMaxEntries >= dedup.LocalMaxEntries {
 		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be at least 0 and less than local_max_entries %d, got %d", dedup.LocalMaxEntries, dedup.LocalAnonymousMaxEntries)

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"github.com/stretchr/testify/require"
 )
@@ -132,7 +133,7 @@ func TestValidateRPCDedupRules(t *testing.T) {
 				cfg.RPC.Registry.Dedup.ScopeReserve = 100
 				cfg.RPC.Registry.Dedup.MaxRecordsPerScope = 1024
 			},
-			wantErr: "rpc.registry.dedup.scope_reserve_bytes: must be at least scope_reserve 100 times 128 bytes per record",
+			wantErr: "rpc.registry.dedup.scope_reserve_bytes: must be at least scope_reserve 100 times 256 bytes per record",
 		},
 		{
 			name: "max scopes per user must be at least one",
@@ -150,11 +151,11 @@ func TestValidateRPCDedupRules(t *testing.T) {
 			wantErr: "rpc.registry.dedup.max_records_per_scope: must be at least scope_reserve 8",
 		},
 		{
-			name: "max reply size must fit a shard share",
+			name: "cancelled message must fit a record share",
 			modify: func(cfg *Config) {
-				cfg.RPC.Registry.Dedup.MaxReplySize = 4<<20 + 1
+				cfg.RPC.Registry.Errors.Cancelled.Message = string(make([]byte, 2048-rpcdedup.RecordOverhead+1))
 			},
-			wantErr: "rpc.registry.dedup.max_reply_size: must fit a shard share",
+			wantErr: "rpc.registry.errors.cancelled.message: must fit a record share",
 		},
 		{
 			name: "anonymous entries must be below the total",
@@ -259,7 +260,7 @@ func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())
-	require.Equal(t, 65536, cfg.RPC.Registry.Dedup.MaxReplySize)
+	require.Equal(t, 2048, cfg.RPC.Registry.Dedup.MaxReplySize)
 	require.Equal(t, 200000, cfg.RPC.Registry.Dedup.LocalMaxEntries)
 	require.Equal(t, 268435456, cfg.RPC.Registry.Dedup.LocalMaxBytes)
 	require.Equal(t, 20000, cfg.RPC.Registry.Dedup.LocalAnonymousMaxEntries)

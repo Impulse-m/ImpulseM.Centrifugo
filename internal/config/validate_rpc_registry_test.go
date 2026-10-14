@@ -57,6 +57,13 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 			modify: func(reg *configtypes.RPCRegistry) {},
 		},
 		{
+			name: "poll interval must not be negative",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.PollInterval = configtypes.Duration(-time.Second)
+			},
+			wantErr: "rpc.registry.poll_interval: must not be negative",
+		},
+		{
 			name: "method name must match pattern",
 			modify: func(reg *configtypes.RPCRegistry) {
 				reg.Methods[0].Method = "bad method!"

@@ -30,6 +30,9 @@ func validateRPCRegistry(c Config) error {
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}
+	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
+	}
 	_, err = ResolveRPCRegistry(c.RPC.Registry)
 	return err
 }

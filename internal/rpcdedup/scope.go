@@ -2,7 +2,6 @@ package rpcdedup
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 )
 
@@ -21,10 +20,6 @@ const authenticatedScopeLen = 1 + 1 + userTagLen + 1 + hashLen
 
 // anonymousScopeLen is the length of a scope of an anonymous connection: kind and hash. The shape is "a:<hash>".
 const anonymousScopeLen = 1 + 1 + hashLen
-
-// encodedBufferSize is the size of the stack buffer which holds the length-prefixed parts hashed by ScopeOf and
-// Fingerprint. A longer input is appended to the heap, and is hashed the same.
-const encodedBufferSize = 512
 
 // ScopeOf returns the dedup scope of a connection. kind is "s" for a token session and "i" for an install
 // instance, and userID is the user of the connection. id is the session or the instance. The anonymous kind "a"
@@ -103,16 +98,4 @@ func isLowerHex(s string) bool {
 		}
 	}
 	return true
-}
-
-// appendPartString appends the length of part, then part, so that a concatenation of parts is unambiguous.
-func appendPartString(b []byte, part string) []byte {
-	b = binary.BigEndian.AppendUint32(b, uint32(len(part)))
-	return append(b, part...)
-}
-
-// appendPartBytes is appendPartString for a byte slice.
-func appendPartBytes(b []byte, part []byte) []byte {
-	b = binary.BigEndian.AppendUint32(b, uint32(len(part)))
-	return append(b, part...)
 }

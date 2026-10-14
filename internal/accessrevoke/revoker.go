@@ -77,17 +77,22 @@ func (r *Revoker) RevokeSession(userID string, sessionID string, revokedAt int64
 		return err
 	}
 	sessionKey, _ := Key(sessionID)
-	r.disconnectSessionConnections(sessionKey)
+	indexDropped := r.disconnectSessionConnections(sessionKey)
 	if userID == "" {
 		r.requestSweep()
 		return nil
 	}
-	r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
+	userDropped := r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
 		if identity.Session == sessionKey {
 			return ReasonSession
 		}
 		return ""
 	}, centrifuge.DisconnectExpired)
+	// A dropped disconnect of a session is not retried by the queue. The sweep checks the sessions of all local
+	// connections, so it disconnects the dropped ones.
+	if indexDropped || userDropped {
+		r.requestSweep()
+	}
 	return nil
 }
 
@@ -133,27 +138,35 @@ func (r *Revoker) Apply(notification Notification) error {
 }
 
 // disconnectMatching enqueues disconnect of every local connection of the user for which reasonOf
-// returns a non-empty reason.
+// returns a non-empty reason. It reports whether the queue dropped a disconnect because it was full.
 func (r *Revoker) disconnectMatching(
 	userID string,
 	reasonOf func(identity centrifuge.TokenIdentity) Reason,
 	disconnect centrifuge.Disconnect,
-) {
+) bool {
+	dropped := false
 	for _, client := range r.hub.UserConnections(userID) {
 		reason := reasonOf(IdentityOf(client))
 		if reason == "" {
 			continue
 		}
-		r.queue.Enqueue(client, disconnect, reason)
+		if !r.queue.Enqueue(client, disconnect, reason) {
+			dropped = true
+		}
 	}
+	return dropped
 }
 
 // disconnectSessionConnections enqueues disconnect of the indexed connections of session. Such connections
-// have no user, so disconnectMatching does not find them.
-func (r *Revoker) disconnectSessionConnections(session [16]byte) {
+// have no user, so disconnectMatching does not find them. It reports whether the queue dropped a disconnect.
+func (r *Revoker) disconnectSessionConnections(session [16]byte) bool {
+	dropped := false
 	for _, conn := range r.store.SessionConnections().Connections(session) {
-		r.queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession)
+		if !r.queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession) {
+			dropped = true
+		}
 	}
+	return dropped
 }
 
 // requestSweep starts a sweep in the background. If a sweep is already running, it marks one more

@@ -63,8 +63,9 @@ type RPCRegistry struct {
 	File string `mapstructure:"file" json:"file" envconfig:"file" yaml:"file" toml:"file" expose:"full" doc:"Path to a JSON or YAML file with the registry defaults, targets and methods. Format is chosen by file extension. Must not be combined with inline defaults, targets or methods."`
 	// AuthClassClaim is a JWT claim holding the auth class of a connection.
 	AuthClassClaim string `mapstructure:"auth_class_claim" json:"auth_class_claim" envconfig:"auth_class_claim" yaml:"auth_class_claim" toml:"auth_class_claim" expose:"full" doc:"JWT claim holding the auth class of a connection: pending_2fa, bot, authenticated or anonymous. Empty means connections are anonymous without a user and authenticated with one, and methods of class pending_2fa or bot are not allowed."`
-	// PollInterval is accepted and reserved for file polling. It has no effect yet: the file is read at start and on a configuration reload.
-	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"Accepted and reserved for an upcoming feature, with no effect yet. The registry file is read at start and on a configuration reload (SIGHUP)."`
+	// PollInterval is how often the registry file is checked for changes. Zero means the file is read only at start and on a configuration reload.
+	// The poll starts at process start, so a change of the value takes effect after a restart.
+	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"How often the registry file is checked for changes, for example <<5s>>. A changed file is applied as a whole, and an invalid one keeps the current registry. Zero means the file is read only at start and on a configuration reload (SIGHUP). Read at start: a change of this value takes effect after a restart."`
 	// DrainTimeout is how long connections of removed or replaced targets are kept before they are closed.
 	DrainTimeout Duration `mapstructure:"drain_timeout" default:"30s" json:"drain_timeout" envconfig:"drain_timeout" yaml:"drain_timeout" toml:"drain_timeout" doc:"How long connections of removed or replaced targets stay open before they are closed. Default <<30s>>."`
 	// Errors maps registry-originated errors to Centrifugo protocol errors.

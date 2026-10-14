@@ -16,6 +16,10 @@ import (
 // errStillInFlight is the result of a poll of a call which still runs on another node. The watcher retries on it.
 var errStillInFlight = errors.New("the call still runs on another node")
 
+// errNilCancelFailure is the result of a cancel without the error which the cancelled call answers with. Such a cancel
+// would be kept as a success with an empty reply, so it is refused.
+var errNilCancelFailure = errors.New("a cancel needs the error which the cancelled call answers with")
+
 const (
 	// sharedDefaultPollInitial and sharedDefaultPollMax bound the delay between two polls of a call which runs on
 	// another node.
@@ -300,6 +304,9 @@ func sharedOverReplyLimit(rec Record, limit int) bool {
 // which did not start leaves a tombstone, which is also kept locally. A scope which this node refuses is refused
 // before the shared tier, so nothing is written for it.
 func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
+	if failure == nil {
+		return errNilCancelFailure
+	}
 	if s.CancelFlight(key) {
 		return nil
 	}

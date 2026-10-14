@@ -584,6 +584,18 @@ func TestSharedCancelTombstoneIsCachedLocally(t *testing.T) {
 	require.Same(t, testCancelled, lookup.Record.Err)
 }
 
+// A cancel without an error is refused before the shared tier: the record would answer a later begin with an empty
+// success, and the local store would answer it the same way.
+func TestSharedCancelWithoutFailureIsRefused(t *testing.T) {
+	fx := newSharedFixture(t, false)
+
+	require.Error(t, fx.shared.Cancel(sharedKey, nil))
+	require.Zero(t, countCalls(fx.backend.callLog(), "cancel"))
+	_, found := fx.backend.entry(sharedKey)
+	require.False(t, found)
+	require.True(t, testIsMiss(t, fx.local, sharedKey))
+}
+
 func TestSharedCancelInFlightElsewhereNotifiesOwner(t *testing.T) {
 	fx := newSharedFixture(t, false)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})

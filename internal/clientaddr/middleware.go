@@ -2,6 +2,7 @@ package clientaddr
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/netip"
 
@@ -9,18 +10,21 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-type addrKey struct{}
+type stateKey struct{}
 
-// Middleware resolves the client address of each request with r and stores it in the request
-// context. A request whose address is unknown is passed on without a value.
+// state is what the middleware leaves in the context. addr is the zero value when the address
+// is unknown; the state itself is still present, which tells an enabled feature from a disabled one.
+type state struct {
+	addr netip.Addr
+}
+
+// Middleware resolves the client address of each request with r and stores the result in the
+// request context. A request whose address is unknown is stored without an address.
 func Middleware(r *Resolver) alice.Constructor {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			addr := r.Resolve(req.RemoteAddr, req.Header)
-			if addr.IsValid() {
-				req = req.WithContext(withAddr(req.Context(), addr))
-			}
-			next.ServeHTTP(w, req)
+			next.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), stateKey{}, state{addr: addr})))
 		})
 	}
 }
@@ -41,28 +45,50 @@ func WithPeer(ctx context.Context) context.Context {
 
 // FromContext returns the client address stored by Middleware or WithPeer.
 func FromContext(ctx context.Context) (netip.Addr, bool) {
-	addr, ok := ctx.Value(addrKey{}).(netip.Addr)
-	return addr, ok
+	st, _ := ctx.Value(stateKey{}).(state)
+	return st.addr, st.addr.IsValid()
 }
 
-// ThrottleKey returns the key an auth throttle counts a request under. It is the resolved address
-// when the middleware ran, and the legacy rule otherwise.
+// ThrottleKey returns the key an auth throttle counts a request under. With the feature enabled it
+// is the resolved address, or the socket host when the address is unknown. With the feature
+// disabled, where no middleware ran, it is the legacy rule.
 func ThrottleKey(r *http.Request) string {
-	if addr, ok := FromContext(r.Context()); ok {
-		return addr.String()
+	if host, ok := enabledHost(r); ok {
+		return host
 	}
 	return legacyThrottleKey(r)
 }
 
-// LogAddr returns the address written to the request log. It is the resolved address when the
-// middleware ran, and the legacy rule otherwise.
+// LogAddr returns the address written to the request log, with the same rules as ThrottleKey.
 func LogAddr(r *http.Request) string {
-	if addr, ok := FromContext(r.Context()); ok {
-		return addr.String()
+	if host, ok := enabledHost(r); ok {
+		return host
 	}
 	return legacyLogAddr(r)
 }
 
+// enabledHost returns the address the middleware stored, or the socket host when it stored none.
+// The second result is false when the middleware did not run.
+func enabledHost(r *http.Request) (string, bool) {
+	st, ok := r.Context().Value(stateKey{}).(state)
+	if !ok {
+		return "", false
+	}
+	if st.addr.IsValid() {
+		return st.addr.String(), true
+	}
+	return socketHost(r.RemoteAddr), true
+}
+
+// socketHost returns the host of a remote address without its port.
+func socketHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
 func withAddr(ctx context.Context, addr netip.Addr) context.Context {
-	return context.WithValue(ctx, addrKey{}, addr)
+	return context.WithValue(ctx, stateKey{}, state{addr: addr})
 }

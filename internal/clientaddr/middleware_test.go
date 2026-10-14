@@ -59,6 +59,25 @@ func TestThrottleKeyAndLogAddrPreferResolved(t *testing.T) {
 	require.Equal(t, "10.0.0.9", logAddr)
 }
 
+func TestThrottleKeyAndLogAddrUseSocketHostWhenUnknown(t *testing.T) {
+	// The feature is enabled but the remote address does not parse: nothing is resolved, and the
+	// headers, which the legacy rule would read, must not be used.
+	r := mustResolver(t, enabledConfig("10.0.0.0/8"))
+	var throttleKey, logAddr string
+	h := Middleware(r)(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		throttleKey = ThrottleKey(req)
+		logAddr = LogAddr(req)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "raw-addr"
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+	req.Header.Set("X-Real-IP", "1.1.1.1")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	require.Equal(t, "raw-addr", throttleKey)
+	require.Equal(t, "raw-addr", logAddr)
+}
+
 func TestThrottleKeyAndLogAddrFallBackToLegacy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.9:1"

@@ -996,12 +996,15 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 4096)
 	options.Shards = 4
-	options.MaxEntries = 200
+	options.MaxEntries = 120
 	options.MaxBytes = 200 * 1024
 	options.ScopeReserveBytes = 1024
 	options.MaxScopesPerUser = 8
+	observer := newCountingObserver()
+	options.Observer = observer
 	store := NewMemory(options)
 	random := rand.New(rand.NewPCG(1, 2))
+	refusals := 0
 
 	const users = 40
 	const sessions = 300
@@ -1017,7 +1020,9 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 			key := Key{Scope: scope, MsgID: uint64(random.IntN(64))}
 			flight := NewFlight()
 			lookup, err := store.Begin(key, flight)
-			if err == nil && lookup.Outcome == OutcomeMiss {
+			if err != nil {
+				refusals++
+			} else if lookup.Outcome == OutcomeMiss {
 				reply := make([]byte, random.IntN(2000))
 				require.NoError(t, store.Complete(key, flight, Record{Reply: reply}))
 				issued = append(issued, key)
@@ -1035,7 +1040,8 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 				require.NoError(t, store.Ack(key.Scope, []uint64{key.MsgID}))
 			}
 		case 8:
-			clock.advance(time.Duration(random.IntN(20)) * time.Second)
+			// Records live for the TTL, about 1200 operations here, so the budgets fill before they expire.
+			clock.advance(time.Duration(random.IntN(1000)) * time.Millisecond)
 		default:
 			require.NoError(t, store.Ack(scope, []uint64{uint64(random.IntN(64))}))
 		}
@@ -1046,6 +1052,9 @@ func TestMemoryBudgetsHoldUnderMixedLoad(t *testing.T) {
 			checkInvariants(t, store)
 		}
 	}
+	// The load reaches both limits, so the checks above are not vacuous.
+	require.Positive(t, refusals)
+	require.Positive(t, observer.counts[EvictionSurplus]+observer.counts[EvictionOverReserve]+observer.counts[EvictionScopeCap])
 }
 
 // The store admits a scope only up to the limit its pool allows, and the budgets stay whole with shards.

@@ -1,0 +1,672 @@
+package rpcdedup
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/centrifugal/centrifuge"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeEntry is a Redis record of the fake backend: state is 'i' in flight, 'd' done or 'c' cancelled.
+type fakeEntry struct {
+	state       byte
+	fingerprint [32]byte
+	owner       string
+	rec         Record
+}
+
+// fakeBackend is the shared tier in memory. Its scripts follow the semantics of redis_scripts.go, and it counts and
+// logs its calls. The fail switch makes every call fail, as an unreachable Redis does.
+type fakeBackend struct {
+	mu        sync.Mutex
+	entries   map[Key]*fakeEntry
+	fail      error
+	connected bool
+	calls     []string
+	acks      [][]ScopeAcks
+	// onBegin and onComplete run when the call is made, before it takes effect and outside the lock.
+	onBegin    func()
+	onComplete func()
+}
+
+// newFakeBackend returns a connected backend without records.
+func newFakeBackend() *fakeBackend {
+	return &fakeBackend{entries: make(map[Key]*fakeEntry), connected: true}
+}
+
+// enter logs a call and returns the failure of the backend.
+func (f *fakeBackend) enter(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, name)
+	return f.fail
+}
+
+// setFail makes every later call fail with err, or succeed when err is nil.
+func (f *fakeBackend) setFail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = err
+}
+
+// callLog returns the names of the calls made so far.
+func (f *fakeBackend) callLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+// resetCalls forgets the names of the calls made so far.
+func (f *fakeBackend) resetCalls() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
+}
+
+// ackBatches returns the batches of acks flushed so far.
+func (f *fakeBackend) ackBatches() [][]ScopeAcks {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]ScopeAcks(nil), f.acks...)
+}
+
+// put sets the record of key.
+func (f *fakeBackend) put(key Key, state byte, fingerprint [32]byte, owner string, rec Record) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries[key] = &fakeEntry{state: state, fingerprint: fingerprint, owner: owner, rec: rec}
+}
+
+// finish makes the in-flight record of key a done record with rec, as the owner completes it.
+func (f *fakeBackend) finish(key Key, rec Record) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.entries[key]
+	e.state = 'd'
+	e.owner = ""
+	e.rec = rec
+}
+
+// remove deletes the record of key, as its expiry does.
+func (f *fakeBackend) remove(key Key) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.entries, key)
+}
+
+// entry returns a copy of the record of key.
+func (f *fakeBackend) entry(key Key) (fakeEntry, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e, found := f.entries[key]
+	if !found {
+		return fakeEntry{}, false
+	}
+	return *e, true
+}
+
+// Begin implements Backend with the semantics of beginScript.
+func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration) (BeginResult, error) {
+	if err := f.enter("begin"); err != nil {
+		return BeginResult{}, err
+	}
+	if f.onBegin != nil {
+		f.onBegin()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.entries[key]
+	if e == nil {
+		f.entries[key] = &fakeEntry{state: 'i', fingerprint: fingerprint, owner: nodeID}
+		return BeginResult{State: BeginMiss}, nil
+	}
+	if e.state == 'c' {
+		return BeginResult{State: BeginDone, Record: e.rec}, nil
+	}
+	if e.fingerprint != fingerprint {
+		return BeginResult{State: BeginMismatch}, nil
+	}
+	if e.state == 'i' {
+		return BeginResult{State: BeginInFlight, Owner: e.owner}, nil
+	}
+	return BeginResult{State: BeginDone, Record: e.rec}, nil
+}
+
+// Complete implements Backend with the semantics of completeScript: only the owner completes its record.
+func (f *fakeBackend) Complete(_ context.Context, key Key, nodeID string, rec Record, _ time.Duration) (bool, error) {
+	if err := f.enter("complete"); err != nil {
+		return false, err
+	}
+	if f.onComplete != nil {
+		f.onComplete()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.entries[key]
+	if e == nil || e.state != 'i' || e.owner != nodeID {
+		return false, nil
+	}
+	if rec.Abandoned {
+		delete(f.entries, key)
+		return true, nil
+	}
+	e.state = 'd'
+	e.owner = ""
+	if rec.Uncached {
+		e.rec = Record{Uncached: true}
+	} else {
+		e.rec = rec
+	}
+	return true, nil
+}
+
+// Cancel implements Backend with the semantics of cancelScript.
+func (f *fakeBackend) Cancel(_ context.Context, key Key, failure *centrifuge.Error, _ time.Duration) (CancelResult, error) {
+	if err := f.enter("cancel"); err != nil {
+		return CancelResult{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.entries[key]
+	if e == nil {
+		f.entries[key] = &fakeEntry{state: 'c', rec: Record{Err: failure}}
+		return CancelResult{State: CancelTombstone}, nil
+	}
+	if e.state == 'i' {
+		return CancelResult{State: CancelInFlight, Owner: e.owner}, nil
+	}
+	return CancelResult{State: CancelDone}, nil
+}
+
+// Poll implements Backend with the semantics of HMGET of the watcher.
+func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
+	if err := f.enter("poll"); err != nil {
+		return PollResult{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := f.entries[key]
+	if e == nil {
+		return PollResult{State: PollMissing}, nil
+	}
+	if e.state == 'i' {
+		return PollResult{State: PollInFlight}, nil
+	}
+	return PollResult{State: PollDone, Record: e.rec}, nil
+}
+
+// Ack implements Backend: it deletes the done records and tombstones of the acks, and keeps the batch.
+func (f *fakeBackend) Ack(_ context.Context, acks []ScopeAcks) error {
+	if err := f.enter("ack"); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.acks = append(f.acks, acks)
+	for _, scope := range acks {
+		for _, msgID := range scope.MsgIDs {
+			key := Key{Scope: scope.Scope, MsgID: msgID}
+			if e := f.entries[key]; e != nil && e.state != 'i' {
+				delete(f.entries, key)
+			}
+		}
+	}
+	return nil
+}
+
+// Connected implements Backend.
+func (f *fakeBackend) Connected() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connected
+}
+
+// notifyCall is a cancel notification of the fake node.
+type notifyCall struct {
+	nodeID string
+	key    Key
+}
+
+// sharedFixture is a Shared store over a node-local Memory and a fake backend, as node-a.
+type sharedFixture struct {
+	local    *Memory
+	backend  *fakeBackend
+	shared   *Shared
+	notified []notifyCall
+	dropped  int
+}
+
+// AckDropped implements SharedObserver.
+func (fx *sharedFixture) AckDropped() {
+	fx.dropped++
+}
+
+// newSharedFixture returns a shared store of node-a with the given failure mode.
+func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
+	t.Helper()
+	local, _ := newTestMemory(1024)
+	fx := &sharedFixture{local: local, backend: newFakeBackend()}
+	fx.shared = NewShared(SharedOptions{
+		Local:         local,
+		Backend:       fx.backend,
+		NodeID:        "node-a",
+		TTL:           time.Minute,
+		MaxReplyBytes: 1024,
+		FailOpen:      failOpen,
+		Notifier: func(nodeID string, key Key) {
+			fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
+		},
+		Observer:      fx,
+		PollInitial:   time.Millisecond,
+		PollMax:       2 * time.Millisecond,
+		AckFlushEvery: time.Hour,
+	})
+	return fx
+}
+
+// sharedKey is the key of the tests, of a session scope of user u1.
+var sharedKey = Key{Scope: testScope("u1", "a"), MsgID: 7}
+
+var (
+	sharedFingerprintA = Fingerprint("users.get", []byte("x"))
+	sharedFingerprintB = Fingerprint("users.get", []byte("y"))
+)
+
+// waitDone waits for the flight to finish, and fails the test when it does not.
+func waitDone(t *testing.T, flight *Flight) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		select {
+		case <-flight.Done():
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second, time.Millisecond)
+}
+
+func TestSharedImplementsStore(t *testing.T) {
+	var store Store = &Shared{}
+	require.NotNil(t, store)
+}
+
+func TestSharedLocalDoneHitMakesNoBackendCall(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeMiss, lookup.Outcome)
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+
+	fx.backend.resetCalls()
+	lookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("ok"), lookup.Record.Reply)
+	require.Empty(t, fx.backend.callLog())
+}
+
+func TestSharedLocalUncachedHitPollsBackendWithoutCaching(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	require.Equal(t, OutcomeMiss, testBegin(t, fx.local, sharedKey, owner).Outcome)
+	require.NoError(t, fx.local.Complete(sharedKey, owner, Record{Reply: make([]byte, 2000)}))
+	fx.backend.put(sharedKey, 'd', sharedFingerprintA, "", Record{Reply: []byte("from-redis")})
+
+	lookup, err := fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("from-redis"), lookup.Record.Reply)
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "poll"))
+
+	// The local record stays uncached: the reply of Redis is not kept on this node.
+	lookup, err = fx.local.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+}
+
+// countCalls returns how many times name is in calls.
+func countCalls(calls []string, name string) int {
+	n := 0
+	for _, call := range calls {
+		if call == name {
+			n++
+		}
+	}
+	return n
+}
+
+func TestSharedMissWritesRedisBeforeMemory(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	var localFlightRunning bool
+	fx.backend.onComplete = func() {
+		localFlightRunning = fx.local.flightOf(sharedKey) != nil
+	}
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeMiss, lookup.Outcome)
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+
+	// Redis was written while the local flight was still registered, so the local record came second.
+	require.True(t, localFlightRunning)
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.Equal(t, byte('d'), entry.state)
+	require.Equal(t, []byte("ok"), entry.rec.Reply)
+	localLookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, localLookup.Outcome)
+}
+
+func TestSharedBackendDoneOnLocalMissIsCachedAndWakesDuplicates(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'd', sharedFingerprintA, "", Record{Reply: []byte("from-backend")})
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	var duplicateLookup Lookup
+	fx.backend.onBegin = func() {
+		var err error
+		duplicateLookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+		require.NoError(t, err)
+	}
+
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("from-backend"), lookup.Record.Reply)
+	require.Equal(t, OutcomeInFlight, duplicateLookup.Outcome)
+	require.Same(t, owner, duplicateLookup.Flight)
+	waitDone(t, owner)
+	require.Equal(t, []byte("from-backend"), owner.Record().Reply)
+
+	// Cached: the next duplicate is a local hit.
+	fx.backend.resetCalls()
+	lookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Empty(t, fx.backend.callLog())
+}
+
+func TestSharedMismatchAbandonsLocalFlight(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'd', sharedFingerprintB, "", Record{Reply: []byte("other")})
+
+	lookup, err := fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeMismatch, lookup.Outcome)
+	require.Nil(t, lookup.Flight)
+	require.True(t, testIsMiss(t, fx.local, sharedKey))
+}
+
+func TestSharedRemoteInFlightWaitsForAnswer(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+	require.Same(t, owner, lookup.Flight)
+
+	// A second duplicate on this node joins the same local flight.
+	duplicate := NewCallFlight(sharedFingerprintA, time.Second)
+	duplicateLookup, err := fx.shared.Begin(sharedKey, duplicate)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlight, duplicateLookup.Outcome)
+	require.Same(t, owner, duplicateLookup.Flight)
+
+	// Node-b completes the call; the watcher completes the local flight, which wakes both duplicates.
+	fx.backend.finish(sharedKey, Record{Reply: []byte("answer")})
+	waitDone(t, owner)
+	require.Equal(t, []byte("answer"), owner.Record().Reply)
+
+	lookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+}
+
+func TestSharedRemoteKeyVanishingAbandonsFlight(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+
+	// The owner died and its record expired.
+	fx.backend.remove(sharedKey)
+	waitDone(t, owner)
+	require.True(t, owner.Record().Abandoned)
+}
+
+func TestSharedRemoteWatcherDeadlineAbandonsFlight(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.inflightGrace = 20 * time.Millisecond
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	owner := NewCallFlight(sharedFingerprintA, 0)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+
+	// Node-b never completes the call: the watcher gives up at the in-flight TTL.
+	waitDone(t, owner)
+	require.True(t, owner.Record().Abandoned)
+}
+
+func TestSharedFailOpenDegradesToLocalDedup(t *testing.T) {
+	fx := newSharedFixture(t, true)
+	fx.backend.setFail(errors.New("redis is down"))
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeMiss, lookup.Outcome)
+	require.True(t, owner.localOnly)
+
+	fx.backend.resetCalls()
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Empty(t, fx.backend.callLog(), "a local-only flight does not write Redis")
+
+	// The record is kept on this node, so a duplicate is a local hit.
+	lookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("ok"), lookup.Record.Reply)
+}
+
+func TestSharedFailClosedRefusesCall(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.setFail(errors.New("redis is down"))
+	_, err := fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Error(t, err)
+
+	// The flight is abandoned: the next call is a miss again.
+	require.True(t, testIsMiss(t, fx.local, sharedKey))
+}
+
+func TestSharedCancelOfLocalFlightMakesNoBackendCall(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner.Attach(cancel)
+
+	fx.backend.resetCalls()
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Empty(t, fx.backend.callLog())
+}
+
+func TestSharedCancelTombstoneIsCachedLocally(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.Equal(t, []string{"cancel"}, fx.backend.callLog())
+
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+}
+
+func TestSharedCancelInFlightElsewhereNotifiesOwner(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}}, fx.notified)
+	require.True(t, testIsMiss(t, fx.local, sharedKey), "nothing is recorded locally")
+}
+
+func TestSharedCancelOwnedByThisNodeWithoutFlightDoesNothing(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-a", Record{})
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.Empty(t, fx.notified)
+	require.True(t, testIsMiss(t, fx.local, sharedKey))
+}
+
+func TestSharedCancelFailureFollowsOnStoreError(t *testing.T) {
+	fx := newSharedFixture(t, true)
+	fx.backend.setFail(errors.New("redis is down"))
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+
+	closed := newSharedFixture(t, false)
+	closed.backend.setFail(errors.New("redis is down"))
+	require.Error(t, closed.shared.Cancel(sharedKey, testCancelled))
+}
+
+func TestSharedCompleteOverReplyLimitStoresUncached(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: make([]byte, 2000)}))
+
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.True(t, entry.rec.Uncached)
+	require.Nil(t, entry.rec.Reply)
+}
+
+func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	scopeA := testScope("u1", "a")
+	scopeB := testScope("u2", "b")
+	for _, key := range []Key{{Scope: scopeA, MsgID: 1}, {Scope: scopeA, MsgID: 2}, {Scope: scopeB, MsgID: 1}} {
+		testAnswer(t, fx.local, key, "ok")
+		fx.backend.put(key, 'd', sharedFingerprintA, "", Record{Reply: []byte("ok")})
+	}
+
+	require.NoError(t, fx.shared.Ack(scopeA, []uint64{1, 2}))
+	require.NoError(t, fx.shared.Ack(scopeB, []uint64{1}))
+	require.True(t, testIsMiss(t, fx.local, Key{Scope: scopeA, MsgID: 1}))
+	_, stillInRedis := fx.backend.entry(Key{Scope: scopeA, MsgID: 1})
+	require.True(t, stillInRedis, "the ack is not sent before the flush")
+
+	// Shutdown flushes the queue once more: one batch, grouped by scope.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fx.shared.Run(ctx) }()
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	batches := fx.backend.ackBatches()
+	require.Len(t, batches, 1)
+	require.Len(t, batches[0], 2)
+	byScope := map[string][]uint64{}
+	for _, acks := range batches[0] {
+		byScope[acks.Scope] = acks.MsgIDs
+	}
+	require.ElementsMatch(t, []uint64{1, 2}, byScope[scopeA])
+	require.ElementsMatch(t, []uint64{1}, byScope[scopeB])
+	_, found := fx.backend.entry(Key{Scope: scopeA, MsgID: 1})
+	require.False(t, found)
+}
+
+func TestSharedAckFlushesOnTicker(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ackFlushEvery = time.Millisecond
+	scope := testScope("u1", "a")
+	testAnswer(t, fx.local, Key{Scope: scope, MsgID: 1}, "ok")
+	fx.backend.put(Key{Scope: scope, MsgID: 1}, 'd', sharedFingerprintA, "", Record{Reply: []byte("ok")})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- fx.shared.Run(ctx) }()
+	require.NoError(t, fx.shared.Ack(scope, []uint64{1}))
+	require.Eventually(t, func() bool {
+		_, found := fx.backend.entry(Key{Scope: scope, MsgID: 1})
+		return !found
+	}, 5*time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+// droppedAckObserver counts the dropped acks of a Shared store.
+type droppedAckObserver struct {
+	dropped atomic.Int32
+}
+
+// AckDropped implements SharedObserver.
+func (o *droppedAckObserver) AckDropped() {
+	o.dropped.Add(1)
+}
+
+func TestSharedAckQueueFullDropsAndCounts(t *testing.T) {
+	local, _ := newTestMemory(1024)
+	observer := &droppedAckObserver{}
+	shared := NewShared(SharedOptions{
+		Local:        local,
+		Backend:      newFakeBackend(),
+		NodeID:       "node-a",
+		TTL:          time.Minute,
+		Observer:     observer,
+		AckQueueSize: 1,
+	})
+	scope := testScope("u1", "a")
+	require.NoError(t, shared.Ack(scope, []uint64{1, 2, 3}))
+	require.Equal(t, int32(2), observer.dropped.Load())
+}
+
+func TestSharedAllocsPerLocalHit(t *testing.T) {
+	const runs = 500
+	fx := newSharedFixture(t, false)
+	keys := make([]Key, runs+1)
+	for i := range keys {
+		keys[i] = Key{Scope: testScope("u1", "a"), MsgID: uint64(i + 1)}
+		testAnswer(t, fx.local, keys[i], "ok")
+	}
+	flights := make([]*Flight, runs+1)
+	for i := range flights {
+		flights[i] = NewFlightWithFingerprint(sharedFingerprintA)
+	}
+
+	next := 0
+	sharedAllocs := testing.AllocsPerRun(runs, func() {
+		lookup, err := fx.shared.Begin(keys[next], flights[next])
+		if err != nil || lookup.Outcome != OutcomeDone {
+			t.Error("unexpected shared outcome")
+		}
+		next++
+	})
+
+	next = 0
+	memoryAllocs := testing.AllocsPerRun(runs, func() {
+		lookup, err := fx.local.Begin(keys[next], flights[next])
+		if err != nil || lookup.Outcome != OutcomeDone {
+			t.Error("unexpected memory outcome")
+		}
+		next++
+	})
+	require.LessOrEqual(t, sharedAllocs, memoryAllocs)
+	require.Zero(t, sharedAllocs)
+}

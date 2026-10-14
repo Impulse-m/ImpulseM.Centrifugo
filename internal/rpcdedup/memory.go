@@ -328,6 +328,14 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	return nil
 }
 
+// flightOf returns the flight of key which is registered on this store, or nil.
+func (m *Memory) flightOf(key Key) *Flight {
+	s := m.shardOf(key.Scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flights[key]
+}
+
 // CancelFlight cancels the call of key when it is in flight on this store, and reports whether it was. The
 // call is cancelled outside the lock; its owner completes the flight with the record of the cancelled call.
 func (m *Memory) CancelFlight(key Key) bool {

@@ -21,6 +21,8 @@ type Flight struct {
 	timeout time.Duration
 	// localOnly is set when the call runs without the shared tier, see Shared.Begin.
 	localOnly bool
+	// remote is set when the call runs on another node, and this flight waits for its answer.
+	remote bool
 }
 
 // NewFlight returns a flight which has not started, with a zero fingerprint. A zero fingerprint matches only a
@@ -66,6 +68,20 @@ func (f *Flight) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// markRemote marks the flight as waiting for a call which runs on another node.
+func (f *Flight) markRemote() {
+	f.mu.Lock()
+	f.remote = true
+	f.mu.Unlock()
+}
+
+// isRemote reports whether the flight waits for a call which runs on another node.
+func (f *Flight) isRemote() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.remote
 }
 
 // Done returns a channel which is closed when the owner completes the flight.

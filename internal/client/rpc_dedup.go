@@ -40,14 +40,16 @@ const (
 // window and the skew of the msg_id check. The window and the skew are captured here, with the store, since the
 // store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
 // joined, when set, is called each time a duplicate joins a call in flight on this node, before it waits. Tests set
-// it to learn of a join.
+// it to learn of a join. afterBackend, when set, is called by the owner of a dedup call once its backend returned,
+// before the record is kept. Tests set it to fail after the backend committed.
 type rpcDedupState struct {
-	store     rpcdedup.Store
-	metrics   *metrics.RPCRegistryDedupMetrics
-	window    time.Duration
-	maxSkew   time.Duration
-	anonymous bool
-	joined    func()
+	store        rpcdedup.Store
+	metrics      *metrics.RPCRegistryDedupMetrics
+	window       time.Duration
+	maxSkew      time.Duration
+	anonymous    bool
+	joined       func()
+	afterBackend func()
 }
 
 // newRPCDedupState returns the exactly-once RPC state of the config, or nil when the dedup is off. The state is
@@ -298,7 +300,8 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 	release := track.inflight.Add(e.Call.MsgID, cancel)
 	defer release()
 	// The owner always completes its flight, so its duplicates never wait on a call which ended without an answer.
-	// A panic in the call leaves the flight abandoned, and the duplicates retry.
+	// A panic in the call leaves the flight abandoned, with no record: the call may have run, so the duplicates get
+	// the error without the retry signal.
 	completed := false
 	defer func() {
 		if !completed {
@@ -306,6 +309,9 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 		}
 	}()
 	reply, callErr := h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
+	if h.rpcDedup.afterBackend != nil {
+		h.rpcDedup.afterBackend()
+	}
 	completed = true
 	h.completeRPCRecord(key, flight, rpcRecordOf(reply, callErr))
 	return reply, callErr
@@ -389,8 +395,8 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	h.rpcDedup.metrics.ObserveWait(time.Since(started).Seconds())
 	rec := flight.Record()
 	if rec.Abandoned {
-		// The call did not answer, and was not kept: the duplicate retries.
-		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater))
+		// The call did not answer, and was not kept. It may have run, so no retry signal is sent: the app decides.
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, ""))
 	}
 	return h.rpcRecordedReply(rec, cfg)
 }

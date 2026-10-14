@@ -900,8 +900,8 @@ func TestRPCDedupJoinTimeoutCarriesLaterSignal(t *testing.T) {
 	requireRetrySignal(t, err, rpcRetryLater)
 }
 
-// A duplicate of a flight which was abandoned by its owner is answered with the later signal, and retries.
-func TestRPCDedupAbandonedOwnerCarriesLaterSignal(t *testing.T) {
+// A duplicate of a flight which was abandoned by its owner is answered without the signal: the call may have run.
+func TestRPCDedupAbandonedOwnerCarriesNoSignal(t *testing.T) {
 	h := newDedupHandler(t, dedupRegistryConfig(), newDedupBackend(t))
 	m := h.rpcRegistry.Lookup("users.put")
 	require.NotNil(t, m)
@@ -915,7 +915,39 @@ func TestRPCDedupAbandonedOwnerCarriesLaterSignal(t *testing.T) {
 	duplicate := newDedupClient("c2", "42", nil, testInstance)
 	_, err = h.rpcJoin(duplicate, m, h.registryConfig(), flight)
 	require.True(t, requireProtocolError(t, err).Temporary)
-	requireRetrySignal(t, err, rpcRetryLater)
+	requireNoRetrySignal(t, err)
+}
+
+// A panic after the backend committed abandons the flight, and the duplicate which joined it is answered without the
+// signal: the call ran, so a resend with the same msg_id must not be sent by the client. The backend runs once.
+func TestRPCDedupPanicAfterBackendCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	joined := testJoinSignal(h)
+	h.rpcDedup.afterBackend = func() {
+		panic("reply mapping failed")
+	}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	duplicate := newDedupClient("c2", "42", nil, testInstance)
+	msgID := dedupMsgID(29)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	backend.waitEntered(t)
+	duplicateDone := dedupCallAsync(h, duplicate, "users.put", msgID, "gate")
+	requireJoined(t, joined)
+	backend.releaseGate()
+
+	require.NotNil(t, <-ownerPanic)
+	dup := waitDedupResult(t, duplicateDone)
+	require.True(t, requireProtocolError(t, dup.err).Temporary)
+	requireNoRetrySignal(t, dup.err)
+	require.Len(t, backend.Calls(), 1)
 }
 
 // A retransmit on the same connection, while a call runs untracked under fail_open, is refused without the signal:

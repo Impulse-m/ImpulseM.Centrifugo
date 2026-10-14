@@ -94,6 +94,11 @@ func (h *Handler) onRefreshRebind(
 	h.attachRateLimit(c, newUser)
 	h.replaceRegistryToken(c, token, nextClass)
 	storeTokenUser(c, verified.UserID)
+	// The channels of the user go before the identity moves, so the anonymous identity never receives them. A rebind
+	// which is refused after this leaves the connection without them, until its next refresh subscribes them again.
+	if newUser == "" {
+		h.unsubscribeNotAnonymous(c)
+	}
 	err := c.Rebind(centrifuge.RebindOptions{
 		UserID:        newUser,
 		ExpireAt:      verified.ExpireAt,
@@ -119,9 +124,6 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	if newUser == "" {
-		h.unsubscribeNotAnonymous(c)
-	}
 	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

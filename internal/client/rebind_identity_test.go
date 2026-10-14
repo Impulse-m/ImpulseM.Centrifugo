@@ -9,6 +9,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
+	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -195,4 +196,26 @@ func TestRefreshWhileAnotherIsInProgressIsRejected(t *testing.T) {
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
 	}, nil)
 	require.NoError(t, err)
+}
+
+// TestRebindDowngradeDropsUserChannelsBeforeTheRebind checks that the personal channel of the user is gone when the
+// rebind to the anonymous identity runs.
+func TestRebindDowngradeDropsUserChannelsBeforeTheRebind(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, false)
+	client, state := newRebindTestClient("42", "authenticated")
+	state.channels = map[string]centrifuge.ChannelContext{
+		"#42": {Source: subsource.UserPersonal},
+	}
+	var personalAtRebind bool
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		_, personalAtRebind = state.channels["#42"]
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Len(t, state.rebinds, 1)
+	require.False(t, personalAtRebind)
+	require.Empty(t, state.user)
 }

@@ -116,6 +116,7 @@ A connection whose class is `pending_2fa` has a user in its token, which the reg
 * it gets no personal channel, no user-limited channels and no entry in the user index of the node, so calls which address a user do not reach it;
 * the user is still reported in the connect and refresh results, and the token is still forwarded to `pending_2fa` methods;
 * it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of connections without a user which carry a token session, and a connection leaves it when it gets a user or disconnects. The index also holds anonymous connections with a session, so a revocation of their session disconnects them at once and not only in the sweep of all connections;
+* a user block and a user-level token invalidation do not reach it: it stays connected until its token expires, and only a session revocation or a refresh disconnects it;
 * connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them.
 
 ### Rebind on refresh

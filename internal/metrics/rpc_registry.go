@@ -3,6 +3,8 @@ package metrics
 import (
 	"strings"
 	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // rpcRegistryMaxAppTypes caps the distinct app_type label values per process. Values beyond the cap
@@ -24,6 +26,118 @@ const (
 	RPCRegistryResultDenied    = "denied"
 	RPCRegistryResultUnknown   = "unknown"
 )
+
+// rpcRegistryResultCount is the number of RPCRegistryResult values.
+const rpcRegistryResultCount = 6
+
+// RPCRegistryTargetMetrics holds the proxy metric children of one registry target. They are resolved
+// once, when the target is built, so a call does no label lookup. A nil value does nothing.
+type RPCRegistryTargetMetrics struct {
+	duration prometheus.Observer
+	summary  prometheus.Observer
+	errors   prometheus.Counter
+	inflight prometheus.Gauge
+}
+
+// NewRPCRegistryTargetMetrics resolves the proxy metric children of target, with the grpc protocol
+// and the rpc type. It returns nil when the proxy metrics are not initialised.
+func NewRPCRegistryTargetMetrics(target string) *RPCRegistryTargetMetrics {
+	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
+		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
+		return nil
+	}
+	return &RPCRegistryTargetMetrics{
+		duration: ProxyCallDurationHistogram.WithLabelValues("grpc", "rpc", target),
+		summary:  ProxyCallDurationSummary.WithLabelValues("grpc", "rpc", target),
+		errors:   ProxyCallErrorCount.WithLabelValues("grpc", "rpc", target),
+		inflight: ProxyCallInflightRequests.WithLabelValues("grpc", "rpc", target),
+	}
+}
+
+// ObserveCall records the duration of one call to the target, and counts it as an error when failed.
+func (m *RPCRegistryTargetMetrics) ObserveCall(seconds float64, failed bool) {
+	if m == nil {
+		return
+	}
+	m.duration.Observe(seconds)
+	m.summary.Observe(seconds)
+	if failed {
+		m.errors.Inc()
+	}
+}
+
+// IncInflight counts a call to the target which started.
+func (m *RPCRegistryTargetMetrics) IncInflight() {
+	if m == nil {
+		return
+	}
+	m.inflight.Inc()
+}
+
+// DecInflight counts a call to the target which ended.
+func (m *RPCRegistryTargetMetrics) DecInflight() {
+	if m == nil {
+		return
+	}
+	m.inflight.Dec()
+}
+
+// RPCRegistryMethodMetrics holds the calls_total children of one registry method, one per result.
+// A nil value does nothing.
+type RPCRegistryMethodMetrics struct {
+	calls [rpcRegistryResultCount]prometheus.Counter
+}
+
+// NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
+// nil when the registry metrics are not initialised.
+func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
+	if RPCRegistryCallsTotal == nil {
+		return nil
+	}
+	m := &RPCRegistryMethodMetrics{}
+	for i, result := range rpcRegistryResults {
+		m.calls[i] = RPCRegistryCallsTotal.WithLabelValues(rpcMethod, result)
+	}
+	return m
+}
+
+// IncCall counts one call with its result. Results other than the RPCRegistryResult values are
+// counted as RPCRegistryResultError, as IncRPCRegistryCall does.
+func (m *RPCRegistryMethodMetrics) IncCall(result string) {
+	if m == nil {
+		return
+	}
+	m.calls[rpcRegistryResultIndex(result)].Inc()
+}
+
+// rpcRegistryResults lists the RPCRegistryResult values in the order of RPCRegistryMethodMetrics.calls.
+var rpcRegistryResults = [rpcRegistryResultCount]string{
+	RPCRegistryResultOK,
+	RPCRegistryResultError,
+	RPCRegistryResultCancelled,
+	RPCRegistryResultTimeout,
+	RPCRegistryResultDenied,
+	RPCRegistryResultUnknown,
+}
+
+// rpcRegistryResultIndex returns the index of result in rpcRegistryResults, or the index of
+// RPCRegistryResultError for other values.
+func rpcRegistryResultIndex(result string) int {
+	switch result {
+	case RPCRegistryResultOK:
+		return 0
+	case RPCRegistryResultCancelled:
+		return 2
+	case RPCRegistryResultTimeout:
+		return 3
+	case RPCRegistryResultDenied:
+		return 4
+	case RPCRegistryResultUnknown:
+		return 5
+	default:
+		return 1
+	}
+}
 
 // rpcRegistryAppTypeSet remembers the app_type label values seen by this process.
 type rpcRegistryAppTypeSet struct {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 )
 
 // DialFunc makes the connection of a target. Prepare calls it for every target which is new or
@@ -112,7 +113,10 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			next.targets[def.Name] = prev
 			continue
 		}
-		target := &Target{Config: normalized}
+		target := &Target{
+			Config:  normalized,
+			Metrics: metrics.NewRPCRegistryTargetMetrics(def.Name),
+		}
 		if r.dial != nil {
 			conn, err := r.dial(target)
 			if err != nil {
@@ -143,6 +147,7 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			Name:       def.Method,
 			GRPCMethod: def.GRPCMethod,
 			Target:     target,
+			Metrics:    metrics.NewRPCRegistryMethodMetrics(def.Method),
 			AuthClass:  authClass,
 			Timeout: firstNonZero(
 				def.Timeout.ToDuration(),

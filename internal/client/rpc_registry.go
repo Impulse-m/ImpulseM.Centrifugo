@@ -20,12 +20,6 @@ import (
 // registryUnknownMethod is the rpc_method label of calls to names which are not in the registry.
 const registryUnknownMethod = "unknown"
 
-// registryProxyProtocol is the protocol label of the proxy metrics of registry targets.
-const registryProxyProtocol = "grpc"
-
-// registryProxyType is the type label of the proxy metrics of registry targets.
-const registryProxyType = "rpc"
-
 // SetRPCRegistry sets the RPC method registry consulted for client RPC calls. Must be called before Setup.
 func (h *Handler) SetRPCRegistry(registry *rpcregistry.Registry) {
 	h.rpcRegistry = registry
@@ -49,7 +43,8 @@ func (h *Handler) onRPCRegistry(c Client, e centrifuge.RPCEvent, rpcProxyHandler
 			return centrifuge.RPCReply{}, false, nil
 		}
 		unknownErr := registryError(h.registryErrors().UnknownMethod)
-		return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
+		metrics.IncRPCRegistryCall(registryUnknownMethod, metrics.RPCRegistryResultUnknown)
+			return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
 	}
 	reply, err := h.callRPCRegistry(c, e, m)
 	return reply, true, err
@@ -83,17 +78,18 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 	// the auth upgrade work, so they are not invented here.
 	if m.AuthClass != rpcregistry.AuthClassAnonymous && c.UserID() == "" {
 		authErr := registryError(cfg.Errors.AuthClass)
-		return centrifuge.RPCReply{}, registryFailure(m.Name, metrics.RPCRegistryResultDenied, authErr)
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultDenied, authErr)
 	}
 	if len(e.Data) > m.MaxRequestBytes {
 		sizeErr := registryError(cfg.Errors.RequestTooLarge)
-		return centrifuge.RPCReply{}, registryFailure(m.Name, metrics.RPCRegistryResultError, sizeErr)
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, sizeErr)
 	}
 	var token string
 	if m.AuthClass != rpcregistry.AuthClassAnonymous {
 		token = connectionToken(c)
 	}
 	started := time.Now()
+	m.Target.Metrics.IncInflight()
 	data, trailers, err := proxy.CallRegistryMethod(c.Context(), m, proxy.RegistryCall{
 		ClientID: c.ID(),
 		Token:    token,
@@ -101,25 +97,17 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 		Headers:  e.Call.Headers,
 		MsgID:    e.Call.MsgID,
 	})
+	m.Target.Metrics.DecInflight()
 	// The client context decides whether the call was cancelled. A CANCELLED status sent by the
-	// backend on a live connection is an ordinary failure of the target.
+	// backend on a live connection is an ordinary failure of the target. A cancelled call is not a
+	// proxy error: the client went away, the target did not fail.
 	cancelled := errors.Is(c.Context().Err(), context.Canceled)
-	observeRegistryTarget(m.Target.Config.Name, time.Since(started).Seconds(), err, cancelled)
+	m.Target.Metrics.ObserveCall(time.Since(started).Seconds(), err != nil && !cancelled)
 	if err != nil {
-		return centrifuge.RPCReply{}, registryFailure(m.Name, registryCallResult(err, cancelled), registryCallError(err, trailers, m, cfg, cancelled))
+		return centrifuge.RPCReply{}, registryMethodFailure(m, registryCallResult(err, cancelled), registryCallError(err, trailers, m, cfg, cancelled))
 	}
-	metrics.IncRPCRegistryCall(m.Name, metrics.RPCRegistryResultOK)
+	m.Metrics.IncCall(metrics.RPCRegistryResultOK)
 	return centrifuge.RPCReply{Data: data}, nil
-}
-
-// observeRegistryTarget records the duration of a call to a registry target in the proxy metrics,
-// with the target as the name label. A cancelled call is not counted as a proxy error: the client
-// went away, the target did not fail.
-func observeRegistryTarget(target string, seconds float64, err error, cancelled bool) {
-	metrics.ProxyCallDurationHistogram.WithLabelValues(registryProxyProtocol, registryProxyType, target).Observe(seconds)
-	if err != nil && !cancelled {
-		metrics.ProxyCallErrorCount.WithLabelValues(registryProxyProtocol, registryProxyType, target).Inc()
-	}
 }
 
 // registryCallError maps the error of a failed registry call to the error the client receives. It
@@ -153,10 +141,15 @@ func registryCallResult(err error, cancelled bool) string {
 	}
 }
 
-// registryFailure counts a registry call which ends with err, and returns err. A cancelled call is
-// counted in the call counter only, as the proxy error counter does not count it.
+// registryMethodFailure counts a failed call of m with its result, and returns err.
+func registryMethodFailure(m *rpcregistry.Method, result string, err error) error {
+	m.Metrics.IncCall(result)
+	return registryFailure(m.Name, result, err)
+}
+
+// registryFailure counts the application error of a failed registry call, and returns err. The call
+// counter is counted by the caller. A cancelled call has no application error to count.
 func registryFailure(method string, result string, err error) error {
-	metrics.IncRPCRegistryCall(method, result)
 	if result == metrics.RPCRegistryResultCancelled {
 		return err
 	}

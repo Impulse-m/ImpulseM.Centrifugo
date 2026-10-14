@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 )
 
 // AuthClass is the auth class a connection must have to call a registry method.
@@ -47,6 +48,8 @@ func ParseAuthClass(name string) (AuthClass, bool) {
 // A reload reuses a target whose normalized config is equal to the new one.
 type Target struct {
 	Config configtypes.RPCTarget
+	// Metrics are the proxy metric children of the target, nil when the metrics are not initialised.
+	Metrics *metrics.RPCRegistryTargetMetrics
 	// conn is the connection to the target, made by the dial hook. Nil when no hook is set.
 	conn io.Closer
 }
@@ -57,7 +60,9 @@ type Method struct {
 	Name       string
 	GRPCMethod string
 	Target     *Target
-	AuthClass  AuthClass
+	// Metrics are the calls_total children of the method, nil when the metrics are not initialised.
+	Metrics   *metrics.RPCRegistryMethodMetrics
+	AuthClass AuthClass
 	Timeout    time.Duration
 	// MaxRequestBytes and MaxResponseBytes are the size limits of the call.
 	MaxRequestBytes  int

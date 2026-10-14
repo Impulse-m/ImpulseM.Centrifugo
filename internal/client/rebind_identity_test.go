@@ -73,7 +73,7 @@ func TestRebindStoresNewIdentityBeforeCoreUser(t *testing.T) {
 }
 
 // connIsClosed reports whether the handler state of the connection is marked closed.
-func connIsClosed(c Client) bool {
+func connIsClosed(c rebindableClient) bool {
 	st := connStateOf(c)
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -83,7 +83,7 @@ func connIsClosed(c Client) bool {
 // closeInRebindHook closes the connection from the rebind hook, and returns once its disconnect has released it.
 func closeInRebindHook(t *testing.T, client *centrifuge.Client) {
 	t.Helper()
-	hook := func(c Client) {
+	hook := func(c rebindableClient) {
 		client.Disconnect(centrifuge.DisconnectForceNoReconnect)
 		require.Eventually(t, func() bool { return connIsClosed(c) }, 5*time.Second, time.Millisecond)
 	}
@@ -123,7 +123,7 @@ func TestRebindCloseBeforeSyncReleasesUserState(t *testing.T) {
 	st := rateLimitStateOf(client)
 	require.NotNil(t, st)
 
-	hook := func(c Client) {
+	hook := func(c rebindableClient) {
 		require.True(t, budgetAllowed(h, st), "the connection draws on the budget of 42 once it is rebound")
 		client.Disconnect(centrifuge.DisconnectForceNoReconnect)
 		require.Eventually(t, func() bool { return connIsClosed(c) }, 5*time.Second, time.Millisecond)
@@ -151,7 +151,7 @@ func TestRefreshRevokedAfterTrackExpiresConnection(t *testing.T) {
 	}))
 	require.Empty(t, client.UserID())
 
-	hook := func(Client) {
+	hook := func(rebindableClient) {
 		require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
 	}
 	testHookRefreshTracked.Store(&hook)
@@ -175,7 +175,7 @@ func TestRefreshWhileAnotherIsInProgressIsRejected(t *testing.T) {
 	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
 	client, state := newRebindTestClient("", "anonymous")
 	var secondErr error
-	hook := func(c Client) {
+	hook := func(c rebindableClient) {
 		_, _, secondErr = h.OnRefresh(c, centrifuge.RefreshEvent{
 			Token: rebindTestToken(t, "43", "authenticated", revokeTestUUID, nil),
 		}, nil)

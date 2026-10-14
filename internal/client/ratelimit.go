@@ -144,7 +144,7 @@ func (h *Handler) Services() []service.Service {
 
 // attachRateLimit attaches the user state of the rate limits to the connection. Connections without a user
 // are not attached. A rebind attaches the state of the new user after it detaches the old one.
-func (h *Handler) attachRateLimit(c Client, userID string) {
+func (h *Handler) attachRateLimit(c rebindableClient, userID string) {
 	if h.userLimiter == nil || userID == "" {
 		return
 	}
@@ -157,7 +157,7 @@ func (h *Handler) attachRateLimit(c Client, userID string) {
 
 // detachRateLimit releases the user state of the rate limits attached to the connection. It is safe to call
 // for a connection which is not attached.
-func (h *Handler) detachRateLimit(c Client) {
+func (h *Handler) detachRateLimit(c rebindableClient) {
 	if h.userLimiter == nil {
 		return
 	}

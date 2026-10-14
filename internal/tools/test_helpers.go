@@ -211,7 +211,6 @@ func (c *CommonGRPCProxyTestCase) Teardown() {
 }
 
 type TestClientMock struct {
-	RebindMockStubs
 	IDFunc           func() string
 	UserIDFunc       func() string
 	IsSubscribedFunc func(string) bool

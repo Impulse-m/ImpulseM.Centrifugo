@@ -196,10 +196,9 @@ func TestAccessRevokeConnectProxyPathChecksBlockOnly(t *testing.T) {
 
 func TestAccessRevokeRefresh(t *testing.T) {
 	now := time.Now().Unix()
-	client := &tools.TestClientMock{
-		IDFunc:     func() string { return "client-1" },
-		UserIDFunc: func() string { return "42" },
-	}
+	client := &rebindClientMock{}
+	client.IDFunc = func() string { return "client-1" }
+	client.UserIDFunc = func() string { return "42" }
 
 	tests := []struct {
 		name          string
@@ -275,18 +274,16 @@ func TestAccessRevokeRefreshProxyPathChecksBlockOnly(t *testing.T) {
 		return centrifuge.RefreshReply{}, proxy.RefreshExtra{}, nil
 	}
 
-	blockedClient := &tools.TestClientMock{
-		IDFunc:     func() string { return "client-1" },
-		UserIDFunc: func() string { return "42" },
-	}
+	blockedClient := &rebindClientMock{}
+	blockedClient.IDFunc = func() string { return "client-1" }
+	blockedClient.UserIDFunc = func() string { return "42" }
 	_, _, err := h.OnRefresh(blockedClient, centrifuge.RefreshEvent{}, refreshProxyHandler)
 	require.Equal(t, accessrevoke.DisconnectUserBlocked, err)
 	require.Equal(t, 0, proxyCalls)
 
-	activeClient := &tools.TestClientMock{
-		IDFunc:     func() string { return "client-2" },
-		UserIDFunc: func() string { return "43" },
-	}
+	activeClient := &rebindClientMock{}
+	activeClient.IDFunc = func() string { return "client-2" }
+	activeClient.UserIDFunc = func() string { return "43" }
 	require.NoError(t, store.RevokeSession(revokeTestUUID, time.Now().Unix(), 0))
 	_, _, err = h.OnRefresh(activeClient, centrifuge.RefreshEvent{}, refreshProxyHandler)
 	require.NoError(t, err)

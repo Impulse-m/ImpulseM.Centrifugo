@@ -141,7 +141,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 
 	var trackedAtHook int
 	var revokeErr error
-	hook := func(Client) {
+	hook := func(rebindableClient) {
 		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
 		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0)
 	}
@@ -165,10 +165,9 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	h, store, _ := newPendingTestHandler(t)
 	now := time.Now().Unix()
-	client := &tools.TestClientMock{
-		IDFunc:     func() string { return "c1" },
-		UserIDFunc: func() string { return "" },
-	}
+	client := &rebindClientMock{}
+	client.IDFunc = func() string { return "c1" }
+	client.UserIDFunc = func() string { return "" }
 	// A pending connection established by a token has its token user stored.
 	storage, release := client.AcquireStorage()
 	storage[storageKeyTokenUser] = "42"

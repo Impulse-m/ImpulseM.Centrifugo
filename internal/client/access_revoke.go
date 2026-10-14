@@ -13,14 +13,14 @@ import (
 
 // testHookConnectTracked, if set, runs in trackConnect after the session of a connection is tracked and before the
 // connection is rechecked. Tests use it to apply a revocation at that point.
-var testHookConnectTracked atomic.Pointer[func(c Client)]
+var testHookConnectTracked atomic.Pointer[func(c rebindableClient)]
 
 // testHookRefreshTracked, if set, runs in OnRefresh after the session of a refreshed connection is tracked and before
 // the check. Tests use it to apply a revocation at that point.
-var testHookRefreshTracked atomic.Pointer[func(c Client)]
+var testHookRefreshTracked atomic.Pointer[func(c rebindableClient)]
 
 // runTestHook runs the test hook set in p, if any, with c.
-func runTestHook(p *atomic.Pointer[func(c Client)], c Client) {
+func runTestHook(p *atomic.Pointer[func(c rebindableClient)], c rebindableClient) {
 	if f := p.Load(); f != nil {
 		(*f)(c)
 	}
@@ -124,7 +124,7 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 // syncSessionConnection keeps the session index of access revocation up to date for a refreshed or rebound
 // connection. A connection with a user is not indexed, a connection without a user is indexed by the session of its
 // token.
-func (h *Handler) syncSessionConnection(c Client, userID string, identity centrifuge.TokenIdentity) {
+func (h *Handler) syncSessionConnection(c rebindableClient, userID string, identity centrifuge.TokenIdentity) {
 	if h.accessStore == nil {
 		return
 	}
@@ -138,7 +138,7 @@ func (h *Handler) syncSessionConnection(c Client, userID string, identity centri
 // trackSession sets the session of a connection in the index. A closed connection is not tracked: its disconnect
 // released it, and a session set after that would stay in the index for good. The close marks the connection under the
 // same lock, so a track either happens before the close, which then removes it, or sees the mark.
-func (h *Handler) trackSession(c Client, session [16]byte) {
+func (h *Handler) trackSession(c rebindableClient, session [16]byte) {
 	if st := connStateOf(c); st != nil {
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -151,7 +151,7 @@ func (h *Handler) trackSession(c Client, session [16]byte) {
 
 // onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
 // session index entry. The connection is marked closed first, so no session is tracked for it after the release.
-func (h *Handler) onClientDisconnect(c Client) {
+func (h *Handler) onClientDisconnect(c rebindableClient) {
 	h.detachRateLimit(c)
 	if st := connStateOf(c); st != nil {
 		st.mu.Lock()

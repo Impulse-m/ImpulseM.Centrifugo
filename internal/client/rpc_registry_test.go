@@ -32,18 +32,17 @@ func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
 }
 
 // newRegistryTestClient returns a client for the registry tests. Its storage starts with a copy of storage.
-func newRegistryTestClient(id string, userID string, ctx context.Context, storage map[string]any) *tools.TestClientMock {
-	client := &tools.TestClientMock{
-		IDFunc:     func() string { return id },
-		UserIDFunc: func() string { return userID },
-		ContextFunc: func() context.Context {
-			if ctx == nil {
-				return context.Background()
-			}
-			return ctx
-		},
-		TransportFunc: func() centrifuge.TransportInfo { return nil },
+func newRegistryTestClient(id string, userID string, ctx context.Context, storage map[string]any) *rebindClientMock {
+	client := &rebindClientMock{}
+	client.IDFunc = func() string { return id }
+	client.UserIDFunc = func() string { return userID }
+	client.ContextFunc = func() context.Context {
+		if ctx == nil {
+			return context.Background()
+		}
+		return ctx
 	}
+	client.TransportFunc = func() centrifuge.TransportInfo { return nil }
 	if len(storage) > 0 {
 		copied, release := client.AcquireStorage()
 		for key, value := range storage {
@@ -55,7 +54,7 @@ func newRegistryTestClient(id string, userID string, ctx context.Context, storag
 }
 
 // registryTestStored returns the client storage value under key.
-func registryTestStored(client *tools.TestClientMock, key string) (any, bool) {
+func registryTestStored(client *rebindClientMock, key string) (any, bool) {
 	storage, release := client.AcquireStorage()
 	defer release(storage)
 	value, ok := storage[key]

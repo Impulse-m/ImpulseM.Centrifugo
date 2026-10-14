@@ -16,13 +16,13 @@ type connState struct {
 }
 
 // connStateOf returns the state of the connection, nil when the connection has none.
-func connStateOf(c Client) *connState {
+func connStateOf(c rebindableClient) *connState {
 	st, _ := c.ExtState().(*connState)
 	return st
 }
 
 // rateLimitStateOf returns the rate limit state of the connection, nil when the connection has none.
-func rateLimitStateOf(c Client) *ratelimit.ConnState {
+func rateLimitStateOf(c rebindableClient) *ratelimit.ConnState {
 	st := connStateOf(c)
 	if st == nil {
 		return nil

@@ -15,7 +15,7 @@ import (
 
 // testHookRebound, if set, runs in onRefreshRebind after the connection is rebound and before its session is
 // tracked. Tests use it to close the connection at that point.
-var testHookRebound atomic.Pointer[func(c Client)]
+var testHookRebound atomic.Pointer[func(c rebindableClient)]
 
 // storageKeyRefreshing marks a connection whose refresh is in progress. See beginRefresh.
 const storageKeyRefreshing = "refreshing"
@@ -44,7 +44,7 @@ func endRefresh(c Client) {
 // connection is disconnected, as before. Otherwise the connection moves to the identity of the token in place: its
 // user, token, expiration and channels follow the transition between auth classes.
 func (h *Handler) onRefreshRebind(
-	c Client,
+	c rebindableClient,
 	token string,
 	verified jwtverify.ConnectToken,
 	nextClass rpcregistry.AuthClass,
@@ -143,7 +143,7 @@ func (h *Handler) onRefreshRebind(
 // the check. A revocation applied after the check then finds the connection in the index, and one applied before it is
 // seen by the check.
 func (h *Handler) refreshSameIdentity(
-	c Client,
+	c rebindableClient,
 	refreshToken string,
 	verified jwtverify.ConnectToken,
 	class rpcregistry.AuthClass,
@@ -216,7 +216,7 @@ func rebindError(clientID string, err error) error {
 // unsubscribeNotAnonymous unsubscribes the channels which a connection without a user may not keep: the
 // channels of a user, the personal channel, and the channels of token and proxy sources. A client channel stays
 // when its namespace allows anonymous subscriptions.
-func (h *Handler) unsubscribeNotAnonymous(c Client) {
+func (h *Handler) unsubscribeNotAnonymous(c rebindableClient) {
 	for channel, chCtx := range c.ChannelsWithContext() {
 		if h.keepsAnonymous(channel, chCtx.Source) {
 			continue
@@ -244,7 +244,7 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 // its personal channel, and the single connection of the user is enforced first. The channels the connection has
 // already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
 // does not disconnect it.
-func (h *Handler) subscribeRebound(c Client, userID string, subs map[string]centrifuge.SubscribeOptions) error {
+func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[string]centrifuge.SubscribeOptions) error {
 	cfg := h.cfgContainer.ConfigRef()
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
 	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled {

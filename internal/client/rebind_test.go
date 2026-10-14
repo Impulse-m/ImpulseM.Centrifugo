@@ -13,7 +13,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
-	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -35,8 +34,8 @@ type rebindTestState struct {
 
 // newRebindRegistryClient returns a fake connection with the storage given, as newRegistryTestClient does, with the
 // rebind stubs.
-func newRebindRegistryClient(id string, userID string, storage map[string]any) *tools.RebindClientMock {
-	client := &tools.RebindClientMock{}
+func newRebindRegistryClient(id string, userID string, storage map[string]any) *rebindClientMock {
+	client := &rebindClientMock{}
 	client.IDFunc = func() string { return id }
 	client.UserIDFunc = func() string { return userID }
 	client.ContextFunc = func() context.Context { return context.Background() }
@@ -52,14 +51,14 @@ func newRebindRegistryClient(id string, userID string, storage map[string]any) *
 
 // newRebindTestClient returns a fake connection of user with class in its storage, whose token user is user. Its
 // rebinds, subscribes and unsubscribes are recorded in the state.
-func newRebindTestClient(user string, class string) (*tools.RebindClientMock, *rebindTestState) {
+func newRebindTestClient(user string, class string) (*rebindClientMock, *rebindTestState) {
 	return newRebindTestClientWithToken(user, user, class)
 }
 
 // newRebindTestClientWithToken returns a fake connection of Core user, with the token user and the class stored as
 // a connection established by a token keeps them. A connection with no class stores no token user either, as a
 // connection made through a connect proxy.
-func newRebindTestClientWithToken(user string, tokenUser string, class string) (*tools.RebindClientMock, *rebindTestState) {
+func newRebindTestClientWithToken(user string, tokenUser string, class string) (*rebindClientMock, *rebindTestState) {
 	state := &rebindTestState{
 		user:         user,
 		channels:     map[string]centrifuge.ChannelContext{},

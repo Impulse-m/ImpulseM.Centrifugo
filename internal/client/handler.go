@@ -651,7 +651,7 @@ func setStorageMeta(c Client, meta json.RawMessage) {
 }
 
 // OnRefresh ...
-func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHandler proxy.RefreshHandlerFunc) (centrifuge.RefreshReply, RefreshExtra, error) {
+func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refreshProxyHandler proxy.RefreshHandlerFunc) (centrifuge.RefreshReply, RefreshExtra, error) {
 	if refreshProxyHandler != nil {
 		if h.isUserBlocked(c.UserID(), "refresh") {
 			return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked

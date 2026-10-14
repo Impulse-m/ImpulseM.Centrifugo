@@ -40,7 +40,7 @@ func newIntegrationLimiter(tb testing.TB, cfg configtypes.RateLimitRedisUserComm
 
 // firstShard returns the first connected shard of the limiter.
 func firstShard(l *RedisUserLimiter) *redisshard.RedisShard {
-	return (*l.shards.Load())[0]
+	return l.connector.Shards()[0]
 }
 
 // redisIntegrationConfig returns redis_user_command limits of publish with one bucket.

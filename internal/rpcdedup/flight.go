@@ -26,8 +26,8 @@ type Flight struct {
 }
 
 // NewFlight returns a flight which has not started, with a zero fingerprint. A zero fingerprint matches only a
-// cancelled record, and a flight with the zero fingerprint only the flight of a zero fingerprint. Calls of the
-// connections use NewFlightWithFingerprint.
+// cancelled record, and a flight with the zero fingerprint only the flight of a zero fingerprint. Calls use
+// NewCallFlight, which sets the method timeout.
 func NewFlight() *Flight {
 	return &Flight{done: make(chan struct{})}
 }

@@ -148,7 +148,7 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 
 * `window` is how long an answer is kept, and how far in the past a `msg_id` may be. `max_skew` is how far in the future it may be. `window` is at least 1s and greater than `max_skew`.
 * A call with a `msg_id` is checked against the window. The `msg_id` is the Unix second shifted left by 20 bits, plus a sequence, so it fits in 53 bits. Outside the window the call answers `errors.msg_id_invalid`. The reply carries the server time, so the SDK corrects its clock and sends the call again. A `msg_id` of 0 is not deduplicated.
-* Scope. A connection with a token session is scoped to its user and session. Otherwise it is scoped to its user and its install `instance`, which the client sends on connect. An instance must match `^[A-Za-z0-9_-]{16,64}$`, and any other value is dropped. A connection with neither has no scope: its calls are not deduplicated, and count as `no_scope`. Scope keys are hashed, so they do not show the instance.
+* Scope. A connection with a token session is scoped to its user and session. Otherwise it is scoped to its user and its install `instance`, which the client sends on connect. An instance must match `^[A-Za-z0-9_-]{22,64}$`, and any other value is dropped. A connection with neither has no scope: its calls are not deduplicated, and count as `no_scope`. Scope keys are hashed, so they do not show the instance.
 * Only calls of non-idempotent methods are recorded. An idempotent method is executed again on retransmit, and is cancelled on disconnect.
 * A recorded call keeps its answer, or its protocol error, for the window, on this node, in an LRU bounded by `local_max_entries`. A retransmit with the same method and data gets the answer with `cached: true`. A duplicate which arrives while the call runs waits for it. A duplicate with another method or other data gets `errors.msg_id_reused`, and neither joins the running call nor gets its answer.
 * Errors of the registry's own gates (unknown method, auth class, request size) are not recorded.
@@ -158,7 +158,7 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 * Mutations and disconnects. A recorded call runs on a context which a disconnect does not cancel, so a backend commit completes, and its retransmit gets the record. A call which ends with a disconnect is not kept, so its retransmit runs again.
 * A store failure answers a tracked call with the temporary `errors.dedup_unavailable` under `on_store_error: fail_closed`, the default. Under `fail_open` the call runs without dedup. Idempotent calls do not use the store.
 * Records are node-local. A retransmit which reaches another node runs again.
-* Secrecy. The instance is a secret: a random value of at least 128 bits, made by the application, kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit calls in its scope. The server never logs the instance or a scope.
+* Secrecy. The instance is a bearer secret. It must be random, made by the application, of at least 128 bits (22 base64url characters), kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit and cancel calls in its scope. The server never logs the instance or a scope.
 
 | Error | Default `code` | `temporary` |
 |---|---|---|

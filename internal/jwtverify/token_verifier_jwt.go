@@ -741,13 +741,11 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	} else {
 		ct.UserID = claims.RegisteredClaims.Subject
 	}
-	if verifier.authClassClaim != "" {
-		value := gjson.GetBytes(token.Claims(), verifier.authClassClaim)
-		if value.Exists() && value.Type != gjson.String {
-			return ConnectToken{}, fmt.Errorf("%w: auth class claim must be a string", ErrInvalidToken)
-		}
-		ct.AuthClass = value.String()
+	authClass, err := verifier.authClassFromClaims(token.Claims())
+	if err != nil {
+		return ConnectToken{}, err
 	}
+	ct.AuthClass = authClass
 	ct.Session = verifier.sessionFromClaims(token.Claims(), claims.RegisteredClaims)
 	ct.Generation = verifier.generationFromClaims(token.Claims())
 	if claims.RegisteredClaims.IssuedAt != nil {

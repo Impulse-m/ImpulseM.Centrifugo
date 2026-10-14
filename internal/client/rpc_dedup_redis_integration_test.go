@@ -303,9 +303,11 @@ func TestRPCDedupRedisServicesAndNotifications(t *testing.T) {
 	cleanupRedisPrefix(t, prefix)
 	h := newRedisDedupHandler(t, dedupRegistryWithRedis(prefix), backend)
 	services := h.Services()
-	require.Len(t, services, 2)
-	require.Equal(t, h.rpcDedup.connector, services[0])
-	require.Equal(t, h.rpcDedup.shared, services[1])
+	require.Len(t, services, 1)
+	redisService, ok := services[0].(*rpcDedupRedisService)
+	require.True(t, ok)
+	require.Same(t, h.rpcDedup.connector, redisService.connector)
+	require.Same(t, h.rpcDedup.shared, redisService.shared)
 	require.Contains(t, h.NotificationHandlers(), rpcdedup.CancelNotificationOp)
 }
 

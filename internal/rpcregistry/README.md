@@ -67,14 +67,29 @@ methods:
 
 The same tree works as JSON. Each method and target field left unset inherits from the target, then from `defaults`, then from the built-in values: `timeout` 5s, `max_request_bytes` 64 KiB, `max_response_bytes` 1 MiB, `idempotent` false. Method names match `^[A-Za-z0-9_.:/-]{1,128}$`, gRPC method paths match `^/[\w.]+/\w+$`. Header allow-lists are lower-case. `authorization`, `traceparent`, `tracestate`, `x-forwarded-for` and names with the `x-centrifugo-` prefix are reserved and rejected in both allow-lists.
 
-Auth classes say which connections can call a method:
+Auth classes say which connections can call a method. Every connection has one class:
 
-* `anonymous`: any connection. The connection token is never forwarded, even when the connection is authenticated.
-* `pending_2fa`: planned, see [Planned](#planned). For now it is checked like `authenticated`.
-* `authenticated`: a connection with a user ID, which forwards its connection token.
-* `bot`: planned, see [Planned](#planned). For now it is checked like `authenticated`.
+* `anonymous`: a connection without a user ID.
+* `pending_2fa`: a connection whose user has not finished signing in.
+* `authenticated`: a connection with a user ID.
+* `bot`: a connection of a bot account, with a user ID.
 
-A method without `auth_class` takes `defaults.auth_class`. If that is empty or `anonymous`, every method must state its class, so a missing class never makes a method public. A connection which does not satisfy the class gets `errors.auth_class`.
+A method admits a connection by its class:
+
+| Method class | Admitted connection classes |
+|---|---|
+| `anonymous` | all |
+| `pending_2fa` | `pending_2fa`, `authenticated`, `bot` |
+| `authenticated` | `authenticated`, `bot` |
+| `bot` | `bot` |
+
+The `anonymous` method class is open to everyone, and its connection token is never forwarded, even when the connection is authenticated. Other methods forward the connection token.
+
+A connection gets its class from the connection token at connect, and a refresh replaces it. The claim named by `rpc.registry.auth_class_claim` holds the class, with one of the values `pending_2fa`, `bot`, `authenticated` or `anonymous`. Each value must agree with the user of the connection: `anonymous` only without a user, `authenticated` and `bot` only with one, and `pending_2fa` with or without one. A claim with any other value, a claim which is not a string, or a value which does not agree with the user, makes the token invalid, so the connect or the refresh is rejected. A refresh with a full token upgrades a pending connection.
+
+When `auth_class_claim` is empty, a connection is `anonymous` without a user and `authenticated` with one. A connection without a token, such as one made through a connect proxy, has no stored class and gets the class of its user the same way.
+
+A method without `auth_class` takes `defaults.auth_class`. If that is empty or `anonymous`, every method must state its class, so a missing class never makes a method public. When the registry is enabled, a method or `defaults.auth_class` of class `pending_2fa` or `bot` needs `rpc.registry.auth_class_claim`, and `auth_class_claim` must be a name of the form `[a-zA-Z_]+`. The rule applies at config validation and on reload, and a reload which breaks it is rejected, keeping the current registry. A connection which does not satisfy the class gets `errors.auth_class`.
 
 Metadata sent with each call. Later sources win:
 
@@ -131,7 +146,7 @@ Not implemented yet:
 
 * `x-forwarded-for` from the PROXY protocol address of the client connection, with one trusted-proxy policy shared with the listener.
 * File polling: `poll_interval` is accepted and reserved for it. It has no effect yet.
-* `pending_2fa` and `bot` class claims. Both are checked like `authenticated` for now.
+* Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
 * The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
 * Cancelling an in-flight call by its `msg_id`.
 * Deduplication of calls with a message ID. `idempotent` is accepted and reserved for it. It has no effect yet.

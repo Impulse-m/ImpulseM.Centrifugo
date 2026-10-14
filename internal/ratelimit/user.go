@@ -61,10 +61,13 @@ func NewUserLimiter(cfg configtypes.RateLimitUserCommand) *UserLimiter {
 	}
 }
 
-// Attach resolves the state of userID and attaches it to the connection. It is called once per
-// connection, anonymous connections must not be attached.
+// Attach resolves the state of userID and attaches it to the connection. A state attached before is released, so a
+// connection which attaches again, as a rebind does, holds one reference only. Anonymous connections must not be
+// attached.
 func (l *UserLimiter) Attach(st *ConnState, userID string) {
-	st.user.Store(l.store.acquire(userID))
+	if prev := st.user.Swap(l.store.acquire(userID)); prev != nil {
+		l.store.release(prev)
+	}
 }
 
 // Detach releases the user state attached to the connection. It is called once per connection

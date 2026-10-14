@@ -158,6 +158,28 @@ func TestUserReattachAfterEvictionCreatesNewState(t *testing.T) {
 	require.Equal(t, 1, storeSize(limiter.store))
 }
 
+// TestUserReattachReleasesPreviousState checks that attaching a connection again releases the state of the first
+// attach: the first user is left with no reference, and the second holds exactly one.
+func TestUserReattachReleasesPreviousState(t *testing.T) {
+	limiter := NewUserLimiter(userConfig(time.Second, 10))
+	st := &ConnState{}
+	limiter.Attach(st, "first")
+	limiter.Attach(st, "second")
+
+	first := limiter.store.acquire("first")
+	require.Equal(t, int32(1), first.refs.Load())
+	limiter.store.release(first)
+
+	second := limiter.store.acquire("second")
+	require.Equal(t, int32(2), second.refs.Load())
+	limiter.store.release(second)
+
+	limiter.Detach(st)
+	second = limiter.store.acquire("second")
+	require.Equal(t, int32(1), second.refs.Load())
+	limiter.store.release(second)
+}
+
 func TestUserDetachIsIdempotent(t *testing.T) {
 	limiter := NewUserLimiter(userConfig(time.Second, 10))
 	st := &ConnState{}

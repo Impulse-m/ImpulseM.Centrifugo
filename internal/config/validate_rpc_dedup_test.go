@@ -14,12 +14,14 @@ func dedupConfig() Config {
 	cfg := configWithRegistry(validInlineRegistry())
 	cfg.Client.ReplyIncludeServerTime = true
 	cfg.RPC.Registry.Dedup = configtypes.RPCDedup{
-		Enabled:         true,
-		Window:          configtypes.Duration(120 * time.Second),
-		MaxSkew:         configtypes.Duration(30 * time.Second),
-		MaxReplySize:    65536,
-		LocalMaxEntries: 200000,
-		OnStoreError:    configtypes.RPCDedupFailClosed,
+		Enabled:            true,
+		Window:             configtypes.Duration(120 * time.Second),
+		MaxSkew:            configtypes.Duration(30 * time.Second),
+		MaxReplySize:       65536,
+		LocalMaxEntries:    100000,
+		LocalMaxBytes:      268435456,
+		MaxRecordsPerScope: 1024,
+		OnStoreError:       configtypes.RPCDedupFailClosed,
 	}
 	return cfg
 }
@@ -92,6 +94,20 @@ func TestValidateRPCDedupRules(t *testing.T) {
 			wantErr: "rpc.registry.dedup.local_max_entries: must be positive",
 		},
 		{
+			name: "local max bytes must be positive",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.LocalMaxBytes = 0
+			},
+			wantErr: "rpc.registry.dedup.local_max_bytes: must be positive",
+		},
+		{
+			name: "max records per scope must be positive",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.MaxRecordsPerScope = 0
+			},
+			wantErr: "rpc.registry.dedup.max_records_per_scope: must be positive",
+		},
+		{
 			name: "unknown store error mode",
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry.Dedup.OnStoreError = "retry"
@@ -125,7 +141,9 @@ func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())
 	require.Equal(t, 65536, cfg.RPC.Registry.Dedup.MaxReplySize)
-	require.Equal(t, 200000, cfg.RPC.Registry.Dedup.LocalMaxEntries)
+	require.Equal(t, 100000, cfg.RPC.Registry.Dedup.LocalMaxEntries)
+	require.Equal(t, 268435456, cfg.RPC.Registry.Dedup.LocalMaxBytes)
+	require.Equal(t, 1024, cfg.RPC.Registry.Dedup.MaxRecordsPerScope)
 	require.Equal(t, configtypes.RPCDedupFailClosed, cfg.RPC.Registry.Dedup.OnStoreError)
 	require.Equal(t, uint32(107), cfg.RPC.Registry.Errors.MsgIDInvalid.Code)
 	require.Equal(t, uint32(110), cfg.RPC.Registry.Errors.ResultEvicted.Code)

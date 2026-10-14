@@ -7,10 +7,22 @@ import (
 	"time"
 )
 
+// benchMemoryOptions returns the options of the benchmarks: the configured defaults, with the budgets large enough
+// that no benchmark reaches them, so the cost measured is the call path.
+func benchMemoryOptions() MemoryOptions {
+	return MemoryOptions{
+		MaxEntries:         200000,
+		MaxBytes:           1 << 30,
+		MaxRecordsPerScope: 1 << 20,
+		TTL:                120 * time.Second,
+		MaxReplyBytes:      65536,
+	}
+}
+
 // BenchmarkMemoryBeginCompleteParallel is BenchmarkMemoryBeginComplete run by GOMAXPROCS goroutines, over 1024
 // scopes, as concurrent connections of a node use the store.
 func BenchmarkMemoryBeginCompleteParallel(b *testing.B) {
-	store := NewMemory(200000, 120*time.Second, 65536)
+	store := NewMemory(benchMemoryOptions())
 	scopes := make([]string, 1024)
 	for i := range scopes {
 		scopes[i] = "s:" + strconv.Itoa(i)
@@ -41,7 +53,7 @@ func BenchmarkMemoryBeginCompleteParallel(b *testing.B) {
 // BenchmarkMemoryBeginComplete is one tracked call in the node-local store: a miss which is completed. The
 // keys do not repeat, so the store stays at its bound.
 func BenchmarkMemoryBeginComplete(b *testing.B) {
-	store := NewMemory(200000, 120*time.Second, 65536)
+	store := NewMemory(benchMemoryOptions())
 	reply := []byte("ok")
 	fingerprint := Fingerprint("users.get", []byte("x"))
 	b.ReportAllocs()

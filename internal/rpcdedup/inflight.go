@@ -39,14 +39,12 @@ func (f *InFlight) Add(msgID uint64, cancel context.CancelFunc) func() {
 	}
 }
 
-// Cancel cancels the call msgID when it runs on this connection, and reports whether it does.
-func (f *InFlight) Cancel(msgID uint64) bool {
+// Cancel cancels the call msgID when it runs on this connection. It does nothing for other msg_ids.
+func (f *InFlight) Cancel(msgID uint64) {
 	f.mu.Lock()
 	call := f.calls[msgID]
 	f.mu.Unlock()
-	if call == nil {
-		return false
+	if call != nil {
+		call.cancel()
 	}
-	call.cancel()
-	return true
 }

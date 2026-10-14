@@ -27,7 +27,9 @@ func rpcDedupTestConfig() config.Config {
 		Window:          configtypes.Duration(120 * time.Second),
 		MaxSkew:         configtypes.Duration(30 * time.Second),
 		MaxReplySize:    65536,
-		LocalMaxEntries: 1000,
+		LocalMaxEntries:    1000,
+		LocalMaxBytes:      1 << 28,
+		MaxRecordsPerScope: 1024,
 		OnStoreError:    configtypes.RPCDedupFailClosed,
 	}
 	return cfg

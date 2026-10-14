@@ -71,6 +71,12 @@ func validateRPCDedup(c Config) error {
 	if dedup.LocalMaxEntries <= 0 {
 		return fmt.Errorf("rpc.registry.dedup.local_max_entries: must be positive, got %d", dedup.LocalMaxEntries)
 	}
+	if dedup.LocalMaxBytes <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.local_max_bytes: must be positive, got %d", dedup.LocalMaxBytes)
+	}
+	if dedup.MaxRecordsPerScope <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_records_per_scope: must be positive, got %d", dedup.MaxRecordsPerScope)
+	}
 	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
 		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)
 	}

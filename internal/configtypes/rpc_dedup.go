@@ -25,7 +25,11 @@ type RPCDedup struct {
 	// MaxReplySize is the size in bytes above which a reply is not kept.
 	MaxReplySize int `mapstructure:"max_reply_size" default:"65536" json:"max_reply_size" envconfig:"max_reply_size" yaml:"max_reply_size" toml:"max_reply_size" doc:"Size in bytes above which the reply of a call is not kept: a retransmit of it gets rpc.registry.errors.result_evicted. Default <<65536>>."`
 	// LocalMaxEntries bounds the number of answers kept by the node.
-	LocalMaxEntries int `mapstructure:"local_max_entries" default:"200000" json:"local_max_entries" envconfig:"local_max_entries" yaml:"local_max_entries" toml:"local_max_entries" doc:"Maximum number of answers kept by the node. The least recently used are dropped first. Default <<200000>>."`
+	LocalMaxEntries int `mapstructure:"local_max_entries" default:"100000" json:"local_max_entries" envconfig:"local_max_entries" yaml:"local_max_entries" toml:"local_max_entries" doc:"Maximum number of answers kept by the node. When full, a new answer first evicts the oldest answer of its own scope. Default <<100000>>."`
+	// LocalMaxBytes bounds the bytes of the answers kept by the node.
+	LocalMaxBytes int `mapstructure:"local_max_bytes" default:"268435456" json:"local_max_bytes" envconfig:"local_max_bytes" yaml:"local_max_bytes" toml:"local_max_bytes" doc:"Maximum bytes of the answers kept by the node, counting a fixed overhead per answer. When full, a new answer first evicts the oldest answer of its own scope. Default <<268435456>> (256 MiB)."`
+	// MaxRecordsPerScope bounds the answers kept for one scope.
+	MaxRecordsPerScope int `mapstructure:"max_records_per_scope" default:"1024" json:"max_records_per_scope" envconfig:"max_records_per_scope" yaml:"max_records_per_scope" toml:"max_records_per_scope" doc:"Maximum number of answers kept for one scope, which is a user session or install. Over it, the oldest answer of the scope is dropped, so one scope cannot push out the answers of another. Default <<1024>>."`
 	// OnStoreError is what a tracked call does when the dedup store fails.
 	OnStoreError string `mapstructure:"on_store_error" default:"fail_closed" json:"on_store_error" envconfig:"on_store_error" yaml:"on_store_error" toml:"on_store_error" expose:"full" doc:"What a tracked call does when the dedup store fails: fail_closed answers it with rpc.registry.errors.dedup_unavailable, fail_open runs it without dedup. Default <<fail_closed>>."`
 }

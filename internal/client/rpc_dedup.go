@@ -28,7 +28,13 @@ func newRPCDedupStore(cfgContainer *config.Container) rpcdedup.Store {
 	if !dedup.Enabled {
 		return nil
 	}
-	store := rpcdedup.NewMemory(dedup.LocalMaxEntries, dedup.Window.ToDuration(), dedup.MaxReplySize)
+	store := rpcdedup.NewMemory(rpcdedup.MemoryOptions{
+		MaxEntries:         dedup.LocalMaxEntries,
+		MaxBytes:           int64(dedup.LocalMaxBytes),
+		MaxRecordsPerScope: dedup.MaxRecordsPerScope,
+		TTL:                dedup.Window.ToDuration(),
+		MaxReplyBytes:      dedup.MaxReplySize,
+	})
 	return store
 }
 

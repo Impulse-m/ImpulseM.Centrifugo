@@ -29,11 +29,6 @@ func NewFlightWithFingerprint(fingerprint [32]byte) *Flight {
 	return flight
 }
 
-// Fingerprint returns the fingerprint of the call of the flight.
-func (f *Flight) Fingerprint() [32]byte {
-	return f.fingerprint
-}
-
 // Attach sets the function which cancels the backend call of the owner. If the flight was cancelled
 // before, cancel runs now.
 func (f *Flight) Attach(cancel context.CancelFunc) {
@@ -55,13 +50,6 @@ func (f *Flight) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
-}
-
-// Cancelled reports whether Cancel was called.
-func (f *Flight) Cancelled() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.cancelled
 }
 
 // Done returns a channel which is closed when the owner completes the flight.

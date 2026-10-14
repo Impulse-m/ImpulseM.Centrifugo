@@ -85,6 +85,9 @@ func runGRPCUniServer(cfg config.Config, node *centrifuge.Node) (*grpc.Server, e
 	}
 	var grpcOpts []grpc.ServerOption
 	grpcOpts = append(grpcOpts, grpc.ForceServerCodec(&unigrpc.RawCodec{}))
+	if cfg.ClientAddress.Enabled {
+		grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(clientaddr.StreamInterceptor))
+	}
 
 	if cfg.UniGRPC.MaxReceiveMessageSize > 0 {
 		grpcOpts = append(grpcOpts, grpc.MaxRecvMsgSize(cfg.UniGRPC.MaxReceiveMessageSize))
@@ -110,7 +113,7 @@ func runGRPCUniServer(cfg config.Config, node *centrifuge.Node) (*grpc.Server, e
 	grpcOpts = append(grpcOpts, grpc.KeepaliveEnforcementPolicy(keepAliveEnforcementPolicy))
 	grpcOpts = append(grpcOpts, grpc.KeepaliveParams(keepAliveServerParams))
 	grpcUniServer := grpc.NewServer(grpcOpts...)
-	_ = unigrpc.RegisterService(grpcUniServer, unigrpc.NewService(node, cfg.UniGRPC, cfg.ClientAddress))
+	_ = unigrpc.RegisterService(grpcUniServer, unigrpc.NewService(node, cfg.UniGRPC))
 	log.Info().Msgf("serving unidirectional GRPC on %s", grpcUniAddr)
 	go func() {
 		if err := grpcUniServer.Serve(grpcUniConn); err != nil {

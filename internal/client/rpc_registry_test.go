@@ -468,4 +468,3 @@ func TestRPCRegistryConnectRejectsInvalidAuthClass(t *testing.T) {
 		})
 	}
 }
-

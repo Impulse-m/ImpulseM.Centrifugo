@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -31,13 +33,16 @@ type forkRegistry struct {
 	rateLimitRedisDuration         prometheus.Histogram
 
 	// RPC method registry metrics
-	rpcRegistryCallsTotal   *prometheus.CounterVec
-	rpcRegistryErrorsTotal  *prometheus.CounterVec
-	rpcRegistryReloadsTotal *prometheus.CounterVec
-	rpcRegistryDedupTotal   *prometheus.CounterVec
-	rpcRegistryRetransmits  *prometheus.CounterVec
-	rpcRegistryDedupWait    prometheus.Histogram
-	rpcRegistryDedupEntries prometheus.Gauge
+	rpcRegistryCallsTotal     *prometheus.CounterVec
+	rpcRegistryErrorsTotal    *prometheus.CounterVec
+	rpcRegistryReloadsTotal   *prometheus.CounterVec
+	rpcRegistryDedupTotal     *prometheus.CounterVec
+	rpcRegistryRetransmits    *prometheus.CounterVec
+	rpcRegistryDedupWait      prometheus.Histogram
+	rpcRegistryDedupEntries   prometheus.Gauge
+	rpcRegistryDedupEvictions *prometheus.CounterVec
+	rpcRegistryDedupScopes    *prometheus.GaugeVec
+	rpcRegistryDedupBytes     *prometheus.GaugeVec
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -234,9 +239,40 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_entries",
-		Help:        "Number of exactly-once RPC answers kept by the node.",
+		Help:        "Number of exactly-once RPC answers kept by the node, of both pools.",
 		ConstLabels: constLabels,
 	})
+
+	m.rpcRegistryDedupEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_evictions_total",
+		Help:        "Number of exactly-once RPC answers the node evicted to make room, by reason.",
+		ConstLabels: constLabels,
+	}, []string{"reason"})
+	for _, reason := range []string{rpcdedup.EvictionScopeCap, rpcdedup.EvictionOverReserve, rpcdedup.EvictionSurplus, rpcdedup.EvictionUncached} {
+		m.rpcRegistryDedupEvictions.WithLabelValues(reason)
+	}
+
+	m.rpcRegistryDedupScopes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_scopes",
+		Help:        "Number of exactly-once RPC scopes the node admits, by pool. Compare with local_max_entries / scope_reserve.",
+		ConstLabels: constLabels,
+	}, []string{"pool"})
+
+	m.rpcRegistryDedupBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_bytes",
+		Help:        "Bytes of the exactly-once RPC answers the node keeps, by pool.",
+		ConstLabels: constLabels,
+	}, []string{"pool"})
+	for _, pool := range []string{"authenticated", "anonymous"} {
+		m.rpcRegistryDedupScopes.WithLabelValues(pool)
+		m.rpcRegistryDedupBytes.WithLabelValues(pool)
+	}
 
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
@@ -262,6 +298,9 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupTotal,
 		m.rpcRegistryDedupWait,
 		m.rpcRegistryDedupEntries,
+		m.rpcRegistryDedupEvictions,
+		m.rpcRegistryDedupScopes,
+		m.rpcRegistryDedupBytes,
 		m.rpcRegistryRetransmits,
 	}
 }
@@ -318,5 +357,8 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupTotal = m.rpcRegistryDedupTotal
 	RPCRegistryDedupWaitSeconds = m.rpcRegistryDedupWait
 	RPCRegistryDedupEntries = m.rpcRegistryDedupEntries
+	RPCRegistryDedupEvictions = m.rpcRegistryDedupEvictions
+	RPCRegistryDedupScopes = m.rpcRegistryDedupScopes
+	RPCRegistryDedupBytes = m.rpcRegistryDedupBytes
 	RPCRegistryRetransmitsTotal = m.rpcRegistryRetransmits
 }

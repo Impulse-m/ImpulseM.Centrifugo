@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -226,9 +228,21 @@ var RPCRegistryDedupTotal *prometheus.CounterVec
 // metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupWaitSeconds prometheus.Histogram
 
-// RPCRegistryDedupEntries is the number of answers the dedup store keeps. It is set by the fork metrics
-// setup, and is nil when the metrics are not initialised.
+// RPCRegistryDedupEntries is the number of answers the dedup store keeps, of both pools. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupEntries prometheus.Gauge
+
+// RPCRegistryDedupEvictions counts the answers which the dedup store evicts to make room, by reason. It is set by
+// the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupEvictions *prometheus.CounterVec
+
+// RPCRegistryDedupScopes is the number of scopes the dedup store admits, per pool. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupScopes *prometheus.GaugeVec
+
+// RPCRegistryDedupBytes is the number of bytes the dedup store keeps, per pool. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupBytes *prometheus.GaugeVec
 
 // RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
 type RPCRegistryDedupOutcome int
@@ -244,6 +258,8 @@ const (
 	RPCRegistryDedupMsgIDInvalid
 	RPCRegistryDedupMsgIDReused
 	RPCRegistryDedupNoScope
+	RPCRegistryDedupRefusedPool
+	RPCRegistryDedupRefusedUser
 )
 
 // rpcRegistryDedupOutcomeLabels holds the outcome label of each RPCRegistryDedupOutcome, in the same order.
@@ -257,14 +273,28 @@ var rpcRegistryDedupOutcomeLabels = [...]string{
 	"msg_id_invalid",
 	"msg_id_reused",
 	"no_scope",
+	"refused_pool",
+	"refused_user",
+}
+
+// rpcRegistryDedupPoolLabels are the pool labels of the dedup gauges, the index of each is the pool index of the store.
+var rpcRegistryDedupPoolLabels = [...]string{
+	"authenticated",
+	"anonymous",
 }
 
 // RPCRegistryDedupMetrics holds the outcome counters of exactly-once RPC, resolved once. A nil value does
 // nothing.
 type RPCRegistryDedupMetrics struct {
-	outcomes    [len(rpcRegistryDedupOutcomeLabels)]prometheus.Counter
-	waitSeconds prometheus.Histogram
-	entries     prometheus.Gauge
+	outcomes         [len(rpcRegistryDedupOutcomeLabels)]prometheus.Counter
+	evictScopeCap    prometheus.Counter
+	evictOverReserve prometheus.Counter
+	evictSurplus     prometheus.Counter
+	evictUncached    prometheus.Counter
+	waitSeconds      prometheus.Histogram
+	entries          prometheus.Gauge
+	scopes           [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
+	bytes            [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
 }
 
 // NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
@@ -280,7 +310,43 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 	for i, label := range rpcRegistryDedupOutcomeLabels {
 		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
 	}
+	if RPCRegistryDedupEvictions != nil {
+		m.evictScopeCap = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionScopeCap)
+		m.evictOverReserve = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionOverReserve)
+		m.evictSurplus = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionSurplus)
+		m.evictUncached = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionUncached)
+	}
+	if RPCRegistryDedupScopes != nil && RPCRegistryDedupBytes != nil {
+		for i, label := range rpcRegistryDedupPoolLabels {
+			m.scopes[i] = RPCRegistryDedupScopes.WithLabelValues(label)
+			m.bytes[i] = RPCRegistryDedupBytes.WithLabelValues(label)
+		}
+	}
 	return m
+}
+
+// Evicted counts an answer which the dedup store evicted for reason. It implements rpcdedup.EvictionObserver.
+func (m *RPCRegistryDedupMetrics) Evicted(reason string) {
+	if m == nil {
+		return
+	}
+	switch reason {
+	case rpcdedup.EvictionScopeCap:
+		incCounter(m.evictScopeCap)
+	case rpcdedup.EvictionOverReserve:
+		incCounter(m.evictOverReserve)
+	case rpcdedup.EvictionSurplus:
+		incCounter(m.evictSurplus)
+	case rpcdedup.EvictionUncached:
+		incCounter(m.evictUncached)
+	}
+}
+
+// incCounter increments c when it is set.
+func incCounter(c prometheus.Counter) {
+	if c != nil {
+		c.Inc()
+	}
 }
 
 // Inc counts one outcome.
@@ -299,10 +365,22 @@ func (m *RPCRegistryDedupMetrics) ObserveWait(seconds float64) {
 	m.waitSeconds.Observe(seconds)
 }
 
-// SetEntries sets the number of answers the store keeps.
-func (m *RPCRegistryDedupMetrics) SetEntries(n int) {
-	if m == nil || m.entries == nil {
+// SetStore sets the gauges of the store: its answers, and per pool its admitted scopes and its bytes. The gauges are
+// read from the store without its locks, so this does not wait for the calls.
+func (m *RPCRegistryDedupMetrics) SetStore(stats rpcdedup.Stats) {
+	if m == nil {
 		return
 	}
-	m.entries.Set(float64(n))
+	if m.entries != nil {
+		m.entries.Set(float64(stats.Entries))
+	}
+	pools := [len(rpcRegistryDedupPoolLabels)]rpcdedup.PoolStats{stats.Authenticated, stats.Anonymous}
+	for i, pool := range pools {
+		if m.scopes[i] != nil {
+			m.scopes[i].Set(float64(pool.Scopes))
+		}
+		if m.bytes[i] != nil {
+			m.bytes[i].Set(float64(pool.Bytes))
+		}
+	}
 }

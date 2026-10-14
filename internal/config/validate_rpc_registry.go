@@ -271,7 +271,16 @@ func validateRPCMethod(method configtypes.RPCMethod, defaults configtypes.RPCMet
 	if err != nil {
 		return err
 	}
-	return validateRPCLowerCaseNames(method.ErrorMetadata, "error_metadata")
+	err = validateRPCLowerCaseNames(method.ErrorMetadata, "error_metadata")
+	if err != nil {
+		return err
+	}
+	for _, name := range method.ErrorMetadata {
+		if configtypes.IsRPCRegistryReservedHeader(name) {
+			return fmt.Errorf("error_metadata: name %q is reserved", name)
+		}
+	}
+	return nil
 }
 
 // validateRPCLimits rejects negative timeouts and sizes. Zero is allowed and means the value is inherited.

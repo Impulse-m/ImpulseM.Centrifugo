@@ -268,6 +268,20 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 			wantErr: `method "users.getUser": error_metadata: name "Example-Token" must be lower-case`,
 		},
 		{
+			name: "error metadata with centrifugo prefix is reserved",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.Methods[0].ErrorMetadata = []string{"x-centrifugo-retry"}
+			},
+			wantErr: `method "users.getUser": error_metadata: name "x-centrifugo-retry" is reserved`,
+		},
+		{
+			name: "error metadata authorization is reserved",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.Methods[0].ErrorMetadata = []string{"authorization"}
+			},
+			wantErr: `method "users.getUser": error_metadata: name "authorization" is reserved`,
+		},
+		{
 			name: "target name must be set",
 			modify: func(reg *configtypes.RPCRegistry) {
 				reg.Targets[0].Name = ""

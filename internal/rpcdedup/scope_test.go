@@ -85,7 +85,7 @@ func TestScopeOfAllocs(t *testing.T) {
 	allocs := testing.AllocsPerRun(1000, func() {
 		_ = ScopeOf("i", "42", id)
 	})
-	require.LessOrEqual(t, allocs, 2.0)
+	require.LessOrEqual(t, allocs, 1.0)
 }
 
 func TestFingerprintAllocs(t *testing.T) {

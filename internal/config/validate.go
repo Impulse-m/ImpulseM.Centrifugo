@@ -42,6 +42,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateRebind(c); err != nil {
+		return err
+	}
+
 	if err := validateRPCRegistry(c); err != nil {
 		return err
 	}

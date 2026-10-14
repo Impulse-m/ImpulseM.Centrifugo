@@ -150,7 +150,7 @@ On a rebind to a user the connection gets its personal channel and the channels 
 
 On a downgrade to anonymous the connection loses its personal channel, its user-limited channels, and the channels of token and proxy sources. Client channels stay when their namespace allows anonymous subscriptions.
 
-Access checks run before the rebind: a blocked user disconnects the connection, a revoked session or invalidated token gets a refresh error `token expired`. A revocation applied between the check and the rebind disconnects the connection, because the connection is checked again after it moves. A user connection limit reached by the new user disconnects with the connection limit disconnect, a refresh of an expired token gets `token expired`, and a connection closed meanwhile is not changed.
+Access checks run before the rebind: a blocked user disconnects the connection, a revoked session or invalidated token gets a refresh error `token expired`. A revocation applied between the check and the rebind disconnects the connection, because the connection is checked again after it moves. A user connection limit reached by the new user gets a refresh error `too many requests`, and the connection keeps its identity. A refresh of an expired token gets `token expired`, and a connection closed meanwhile is not changed.
 
 `client.rebind.enabled` cannot be combined with `client.proxy.refresh.enabled`: the refresh proxy answers refreshes without the token user, so the config is rejected at startup.
 
@@ -164,8 +164,11 @@ The connect result and the refresh result carry two fields:
 ### Known gaps
 
 * A refresh with the same user whose class changes, such as `authenticated` to `bot`, takes the refresh path without the transition table. The token is still verified, and the class is taken from it.
-* An account switch between two users is denied: a refresh of a connection which holds the user of its token (`authenticated`, `bot` or `pending_2fa`) to a token of another user gets a permission error. The client must log out, and then connect.
+* An account switch between two users is denied, also after a logout: the account of a connection is the user of its last token with a user, and an anonymous token keeps it. A refresh to a token of another user gets a permission error. The client must connect again.
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
+* The connection info is not replaced by a rebind. A downgrade, or a rebind to a token without info, keeps the info of the previous identity on presence, join and publication client info.
+* A token which expires within about a second after a rebind can get the refresh error `token expired` after the identity has moved. The client recovers on its next refresh, which subscribes its channels again.
+* A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
 
 ## Error mapping
 

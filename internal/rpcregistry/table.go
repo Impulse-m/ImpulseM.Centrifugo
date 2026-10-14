@@ -63,7 +63,7 @@ type Method struct {
 	// Metrics are the calls_total children of the method, nil when the metrics are not initialised.
 	Metrics   *metrics.RPCRegistryMethodMetrics
 	AuthClass AuthClass
-	Timeout    time.Duration
+	Timeout   time.Duration
 	// MaxRequestBytes and MaxResponseBytes are the size limits of the call.
 	MaxRequestBytes  int
 	MaxResponseBytes int

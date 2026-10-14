@@ -44,7 +44,7 @@ func (h *Handler) onRPCRegistry(c Client, e centrifuge.RPCEvent, rpcProxyHandler
 		}
 		unknownErr := registryError(h.registryErrors().UnknownMethod)
 		metrics.IncRPCRegistryCall(registryUnknownMethod, metrics.RPCRegistryResultUnknown)
-			return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
+		return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
 	}
 	reply, err := h.callRPCRegistry(c, e, m)
 	return reply, true, err

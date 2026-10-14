@@ -276,4 +276,3 @@ func (m *TestClientMock) AcquireStorage() (map[string]any, func(map[string]any))
 		m.storageMu.Unlock()
 	}
 }
-

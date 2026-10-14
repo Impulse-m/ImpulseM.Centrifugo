@@ -31,12 +31,15 @@ func registryContent(methods ...string) string {
 }
 
 // replaceRegistryFile replaces the registry file by a rename, as a ConfigMap update does, so the
-// poller never reads a file which is only partly written.
+// poller never reads a file which is only partly written. On Windows the rename fails while the
+// poller has the file open for a read, so it is retried until it succeeds.
 func replaceRegistryFile(t *testing.T, path string, content string) {
 	t.Helper()
 	tmp := path + ".tmp"
 	require.NoError(t, os.WriteFile(tmp, []byte(content), 0o600))
-	require.NoError(t, os.Rename(tmp, path))
+	require.Eventually(t, func() bool {
+		return os.Rename(tmp, path) == nil
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // pollingRegistry returns an enabled registry config which reads path and checks it every interval.

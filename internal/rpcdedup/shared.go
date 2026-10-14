@@ -225,16 +225,25 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	return s.local.Complete(key, flight, rec)
 }
 
-// completeShared writes the record of a call which this node owns to the shared tier. A reply over the limit is
+// completeShared writes the record of a call which this node owns to the shared tier. A record over the limit is
 // written as uncached. A Redis error is logged and counted, and the record is still kept locally.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
-	if rec.Err == nil && len(rec.Reply) > s.maxReplyBytes {
+	if s.overLimit(rec) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
 	if _, err := s.backend.Complete(context.Background(), key, s.nodeID, stored, s.ttl); err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to keep a record", err)
 	}
+}
+
+// overLimit reports whether the shared tier keeps rec as uncached: a reply over the limit, or an error whose encoded
+// form is over it, so that an error with a large message or metadata is not kept for the full TTL.
+func (s *Shared) overLimit(rec Record) bool {
+	if rec.Err != nil {
+		return len(encodeError(rec.Err)) > s.maxReplyBytes
+	}
+	return len(rec.Reply) > s.maxReplyBytes
 }
 
 // Cancel implements Store. A call which runs on this node is cancelled here, and its owner keeps the record. Otherwise

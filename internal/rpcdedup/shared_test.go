@@ -3,6 +3,7 @@ package rpcdedup
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -578,6 +579,33 @@ func TestSharedCompleteOverReplyLimitStoresUncached(t *testing.T) {
 	require.True(t, found)
 	require.True(t, entry.rec.Uncached)
 	require.Nil(t, entry.rec.Reply)
+}
+
+func TestSharedCompleteOverLimitErrorStoresUncached(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 2000)}
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: failure}))
+
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.True(t, entry.rec.Uncached)
+	require.Nil(t, entry.rec.Err)
+}
+
+func TestSharedCompleteErrorUnderLimitIsKept(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: testCancelled}))
+
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.False(t, entry.rec.Uncached)
+	require.Equal(t, testCancelled.Message, entry.rec.Err.Message)
 }
 
 func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {

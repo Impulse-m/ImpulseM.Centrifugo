@@ -309,8 +309,9 @@ func (h *Handler) completeRPCRecord(key rpcdedup.Key, flight *rpcdedup.Flight, r
 
 // rpcStoreFailure handles a failed Begin. A refusal of the scope is counted by its reason, and any other failure
 // is counted as a store error and logged. With fail_open the call runs without dedup, and stays in the in-flight
-// map of its connection, so a cancel reaches it. With fail_closed it is answered with the temporary
-// dedup_unavailable error, which clients retry, and it is not run.
+// map of its connection, so a cancel reaches it. A call with the msg_id of a call which runs on the connection is
+// not run again: it is answered with the temporary dedup_unavailable error, as the store would not know it. With
+// fail_closed the call is answered with the same error, and it is not run.
 func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, storeErr error) (centrifuge.RPCReply, error) {
 	var refused *rpcdedup.RefusedError
 	if errors.As(storeErr, &refused) {
@@ -320,7 +321,10 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 		log.Error().Err(storeErr).Str("method", m.Name).Msg("exactly-once RPC store failed")
 	}
 	if cfg.Dedup.OnStoreError == configtypes.RPCDedupFailOpen {
-		release := track.inflight.Add(e.Call.MsgID, cancel)
+		release, admitted := track.inflight.TryAdd(e.Call.MsgID, cancel)
+		if !admitted {
+			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryTemporaryError(cfg.Errors.DedupUnavailable))
+		}
 		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
 	}

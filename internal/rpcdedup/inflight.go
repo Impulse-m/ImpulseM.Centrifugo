@@ -30,6 +30,24 @@ func (f *InFlight) Add(msgID uint64, cancel context.CancelFunc) func() {
 	f.mu.Lock()
 	f.calls[msgID] = call
 	f.mu.Unlock()
+	return f.releaser(msgID, call)
+}
+
+// TryAdd registers the call msgID like Add, unless a call with msgID runs on this connection already. Then it
+// registers nothing, and returns false.
+func (f *InFlight) TryAdd(msgID uint64, cancel context.CancelFunc) (func(), bool) {
+	call := &inflightCall{cancel: cancel}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.calls[msgID] != nil {
+		return nil, false
+	}
+	f.calls[msgID] = call
+	return f.releaser(msgID, call), true
+}
+
+// releaser returns the function which removes call, when call is still the call of msgID.
+func (f *InFlight) releaser(msgID uint64, call *inflightCall) func() {
 	return func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()

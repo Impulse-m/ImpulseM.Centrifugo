@@ -637,6 +637,31 @@ func TestRPCDedupStoreFailureFailsOpen(t *testing.T) {
 	require.Len(t, backend.Calls(), 1)
 }
 
+// A retransmit on the same connection, while a call runs untracked under fail_open, is not run again: the store
+// refuses it again, and the call of its msg_id is in the in-flight map of the connection.
+func TestRPCDedupStoreFailureFailsOpenRetransmitIsNotRerun(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	reg.Dedup.OnStoreError = configtypes.RPCDedupFailOpen
+	h := newDedupHandler(t, reg, backend)
+	h.rpcDedup.store = failingDedupStore{Memory: h.rpcDedup.store.(*rpcdedup.Memory)}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(14)
+
+	firstDone := dedupCallAsync(h, client, "users.get", msgID, "gate")
+	backend.waitEntered(t)
+	retransmit := waitDedupResult(t, dedupCallAsync(h, client, "users.get", msgID, "gate"))
+	protoErr := requireProtocolError(t, retransmit.err)
+	require.Equal(t, uint32(108), protoErr.Code)
+	require.True(t, protoErr.Temporary)
+	require.Len(t, backend.Calls(), 1)
+
+	backend.releaseGate()
+	first := waitDedupResult(t, firstDone)
+	require.NoError(t, first.err)
+	require.Len(t, backend.Calls(), 1)
+}
+
 // A cancel command is answered while the semaphore of the connection is full: it does not wait behind the calls
 // it cancels. The connection is a real one, with two concurrent calls.
 func TestRPCDedupCancelWhileSemaphoreIsFull(t *testing.T) {

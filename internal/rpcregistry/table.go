@@ -22,6 +22,54 @@ const (
 	AuthClassBot
 )
 
+// Admits reports whether a connection of class conn may call a method which requires the class a.
+// The zero value admits nothing.
+func (a AuthClass) Admits(conn AuthClass) bool {
+	switch a {
+	case AuthClassAnonymous:
+		return true
+	case AuthClassPending2FA:
+		return conn == AuthClassPending2FA || conn == AuthClassAuthenticated || conn == AuthClassBot
+	case AuthClassAuthenticated:
+		return conn == AuthClassAuthenticated || conn == AuthClassBot
+	case AuthClassBot:
+		return conn == AuthClassBot
+	}
+	return false
+}
+
+// ConnectionAuthClass returns the auth class of a connection from the claim configured by
+// rpc.registry.auth_class_claim and from the user of the connection. An empty claim gives
+// anonymous without a user and authenticated with one. It reports false when the claim value
+// does not agree with the user, or is unknown: such a connection must be rejected.
+func ConnectionAuthClass(claim string, userID string) (AuthClass, bool) {
+	switch claim {
+	case "":
+		if userID == "" {
+			return AuthClassAnonymous, true
+		}
+		return AuthClassAuthenticated, true
+	case configtypes.RPCAuthClassPending2FA:
+		return AuthClassPending2FA, true
+	case configtypes.RPCAuthClassBot:
+		if userID == "" {
+			return 0, false
+		}
+		return AuthClassBot, true
+	case configtypes.RPCAuthClassAuthenticated:
+		if userID == "" {
+			return 0, false
+		}
+		return AuthClassAuthenticated, true
+	case configtypes.RPCAuthClassAnonymous:
+		if userID != "" {
+			return 0, false
+		}
+		return AuthClassAnonymous, true
+	}
+	return 0, false
+}
+
 // Built-in limits. They apply when neither the method, its target nor the defaults set a value.
 const (
 	DefaultTimeout          = 5 * time.Second

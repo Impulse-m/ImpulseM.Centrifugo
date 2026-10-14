@@ -76,7 +76,11 @@ func TestResolveRPCRegistryRequiresFileOrInlineEntries(t *testing.T) {
 }
 
 func TestResolveRPCRegistryFromFile(t *testing.T) {
-	file, err := ResolveRPCRegistry(configtypes.RPCRegistry{Enabled: true, File: "testdata/rpc_registry.yaml"})
+	file, err := ResolveRPCRegistry(configtypes.RPCRegistry{
+		Enabled:        true,
+		File:           "testdata/rpc_registry.yaml",
+		AuthClassClaim: "auth_class",
+	})
 	require.NoError(t, err)
 	require.Equal(t, 1, file.Version)
 	require.Len(t, file.Methods, 6)

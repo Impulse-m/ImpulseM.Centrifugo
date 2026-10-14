@@ -34,6 +34,36 @@ func validateRPCRegistry(c Config) error {
 	return err
 }
 
+// validateRPCAuthClassClaim checks auth_class_claim against the entries of the registry. Methods of class
+// pending_2fa or bot can only be allowed when the claim which carries the class is configured.
+func validateRPCAuthClassClaim(claim string, file configtypes.RPCRegistryFile) error {
+	if claim != "" {
+		if !customClaimRe.MatchString(claim) {
+			return fmt.Errorf("rpc.registry.auth_class_claim: invalid claim %s, must match %s regular expression", claim, customClaimRe.String())
+		}
+		return nil
+	}
+	if authClassNeedsClaim(file.Defaults.AuthClass) {
+		return fmt.Errorf("rpc registry: defaults: auth_class: %q requires rpc.registry.auth_class_claim to be set", file.Defaults.AuthClass)
+	}
+	for _, method := range file.Methods {
+		authClass := method.AuthClass
+		if authClass == "" {
+			authClass = file.Defaults.AuthClass
+		}
+		if authClassNeedsClaim(authClass) {
+			return fmt.Errorf("rpc registry method %q: auth_class: %q requires rpc.registry.auth_class_claim to be set", method.Method, authClass)
+		}
+	}
+	return nil
+}
+
+// authClassNeedsClaim reports whether an auth class can only be granted by the claim configured in
+// rpc.registry.auth_class_claim.
+func authClassNeedsClaim(authClass string) bool {
+	return authClass == configtypes.RPCAuthClassPending2FA || authClass == configtypes.RPCAuthClassBot
+}
+
 // validateRPCRegistryFile checks the entries of a registry file, whether read from a file or given inline.
 // Every error names the method or target and the field.
 func validateRPCRegistryFile(file configtypes.RPCRegistryFile) error {

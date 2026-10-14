@@ -2,6 +2,7 @@ package rpcregistry
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -94,7 +95,8 @@ func TestMethodDefaultsPrecedence(t *testing.T) {
 
 func TestBuiltInDefaultsApplyWhenNothingIsSet(t *testing.T) {
 	reg := configtypes.RPCRegistry{
-		Enabled: true,
+		Enabled:        true,
+		AuthClassClaim: "auth_class",
 		Defaults: configtypes.RPCMethodDefaults{
 			AuthClass: configtypes.RPCAuthClassBot,
 		},
@@ -196,8 +198,9 @@ func TestDisabledRegistryPreparesEmptyTable(t *testing.T) {
 func TestPrepareFromFile(t *testing.T) {
 	r := New()
 	apply, err := r.Prepare(configtypes.RPCRegistry{
-		Enabled: true,
-		File:    "../config/testdata/rpc_registry.yaml",
+		Enabled:        true,
+		File:           "../config/testdata/rpc_registry.yaml",
+		AuthClassClaim: "auth_class",
 	})
 	require.NoError(t, err)
 	apply()
@@ -208,4 +211,98 @@ func TestPrepareFromFile(t *testing.T) {
 	require.Equal(t, "users", method.Target.Config.Name)
 	require.Equal(t, []string{"example-token"}, method.ErrorMetadata)
 	require.Equal(t, AuthClassPending2FA, r.Lookup("users.checkPassword").AuthClass)
+}
+
+func TestReloadWithPendingClassNeedsClaimAndKeepsOldTable(t *testing.T) {
+	r := New()
+	claimed := testRegistry()
+	claimed.AuthClassClaim = "auth_class"
+	reloadWith(t, r, claimed)
+
+	reg := testRegistry()
+	reg.Methods[0].AuthClass = configtypes.RPCAuthClassPending2FA
+	_, _, err := r.PrepareReload(reg)
+	require.ErrorContains(t, err, `method "users.getUser": auth_class: "pending_2fa" requires rpc.registry.auth_class_claim to be set`)
+	require.Equal(t, AuthClassAuthenticated, r.Lookup(testGetUserMethod).AuthClass)
+}
+
+func TestConnectionAuthClass(t *testing.T) {
+	testCases := []struct {
+		name     string
+		claim    string
+		userID   string
+		wantOK   bool
+		wantAuth AuthClass
+	}{
+		{name: "no claim without user is anonymous", claim: "", userID: "", wantOK: true, wantAuth: AuthClassAnonymous},
+		{name: "no claim with user is authenticated", claim: "", userID: "42", wantOK: true, wantAuth: AuthClassAuthenticated},
+		{name: "pending_2fa with user", claim: "pending_2fa", userID: "42", wantOK: true, wantAuth: AuthClassPending2FA},
+		{name: "pending_2fa without user", claim: "pending_2fa", userID: "", wantOK: true, wantAuth: AuthClassPending2FA},
+		{name: "bot with user", claim: "bot", userID: "42", wantOK: true, wantAuth: AuthClassBot},
+		{name: "bot without user is invalid", claim: "bot", userID: "", wantOK: false},
+		{name: "authenticated with user", claim: "authenticated", userID: "42", wantOK: true, wantAuth: AuthClassAuthenticated},
+		{name: "authenticated without user is invalid", claim: "authenticated", userID: "", wantOK: false},
+		{name: "anonymous without user", claim: "anonymous", userID: "", wantOK: true, wantAuth: AuthClassAnonymous},
+		{name: "anonymous with user is invalid", claim: "anonymous", userID: "42", wantOK: false},
+		{name: "unknown claim value is invalid", claim: "root", userID: "42", wantOK: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, ok := ConnectionAuthClass(tc.claim, tc.userID)
+			require.Equal(t, tc.wantOK, ok)
+			if tc.wantOK {
+				require.Equal(t, tc.wantAuth, auth)
+			}
+		})
+	}
+}
+
+func TestAuthClassAdmits(t *testing.T) {
+	allClasses := []AuthClass{AuthClassAnonymous, AuthClassPending2FA, AuthClassAuthenticated, AuthClassBot}
+	testCases := []struct {
+		name   string
+		method AuthClass
+		admit  []AuthClass
+	}{
+		{
+			name:   "anonymous admits all",
+			method: AuthClassAnonymous,
+			admit:  allClasses,
+		},
+		{
+			name:   "pending_2fa admits pending_2fa, authenticated and bot",
+			method: AuthClassPending2FA,
+			admit: []AuthClass{
+				AuthClassPending2FA,
+				AuthClassAuthenticated,
+				AuthClassBot,
+			},
+		},
+		{
+			name:   "authenticated admits authenticated and bot",
+			method: AuthClassAuthenticated,
+			admit: []AuthClass{
+				AuthClassAuthenticated,
+				AuthClassBot,
+			},
+		},
+		{
+			name:   "bot admits bot",
+			method: AuthClassBot,
+			admit: []AuthClass{
+				AuthClassBot,
+			},
+		},
+		{
+			name:   "zero admits nothing",
+			method: 0,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, conn := range allClasses {
+				require.Equal(t, slices.Contains(tc.admit, conn), tc.method.Admits(conn), "connection class %d", conn)
+			}
+		})
+	}
 }

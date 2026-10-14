@@ -61,6 +61,8 @@ type RPCRegistry struct {
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the RPC method registry. When disabled, client RPC calls do not use it."`
 	// File is a path to a JSON or YAML file with the registry entries. Format is chosen by extension.
 	File string `mapstructure:"file" json:"file" envconfig:"file" yaml:"file" toml:"file" expose:"full" doc:"Path to a JSON or YAML file with the registry defaults, targets and methods. Format is chosen by file extension. Must not be combined with inline defaults, targets or methods."`
+	// AuthClassClaim is a JWT claim holding the auth class of a connection.
+	AuthClassClaim string `mapstructure:"auth_class_claim" json:"auth_class_claim" envconfig:"auth_class_claim" yaml:"auth_class_claim" toml:"auth_class_claim" expose:"full" doc:"JWT claim holding the auth class of a connection: pending_2fa, bot, authenticated or anonymous. Empty means connections are anonymous without a user and authenticated with one, and methods of class pending_2fa or bot are not allowed."`
 	// PollInterval is accepted and reserved for file polling. It has no effect yet: the file is read at start and on a configuration reload.
 	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"Accepted and reserved for an upcoming feature, with no effect yet. The registry file is read at start and on a configuration reload (SIGHUP)."`
 	// DrainTimeout is how long connections of removed or replaced targets are kept before they are closed.

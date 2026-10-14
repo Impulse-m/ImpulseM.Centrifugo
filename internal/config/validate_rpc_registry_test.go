@@ -115,9 +115,52 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 		{
 			name: "method inherits class from non-anonymous defaults",
 			modify: func(reg *configtypes.RPCRegistry) {
+				reg.AuthClassClaim = "auth_class"
 				reg.Defaults.AuthClass = configtypes.RPCAuthClassPending2FA
 				reg.Methods[0].AuthClass = ""
 			},
+		},
+		{
+			name: "pending_2fa method is allowed when auth class claim is set",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.AuthClassClaim = "auth_class"
+				reg.Methods[0].AuthClass = configtypes.RPCAuthClassPending2FA
+			},
+		},
+		{
+			name: "bot method is allowed when auth class claim is set",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.AuthClassClaim = "auth_class"
+				reg.Methods[0].AuthClass = configtypes.RPCAuthClassBot
+			},
+		},
+		{
+			name: "auth class claim must match pattern",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.AuthClassClaim = "auth-class"
+			},
+			wantErr: `rpc.registry.auth_class_claim: invalid claim auth-class, must match`,
+		},
+		{
+			name: "pending_2fa method needs auth class claim",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.Methods[0].AuthClass = configtypes.RPCAuthClassPending2FA
+			},
+			wantErr: `method "users.getUser": auth_class: "pending_2fa" requires rpc.registry.auth_class_claim to be set`,
+		},
+		{
+			name: "bot method needs auth class claim",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.Methods[0].AuthClass = configtypes.RPCAuthClassBot
+			},
+			wantErr: `method "users.getUser": auth_class: "bot" requires rpc.registry.auth_class_claim to be set`,
+		},
+		{
+			name: "bot defaults need auth class claim",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.Defaults.AuthClass = configtypes.RPCAuthClassBot
+			},
+			wantErr: `rpc registry: defaults: auth_class: "bot" requires rpc.registry.auth_class_claim to be set`,
 		},
 		{
 			name: "negative method timeout",
@@ -307,7 +350,7 @@ func TestValidateRPCRegistryDisabledIsNotChecked(t *testing.T) {
 }
 
 func TestValidateRPCRegistryChecksFileWhenEnabled(t *testing.T) {
-	reg := configtypes.RPCRegistry{Enabled: true, File: "testdata/rpc_registry.yaml"}
+	reg := configtypes.RPCRegistry{Enabled: true, File: "testdata/rpc_registry.yaml", AuthClassClaim: "auth_class"}
 	require.NoError(t, configWithRegistry(reg).Validate())
 }
 

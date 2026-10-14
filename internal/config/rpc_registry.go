@@ -83,5 +83,9 @@ func ResolveRPCRegistry(reg configtypes.RPCRegistry) (configtypes.RPCRegistryFil
 	if err != nil {
 		return file, err
 	}
+	err = validateRPCAuthClassClaim(reg.AuthClassClaim, file)
+	if err != nil {
+		return file, err
+	}
 	return file, nil
 }

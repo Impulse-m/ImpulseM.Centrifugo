@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,16 +17,31 @@ import (
 // has changed. Nil means no connections are made.
 type DialFunc func(target *Target) (io.Closer, error)
 
-// Registry is the RPC method registry. Lookup may run concurrently with a reload. Prepare and
-// apply must not run concurrently with each other: reloads run one at a time.
+// Registry is the RPC method registry. Lookup may run concurrently with a reload. A reload is a
+// prepare followed by an apply or a discard, and reloads run one at a time: reloadMu is held from
+// the prepare until the apply or the discard, whether the reload comes from a signal or from the
+// file poller.
 type Registry struct {
 	current atomic.Pointer[table]
 	dial    DialFunc
+	// reloadMu serializes reloads. The fields below it are read and written only while it is held.
+	reloadMu sync.Mutex
+	// cfg is the registry config the running table was built from.
+	cfg configtypes.RPCRegistry
+	// source identifies the content of the registry file the running table was built from. It is
+	// zero when the table does not come from a file.
+	source fileSource
+	// signalReloads and pollReloads count the reloads by trigger. Nil when the metrics are not initialised.
+	signalReloads *metrics.RPCRegistryReloadMetrics
+	pollReloads   *metrics.RPCRegistryReloadMetrics
 }
 
 // New returns an empty registry. Prepare fills it.
 func New() *Registry {
-	r := &Registry{}
+	r := &Registry{
+		signalReloads: metrics.NewRPCRegistryReloadMetrics(metrics.RPCRegistryReloadTriggerSignal),
+		pollReloads:   metrics.NewRPCRegistryReloadMetrics(metrics.RPCRegistryReloadTriggerPoll),
+	}
 	r.current.Store(&table{
 		methods: map[string]*Method{},
 		targets: map[string]*Target{},
@@ -35,21 +51,69 @@ func New() *Registry {
 
 // Prepare builds the table for cfg without changing the registry, and returns the function which
 // publishes it. Apply cannot fail. A failed Prepare leaves the registry as it was. A disabled
-// registry prepares an empty table, so applying it removes all methods.
+// registry prepares an empty table, so applying it removes all methods. The returned function must
+// be called, it releases the reload lock.
 func (r *Registry) Prepare(cfg configtypes.RPCRegistry) (func(), error) {
-	apply, _, err := r.PrepareReload(cfg)
-	return apply, err
+	r.reloadMu.Lock()
+	p, err := r.prepare(cfg, nil)
+	if err != nil {
+		r.reloadMu.Unlock()
+		return nil, err
+	}
+	apply, _ := r.stage(p, nil)
+	return apply, nil
 }
 
-// PrepareReload is Prepare which also returns discard. Discard closes the connections this
-// prepare dialed, for a reload which fails after Prepare. It does nothing once apply ran, and
-// apply does nothing once discard ran.
+// PrepareReload is Prepare which also returns discard, for a reload on SIGHUP. Discard closes the
+// connections this prepare dialed, for a reload which fails after Prepare. Apply and discard each
+// release the reload lock, and only the first call of either one has an effect. Until one of them
+// runs, no other reload runs, so the caller must call one of them.
 func (r *Registry) PrepareReload(cfg configtypes.RPCRegistry) (func(), func(), error) {
+	r.reloadMu.Lock()
+	p, err := r.prepare(cfg, nil)
+	if err != nil {
+		r.reloadMu.Unlock()
+		r.signalReloads.Inc(false)
+		return nil, nil, err
+	}
+	apply, discard := r.stage(p, r.signalReloads)
+	return apply, discard, nil
+}
+
+// prepared is a table built by prepare, with what publishing it changes.
+type prepared struct {
+	cfg     configtypes.RPCRegistry
+	next    *table
+	source  fileSource
+	removed []*Target
+	created []*Target
+	drain   time.Duration
+}
+
+// prepare builds the table for cfg. The caller holds reloadMu. A registry file is read into snap,
+// or read here when snap is nil.
+func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*prepared, error) {
 	var file configtypes.RPCRegistryFile
-	if cfg.Enabled {
+	var source fileSource
+	switch {
+	case cfg.Enabled && cfg.File != "":
+		if snap == nil {
+			loaded, err := snapshotFile(cfg.File)
+			if err != nil {
+				return nil, err
+			}
+			snap = loaded
+		}
+		resolved, err := config.ResolveRPCRegistryContent(cfg, snap.data)
+		if err != nil {
+			return nil, err
+		}
+		file = resolved
+		source = snap.fileSource
+	case cfg.Enabled:
 		resolved, err := config.ResolveRPCRegistry(cfg)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		file = resolved
 	}
@@ -57,7 +121,7 @@ func (r *Registry) PrepareReload(cfg configtypes.RPCRegistry) (func(), func(), e
 	old := r.current.Load()
 	next, removed, created, err := r.buildTable(file, old)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	next.enabled = cfg.Enabled
 	for _, target := range next.targets {
@@ -65,22 +129,41 @@ func (r *Registry) PrepareReload(cfg configtypes.RPCRegistry) (func(), func(), e
 			next.usesEmulatedHeaders = true
 		}
 	}
-	drain := cfg.DrainTimeout.ToDuration()
+	return &prepared{
+		cfg:     cfg,
+		next:    next,
+		source:  source,
+		removed: removed,
+		created: created,
+		drain:   cfg.DrainTimeout.ToDuration(),
+	}, nil
+}
+
+// stage returns the functions which publish p, and which drop it. The caller holds reloadMu. Apply
+// publishes p, discard closes the connections p dialed, and each of them releases reloadMu. Only the
+// first call of either one has an effect. reloads counts the outcome, nil counts nothing.
+func (r *Registry) stage(p *prepared, reloads *metrics.RPCRegistryReloadMetrics) (func(), func()) {
 	var settled atomic.Bool
 	apply := func() {
 		if !settled.CompareAndSwap(false, true) {
 			return
 		}
-		r.current.Store(next)
-		r.retire(removed, drain)
+		r.cfg = p.cfg
+		r.source = p.source
+		r.current.Store(p.next)
+		r.retire(p.removed, p.drain)
+		reloads.Inc(true)
+		r.reloadMu.Unlock()
 	}
 	discard := func() {
 		if !settled.CompareAndSwap(false, true) {
 			return
 		}
-		closeTargets(created)
+		closeTargets(p.created)
+		reloads.Inc(false)
+		r.reloadMu.Unlock()
 	}
-	return apply, discard, nil
+	return apply, discard
 }
 
 // closeTargets closes the connections of targets which have one.

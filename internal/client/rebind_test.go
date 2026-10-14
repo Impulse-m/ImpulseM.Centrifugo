@@ -231,6 +231,34 @@ func runRebindCase(t *testing.T, tt rebindCase) {
 	}
 }
 
+// TestRebindConnectProxyUserMayNotRebind checks a connection made through a connect proxy: it has a user but no
+// class stored under the claim, so a change of its identity is refused, and its renewal of the same user is not.
+func TestRebindConnectProxyUserMayNotRebind(t *testing.T) {
+	tests := []struct {
+		name    string
+		toUser  string
+		toClass string
+		wantErr error
+	}{
+		{name: "to another user", toUser: "43", toClass: "authenticated", wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "to anonymous", toUser: "", toClass: "anonymous", wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "renewal of the same user", toUser: "42", toClass: "authenticated"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, false)
+			client, state := newRebindTestClient("42", "")
+
+			_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+				Token: rebindTestToken(t, tt.toUser, tt.toClass, revokeTestOtherUUID, nil),
+			}, nil)
+			require.Equal(t, tt.wantErr, err)
+			require.Empty(t, state.rebinds)
+			require.Equal(t, "42", state.user)
+		})
+	}
+}
+
 // TestRebindFlagOffRoutesAnyTokenUserChangeToDisconnect checks that with rebind off, a change of the token user
 // disconnects as upstream does, even when Core sees no user for the connection.
 func TestRebindFlagOffRoutesAnyTokenUserChangeToDisconnect(t *testing.T) {

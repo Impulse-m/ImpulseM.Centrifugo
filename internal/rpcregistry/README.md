@@ -141,6 +141,8 @@ The transitions of the auth class of a connection on refresh, when the user of t
 | `pending_2fa` | `anonymous` | rebind to anonymous, dropping the channels of the token and of the user |
 | `authenticated`, `bot` | `anonymous` | with `allow_downgrade`: rebind to anonymous; otherwise disconnect |
 | any other | | refresh error `permission denied`, the class is kept |
+
+A connection with a user but no class stored under the current `auth_class_claim`, such as one made through a connect proxy, may not rebind: a refresh which would change its identity gets the same permission error.
 A refresh whose token user is the user the connection already has, and which keeps the user Core sees, takes the refresh path as before. Any other change of the token user takes the rebind path: with rebind off it disconnects, as it did before, and with rebind on the table decides. So `anonymous` to `pending_2fa` of a user, and `pending_2fa` of one user to `pending_2fa` of another, are routed by the table even though Core sees no user change.
 
 On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.

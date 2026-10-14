@@ -26,7 +26,13 @@ func (h *Handler) onRefreshRebind(
 		log.Info().Str("token_user", verified.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	_, currentClass := registryConnection(c, h.registryConfig().AuthClassClaim)
+	claim := h.registryConfig().AuthClassClaim
+	// A connection with a user and no class under the claim came through a connect proxy: its user is not
+	// proven by a token, so it may not move to another identity.
+	if c.UserID() != "" && !hasStoredAuthClass(c, claim) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
+	}
+	_, currentClass := registryConnection(c, claim)
 	if err := rebindTransitionError(currentClass, nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

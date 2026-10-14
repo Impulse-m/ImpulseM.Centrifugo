@@ -250,6 +250,15 @@ func registryConnection(c Client, claim string) (string, rpcregistry.AuthClass) 
 	return token, authClassOf(storage, claim, userID)
 }
 
+// hasStoredAuthClass reports whether the client has an auth class stored under claim, which a connection
+// established by a token has. A connection made through a connect proxy has none.
+func hasStoredAuthClass(c Client, claim string) bool {
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	stored, ok := storage[clientstorage.KeyAuthClass].(registryAuthClass)
+	return ok && stored.claim == claim
+}
+
 // authClassOf returns the auth class of a connection with the storage of the connection, its user and the
 // claim, as registryConnection describes it.
 func authClassOf(storage map[string]any, claim string, userID string) rpcregistry.AuthClass {

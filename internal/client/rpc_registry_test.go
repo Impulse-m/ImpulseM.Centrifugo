@@ -24,7 +24,7 @@ import (
 const registryTestBackendMethod = "/example.v1.UserService/GetUser"
 
 // newRegistryTestBackend starts a shared bytes backend which is closed when the test ends.
-func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
+func newRegistryTestBackend(t testing.TB) *tools.GRPCBytesBackend {
 	t.Helper()
 	backend := tools.NewGRPCBytesBackend()
 	t.Cleanup(backend.Close)
@@ -108,14 +108,14 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 }
 
 // newRegistryTestHandler returns a handler with cfg, which uses registry for RPC calls.
-func newRegistryTestHandler(t *testing.T, cfg config.Config, registry *rpcregistry.Registry) (*Handler, *config.Container) {
+func newRegistryTestHandler(t testing.TB, cfg config.Config, registry *rpcregistry.Registry) (*Handler, *config.Container) {
 	t.Helper()
 	return newRegistryTestHandlerWithClaim(t, cfg, registry, "")
 }
 
 // newRegistryTestHandlerWithClaim is newRegistryTestHandler whose connection token verifier reads the
 // auth class from authClassClaim.
-func newRegistryTestHandlerWithClaim(t *testing.T, cfg config.Config, registry *rpcregistry.Registry, authClassClaim string) (*Handler, *config.Container) {
+func newRegistryTestHandlerWithClaim(t testing.TB, cfg config.Config, registry *rpcregistry.Registry, authClassClaim string) (*Handler, *config.Container) {
 	t.Helper()
 	node := tools.NodeWithMemoryEngine()
 	t.Cleanup(func() {
@@ -134,7 +134,7 @@ func newRegistryTestHandlerWithClaim(t *testing.T, cfg config.Config, registry *
 }
 
 // startRegistryTestRegistry returns a registry with cfg applied, whose targets use the backend.
-func startRegistryTestRegistry(t *testing.T, cfg configtypes.RPCRegistry, backend *tools.GRPCBytesBackend) *rpcregistry.Registry {
+func startRegistryTestRegistry(t testing.TB, cfg configtypes.RPCRegistry, backend *tools.GRPCBytesBackend) *rpcregistry.Registry {
 	t.Helper()
 	conn, err := backend.Conn()
 	require.NoError(t, err)

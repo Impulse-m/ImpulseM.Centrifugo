@@ -13,11 +13,18 @@ import (
 
 // testHookConnectTracked, if set, runs in trackConnect after the session of a connection is tracked and before the
 // connection is rechecked. Tests use it to apply a revocation at that point.
-var testHookConnectTracked atomic.Pointer[func(c *centrifuge.Client)]
+var testHookConnectTracked atomic.Pointer[func(c Client)]
 
 // testHookRefreshTracked, if set, runs in OnRefresh after the session of a refreshed connection is tracked and before
 // the check. Tests use it to apply a revocation at that point.
 var testHookRefreshTracked atomic.Pointer[func(c Client)]
+
+// runTestHook runs the test hook set in p, if any, with c.
+func runTestHook(p *atomic.Pointer[func(c Client)], c Client) {
+	if f := p.Load(); f != nil {
+		(*f)(c)
+	}
+}
 
 // sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
 // lags when reject_connect_on_lag is set. Without a source it passes.
@@ -107,9 +114,7 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 	if h.accessStore != nil && client.UserID() == "" && identity.Session != ([16]byte{}) {
 		h.trackSession(client, identity.Session)
 	}
-	if f := testHookConnectTracked.Load(); f != nil {
-		(*f)(client)
-	}
+	runTestHook(&testHookConnectTracked, client)
 	return h.recheckConnection(client)
 }
 

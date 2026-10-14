@@ -686,9 +686,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	// The session is tracked before the check. A revocation applied after the check then finds the connection in the
 	// index, and one applied before it is seen by the check.
 	h.syncSessionConnection(c, c.UserID(), identity)
-	if f := testHookRefreshTracked.Load(); f != nil {
-		(*f)(c)
-	}
+	runTestHook(&testHookRefreshTracked, c)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)

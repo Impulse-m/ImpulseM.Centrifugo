@@ -142,7 +142,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 
 	var trackedAtHook int
 	var revokeErr error
-	hook := func(*centrifuge.Client) {
+	hook := func(Client) {
 		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
 		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0)
 	}

@@ -86,9 +86,7 @@ func (h *Handler) onRefreshRebind(
 		storeTokenUser(c, oldTokenUser)
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
-	if f := testHookRebound.Load(); f != nil {
-		(*f)(c)
-	}
+	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, newUser, identity)
 
 	// A revocation applied between the check above and the rebind is caught here, as a connection is

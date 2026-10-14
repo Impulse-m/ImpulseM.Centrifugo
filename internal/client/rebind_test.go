@@ -331,7 +331,7 @@ func TestRebindErrorMapping(t *testing.T) {
 		err     error
 		wantErr error
 	}{
-		{name: "user limit", err: centrifuge.ErrRebindUserLimit, wantErr: centrifuge.DisconnectConnectionLimit},
+		{name: "user limit", err: centrifuge.ErrRebindUserLimit, wantErr: centrifuge.ErrorTooManyRequests},
 		{name: "expired", err: centrifuge.ErrRebindExpired, wantErr: centrifuge.ErrorTokenExpired},
 		{name: "closed", err: centrifuge.ErrRebindClosed, wantErr: centrifuge.DisconnectConnectionClosed},
 		{name: "other", err: errors.New("other"), wantErr: centrifuge.DisconnectServerError},
@@ -474,7 +474,8 @@ func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
 	}, nil)
-	require.Equal(t, centrifuge.DisconnectConnectionLimit, err)
+	// A refusal by the user limit is an error reply, so the connection stays with the identity it had.
+	require.Equal(t, centrifuge.ErrorTooManyRequests, err)
 	require.Equal(t, "42", state.user)
 	// The class and the token user stored before the rebind are restored with the user.
 	storage, release := client.AcquireStorage()

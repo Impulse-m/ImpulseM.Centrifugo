@@ -198,11 +198,12 @@ func rebindTransitionError(from rpcregistry.AuthClass, to rpcregistry.AuthClass,
 	return centrifuge.ErrorPermissionDenied
 }
 
-// rebindError maps an error of Client.Rebind to the error of the refresh.
+// rebindError maps an error of Client.Rebind to the error of the refresh. A new user over its connection limit is an
+// error of the refresh, not a disconnect: the connection keeps its identity, and the client may refresh again later.
 func rebindError(clientID string, err error) error {
 	switch {
 	case errors.Is(err, centrifuge.ErrRebindUserLimit):
-		return centrifuge.DisconnectConnectionLimit
+		return centrifuge.ErrorTooManyRequests
 	case errors.Is(err, centrifuge.ErrRebindExpired):
 		return centrifuge.ErrorTokenExpired
 	case errors.Is(err, centrifuge.ErrRebindClosed):

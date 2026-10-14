@@ -74,8 +74,9 @@ func (h *Handler) registryErrors() configtypes.RPCRegistryErrors {
 // callRPCRegistry checks the connection against the method and calls its gRPC target.
 func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()
+	connToken, connClass := registryConnection(c, cfg.AuthClassClaim)
 	// The class of the connection decides whether it may call the method, see AuthClass.Admits.
-	if !m.AuthClass.Admits(connectionAuthClass(c)) {
+	if !m.AuthClass.Admits(connClass) {
 		authErr := registryError(cfg.Errors.AuthClass)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultDenied, authErr)
 	}
@@ -85,7 +86,7 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 	}
 	var token string
 	if m.AuthClass != rpcregistry.AuthClassAnonymous {
-		token = connectionToken(c)
+		token = connToken
 	}
 	started := time.Now()
 	m.Target.Metrics.IncInflight()
@@ -173,6 +174,13 @@ func registryError(e configtypes.RPCRegistryError) error {
 	}
 }
 
+// registryAuthClass is the auth class stored for a connection at connect or refresh, with the name of
+// the claim it was derived under.
+type registryAuthClass struct {
+	class rpcregistry.AuthClass
+	claim string
+}
+
 // storeRegistryToken stores the verified connection token and its auth class for the registry, when the
 // registry is enabled. It reports false when the auth class of the token is invalid for its user, and the
 // connection must be rejected.
@@ -183,7 +191,7 @@ func (h *Handler) storeRegistryToken(storage map[string]any, token string, verif
 	}
 	if h.rpcRegistry.Enabled() {
 		storage[clientstorage.KeyToken] = token
-		storage[clientstorage.KeyAuthClass] = authClass
+		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: authClass, claim: h.registryConfig().AuthClassClaim}
 	}
 	return true
 }
@@ -199,32 +207,35 @@ func (h *Handler) replaceRegistryToken(c Client, token string, verified jwtverif
 	if !h.rpcRegistry.Enabled() {
 		return true
 	}
+	claim := h.registryConfig().AuthClassClaim
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	storage[clientstorage.KeyToken] = token
-	storage[clientstorage.KeyAuthClass] = authClass
+	storage[clientstorage.KeyAuthClass] = registryAuthClass{class: authClass, claim: claim}
 	return true
 }
 
-// connectionToken returns the connection token stored for the client, or empty when there is none.
-func connectionToken(c Client) string {
-	storage, release := c.AcquireStorage()
-	defer release(storage)
-	token, _ := storage[clientstorage.KeyToken].(string)
-	return token
-}
-
-// connectionAuthClass returns the auth class stored for the client at connect or refresh. A client
-// without one, such as a client connected through a connect proxy which has no token, gets the class
-// of its user without a claim.
-func connectionAuthClass(c Client) rpcregistry.AuthClass {
+// registryConnection returns the connection token stored for the client, and the effective auth class of
+// the client for the registry, with claim the current auth class claim. The storage is acquired once.
+//   - A stored class derived under claim is the class of the connection.
+//   - A stored class derived under another claim is anonymous, until a refresh derives it again.
+//   - Without a stored class, the class is taken from the user without a claim, and is anonymous when a
+//     claim is configured: a connection without a token cannot prove a class then.
+func registryConnection(c Client, claim string) (string, rpcregistry.AuthClass) {
 	userID := c.UserID()
 	storage, release := c.AcquireStorage()
 	defer release(storage)
-	authClass, ok := storage[clientstorage.KeyAuthClass].(rpcregistry.AuthClass)
+	token, _ := storage[clientstorage.KeyToken].(string)
+	stored, ok := storage[clientstorage.KeyAuthClass].(registryAuthClass)
 	if ok {
-		return authClass
+		if stored.claim == claim {
+			return token, stored.class
+		}
+		return token, rpcregistry.AuthClassAnonymous
 	}
-	fallback, _ := rpcregistry.ConnectionAuthClass("", userID)
-	return fallback
+	if claim != "" {
+		return token, rpcregistry.AuthClassAnonymous
+	}
+	class, _ := rpcregistry.ConnectionAuthClass("", userID)
+	return token, class
 }

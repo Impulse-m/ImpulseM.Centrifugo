@@ -80,6 +80,10 @@ type VerifierConfig struct {
 	// By default, Centrifugo uses "sub" and we recommend keeping the default if possible.
 	UserIDClaim string
 
+	// AuthClassClaim is a claim used to extract the auth class from connection token. Empty value
+	// means the auth class is not extracted. The value is not interpreted by the verifier.
+	AuthClassClaim string
+
 	// SessionClaim allows overriding claim used to extract session ID from connection token.
 	// Empty value means "jti" claim.
 	SessionClaim string
@@ -144,6 +148,7 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 		audience:        config.Audience,
 		audienceRe:      audienceRe,
 		userIDClaim:     config.UserIDClaim,
+		authClassClaim:  config.AuthClassClaim,
 		sessionClaim:    sessionClaimOrDefault(config.SessionClaim),
 		generationClaim: config.GenerationClaim,
 	}
@@ -190,6 +195,7 @@ type VerifierJWT struct {
 	issuer                          string
 	issuerRe                        *regexp.Regexp
 	userIDClaim                     string
+	authClassClaim                  string
 	sessionClaim                    string
 	generationClaim                 string
 }
@@ -735,6 +741,13 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	} else {
 		ct.UserID = claims.RegisteredClaims.Subject
 	}
+	if verifier.authClassClaim != "" {
+		value := gjson.GetBytes(token.Claims(), verifier.authClassClaim)
+		if value.Exists() && value.Type != gjson.String {
+			return ConnectToken{}, fmt.Errorf("%w: auth class claim must be a string", ErrInvalidToken)
+		}
+		ct.AuthClass = value.String()
+	}
 	ct.Session = verifier.sessionFromClaims(token.Claims(), claims.RegisteredClaims)
 	ct.Generation = verifier.generationFromClaims(token.Claims())
 	if claims.RegisteredClaims.IssuedAt != nil {
@@ -899,6 +912,7 @@ func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), error
 		verifier.issuer = next.issuer
 		verifier.issuerRe = next.issuerRe
 		verifier.userIDClaim = next.userIDClaim
+		verifier.authClassClaim = next.authClassClaim
 		verifier.sessionClaim = next.sessionClaim
 		verifier.generationClaim = next.generationClaim
 	}, nil

@@ -14,6 +14,9 @@ type Verifier interface {
 type ConnectToken struct {
 	// UserID tells an ID of connecting user.
 	UserID string
+	// AuthClass is the auth class of the connection. Taken from the claim configured by
+	// rpc.registry.auth_class_claim. Empty when the claim is not configured or absent.
+	AuthClass string
 	// ExpireAt allows setting time in future when connection must be validated.
 	// Validation can be server-side using On().Refresh callback or client-side
 	// if On().Refresh not set.

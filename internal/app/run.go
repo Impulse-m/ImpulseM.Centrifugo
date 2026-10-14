@@ -170,6 +170,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error creating JWT verifier config")
 	}
 	confighelpers.SetRevokeClaims(&verifierConfig, cfg.TokenRevoke, cfg.UserTokensInvalidate)
+	confighelpers.SetAuthClassClaim(&verifierConfig, cfg.RPC.Registry)
 
 	tokenVerifier, err := jwtverify.NewTokenVerifierJWT(verifierConfig, cfgContainer)
 	if err != nil {
@@ -365,6 +366,7 @@ func reloadConfig(
 		return err
 	}
 	confighelpers.SetRevokeClaims(&verifierConfig, newCfg.TokenRevoke, newCfg.UserTokensInvalidate)
+	confighelpers.SetAuthClassClaim(&verifierConfig, newCfg.RPC.Registry)
 	applyTokenVerifier, err := tokenVerifier.PrepareReload(verifierConfig)
 	if err != nil {
 		return err

@@ -62,6 +62,16 @@ func MakeVerifierConfig(tokenConf configtypes.Token) (jwtverify.VerifierConfig, 
 	return cfg, nil
 }
 
+// SetAuthClassClaim sets the claim which carries the auth class on a connection token verifier config
+// made by MakeVerifierConfig. The claim is set only when the RPC registry is enabled. Call it both at
+// startup and on reload.
+func SetAuthClassClaim(verifierConfig *jwtverify.VerifierConfig, registry configtypes.RPCRegistry) {
+	if !registry.Enabled {
+		return
+	}
+	verifierConfig.AuthClassClaim = registry.AuthClassClaim
+}
+
 // SetRevokeClaims sets claims used for access revocation checks on a verifier config made by
 // MakeVerifierConfig. Call it both at startup and on reload.
 func SetRevokeClaims(

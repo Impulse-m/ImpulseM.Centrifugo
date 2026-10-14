@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,6 +83,40 @@ func TestIncRPCRegistryHelpersWithoutInit(t *testing.T) {
 	// Counters which are not initialised are skipped, nothing panics.
 	IncRPCRegistryCall("auth.signIn", RPCRegistryResultOK)
 	IncRPCRegistryError("auth.signIn", "QUOTA_EXCEEDED_17")
+}
+
+func TestRPCRegistryAppTypeLabelParallel(t *testing.T) {
+	resetRPCRegistryMetrics(t)
+	rpcRegistryAppTypeLabel("KNOWN-TYPE")
+
+	var mismatches atomic.Int64
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				if rpcRegistryAppTypeLabel("KNOWN-TYPE") != "KNOWN-TYPE" {
+					mismatches.Add(1)
+				}
+				rpcRegistryAppTypeLabel(fmt.Sprintf("NEW-%d-%d", g, i))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	require.Zero(t, mismatches.Load())
+	require.Len(t, rpcRegistryAppTypes.values, rpcRegistryMaxAppTypes)
+	require.Equal(t, rpcRegistryOtherAppType, rpcRegistryAppTypeLabel("NEW-after-cap"))
+}
+
+func BenchmarkRPCRegistryAppTypeLabelParallel(b *testing.B) {
+	rpcRegistryAppTypeLabel("QUOTA-EXCEEDED")
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			rpcRegistryAppTypeLabel("QUOTA-EXCEEDED")
+		}
+	})
 }
 
 func TestNormalizeNumericSuffix(t *testing.T) {

@@ -141,7 +141,7 @@ func rpcRegistryResultIndex(result string) int {
 
 // rpcRegistryAppTypeSet remembers the app_type label values seen by this process.
 type rpcRegistryAppTypeSet struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	values map[string]struct{}
 }
 
@@ -205,7 +205,14 @@ func normalizeNumericSuffix(value string) string {
 }
 
 // label returns value when it is known or still fits under the cap, and rpcRegistryOtherAppType otherwise.
+// A known value is found under the read lock, so concurrent errors do not queue behind each other.
 func (s *rpcRegistryAppTypeSet) label(value string) string {
+	s.mu.RLock()
+	_, known := s.values[value]
+	s.mu.RUnlock()
+	if known {
+		return value
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.values[value]; ok {

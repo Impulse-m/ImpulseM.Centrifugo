@@ -3,9 +3,11 @@ package proxy
 import (
 	"context"
 	"io"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
 	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -14,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -252,6 +255,40 @@ func TestRegistryRequestMetadataServerValuesWinOverListedReservedHeaders(t *test
 	require.Equal(t, []string{"Bearer good"}, md.Get("authorization"))
 	require.Equal(t, []string{"real-client"}, md.Get("x-centrifugo-client"))
 	require.Equal(t, []string{"9"}, md.Get("x-centrifugo-msg-id"))
+}
+
+// registryForwardedTarget is a method whose target lets x-forwarded-for through as an emulated
+// header. Validation rejects that name, so the test builds the target directly to put a
+// client-sent value in front of the registry.
+func registryForwardedTarget() *rpcregistry.Method {
+	return &rpcregistry.Method{
+		Name:       "users.get",
+		GRPCMethod: registryTestMethod,
+		Target: &rpcregistry.Target{Config: configtypes.RPCTarget{
+			Name:            "backend",
+			EmulatedHeaders: []string{"x-forwarded-for"},
+		}},
+		AuthClass: rpcregistry.AuthClassAuthenticated,
+	}
+}
+
+func TestRegistryRequestMetadataOverwritesClientForwardedFor(t *testing.T) {
+	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{"x-forwarded-for": "9.9.9.9"})
+	ctx = clientaddr.WithPeer(peer.NewContext(ctx, &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 443},
+	}))
+	md := registryRequestMetadata(ctx, registryForwardedTarget(), RegistryCall{ClientID: "real-client"})
+	require.Equal(t, []string{"2001:db8::1"}, md.Get("x-forwarded-for"))
+}
+
+func TestRegistryRequestMetadataOmitsUnresolvedForwardedFor(t *testing.T) {
+	// No resolved address: the header is omitted, and a client-sent value is dropped with it.
+	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{"x-forwarded-for": "9.9.9.9"})
+	md := registryRequestMetadata(ctx, registryForwardedTarget(), RegistryCall{ClientID: "real-client"})
+	require.Empty(t, md.Get("x-forwarded-for"))
+
+	md = registryRequestMetadata(context.Background(), registryForwardedTarget(), RegistryCall{ClientID: "real-client"})
+	require.Empty(t, md.Get("x-forwarded-for"))
 }
 
 func TestDialRegistryTargetBuildsConnection(t *testing.T) {

@@ -102,7 +102,7 @@ Metadata sent with each call. Later sources win:
 2. connect-time headers listed in the target's `emulated_headers`;
 3. per-call headers listed in the method's `headers`;
 4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods when the connection has a token, `x-centrifugo-client` with the client ID, and `x-centrifugo-msg-id` for calls with a message ID;
-5. `x-forwarded-for` is planned, see [Planned](#planned). Until then no `x-forwarded-for` is sent. Clients cannot set it: the name is reserved;
+5. `x-forwarded-for` with the client address, as resolved by `client_address`. When the address is not resolved, no `x-forwarded-for` is sent, even if a source above carried one. Clients cannot set it: the name is reserved;
 6. `traceparent` and `tracestate` from the trace context of the call.
 
 ## Error mapping
@@ -150,7 +150,6 @@ centrifugo checkconfig -c config.json
 
 Not implemented yet:
 
-* `x-forwarded-for` from the PROXY protocol address of the client connection, with one trusted-proxy policy shared with the listener.
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
 * Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
 * The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.

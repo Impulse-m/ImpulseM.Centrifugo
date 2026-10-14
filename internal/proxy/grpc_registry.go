@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 
@@ -124,6 +125,14 @@ func registryRequestMetadata(ctx context.Context, m *rpcregistry.Method, call Re
 	md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"client", call.ClientID)
 	if call.MsgID != 0 {
 		md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"msg-id", strconv.FormatUint(call.MsgID, 10))
+	}
+	// Written last and omitted when unknown, even if a source carried one: a backend which reads
+	// this header would otherwise take the balancer for the client. An absent header is detectable,
+	// a wrong one is not.
+	if addr, ok := clientaddr.FromContext(ctx); ok {
+		md.Set("x-forwarded-for", addr.String())
+	} else {
+		md.Delete("x-forwarded-for")
 	}
 	return md
 }

@@ -23,6 +23,19 @@ const rpcInflightKey = "rpc_inflight"
 // again at refresh, from the user and the identity of the connection, and each call reads it.
 const rpcScopeKey = "rpc_scope"
 
+// rpcRetryMetadataKey is the metadata key of a protocol error which tells the client that its call was not executed
+// and may be sent again. The server sets it itself: the x-centrifugo- prefix is reserved, and no allow-list may name
+// a key with it, so a backend cannot set it.
+const rpcRetryMetadataKey = "x-centrifugo-retry"
+
+// The values of rpcRetryMetadataKey. rpcRetryNewMsgID means the msg_id of the call was refused: the call is sent
+// again with a new msg_id, after the client re-syncs its clock. rpcRetryLater means the msg_id is still good: the
+// same call is sent again after a delay.
+const (
+	rpcRetryNewMsgID = "new_msg_id"
+	rpcRetryLater    = "later"
+)
+
 // rpcDedupState is the exactly-once RPC state of a handler: the store, the metrics of its outcomes, and the
 // window and the skew of the msg_id check. The window and the skew are captured here, with the store, since the
 // store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
@@ -236,7 +249,7 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 	msgID := e.Call.MsgID
 	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), h.rpcDedup.window, h.rpcDedup.maxSkew) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDInvalid)
-		msgIDErr := registryError(cfg.Errors.MsgIDInvalid)
+		msgIDErr := registryRetryError(cfg.Errors.MsgIDInvalid, false, rpcRetryNewMsgID)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, msgIDErr)
 	}
 	if m.Idempotent || track.scope == "" {
@@ -311,7 +324,7 @@ func (h *Handler) completeRPCRecord(key rpcdedup.Key, flight *rpcdedup.Flight, r
 // is counted as a store error and logged. With fail_open the call runs without dedup, and stays in the in-flight
 // map of its connection, so a cancel reaches it. A call with the msg_id of a call which runs on the connection is
 // not run again: it is answered with the temporary dedup_unavailable error, as the store would not know it. With
-// fail_closed the call is answered with the same error, and it is not run.
+// fail_closed the call is answered with the same error, which carries the later retry signal, and it is not run.
 func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, storeErr error) (centrifuge.RPCReply, error) {
 	var refused *rpcdedup.RefusedError
 	if errors.As(storeErr, &refused) {
@@ -328,7 +341,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
 	}
-	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryTemporaryError(cfg.Errors.DedupUnavailable))
+	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater))
 }
 
 // storeCancelFailure handles a failed Cancel of the store. A refusal is counted and records nothing. Any other failure
@@ -370,14 +383,14 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	case <-c.Context().Done():
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultCancelled, registryError(cfg.Errors.Cancelled))
 	case <-timer.C:
-		timeoutErr := registryTemporaryError(cfg.Errors.DedupUnavailable)
+		timeoutErr := registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultTimeout, timeoutErr)
 	}
 	h.rpcDedup.metrics.ObserveWait(time.Since(started).Seconds())
 	rec := flight.Record()
 	if rec.Abandoned {
 		// The call did not answer, and was not kept: the duplicate retries.
-		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryTemporaryError(cfg.Errors.DedupUnavailable))
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater))
 	}
 	return h.rpcRecordedReply(rec, cfg)
 }
@@ -400,6 +413,17 @@ func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegis
 func registryTemporaryError(e configtypes.RPCRegistryError) *centrifuge.Error {
 	protoErr := registryErrorValue(e)
 	protoErr.Temporary = true
+	return protoErr
+}
+
+// registryRetryError is the protocol error of a failure after which the client sends the call again. It carries the
+// retry signal in its metadata, and is sent as temporary or not. The call was not executed. An error which carries
+// the signal is never recorded: it is answered before Begin, by a failed Begin, or to a duplicate, and a record
+// only holds the outcome of a call which ran. So a retransmit never replays the signal.
+func registryRetryError(e configtypes.RPCRegistryError, temporary bool, retry string) *centrifuge.Error {
+	protoErr := registryErrorValue(e)
+	protoErr.Temporary = temporary
+	protoErr.Metadata = map[string]string{rpcRetryMetadataKey: retry}
 	return protoErr
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestTransformHTTPStatusErrorMatchesSharedRules(t *testing.T) {
@@ -164,4 +165,19 @@ func TestHTTPAndGRPCShareMatcher(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, uint32(101), protocolError.Code)
 
+}
+
+func TestMapGRPCRegistryErrorBackendCanceledUsesInternalClass(t *testing.T) {
+	protocolError, disconnect := MapGRPCRegistryError(
+		status.Error(codes.Canceled, "backend cancelled"),
+		nil,
+		nil,
+		configtypes.RPCRegistryAppError{},
+		nil,
+	)
+	require.Nil(t, disconnect)
+	require.NotNil(t, protocolError)
+	require.Equal(t, uint32(100), protocolError.Code)
+	require.Equal(t, "backend cancelled", protocolError.Message)
+	require.False(t, protocolError.Temporary)
 }

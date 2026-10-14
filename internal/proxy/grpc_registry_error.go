@@ -5,13 +5,10 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 
 	"github.com/centrifugal/centrifuge"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
-
-// registryInternalErrorCode is the protocol error code of a failed gRPC call which has no mapping
-// at all. The default table never reaches it: every status code maps to a code.
-const registryInternalErrorCode = 100
 
 // MapGRPCRegistryError maps the error of a failed gRPC registry call to the protocol error or the
 // disconnect the client receives. The configured status transforms come first, then the default
@@ -38,7 +35,10 @@ func MapGRPCRegistryError(
 		protoErr = defaultGRPCStatusError(code, st.Message())
 	}
 	if protoErr == nil {
-		protoErr = &proxyproto.Error{Code: registryInternalErrorCode, Message: capGRPCErrorMessage(st.Message())}
+		// The default table has no protocol error for OK and Canceled. Canceled reaches here only
+		// when the backend sent it: a cancelled client call is answered before the mapping. Such a
+		// status is mapped to the internal class, as any other status without a rule.
+		protoErr = defaultGRPCStatusError(codes.Internal, st.Message())
 	}
 
 	appError := extractGRPCAppError(trailers, code, st.Message(), appKeys, metadataKeys)

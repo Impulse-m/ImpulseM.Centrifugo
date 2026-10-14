@@ -336,7 +336,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 	if cfg.Dedup.OnStoreError == configtypes.RPCDedupFailOpen {
 		release, admitted := track.inflight.TryAdd(e.Call.MsgID, cancel)
 		if !admitted {
-			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryTemporaryError(cfg.Errors.DedupUnavailable))
+			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, ""))
 		}
 		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
@@ -408,22 +408,17 @@ func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegis
 	return centrifuge.RPCReply{Data: rec.Reply, Cached: true}, nil
 }
 
-// registryTemporaryError returns the protocol error configured for a failure which clients retry. It is sent as
-// temporary.
-func registryTemporaryError(e configtypes.RPCRegistryError) *centrifuge.Error {
-	protoErr := registryErrorValue(e)
-	protoErr.Temporary = true
-	return protoErr
-}
-
-// registryRetryError is the protocol error of a failure after which the client sends the call again. It carries the
-// retry signal in its metadata, and is sent as temporary or not. The call was not executed. An error which carries
-// the signal is never recorded: it is answered before Begin, by a failed Begin, or to a duplicate, and a record
-// only holds the outcome of a call which ran. So a retransmit never replays the signal.
+// registryRetryError is the protocol error of a dedup failure, sent as temporary or not. A non-empty retry is the
+// value of the retry signal in its metadata: the client sends the call again after it. An empty retry gives no
+// signal, for a call which runs on its connection, which a resend would run again. An error which carries the signal
+// is never recorded: it is answered before Begin, by a failed Begin, or to a duplicate, and a record only holds the
+// outcome of a call which ran. So a retransmit never replays the signal.
 func registryRetryError(e configtypes.RPCRegistryError, temporary bool, retry string) *centrifuge.Error {
 	protoErr := registryErrorValue(e)
 	protoErr.Temporary = temporary
-	protoErr.Metadata = map[string]string{rpcRetryMetadataKey: retry}
+	if retry != "" {
+		protoErr.Metadata = map[string]string{rpcRetryMetadataKey: retry}
+	}
 	return protoErr
 }
 

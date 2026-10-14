@@ -836,6 +836,18 @@ func TestRPCDedupMsgIDOutsideWindowCarriesNewMsgIDSignal(t *testing.T) {
 	require.Empty(t, backend.Calls())
 }
 
+// A msg_id above 53 bits is refused with the new_msg_id signal, though its time part is in the window, and nothing runs.
+func TestRPCDedupMsgIDAbove53BitsCarriesNewMsgIDSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(26) | 1<<53
+
+	_, err := dedupCall(h, client, "users.get", msgID, "x")
+	requireRetrySignal(t, err, rpcRetryNewMsgID)
+	require.Empty(t, backend.Calls())
+}
+
 // A call refused by the store under fail_closed, for the user limit of scopes, is temporary and carries the later
 // signal, and does not run.
 func TestRPCDedupRefusedUserCarriesLaterSignal(t *testing.T) {

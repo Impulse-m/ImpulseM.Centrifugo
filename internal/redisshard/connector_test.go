@@ -3,6 +3,7 @@ package redisshard
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,29 @@ func TestConnectorConnectIsNoOpWhenConnected(t *testing.T) {
 	require.Len(t, c.Shards(), 2)
 	require.NoError(t, c.Connect())
 	require.Equal(t, int32(1), fake.calls.Load())
+}
+
+func TestConnectorConcurrentConnectDialsOnce(t *testing.T) {
+	var dials atomic.Int32
+	c := NewConnector(fakeConfigs(2), nil)
+	c.SetConnect(func(configs []RedisShardConfig) ([]*RedisShard, error) {
+		dials.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		return make([]*RedisShard, len(configs)), nil
+	})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.Connect(); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), dials.Load())
+	require.Len(t, c.Shards(), 2)
 }
 
 func TestConnectorConnectFailureKeepsNothing(t *testing.T) {

@@ -14,13 +14,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const (
-	// redisDefaultIOTimeout bounds Redis calls when the configuration has no IO timeout.
-	redisDefaultIOTimeout = 4 * time.Second
-	// redisErrorLogInterval is the minimum time between two logged Redis errors of a node.
-	redisErrorLogInterval = 10 * time.Second
-)
-
 // rateLimitScript is the rate limit check which runs in Redis. KEYS[1] is a hash with one theoretical
 // arrival time (TAT, microseconds) per bucket of a scope, fields are bucket indexes starting from 0.
 // ARGV is described in redisScriptArgs. All buckets are checked first and TATs are written only when
@@ -71,7 +64,7 @@ type RedisUserLimiter struct {
 	// for the life of the process.
 	connector *redisshard.Connector
 	run       redisScriptRunner
-	// errorLog limits how often Redis errors are logged to once per redisErrorLogInterval.
+	// errorLog limits how often Redis errors are logged to once per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
 }
 
@@ -86,14 +79,14 @@ func NewRedisUserLimiter(
 	ioTimeout time.Duration,
 ) *RedisUserLimiter {
 	if ioTimeout <= 0 {
-		ioTimeout = redisDefaultIOTimeout
+		ioTimeout = redisshard.DefaultIOTimeout
 	}
 	limiter := &RedisUserLimiter{
 		plan:     newRedisUserPlan(cfg),
 		prefix:   prefix,
 		timeout:  ioTimeout,
 		run:      runRedisScript,
-		errorLog: tools.NewIntervalLimiter(redisErrorLogInterval),
+		errorLog: tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
 	limiter.connector = redisshard.NewConnector(shardConfigs, redisshard.LogConnect(
 		"redis_user_command rate limit",
@@ -181,7 +174,7 @@ func (l *RedisUserLimiter) check(userID string, s *scope) bool {
 	return allowed
 }
 
-// logError logs a Redis error at most once per redisErrorLogInterval.
+// logError logs a Redis error at most once per redisshard.ErrorLogInterval.
 func (l *RedisUserLimiter) logError(err error) {
 	if l.errorLog.Allow() {
 		log.Error().Err(err).Msg("redis_user_command rate limit: Redis error, command allowed")

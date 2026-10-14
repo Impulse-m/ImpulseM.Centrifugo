@@ -3,6 +3,7 @@ package redisshard
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,14 @@ const (
 	// connectRetryMin and connectRetryMax bound the delay between connect attempts while Redis is unreachable.
 	connectRetryMin = time.Second
 	connectRetryMax = 30 * time.Second
+)
+
+const (
+	// DefaultIOTimeout bounds each Redis call of the Redis users of the server when their configuration has no IO
+	// timeout.
+	DefaultIOTimeout = 4 * time.Second
+	// ErrorLogInterval is the minimum time between two logged errors of one Redis user.
+	ErrorLogInterval = 10 * time.Second
 )
 
 // ErrNotConnected is returned by the checks and the calls made while a connector has no shards.
@@ -50,6 +59,9 @@ type Connector struct {
 	backoffMax time.Duration
 	// shards is set once, by a successful Connect. Its shard count never changes. Nil means not connected.
 	shards atomic.Pointer[[]*RedisShard]
+	// connectMu serializes Connect, so that two calls do not both dial, and the second store does not drop the first
+	// set of shards without closing it.
+	connectMu sync.Mutex
 }
 
 // NewConnector returns a connector of configs. It does not connect: call Connect, or run Run as a service.
@@ -80,6 +92,8 @@ func (c *Connector) SetBackoff(backoffMin time.Duration, backoffMax time.Duratio
 // kept and the connector stays not connected. Once connected, Connect does nothing: the Redis client
 // reconnects by itself.
 func (c *Connector) Connect() error {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 	if c.Shards() != nil {
 		return nil
 	}

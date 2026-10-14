@@ -293,7 +293,7 @@ func TestRedisLimiterNeedsKey(t *testing.T) {
 
 func TestRedisLimiterDefaultTimeout(t *testing.T) {
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
-	require.Equal(t, redisDefaultIOTimeout, l.timeout)
+	require.Equal(t, redisshard.DefaultIOTimeout, l.timeout)
 	l = NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 250*time.Millisecond)
 	require.Equal(t, 250*time.Millisecond, l.timeout)
 }

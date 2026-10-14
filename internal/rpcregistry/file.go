@@ -29,7 +29,7 @@ func snapshotFile(path string) (*fileSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rpc registry file %s: %w", path, err)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // Path of the registry file set by the operator in the config.
 	if err != nil {
 		return nil, fmt.Errorf("rpc registry file %s: %w", path, err)
 	}

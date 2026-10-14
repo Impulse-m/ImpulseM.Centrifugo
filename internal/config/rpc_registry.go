@@ -37,7 +37,7 @@ func LoadRPCRegistryFile(path string) (configtypes.RPCRegistryFile, error) {
 	if err != nil {
 		return file, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // Path of the registry file set by the operator in the config.
 	if err != nil {
 		return file, fmt.Errorf("error reading rpc registry file %s: %w", path, err)
 	}

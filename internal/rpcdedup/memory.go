@@ -309,7 +309,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 // finish is Complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
 // has no fingerprint, and keeps none, so it answers any duplicate.
 func (m *Memory) finish(key Key, flight *Flight, rec Record) {
-	oversize := overReplyLimit(rec, m.maxReplyBytes)
+	oversize := memoryOverReplyLimit(rec, m.maxReplyBytes)
 	kept := rec
 	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
@@ -661,6 +661,16 @@ func (s *shard) unlink(r *storedRecord) {
 	p.bytes -= r.size
 	p.stats.entries.Add(-1)
 	p.stats.bytes.Add(-r.size)
+}
+
+// memoryOverReplyLimit reports whether the node-local store keeps rec as uncached: a reply over the limit, or an error
+// whose message and metadata are over it. The shared tier counts an error by its encoded form instead, see
+// sharedOverReplyLimit.
+func memoryOverReplyLimit(rec Record, limit int) bool {
+	if rec.Err != nil {
+		return errorBytes(rec.Err) > int64(limit)
+	}
+	return len(rec.Reply) > limit
 }
 
 // recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or the bytes of its

@@ -256,7 +256,7 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 // expires. A write which reports that this node does not own the in-flight record is not retried.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
-	if overReplyLimit(rec, s.maxReplyBytes) {
+	if sharedOverReplyLimit(rec, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
 	limit := time.Now().Add(s.inflightGrace / 2)
@@ -285,10 +285,10 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	}
 }
 
-// overReplyLimit reports whether the shared tier keeps rec as uncached, and the node-local store with it: a reply over
-// the limit, or an error whose encoded form is over it, so that an error with a large message or metadata is not kept
-// for the full TTL.
-func overReplyLimit(rec Record, limit int) bool {
+// sharedOverReplyLimit reports whether the shared tier keeps rec as uncached: a reply over the limit, or an error whose
+// encoded form is over it, so that an error with a large message or metadata is not kept for the full TTL. The
+// node-local store counts an error by its message and metadata, see memoryOverReplyLimit.
+func sharedOverReplyLimit(rec Record, limit int) bool {
 	if rec.Err != nil {
 		return len(encodeError(rec.Err)) > limit
 	}

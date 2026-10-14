@@ -449,6 +449,46 @@ func TestMemoryErrorOverReplyLimitIsUncached(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+// The node-local store counts an error by its message and metadata, not by its encoded form. A message of quote
+// characters is 1700 bytes, and its encoded form is over 2048, yet the error fits the reply limit and is kept.
+func TestMemoryErrorUnderLimitIsKeptWhenEncodedFormIsOver(t *testing.T) {
+	store, _ := newTestMemory(2048)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat(`"`, 1700)}
+	require.Greater(t, len(encodeError(failure)), 2048)
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.False(t, lookup.Record.Uncached)
+	require.Equal(t, failure.Message, lookup.Record.Err.Message)
+	checkInvariants(t, store)
+}
+
+// An error with escaped characters and short metadata entries is over the limit encoded, and under it by its message
+// and metadata, so it stays cached: a retransmit gets the error, not result_evicted.
+func TestMemoryErrorWithMetadataUnderLimitStaysCached(t *testing.T) {
+	store, _ := newTestMemory(2048)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	metadata := make(map[string]string, 40)
+	for i := range 40 {
+		metadata[strconv.Itoa(i)] = "v"
+	}
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("<", 300), Metadata: metadata}
+	require.Greater(t, len(encodeError(failure)), 2048)
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.False(t, lookup.Record.Uncached)
+	require.Equal(t, metadata, lookup.Record.Err.Metadata)
+	checkInvariants(t, store)
+}
+
 func TestMemoryUncachedReplyIsNotKept(t *testing.T) {
 	store, _ := newTestMemory(4)
 	key := Key{Scope: testScope("u1", "a"), MsgID: 7}

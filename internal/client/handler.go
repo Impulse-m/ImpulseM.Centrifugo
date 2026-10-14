@@ -455,10 +455,12 @@ func (h *Handler) OnClientConnecting(
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
 		replyUser = token.UserID
-		if !h.storeRegistryToken(storage, credentials, e.Token, token) {
+		authClass, ok := h.storeConnectClass(storage, e.Token, token)
+		if !ok {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
+		credentials.UserID = coreUserID(authClass, token.UserID)
 
 		processClientChannels = true
 	} else if connectProxyHandler != nil {

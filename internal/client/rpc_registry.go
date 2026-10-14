@@ -191,23 +191,21 @@ type registryAuthClass struct {
 	claim string
 }
 
-// storeRegistryToken stores the verified connection token and its auth class for the registry, when the
-// registry is enabled. The credentials get the user Core sees, which is empty for a pending connection. It
-// reports false when the auth class of the token is invalid for its user, and the connection must be rejected.
-func (h *Handler) storeRegistryToken(
+// storeConnectClass stores the verified connection token and its auth class for the registry, when the registry is
+// enabled, and returns the auth class of the token. It reports false when the auth class of the token is invalid for
+// its user, and the connection must be rejected.
+func (h *Handler) storeConnectClass(
 	storage map[string]any,
-	credentials *centrifuge.Credentials,
 	token string,
 	verified jwtverify.ConnectToken,
-) bool {
+) (rpcregistry.AuthClass, bool) {
 	authClass, ok := rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
 	if !ok {
-		return false
+		return 0, false
 	}
-	credentials.UserID = coreUserID(authClass, verified.UserID)
 	storage[clientstorage.KeyTokenUser] = verified.UserID
 	h.setRegistryStorage(storage, token, authClass)
-	return true
+	return authClass, true
 }
 
 // setRegistryStorage stores the connection token when the registry is enabled, and the auth class when it is kept.

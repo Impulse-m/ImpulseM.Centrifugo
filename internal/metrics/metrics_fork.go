@@ -35,6 +35,7 @@ type forkRegistry struct {
 	rpcRegistryErrorsTotal  *prometheus.CounterVec
 	rpcRegistryReloadsTotal *prometheus.CounterVec
 	rpcRegistryDedupTotal   *prometheus.CounterVec
+	rpcRegistryRetransmits  *prometheus.CounterVec
 	rpcRegistryDedupWait    prometheus.Histogram
 	rpcRegistryDedupEntries prometheus.Gauge
 }
@@ -221,6 +222,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.rpcRegistryRetransmits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "retransmit_total",
+		Help:        "Number of RPC method registry calls which the client retransmitted, by method.",
+		ConstLabels: constLabels,
+	}, []string{"rpc_method"})
+
 	m.rpcRegistryDedupEntries = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
@@ -253,6 +262,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupTotal,
 		m.rpcRegistryDedupWait,
 		m.rpcRegistryDedupEntries,
+		m.rpcRegistryRetransmits,
 	}
 }
 
@@ -308,4 +318,5 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupTotal = m.rpcRegistryDedupTotal
 	RPCRegistryDedupWaitSeconds = m.rpcRegistryDedupWait
 	RPCRegistryDedupEntries = m.rpcRegistryDedupEntries
+	RPCRegistryRetransmitsTotal = m.rpcRegistryRetransmits
 }

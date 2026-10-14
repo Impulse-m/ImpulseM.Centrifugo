@@ -101,6 +101,9 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 		sizeErr := registryError(cfg.Errors.RequestTooLarge)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, sizeErr)
 	}
+	if e.Call.Retransmit {
+		m.Metrics.IncRetransmit()
+	}
 	if track != nil && e.Call.MsgID != 0 {
 		return h.callRPCTracked(c, e, m, cfg, connToken, track)
 	}
@@ -118,11 +121,13 @@ func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.
 	m.Target.Metrics.IncInflight()
 	defer m.Target.Metrics.DecInflight()
 	data, trailers, err := proxy.CallRegistryMethod(ctx, m, proxy.RegistryCall{
-		ClientID: c.ID(),
-		Token:    token,
-		Data:     e.Data,
-		Headers:  e.Call.Headers,
-		MsgID:    e.Call.MsgID,
+		ClientID:       c.ID(),
+		Token:          token,
+		Data:           e.Data,
+		Headers:        e.Call.Headers,
+		MsgID:          e.Call.MsgID,
+		Retransmit:     e.Call.Retransmit,
+		WithoutUpdates: e.Call.WithoutUpdates,
 	})
 	// The context decides whether the call was cancelled. A CANCELLED status sent by the
 	// backend on a live connection is an ordinary failure of the target. A call cancelled by the

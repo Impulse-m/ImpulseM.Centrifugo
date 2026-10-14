@@ -561,3 +561,28 @@ func TestRPCDedupCancelWhileSemaphoreIsFull(t *testing.T) {
 	backend.releaseGate()
 	require.Nil(t, transport.waitReply(t, 3).Error)
 }
+
+// A retransmit and a call without updates reach the target as headers, and a plain call carries neither.
+func TestRPCDedupRetransmitAndWithoutUpdatesHeaders(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	var msgID uint64 = dedupMsgID(14)
+
+	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
+	require.NoError(t, first.err)
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.get",
+		Data:   []byte("x"),
+		Call:   centrifuge.RPCCallOptions{MsgID: dedupMsgID(15), Retransmit: true, WithoutUpdates: true},
+	}, nil)
+	require.NoError(t, err)
+
+	calls := backend.Calls()
+	require.Len(t, calls, 2)
+	require.Empty(t, calls[0].Metadata.Get("x-centrifugo-retransmit"))
+	require.Empty(t, calls[0].Metadata.Get("x-centrifugo-without-updates"))
+	require.Equal(t, []string{"1"}, calls[1].Metadata.Get("x-centrifugo-retransmit"))
+	require.Equal(t, []string{"1"}, calls[1].Metadata.Get("x-centrifugo-without-updates"))
+}

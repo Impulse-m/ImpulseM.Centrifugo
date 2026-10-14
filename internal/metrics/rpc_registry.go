@@ -34,8 +34,13 @@ const (
 // RPCRegistryMethodMetrics holds the calls_total children of one registry method, one per result.
 // They are resolved once, when the method is built, so a call does no label lookup. A nil value does nothing.
 type RPCRegistryMethodMetrics struct {
-	calls [len(rpcRegistryResults)]prometheus.Counter
+	calls       [len(rpcRegistryResults)]prometheus.Counter
+	retransmits prometheus.Counter
 }
+
+// RPCRegistryRetransmitsTotal counts the calls of a registry method which the client retransmitted after a
+// transport loss. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryRetransmitsTotal *prometheus.CounterVec
 
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
@@ -47,7 +52,18 @@ func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
 	for i, result := range rpcRegistryResults {
 		m.calls[i] = RPCRegistryCallsTotal.WithLabelValues(rpcMethod, result)
 	}
+	if RPCRegistryRetransmitsTotal != nil {
+		m.retransmits = RPCRegistryRetransmitsTotal.WithLabelValues(rpcMethod)
+	}
 	return m
+}
+
+// IncRetransmit counts one retransmitted call of the method.
+func (m *RPCRegistryMethodMetrics) IncRetransmit() {
+	if m == nil || m.retransmits == nil {
+		return
+	}
+	m.retransmits.Inc()
 }
 
 // IncCall counts one call with its result. Results other than the RPCRegistryResult values are

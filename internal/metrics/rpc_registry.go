@@ -283,6 +283,15 @@ var rpcRegistryDedupPoolLabels = [...]string{
 	"anonymous",
 }
 
+// rpcRegistryDedupEvictionReasons are the reasons of the eviction counter, which has a series for each of them from
+// the start.
+var rpcRegistryDedupEvictionReasons = [...]string{
+	rpcdedup.EvictionScopeCap,
+	rpcdedup.EvictionOverReserve,
+	rpcdedup.EvictionSurplus,
+	rpcdedup.EvictionUncached,
+}
+
 // RPCRegistryDedupMetrics holds the outcome counters of exactly-once RPC, resolved once. A nil value does
 // nothing.
 type RPCRegistryDedupMetrics struct {

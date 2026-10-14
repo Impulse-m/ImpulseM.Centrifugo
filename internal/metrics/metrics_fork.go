@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
-
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -250,7 +248,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Help:        "Number of exactly-once RPC answers the node evicted to make room, by reason.",
 		ConstLabels: constLabels,
 	}, []string{"reason"})
-	for _, reason := range []string{rpcdedup.EvictionScopeCap, rpcdedup.EvictionOverReserve, rpcdedup.EvictionSurplus, rpcdedup.EvictionUncached} {
+	for _, reason := range rpcRegistryDedupEvictionReasons {
 		m.rpcRegistryDedupEvictions.WithLabelValues(reason)
 	}
 
@@ -258,7 +256,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_scopes",
-		Help:        "Number of exactly-once RPC scopes the node admits, by pool. Compare with local_max_entries / scope_reserve.",
+		Help:        "Number of exactly-once RPC scopes the node admits, by pool. Per shard, a pool admits the smaller of its entries / scope_reserve and bytes / scope_reserve_bytes: authenticated takes local_max_entries and local_max_bytes less their anonymous parts, anonymous takes the anonymous parts.",
 		ConstLabels: constLabels,
 	}, []string{"pool"})
 
@@ -269,7 +267,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Help:        "Bytes of the exactly-once RPC answers the node keeps, by pool.",
 		ConstLabels: constLabels,
 	}, []string{"pool"})
-	for _, pool := range []string{"authenticated", "anonymous"} {
+	for _, pool := range rpcRegistryDedupPoolLabels {
 		m.rpcRegistryDedupScopes.WithLabelValues(pool)
 		m.rpcRegistryDedupBytes.WithLabelValues(pool)
 	}

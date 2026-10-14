@@ -417,8 +417,6 @@ type Client struct {
 	// Proxy is a configuration for client connection-wide proxies.
 	Proxy ClientProxyContainer `mapstructure:"proxy" json:"proxy" envconfig:"proxy" toml:"proxy" yaml:"proxy" doc:"Configuration for client connection-level proxies (connect and refresh)."`
 
-	// Rebind is a configuration for moving a live connection to another identity on refresh.
-	Rebind Rebind `mapstructure:"rebind" json:"rebind" envconfig:"rebind" toml:"rebind" yaml:"rebind" doc:"Configuration for rebinding a live connection to another identity on refresh."`
 	// AllowedOrigins is a list of allowed origins for client connections.
 	AllowedOrigins []string `mapstructure:"allowed_origins" json:"allowed_origins" envconfig:"allowed_origins" yaml:"allowed_origins" toml:"allowed_origins" expose:"full" doc:"List of allowed WebSocket origins (CORS). Use <<*>> to allow all origins."`
 	// Token is a configuration for token generation and verification. When enabled, this configuration
@@ -485,6 +483,8 @@ type Client struct {
 	ConnectCodeToUnidirectionalDisconnect ConnectCodeToUnidirectionalDisconnect `mapstructure:"connect_code_to_unidirectional_disconnect" json:"connect_code_to_unidirectional_disconnect" envconfig:"connect_code_to_unidirectional_disconnect" yaml:"connect_code_to_unidirectional_disconnect" toml:"connect_code_to_unidirectional_disconnect" doc:"Configuration for mapping connect error codes to disconnect codes for unidirectional transports."`
 	// RateLimit is a configuration of operation rate limits (PRO feature docs describe the semantics).
 	RateLimit RateLimit `mapstructure:"rate_limit" json:"rate_limit" envconfig:"rate_limit" yaml:"rate_limit" toml:"rate_limit" doc:"A configuration of operation rate limits (PRO feature docs describe the semantics)."`
+	// Rebind is a configuration for moving a live connection to another identity on refresh.
+	Rebind Rebind `mapstructure:"rebind" json:"rebind" envconfig:"rebind" toml:"rebind" yaml:"rebind" doc:"Configuration for rebinding a live connection to another identity on refresh."`
 }
 
 type UniConnectCodeToDisconnectTransforms []UniConnectCodeToDisconnectTransform

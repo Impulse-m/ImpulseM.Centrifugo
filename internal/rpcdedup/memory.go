@@ -328,16 +328,27 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	return nil
 }
 
+// CancelFlight cancels the call of key when it is in flight on this store, and reports whether it was. The
+// call is cancelled outside the lock; its owner completes the flight with the record of the cancelled call.
+func (m *Memory) CancelFlight(key Key) bool {
+	s := m.shardOf(key.Scope)
+	s.mu.Lock()
+	running, found := s.flights[key]
+	s.mu.Unlock()
+	if found {
+		running.Cancel()
+	}
+	return found
+}
+
 // Cancel implements Store. A flight is cancelled outside the lock. Otherwise the key is kept as cancelled, which
 // counts toward the budgets like any record, and its scope is admitted like the scope of any call.
 func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
-	s := m.shardOf(key.Scope)
-	s.mu.Lock()
-	if running, found := s.flights[key]; found {
-		s.mu.Unlock()
-		running.Cancel()
+	if m.CancelFlight(key) {
 		return nil
 	}
+	s := m.shardOf(key.Scope)
+	s.mu.Lock()
 	now := s.now()
 	s.sweepSome(now)
 	if s.liveRecord(key, now) != nil {

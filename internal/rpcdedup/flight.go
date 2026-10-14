@@ -3,6 +3,7 @@ package rpcdedup
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Flight is a call which runs on this node. Its owner completes it, and duplicates wait for it. Cancel
@@ -15,6 +16,11 @@ type Flight struct {
 	done        chan struct{}
 	record      Record
 	fingerprint [32]byte
+	// timeout is the method timeout of the call, zero when unknown. It bounds the in-flight record of the
+	// call in a shared tier.
+	timeout time.Duration
+	// localOnly is set when the call runs without the shared tier, see Shared.Begin.
+	localOnly bool
 }
 
 // NewFlight returns a flight which has not started, with a zero fingerprint. A zero fingerprint matches only a
@@ -28,6 +34,14 @@ func NewFlight() *Flight {
 func NewFlightWithFingerprint(fingerprint [32]byte) *Flight {
 	flight := NewFlight()
 	flight.fingerprint = fingerprint
+	return flight
+}
+
+// NewCallFlight returns a flight which has not started, for a call with fingerprint and method timeout.
+// The timeout bounds the in-flight record of the call in a shared tier.
+func NewCallFlight(fingerprint [32]byte, timeout time.Duration) *Flight {
+	flight := NewFlightWithFingerprint(fingerprint)
+	flight.timeout = timeout
 	return flight
 }
 

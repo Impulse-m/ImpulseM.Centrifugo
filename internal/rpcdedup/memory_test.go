@@ -332,6 +332,34 @@ func TestMemoryCancelInFlightCancelsOwner(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+func TestMemoryCancelFlight(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+
+	// Nothing runs: nothing is cancelled and nothing is recorded.
+	require.False(t, store.CancelFlight(key))
+	require.True(t, testIsMiss(t, store, key))
+
+	owner := NewFlight()
+	testBegin(t, store, key, owner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner.Attach(cancel)
+
+	// The call runs: its context is cancelled, and it stays in flight until its owner completes it.
+	require.True(t, store.CancelFlight(key))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	select {
+	case <-owner.Done():
+		t.Fatal("the flight finished before its owner completed it")
+	default:
+	}
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeInFlight, lookup.Outcome)
+	require.Same(t, owner, lookup.Flight)
+	checkInvariants(t, store)
+}
+
 func TestMemoryCancelBeforeCallLeavesCancelledRecord(t *testing.T) {
 	store, _ := newTestMemory(1024)
 	key := Key{Scope: testScope("u1", "a"), MsgID: 7}

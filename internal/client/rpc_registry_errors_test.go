@@ -11,7 +11,9 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -305,6 +307,37 @@ func TestRegistryClientCancelDoesNotCountAppError(t *testing.T) {
 	_ = requireProtocolError(t, <-errCh)
 
 	require.Equal(t, appErrorsBefore, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("metrics.cancelApp", "none")))
+}
+
+func TestRegistryCancelledCallIsNotObservedInDuration(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	cfg := registryErrorTestRegistry([]configtypes.RPCMethod{
+		{Method: "metrics.cancelObserved", GRPCMethod: registryStatusService + "Slow", Target: "backend"},
+	})
+	h := registryErrorTestHandler(t, backend, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := newRegistryTestClient("c1", "42", ctx, nil)
+
+	durationCount := func() uint64 {
+		var out dto.Metric
+		observer := metrics.ProxyCallDurationHistogram.WithLabelValues("grpc", "rpc", "backend")
+		require.NoError(t, observer.(prometheus.Metric).Write(&out))
+		return out.GetHistogram().GetSampleCount()
+	}
+	before := durationCount()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "metrics.cancelObserved", Data: []byte(tools.GRPCBytesSlowPayload)}, nil)
+		errCh <- err
+	}()
+	require.Eventually(t, func() bool { return len(backend.Calls()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	_ = requireProtocolError(t, <-errCh)
+
+	require.Equal(t, before, durationCount())
 }
 
 func TestRegistryCallMetricsLabels(t *testing.T) {

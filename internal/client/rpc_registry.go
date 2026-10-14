@@ -90,6 +90,7 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 	}
 	started := time.Now()
 	m.Target.Metrics.IncInflight()
+	defer m.Target.Metrics.DecInflight()
 	data, trailers, err := proxy.CallRegistryMethod(c.Context(), m, proxy.RegistryCall{
 		ClientID: c.ID(),
 		Token:    token,
@@ -97,12 +98,13 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 		Headers:  e.Call.Headers,
 		MsgID:    e.Call.MsgID,
 	})
-	m.Target.Metrics.DecInflight()
 	// The client context decides whether the call was cancelled. A CANCELLED status sent by the
-	// backend on a live connection is an ordinary failure of the target. A cancelled call is not a
-	// proxy error: the client went away, the target did not fail.
+	// backend on a live connection is an ordinary failure of the target. A call cancelled by the
+	// client is not observed in the proxy metrics, as the proxy handler does for a closed client.
 	cancelled := errors.Is(c.Context().Err(), context.Canceled)
-	m.Target.Metrics.ObserveCall(time.Since(started).Seconds(), err != nil && !cancelled)
+	if !cancelled {
+		m.Target.Metrics.ObserveCall(time.Since(started).Seconds(), err != nil)
+	}
 	if err != nil {
 		return centrifuge.RPCReply{}, registryMethodFailure(m, registryCallResult(err, cancelled), registryCallError(err, trailers, m, cfg, cancelled))
 	}

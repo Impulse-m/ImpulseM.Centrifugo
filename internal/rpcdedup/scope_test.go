@@ -7,7 +7,7 @@ import (
 )
 
 func TestScopeOfIsBoundToUserAndID(t *testing.T) {
-	var id []byte = []byte("install_0123456789abcdef")
+	id := []byte("install_0123456789abcdef")
 	require.NotEqual(t, ScopeOf("i", "42", id), ScopeOf("i", "43", id))
 	require.NotEqual(t, ScopeOf("i", "42", id), ScopeOf("s", "42", id))
 	require.NotEqual(t, ScopeOf("i", "42", id), ScopeOf("i", "", id))

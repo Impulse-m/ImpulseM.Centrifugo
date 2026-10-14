@@ -8,14 +8,14 @@ import (
 // BenchmarkMemoryBeginComplete is one tracked call in the node-local store: a miss which is completed. The
 // keys do not repeat, so the store stays at its bound.
 func BenchmarkMemoryBeginComplete(b *testing.B) {
-	var store *Memory = NewMemory(200000, 120*time.Second, 65536)
-	var reply []byte = []byte("ok")
-	var fingerprint [32]byte = Fingerprint("users.get", []byte("x"))
+	store := NewMemory(200000, 120*time.Second, 65536)
+	reply := []byte("ok")
+	fingerprint := Fingerprint("users.get", []byte("x"))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var key Key = Key{Scope: "s:bench", MsgID: uint64(i)}
-		var flight *Flight = NewFlightWithFingerprint(fingerprint)
+		key := Key{Scope: "s:bench", MsgID: uint64(i)}
+		flight := NewFlightWithFingerprint(fingerprint)
 		var lookup Lookup
 		var err error
 		lookup, err = store.Begin(key, flight)

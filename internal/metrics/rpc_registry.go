@@ -273,7 +273,7 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 	if RPCRegistryDedupTotal == nil {
 		return nil
 	}
-	var m *RPCRegistryDedupMetrics = &RPCRegistryDedupMetrics{
+	m := &RPCRegistryDedupMetrics{
 		waitSeconds: RPCRegistryDedupWaitSeconds,
 		entries:     RPCRegistryDedupEntries,
 	}

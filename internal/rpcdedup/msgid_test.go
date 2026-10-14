@@ -13,10 +13,10 @@ func testMsgID(sec int64, seq uint64) uint64 {
 }
 
 func TestMsgIDInWindow(t *testing.T) {
-	var now time.Time = time.Unix(1_800_000_000, 0)
-	var window time.Duration = 120 * time.Second
-	var maxSkew time.Duration = 30 * time.Second
-	var nowSec int64 = now.Unix()
+	now := time.Unix(1_800_000_000, 0)
+	window := 120 * time.Second
+	maxSkew := 30 * time.Second
+	nowSec := now.Unix()
 
 	testCases := []struct {
 		name  string

@@ -11,7 +11,7 @@ import (
 
 // dedupConfig returns a valid config with dedup enabled, for the dedup validation tests.
 func dedupConfig() Config {
-	var cfg Config = configWithRegistry(validInlineRegistry())
+	cfg := configWithRegistry(validInlineRegistry())
 	cfg.Client.ReplyIncludeServerTime = true
 	cfg.RPC.Registry.Dedup = configtypes.RPCDedup{
 		Enabled:         true,
@@ -25,7 +25,7 @@ func dedupConfig() Config {
 }
 
 func TestValidateRPCDedupDisabledIsNotChecked(t *testing.T) {
-	var cfg Config = configWithRegistry(validInlineRegistry())
+	cfg := configWithRegistry(validInlineRegistry())
 	cfg.RPC.Registry.Dedup.Window = configtypes.Duration(time.Second)
 	cfg.RPC.Registry.Dedup.MaxSkew = configtypes.Duration(time.Hour)
 	require.NoError(t, cfg.Validate())
@@ -107,9 +107,9 @@ func TestValidateRPCDedupRules(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var cfg Config = dedupConfig()
+			cfg := dedupConfig()
 			tc.modify(&cfg)
-			var err error = cfg.Validate()
+			err := cfg.Validate()
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -120,7 +120,7 @@ func TestValidateRPCDedupRules(t *testing.T) {
 }
 
 func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
-	var cfg Config = DefaultConfig()
+	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())

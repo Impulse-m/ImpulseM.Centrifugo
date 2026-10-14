@@ -30,11 +30,11 @@ func testComplete(t *testing.T, store Store, key Key, flight *Flight, data strin
 }
 
 func TestMemoryMissCompleteDone(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
 
-	var flight *Flight = NewFlight()
-	var lookup Lookup = testBegin(t, store, key, flight)
+	flight :=NewFlight()
+	lookup :=testBegin(t, store, key, flight)
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 
 	testComplete(t, store, key, flight, "ok")
@@ -48,12 +48,12 @@ func TestMemoryMissCompleteDone(t *testing.T) {
 }
 
 func TestMemoryDuplicateJoinsRunningFlight(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var owner *Flight = NewFlight()
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	owner :=NewFlight()
 	testBegin(t, store, key, owner)
 
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeInFlight, lookup.Outcome)
 	require.Same(t, owner, lookup.Flight)
 
@@ -64,8 +64,8 @@ func TestMemoryDuplicateJoinsRunningFlight(t *testing.T) {
 
 // Many goroutines begin the same key at once: exactly one owns the call.
 func TestMemorySingleOwnerUnderConcurrentBegin(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 9}
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 9}
 	var owners atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 64; i++ {
@@ -85,9 +85,9 @@ func TestMemorySingleOwnerUnderConcurrentBegin(t *testing.T) {
 }
 
 func TestMemoryCancelInFlightCancelsOwner(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var owner *Flight = NewFlight()
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	owner :=NewFlight()
 	testBegin(t, store, key, owner)
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -101,76 +101,76 @@ func TestMemoryCancelInFlightCancelsOwner(t *testing.T) {
 
 	// The owner completes with the cancelled error, which is then the answer of the key.
 	require.NoError(t, store.Complete(key, owner, Record{Err: testCancelled}))
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Same(t, testCancelled, lookup.Record.Err)
 }
 
 func TestMemoryCancelBeforeCallLeavesCancelledRecord(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
 	require.NoError(t, store.Cancel(key, testCancelled))
 
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Same(t, testCancelled, lookup.Record.Err)
 }
 
 func TestMemoryCancelLeavesDoneRecord(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var flight *Flight = NewFlight()
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	flight :=NewFlight()
 	testBegin(t, store, key, flight)
 	testComplete(t, store, key, flight, "ok")
 
 	require.NoError(t, store.Cancel(key, testCancelled))
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, []byte("ok"), lookup.Record.Reply)
 }
 
 func TestMemoryUncachedReplyIsNotKept(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 4)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var flight *Flight = NewFlight()
+	store :=NewMemory(10, time.Minute, 4)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	flight :=NewFlight()
 	testBegin(t, store, key, flight)
 	testComplete(t, store, key, flight, "too large")
 
 	// The duplicates which joined the call got the reply, later duplicates get the uncached marker.
 	require.Equal(t, []byte("too large"), flight.Record().Reply)
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.True(t, lookup.Record.Uncached)
 	require.Empty(t, lookup.Record.Reply)
 }
 
 func TestMemoryAbandonedCallIsNotKept(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var flight *Flight = NewFlight()
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	flight :=NewFlight()
 	testBegin(t, store, key, flight)
 	require.NoError(t, store.Complete(key, flight, Record{Abandoned: true}))
 	require.True(t, flight.Record().Abandoned)
 
 	// Nothing is kept, so a retransmit runs the call again.
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 	require.Equal(t, 0, store.Len())
 }
 
 func TestMemoryAckRemovesDoneRecordsOnly(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var done Key = Key{Scope: "s:1", MsgID: 1}
-	var running Key = Key{Scope: "s:1", MsgID: 2}
-	var other Key = Key{Scope: "s:2", MsgID: 1}
+	store :=NewMemory(10, time.Minute, 1024)
+	done :=Key{Scope: "s:1", MsgID: 1}
+	running :=Key{Scope: "s:1", MsgID: 2}
+	other :=Key{Scope: "s:2", MsgID: 1}
 
-	var flight *Flight = NewFlight()
+	flight :=NewFlight()
 	testBegin(t, store, done, flight)
 	testComplete(t, store, done, flight, "ok")
 	testBegin(t, store, running, NewFlight())
 	testBegin(t, store, other, NewFlight())
 
 	require.NoError(t, store.Ack("s:1", []uint64{1, 2}))
-	var lookup Lookup = testBegin(t, store, done, NewFlight())
+	lookup :=testBegin(t, store, done, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 	lookup = testBegin(t, store, running, NewFlight())
 	require.Equal(t, OutcomeInFlight, lookup.Outcome)
@@ -179,42 +179,42 @@ func TestMemoryAckRemovesDoneRecordsOnly(t *testing.T) {
 }
 
 func TestMemoryLRUBound(t *testing.T) {
-	var store *Memory = NewMemory(2, time.Minute, 1024)
+	store :=NewMemory(2, time.Minute, 1024)
 	for msgID := uint64(1); msgID <= 3; msgID++ {
-		var key Key = Key{Scope: "s:1", MsgID: msgID}
-		var flight *Flight = NewFlight()
+		key :=Key{Scope: "s:1", MsgID: msgID}
+		flight :=NewFlight()
 		testBegin(t, store, key, flight)
 		testComplete(t, store, key, flight, "ok")
 	}
 	require.Equal(t, 2, store.Len())
 
 	// The least recently used record is the one evicted.
-	var lookup Lookup = testBegin(t, store, Key{Scope: "s:1", MsgID: 1}, NewFlight())
+	lookup :=testBegin(t, store, Key{Scope: "s:1", MsgID: 1}, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 }
 
 func TestMemoryTTLExpiresRecords(t *testing.T) {
-	var store *Memory = NewMemory(10, 20*time.Millisecond, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 1}
-	var flight *Flight = NewFlight()
+	store :=NewMemory(10, 20*time.Millisecond, 1024)
+	key :=Key{Scope: "s:1", MsgID: 1}
+	flight :=NewFlight()
 	testBegin(t, store, key, flight)
 	testComplete(t, store, key, flight, "ok")
 
 	time.Sleep(60 * time.Millisecond)
-	var lookup Lookup = testBegin(t, store, key, NewFlight())
+	lookup :=testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 }
 
 // A duplicate msg_id with another fingerprint neither joins the call in flight, nor gets its reply.
 func TestMemoryFingerprintMismatchInFlight(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var fpA [32]byte = Fingerprint("users.set", []byte("a"))
-	var fpB [32]byte = Fingerprint("users.set", []byte("b"))
-	var owner *Flight = NewFlightWithFingerprint(fpA)
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	fpA :=Fingerprint("users.set", []byte("a"))
+	fpB :=Fingerprint("users.set", []byte("b"))
+	owner :=NewFlightWithFingerprint(fpA)
 	testBegin(t, store, key, owner)
 
-	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(fpB))
+	lookup :=testBegin(t, store, key, NewFlightWithFingerprint(fpB))
 	require.Equal(t, OutcomeMismatch, lookup.Outcome)
 	require.Nil(t, lookup.Flight)
 
@@ -223,14 +223,14 @@ func TestMemoryFingerprintMismatchInFlight(t *testing.T) {
 }
 
 func TestMemoryFingerprintMismatchDone(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
-	var fpA [32]byte = Fingerprint("users.set", []byte("a"))
-	var owner *Flight = NewFlightWithFingerprint(fpA)
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
+	fpA :=Fingerprint("users.set", []byte("a"))
+	owner :=NewFlightWithFingerprint(fpA)
 	testBegin(t, store, key, owner)
 	require.NoError(t, store.Complete(key, owner, Record{Reply: []byte("ok")}))
 
-	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
+	lookup :=testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
 	require.Equal(t, OutcomeMismatch, lookup.Outcome)
 	require.Empty(t, lookup.Record.Reply)
 
@@ -241,11 +241,11 @@ func TestMemoryFingerprintMismatchDone(t *testing.T) {
 
 // A cancelled record has no call, so it answers any duplicate.
 func TestMemoryCancelledRecordAnswersAnyFingerprint(t *testing.T) {
-	var store *Memory = NewMemory(10, time.Minute, 1024)
-	var key Key = Key{Scope: "s:1", MsgID: 7}
+	store :=NewMemory(10, time.Minute, 1024)
+	key :=Key{Scope: "s:1", MsgID: 7}
 	require.NoError(t, store.Cancel(key, testCancelled))
 
-	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
+	lookup :=testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Same(t, testCancelled, lookup.Record.Err)
 }

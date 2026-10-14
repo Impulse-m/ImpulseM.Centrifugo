@@ -21,13 +21,12 @@ type inflightCall struct {
 
 // NewInFlight returns an empty map.
 func NewInFlight() *InFlight {
-	var calls map[uint64]*inflightCall = map[uint64]*inflightCall{}
-	return &InFlight{calls: calls}
+	return &InFlight{calls: map[uint64]*inflightCall{}}
 }
 
 // Add registers the call msgID with its cancel function. The returned function removes the call.
 func (f *InFlight) Add(msgID uint64, cancel context.CancelFunc) func() {
-	var call *inflightCall = &inflightCall{cancel: cancel}
+	call := &inflightCall{cancel: cancel}
 	f.mu.Lock()
 	f.calls[msgID] = call
 	f.mu.Unlock()
@@ -43,7 +42,7 @@ func (f *InFlight) Add(msgID uint64, cancel context.CancelFunc) func() {
 // Cancel cancels the call msgID when it runs on this connection, and reports whether it does.
 func (f *InFlight) Cancel(msgID uint64) bool {
 	f.mu.Lock()
-	var call *inflightCall = f.calls[msgID]
+	call := f.calls[msgID]
 	f.mu.Unlock()
 	if call == nil {
 		return false

@@ -24,11 +24,11 @@ func newRPCDedupStore(cfgContainer *config.Container) rpcdedup.Store {
 	if cfgContainer == nil {
 		return nil
 	}
-	var dedup configtypes.RPCDedup = cfgContainer.ConfigRef().RPC.Registry.Dedup
+	dedup := cfgContainer.ConfigRef().RPC.Registry.Dedup
 	if !dedup.Enabled {
 		return nil
 	}
-	var store *rpcdedup.Memory = rpcdedup.NewMemory(dedup.LocalMaxEntries, dedup.Window.ToDuration(), dedup.MaxReplySize)
+	store := rpcdedup.NewMemory(dedup.LocalMaxEntries, dedup.Window.ToDuration(), dedup.MaxReplySize)
 	return store
 }
 
@@ -78,8 +78,8 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 	if call.MsgID == 0 && call.Cancel == 0 && len(call.Ack) == 0 {
 		return nil
 	}
-	var userID string = c.UserID()
-	var identity centrifuge.TokenIdentity = c.TokenIdentity()
+	userID := c.UserID()
+	identity := c.TokenIdentity()
 	var storage map[string]any
 	var release func(map[string]any)
 	storage, release = c.AcquireStorage()
@@ -113,7 +113,7 @@ func (h *Handler) cancelRPCRegistry(track *rpcTrack, msgID uint64) centrifuge.RP
 	h.rpcDedupMetrics.Inc(metrics.RPCRegistryDedupCancelled)
 	track.inflight.Cancel(msgID)
 	if track.scope != "" {
-		var failure *centrifuge.Error = registryErrorValue(h.registryErrors().Cancelled)
+		failure := registryErrorValue(h.registryErrors().Cancelled)
 		if err := h.rpcDedup.Cancel(rpcdedup.Key{Scope: track.scope, MsgID: msgID}, failure); err != nil {
 			log.Error().Err(err).Msg("error cancelling exactly-once RPC call")
 		}
@@ -133,7 +133,7 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 		msgIDErr := registryError(cfg.Errors.MsgIDInvalid)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, msgIDErr)
 	}
-	var base context.Context = c.Context()
+	base := c.Context()
 	if !m.Idempotent {
 		base = context.WithoutCancel(base)
 	}
@@ -141,7 +141,7 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(base)
 	defer cancel()
-	var release func() = track.inflight.Add(msgID, cancel)
+	release := track.inflight.Add(msgID, cancel)
 	defer release()
 
 	if m.Idempotent {
@@ -157,8 +157,8 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 // callRPCRecorded runs a non-idempotent call in a scope through the dedup store. The call is a miss, a duplicate
 // of a done call, or a duplicate of a call in flight on this node. A duplicate with another fingerprint is refused.
 func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, scope string) (centrifuge.RPCReply, error) {
-	var key rpcdedup.Key = rpcdedup.Key{Scope: scope, MsgID: e.Call.MsgID}
-	var flight *rpcdedup.Flight = rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint(e.Method, e.Data))
+	key := rpcdedup.Key{Scope: scope, MsgID: e.Call.MsgID}
+	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint(e.Method, e.Data))
 	lookup, err := h.rpcDedup.Begin(key, flight)
 	if err != nil {
 		return h.rpcStoreFailure(ctx, c, e, m, cfg, connToken, err)
@@ -203,7 +203,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, c Client, e centrifuge.RP
 // bounded by the method timeout and by the connection of the duplicate.
 func (h *Handler) rpcJoin(ctx context.Context, m *rpcregistry.Method, cfg configtypes.RPCRegistry, flight *rpcdedup.Flight) (centrifuge.RPCReply, error) {
 	started := time.Now()
-	var timer *time.Timer = time.NewTimer(m.Timeout)
+	timer := time.NewTimer(m.Timeout)
 	defer timer.Stop()
 	select {
 	case <-flight.Done():
@@ -214,7 +214,7 @@ func (h *Handler) rpcJoin(ctx context.Context, m *rpcregistry.Method, cfg config
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultTimeout, timeoutErr)
 	}
 	h.rpcDedupMetrics.ObserveWait(time.Since(started).Seconds())
-	var rec rpcdedup.Record = flight.Record()
+	rec := flight.Record()
 	if rec.Abandoned {
 		// The call ended with a disconnect, and was not kept: the duplicate retries.
 		unavailable := registryErrorValue(cfg.Errors.DedupUnavailable)

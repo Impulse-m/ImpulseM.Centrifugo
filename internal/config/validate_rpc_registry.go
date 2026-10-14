@@ -46,7 +46,7 @@ func validateRPCRegistry(c Config) error {
 // validateRPCDedup checks the exactly-once RPC config. A disabled dedup is not checked. Dedup needs the
 // enabled registry, and the server time in replies, which the SDK uses to correct its msg_id clock.
 func validateRPCDedup(c Config) error {
-	var dedup configtypes.RPCDedup = c.RPC.Registry.Dedup
+	dedup := c.RPC.Registry.Dedup
 	if !dedup.Enabled {
 		return nil
 	}

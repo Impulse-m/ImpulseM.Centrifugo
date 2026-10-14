@@ -12,7 +12,7 @@ import (
 // instance. The parts are hashed over a length-prefixed encoding, so no user id or instance can make two
 // scopes equal. The scope does not show id, so it may be logged.
 func ScopeOf(kind string, userID string, id []byte) string {
-	var h hash.Hash = sha256.New()
+	h := sha256.New()
 	writeLengthPrefixed(h, []byte(kind))
 	writeLengthPrefixed(h, []byte(userID))
 	writeLengthPrefixed(h, id)
@@ -23,7 +23,7 @@ func ScopeOf(kind string, userID string, id []byte) string {
 // same scope with another fingerprint is a different call, and gets neither the in-flight call nor its
 // reply.
 func Fingerprint(method string, data []byte) [32]byte {
-	var h hash.Hash = sha256.New()
+	h := sha256.New()
 	writeLengthPrefixed(h, []byte(method))
 	writeLengthPrefixed(h, data)
 	var out [32]byte

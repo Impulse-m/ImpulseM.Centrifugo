@@ -8,13 +8,13 @@ import (
 )
 
 func TestInFlightCancelReachesOnlyItsCall(t *testing.T) {
-	var calls *InFlight = NewInFlight()
+	calls := NewInFlight()
 	var ctx context.Context
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var release func() = calls.Add(5, cancel)
+	release := calls.Add(5, cancel)
 	require.True(t, calls.Cancel(5))
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 	release()
@@ -25,15 +25,15 @@ func TestInFlightCancelReachesOnlyItsCall(t *testing.T) {
 
 // A release of an older call must not remove a newer call with the same msg_id.
 func TestInFlightReleaseKeepsNewerCall(t *testing.T) {
-	var calls *InFlight = NewInFlight()
+	calls := NewInFlight()
 	var cancelOld context.CancelFunc
 	_, cancelOld = context.WithCancel(context.Background())
-	var releaseOld func() = calls.Add(5, cancelOld)
+	releaseOld := calls.Add(5, cancelOld)
 	var newCtx context.Context
 	var cancelNew context.CancelFunc
 	newCtx, cancelNew = context.WithCancel(context.Background())
 	defer cancelNew()
-	var releaseNew func() = calls.Add(5, cancelNew)
+	releaseNew := calls.Add(5, cancelNew)
 
 	releaseOld()
 	require.True(t, calls.Cancel(5))
@@ -43,7 +43,7 @@ func TestInFlightReleaseKeepsNewerCall(t *testing.T) {
 }
 
 func TestFlightAttachAfterCancelRunsCancel(t *testing.T) {
-	var flight *Flight = NewFlight()
+	flight := NewFlight()
 	flight.Cancel()
 	require.True(t, flight.Cancelled())
 

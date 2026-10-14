@@ -19,13 +19,12 @@ type Flight struct {
 // NewFlight returns a flight which has not started, with a zero fingerprint, which matches any fingerprint.
 // Calls of the connections use NewFlightWithFingerprint.
 func NewFlight() *Flight {
-	var done chan struct{} = make(chan struct{})
-	return &Flight{done: done}
+	return &Flight{done: make(chan struct{})}
 }
 
 // NewFlightWithFingerprint returns a flight which has not started, for a call with fingerprint.
 func NewFlightWithFingerprint(fingerprint [32]byte) *Flight {
-	var flight *Flight = NewFlight()
+	flight := NewFlight()
 	flight.fingerprint = fingerprint
 	return flight
 }
@@ -40,7 +39,7 @@ func (f *Flight) Fingerprint() [32]byte {
 func (f *Flight) Attach(cancel context.CancelFunc) {
 	f.mu.Lock()
 	f.cancel = cancel
-	var cancelled bool = f.cancelled
+	cancelled := f.cancelled
 	f.mu.Unlock()
 	if cancelled {
 		cancel()
@@ -51,7 +50,7 @@ func (f *Flight) Attach(cancel context.CancelFunc) {
 func (f *Flight) Cancel() {
 	f.mu.Lock()
 	f.cancelled = true
-	var cancel context.CancelFunc = f.cancel
+	cancel := f.cancel
 	f.mu.Unlock()
 	if cancel != nil {
 		cancel()

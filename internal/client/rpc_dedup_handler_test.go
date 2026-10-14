@@ -41,7 +41,7 @@ type dedupBackend struct {
 // newDedupBackend starts a backend, which is stopped when the test ends.
 func newDedupBackend(t testing.TB) *dedupBackend {
 	t.Helper()
-	var b *dedupBackend = &dedupBackend{
+	b := &dedupBackend{
 		listener: bufconn.Listen(1 << 20),
 		entered:  make(chan struct{}, 64),
 		gate:     make(chan struct{}),
@@ -78,7 +78,7 @@ func (b *dedupBackend) handle(_ any, stream grpc.ServerStream) error {
 		}
 	}
 	// A JSON string is answered as it is: the JSON protocol needs valid JSON replies.
-	var out []byte = append([]byte("reply:"), in...)
+	out := append([]byte("reply:"), in...)
 	if len(in) > 0 && in[0] == '"' {
 		out = in
 	}
@@ -130,8 +130,8 @@ func (b *dedupBackend) Calls() []tools.GRPCBytesCall {
 // an authenticated idempotent one, an anonymous non-idempotent one and a second non-idempotent method of
 // another name. The dedup is on, with the protocol errors of the store.
 func dedupRegistryConfig() configtypes.RPCRegistry {
-	var reg configtypes.RPCRegistry = registryTestRegistryConfig()
-	var idempotent bool = true
+	reg := registryTestRegistryConfig()
+	idempotent := true
 	reg.Methods = append(reg.Methods,
 		configtypes.RPCMethod{Method: "users.read", GRPCMethod: registryTestBackendMethod, Target: "backend", Idempotent: &idempotent},
 		configtypes.RPCMethod{Method: "users.put", GRPCMethod: registryTestBackendMethod, Target: "backend"},
@@ -165,8 +165,8 @@ func startDedupRegistry(t testing.TB, reg configtypes.RPCRegistry, conn *grpc.Cl
 // newDedupHandler returns a handler of reg, whose registry calls backend.
 func newDedupHandler(t testing.TB, reg configtypes.RPCRegistry, backend *dedupBackend) *Handler {
 	t.Helper()
-	var registry *rpcregistry.Registry = startDedupRegistry(t, reg, backend.conn(t))
-	var cfg config.Config = config.DefaultConfig()
+	registry := startDedupRegistry(t, reg, backend.conn(t))
+	cfg := config.DefaultConfig()
 	cfg.Client.ReplyIncludeServerTime = true
 	cfg.RPC.Registry = reg
 	var h *Handler
@@ -177,11 +177,11 @@ func newDedupHandler(t testing.TB, reg configtypes.RPCRegistry, backend *dedupBa
 // newDedupClient returns a client of userID, whose install instance is instance when not empty. Its
 // token session is zero.
 func newDedupClient(id string, userID string, ctx context.Context, instance string) *tools.TestClientMock {
-	var storage map[string]any = map[string]any{}
+	storage := map[string]any{}
 	if instance != "" {
 		storage[clientstorage.KeyInstance] = instance
 	}
-	var client *tools.TestClientMock = newRegistryTestClient(id, userID, ctx, storage)
+	client := newRegistryTestClient(id, userID, ctx, storage)
 	client.IdentityFunc = func() centrifuge.TokenIdentity {
 		return centrifuge.TokenIdentity{}
 	}
@@ -210,7 +210,7 @@ type dedupResult struct {
 
 // dedupCallAsync runs dedupCall in a goroutine, and returns the channel of its result.
 func dedupCallAsync(h *Handler, client *tools.TestClientMock, method string, msgID uint64, data string) <-chan dedupResult {
-	var result chan dedupResult = make(chan dedupResult, 1)
+	result := make(chan dedupResult, 1)
 	go func() {
 		reply, err := dedupCall(h, client, method, msgID, data)
 		result <- dedupResult{reply: reply, err: err}
@@ -233,7 +233,7 @@ func waitDedupResult(t testing.TB, result <-chan dedupResult) dedupResult {
 // requireCancelledError checks that err is the cancelled error of the registry config: code 107, "bad request".
 func requireCancelledError(t *testing.T, err error) {
 	t.Helper()
-	var protoErr *centrifuge.Error = requireProtocolError(t, err)
+	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(107), protoErr.Code)
 	require.Equal(t, "bad request", protoErr.Message)
 }
@@ -243,7 +243,7 @@ func TestRPCDedupSameNodeDuplicateJoinsOneCall(t *testing.T) {
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	first := newDedupClient("c1", "42", nil, testInstance)
 	second := newDedupClient("c2", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(1)
+	msgID :=dedupMsgID(1)
 
 	firstDone := dedupCallAsync(h, first, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -270,7 +270,7 @@ func TestRPCDedupOwnerDisconnectKeepsMutation(t *testing.T) {
 	var disconnectOwner context.CancelFunc
 	ownerCtx, disconnectOwner = context.WithCancel(context.Background())
 	owner := newDedupClient("c1", "42", ownerCtx, testInstance)
-	var msgID uint64 = dedupMsgID(2)
+	msgID :=dedupMsgID(2)
 
 	ownerDone := dedupCallAsync(h, owner, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -316,7 +316,7 @@ func TestRPCDedupCancelThenRetransmit(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(4)
+	msgID :=dedupMsgID(4)
 
 	done := dedupCallAsync(h, client, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -337,7 +337,7 @@ func TestRPCDedupCancelBeforeCallNeverRuns(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(5)
+	msgID :=dedupMsgID(5)
 
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
 	require.NoError(t, err)
@@ -382,7 +382,7 @@ func TestRPCDedupNoScopeRunsEachTime(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, "")
-	var msgID uint64 = dedupMsgID(6)
+	msgID :=dedupMsgID(6)
 
 	for i := 0; i < 2; i++ {
 		r := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
@@ -397,7 +397,7 @@ func TestRPCDedupAckRemovesRecord(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(7)
+	msgID :=dedupMsgID(7)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
 	require.NoError(t, first.err)
@@ -420,7 +420,7 @@ func TestRPCDedupReusedMsgIDWithOtherDataIsRefused(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(8)
+	msgID :=dedupMsgID(8)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "a")
 	require.NoError(t, first.err)
@@ -446,7 +446,7 @@ func TestRPCDedupReusedMsgIDInFlightIsNotJoined(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(9)
+	msgID :=dedupMsgID(9)
 
 	owner := dedupCallAsync(h, client, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -462,7 +462,7 @@ func TestRPCDedupReusedMsgIDInFlightIsNotJoined(t *testing.T) {
 func TestRPCDedupInstanceOfAnotherAccountCannotReplay(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	var msgID uint64 = dedupMsgID(10)
+	msgID :=dedupMsgID(10)
 
 	owner := newDedupClient("c1", "42", nil, testInstance)
 	require.NoError(t, dedupCallAsyncResult(t, h, owner, "users.get", msgID, "x").err)
@@ -541,8 +541,8 @@ func TestRPCDedupCancelWhileSemaphoreIsFull(t *testing.T) {
 	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
 	require.Nil(t, transport.waitReply(t, 1).Error)
 
-	var first uint64 = dedupMsgID(20)
-	var second uint64 = dedupMsgID(21)
+	first := dedupMsgID(20)
+	second := dedupMsgID(21)
 	// The client protocol is JSON, so the payload is a JSON string, which the backend matches as gate.
 	sendRateLimitCommand(client, &protocol.Command{Id: 2, Rpc: &protocol.RPCRequest{Method: "help.config", Data: []byte(`"gate"`), MsgId: first}})
 	backend.waitEntered(t)
@@ -567,7 +567,7 @@ func TestRPCDedupRetransmitAndWithoutUpdatesHeaders(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	var msgID uint64 = dedupMsgID(14)
+	msgID :=dedupMsgID(14)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
 	require.NoError(t, first.err)

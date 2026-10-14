@@ -25,8 +25,8 @@ type Memory struct {
 // NewMemory returns an empty node-local store which keeps at most maxEntries done records for ttl. A
 // reply over maxReplyBytes is kept as uncached.
 func NewMemory(maxEntries int, ttl time.Duration, maxReplyBytes int) *Memory {
-	var done *expirable.LRU[Key, Record] = expirable.NewLRU[Key, Record](maxEntries, nil, ttl)
-	var flights map[Key]*Flight = map[Key]*Flight{}
+	done := expirable.NewLRU[Key, Record](maxEntries, nil, ttl)
+	flights := map[Key]*Flight{}
 	return &Memory{
 		done:          done,
 		flights:       flights,
@@ -68,7 +68,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 		delete(m.flights, key)
 	}
 	if !rec.Abandoned {
-		var kept Record = rec
+		kept := rec
 		if rec.Err == nil && len(rec.Reply) > m.maxReplyBytes {
 			kept = Record{Uncached: true}
 		}
@@ -103,7 +103,7 @@ func (m *Memory) Ack(scope string, msgIDs []uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, msgID := range msgIDs {
-		var key Key = Key{Scope: scope, MsgID: msgID}
+		key := Key{Scope: scope, MsgID: msgID}
 		m.done.Remove(key)
 	}
 	return nil

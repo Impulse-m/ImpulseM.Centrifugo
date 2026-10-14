@@ -204,3 +204,48 @@ func TestMemoryTTLExpiresRecords(t *testing.T) {
 	var lookup Lookup = testBegin(t, store, key, NewFlight())
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 }
+
+// A duplicate msg_id with another fingerprint neither joins the call in flight, nor gets its reply.
+func TestMemoryFingerprintMismatchInFlight(t *testing.T) {
+	var store *Memory = NewMemory(10, time.Minute, 1024)
+	var key Key = Key{Scope: "s:1", MsgID: 7}
+	var fpA [32]byte = Fingerprint("users.set", []byte("a"))
+	var fpB [32]byte = Fingerprint("users.set", []byte("b"))
+	var owner *Flight = NewFlightWithFingerprint(fpA)
+	testBegin(t, store, key, owner)
+
+	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(fpB))
+	require.Equal(t, OutcomeMismatch, lookup.Outcome)
+	require.Nil(t, lookup.Flight)
+
+	lookup = testBegin(t, store, key, NewFlightWithFingerprint(fpA))
+	require.Equal(t, OutcomeInFlight, lookup.Outcome)
+}
+
+func TestMemoryFingerprintMismatchDone(t *testing.T) {
+	var store *Memory = NewMemory(10, time.Minute, 1024)
+	var key Key = Key{Scope: "s:1", MsgID: 7}
+	var fpA [32]byte = Fingerprint("users.set", []byte("a"))
+	var owner *Flight = NewFlightWithFingerprint(fpA)
+	testBegin(t, store, key, owner)
+	require.NoError(t, store.Complete(key, owner, Record{Reply: []byte("ok")}))
+
+	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
+	require.Equal(t, OutcomeMismatch, lookup.Outcome)
+	require.Empty(t, lookup.Record.Reply)
+
+	lookup = testBegin(t, store, key, NewFlightWithFingerprint(fpA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("ok"), lookup.Record.Reply)
+}
+
+// A cancelled record has no call, so it answers any duplicate.
+func TestMemoryCancelledRecordAnswersAnyFingerprint(t *testing.T) {
+	var store *Memory = NewMemory(10, time.Minute, 1024)
+	var key Key = Key{Scope: "s:1", MsgID: 7}
+	require.NoError(t, store.Cancel(key, testCancelled))
+
+	var lookup Lookup = testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.set", []byte("b"))))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+}

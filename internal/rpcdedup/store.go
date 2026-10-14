@@ -19,6 +19,9 @@ type Record struct {
 	Err       *centrifuge.Error
 	Uncached  bool
 	Abandoned bool
+	// Fingerprint is the fingerprint of the call which the record answers. Zero for a cancelled record,
+	// which has no call, and answers any duplicate.
+	Fingerprint [32]byte
 }
 
 // Outcome is the result of Store.Begin.
@@ -31,6 +34,9 @@ const (
 	OutcomeDone
 	// OutcomeInFlight means the call runs on this node, and Lookup.Flight is its flight.
 	OutcomeInFlight
+	// OutcomeMismatch means a call with the same key and another fingerprint exists. The caller gets
+	// neither its answer nor its flight.
+	OutcomeMismatch
 )
 
 // Lookup is the result of Store.Begin.

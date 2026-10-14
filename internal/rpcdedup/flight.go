@@ -8,17 +8,31 @@ import (
 // Flight is a call which runs on this node. Its owner completes it, and duplicates wait for it. Cancel
 // cancels the backend call of the owner.
 type Flight struct {
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	cancelled bool
-	done      chan struct{}
-	record    Record
+	mu          sync.Mutex
+	cancel      context.CancelFunc
+	cancelled   bool
+	done        chan struct{}
+	record      Record
+	fingerprint [32]byte
 }
 
-// NewFlight returns a flight which has not started.
+// NewFlight returns a flight which has not started, with a zero fingerprint, which matches any fingerprint.
+// Calls of the connections use NewFlightWithFingerprint.
 func NewFlight() *Flight {
 	var done chan struct{} = make(chan struct{})
 	return &Flight{done: done}
+}
+
+// NewFlightWithFingerprint returns a flight which has not started, for a call with fingerprint.
+func NewFlightWithFingerprint(fingerprint [32]byte) *Flight {
+	var flight *Flight = NewFlight()
+	flight.fingerprint = fingerprint
+	return flight
+}
+
+// Fingerprint returns the fingerprint of the call of the flight.
+func (f *Flight) Fingerprint() [32]byte {
+	return f.fingerprint
 }
 
 // Attach sets the function which cancels the backend call of the owner. If the flight was cancelled

@@ -9,6 +9,9 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
+// zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.
+var zeroFingerprint [32]byte
+
 // Memory is the node-local store. The done records are kept in an expirable LRU, bounded in entries and
 // expiring after the window. The calls in flight on this node are kept in a map, so a duplicate on
 // another connection of the node joins the call. Records are not shared between nodes.
@@ -39,11 +42,17 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 	var found bool
 	rec, found = m.done.Get(key)
 	if found {
+		if rec.Fingerprint != zeroFingerprint && rec.Fingerprint != flight.fingerprint {
+			return Lookup{Outcome: OutcomeMismatch}, nil
+		}
 		return Lookup{Outcome: OutcomeDone, Record: rec}, nil
 	}
 	var running *Flight
 	running, found = m.flights[key]
 	if found {
+		if running.fingerprint != flight.fingerprint {
+			return Lookup{Outcome: OutcomeMismatch}, nil
+		}
 		return Lookup{Outcome: OutcomeInFlight, Flight: running}, nil
 	}
 	m.flights[key] = flight
@@ -53,6 +62,7 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 // Complete implements Store. The record is kept before the flight is removed from the map and woken
 // up, so a call which misses the done records always finds the flight.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
+	rec.Fingerprint = flight.fingerprint
 	m.mu.Lock()
 	if m.flights[key] == flight {
 		delete(m.flights, key)

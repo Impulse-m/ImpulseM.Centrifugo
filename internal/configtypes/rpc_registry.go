@@ -6,7 +6,7 @@ import (
 )
 
 // rpcRegistryReservedHeaders are names the registry sets itself. A client must not be able to
-// forward them to a target, so they are rejected in every allow-list: headers, emulated_headers and error_metadata.
+// forward them to a target, so they are rejected in both header allow-lists.
 var rpcRegistryReservedHeaders = []string{
 	"authorization",
 	"traceparent",

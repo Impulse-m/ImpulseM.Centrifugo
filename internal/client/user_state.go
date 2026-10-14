@@ -19,6 +19,13 @@ func coreUserID(class rpcregistry.AuthClass, userID string) string {
 	return userID
 }
 
+// changesIdentity reports whether a refresh with a token of tokenUser and class changes the identity of the
+// connection: the user of the token, or the user Core sees. Core sees no user for a pending connection, so the token
+// user is compared as well.
+func changesIdentity(c Client, tokenUser string, class rpcregistry.AuthClass) bool {
+	return storedTokenUser(c) != tokenUser || coreUserID(class, tokenUser) != c.UserID()
+}
+
 // storedTokenUser returns the user of the token the connection holds. A connection without a stored token user,
 // such as one made through a connect proxy, is identified by its Core user.
 func storedTokenUser(c Client) string {

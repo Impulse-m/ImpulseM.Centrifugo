@@ -207,7 +207,8 @@ func TestRebindTransitionMatrix(t *testing.T) {
 		{name: "pending to bot is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "bot", toUser: "42", wantErr: centrifuge.ErrorPermissionDenied},
 		{name: "pending renewal keeps the unchanged path", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "pending_2fa", toUser: "42"},
 		{name: "pending of one user to pending of another is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "pending_2fa", toUser: "43", wantErr: centrifuge.ErrorPermissionDenied},
-		{name: "authenticated logout is a disconnect without allow_downgrade", fromClass: "authenticated", fromUser: "42", toClass: "anonymous", toUser: "", wantErr: centrifuge.DisconnectInvalidToken},
+		{name: "pending of one user to authenticated of another is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "authenticated", toUser: "43", wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "pending of one user to bot of another is denied", fromClass: "pending_2fa", fromUser: "", fromTokenUser: "42", toClass: "bot", toUser: "43", wantErr: centrifuge.ErrorPermissionDenied},		{name: "authenticated logout is a disconnect without allow_downgrade", fromClass: "authenticated", fromUser: "42", toClass: "anonymous", toUser: "", wantErr: centrifuge.DisconnectInvalidToken},
 		{name: "authenticated logout with allow_downgrade", fromClass: "authenticated", fromUser: "42", toClass: "anonymous", toUser: "", allowDowngrade: true, wantRebind: true, wantRebindUser: ""},
 		{name: "bot logout is a disconnect without allow_downgrade", fromClass: "bot", fromUser: "42", toClass: "anonymous", toUser: "", wantErr: centrifuge.DisconnectInvalidToken},
 		{name: "bot logout with allow_downgrade", fromClass: "bot", fromUser: "42", toClass: "anonymous", toUser: "", allowDowngrade: true, wantRebind: true, wantRebindUser: ""},
@@ -472,6 +473,13 @@ func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
 	}, nil)
 	require.Equal(t, centrifuge.DisconnectConnectionLimit, err)
 	require.Equal(t, "42", state.user)
+	// The class and the token user stored before the rebind are restored with the user.
+	storage, release := client.AcquireStorage()
+	stored, _ := storage[clientstorage.KeyAuthClass].(registryAuthClass)
+	tokenUser, _ := storage[clientstorage.KeyTokenUser].(string)
+	release(storage)
+	require.Equal(t, registryTestClass("authenticated"), stored.class)
+	require.Equal(t, "42", tokenUser)
 	require.True(t, budgetAllowed(h, st))
 	probe := &ratelimit.ConnState{}
 	h.userLimiter.Attach(probe, "42")

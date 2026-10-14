@@ -213,20 +213,8 @@ func (h *Handler) Setup() error {
 	}
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
-		// The disconnect handler is set first, so no close leaves an index entry behind. The session is tracked
-		// before the recheck: a revocation applied from then on reaches the connection through the index.
-		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
-			h.onClientDisconnect(client)
-		})
-		h.syncSessionConnection(client, client.UserID(), client.TokenIdentity())
-		if testHookConnectTracked != nil {
-			testHookConnectTracked(client)
-		}
-		disconnect, revoked := h.recheckConnection(client)
-		if revoked {
+		if disconnect, revoked := h.trackConnect(client); revoked {
 			client.Disconnect(disconnect)
-			// The disconnect handler does not run for a connection which is still connecting.
-			h.onClientDisconnect(client)
 			return
 		}
 		h.attachRateLimit(client, client.UserID())
@@ -689,18 +677,21 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	// A change of the token user, or of the user Core sees, is a rebind, decided by rebind or by disconnect.
-	// Core is anonymous for a pending connection, so the token user is compared as well.
-	if storedTokenUser(c) != token.UserID || coreUserID(class, token.UserID) != c.UserID() {
+	if changesIdentity(c, token.UserID, class) {
 		return h.onRefreshRebind(c, e.Token, token, class)
 	}
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	// The session is tracked before the check. A revocation applied after the check then finds the connection in the
+	// index, and one applied before it is seen by the check.
+	h.syncSessionConnection(c, c.UserID(), identity)
+	if f := testHookRefreshTracked.Load(); f != nil {
+		(*f)(c)
+	}
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
 	h.replaceRegistryToken(c, e.Token, class)
-	h.syncSessionConnection(c, c.UserID(), identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}

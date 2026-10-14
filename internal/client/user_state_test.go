@@ -141,11 +141,13 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 	sessionKey, _ := accessrevoke.Key(revokeTestUUID)
 
 	var trackedAtHook int
-	testHookConnectTracked = func(*centrifuge.Client) {
+	var revokeErr error
+	hook := func(*centrifuge.Client) {
 		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
-		require.NoError(t, revoker.RevokeSession("", revokeTestUUID, now, 0))
+		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0)
 	}
-	t.Cleanup(func() { testHookConnectTracked = nil })
+	testHookConnectTracked.Store(&hook)
+	t.Cleanup(func() { testHookConnectTracked.Store(nil) })
 
 	connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
 		"sub":        "42",
@@ -153,6 +155,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 		"iat":        now - 10,
 		"auth_class": "pending_2fa",
 	}))
+	require.NoError(t, revokeErr)
 	require.Equal(t, 1, trackedAtHook)
 	require.Eventually(t, func() bool {
 		return len(node.Hub().Connections()) == 0

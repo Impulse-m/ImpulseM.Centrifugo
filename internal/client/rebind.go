@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -12,9 +13,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// onRefreshRebind answers a refresh whose token user is not the user Core has for the connection. With
-// rebind disabled the connection is disconnected, as before. Otherwise the connection moves to the identity of
-// the token in place: its user, token, expiration and channels follow the transition between auth classes.
+// testHookRebound, if set, runs in onRefreshRebind after the connection is rebound and before its session is
+// tracked. Tests use it to close the connection at that point.
+var testHookRebound atomic.Pointer[func(c Client)]
+
+// onRefreshRebind answers a refresh whose token changes the identity of the connection. With rebind disabled the
+// connection is disconnected, as before. Otherwise the connection moves to the identity of the token in place: its
+// user, token, expiration and channels follow the transition between auth classes.
 func (h *Handler) onRefreshRebind(
 	c Client,
 	token string,
@@ -32,6 +37,11 @@ func (h *Handler) onRefreshRebind(
 	if c.UserID() != "" && !hasStoredAuthClass(c, claim) {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
+	// A connection which holds the user of a token keeps that user: it may not move to another user. An anonymous
+	// token has no user, so it is only checked by the transition. A connection with no user may take any user.
+	if held := storedTokenUser(c); held != "" && verified.UserID != "" && held != verified.UserID {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
+	}
 	_, currentClass := registryConnection(c, claim)
 	if err := rebindTransitionError(currentClass, nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
@@ -42,36 +52,51 @@ func (h *Handler) onRefreshRebind(
 	identity := accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt)
 	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
-		return centrifuge.RefreshReply{}, RefreshExtra{}, connectRevokeError(c.ID(), verified.UserID, result)
+		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.ErrorTokenExpired)
 	}
 
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
+	oldToken, oldClass := registryConnection(c, claim)
+	oldTokenUser := storedTokenUser(c)
+	// The registry reads the class and the token of a connection, and the rate limit state reads its user. The new
+	// class, token and user are stored before the Core user changes, so a call which overlaps the rebind sees the new
+	// class. The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	h.detachRateLimit(c)
+	h.attachRateLimit(c, newUser)
+	h.replaceRegistryToken(c, token, nextClass)
+	storeTokenUser(c, verified.UserID)
 	err := c.Rebind(centrifuge.RebindOptions{
 		UserID:        newUser,
 		ExpireAt:      verified.ExpireAt,
 		TokenIdentity: identity,
 	})
 	if err != nil {
-		h.attachRateLimit(c, oldUser)
+		h.detachRateLimit(c)
+		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again.
+		if !errors.Is(err, centrifuge.ErrRebindClosed) {
+			h.attachRateLimit(c, oldUser)
+		}
+		h.replaceRegistryToken(c, oldToken, oldClass)
+		storeTokenUser(c, oldTokenUser)
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
-	h.attachRateLimit(c, newUser)
-	h.replaceRegistryToken(c, token, nextClass)
-	storeTokenUser(c, verified.UserID)
+	if f := testHookRebound.Load(); f != nil {
+		(*f)(c)
+	}
 	h.syncSessionConnection(c, newUser, identity)
 
 	// A revocation applied between the check above and the rebind is caught here, as a connection is
 	// checked after it is registered.
 	result = h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "rebind")
 	if result.Verdict != accessrevoke.Allowed {
-		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindRecheckError(c.ID(), verified.UserID, result)
+		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
-	} else if err := h.subscribeUpgraded(c, newUser, verified.Subs); err != nil {
+	}
+	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if verified.Meta != nil {
@@ -130,20 +155,6 @@ func rebindError(clientID string, err error) error {
 	return centrifuge.DisconnectServerError
 }
 
-// rebindRecheckError maps a failed access check made after the rebind to the disconnect of the connection.
-func rebindRecheckError(clientID string, userID string, result accessrevoke.Result) error {
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return accessrevoke.DisconnectUserBlocked
-	case accessrevoke.Revoked:
-		return centrifuge.DisconnectExpired
-	case accessrevoke.LoopGuard:
-		accessrevoke.LogLoopGuard(clientID, userID, result)
-		return centrifuge.DisconnectInvalidToken
-	}
-	return nil
-}
-
 // unsubscribeNotAnonymous unsubscribes the channels which a connection without a user may not keep: the
 // channels of a user, the personal channel, and the channels of token and proxy sources. A client channel stays
 // when its namespace allows anonymous subscriptions.
@@ -171,13 +182,14 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 	return chOpts.SubscribeForAnonymous
 }
 
-// subscribeUpgraded subscribes a connection which got a user to its personal channel and to the channels of its
-// token. The single connection of the user is enforced first. Channels the connection has already are kept. The
-// subscriptions are not checked against the token channels of the connection, so a refresh does not disconnect it.
-func (h *Handler) subscribeUpgraded(c Client, userID string, subs map[string]centrifuge.SubscribeOptions) error {
+// subscribeRebound subscribes a rebound connection to the channels of its token. A connection with a user also gets
+// its personal channel, and the single connection of the user is enforced first. The channels the connection has
+// already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
+// does not disconnect it.
+func (h *Handler) subscribeRebound(c Client, userID string, subs map[string]centrifuge.SubscribeOptions) error {
 	cfg := h.cfgContainer.ConfigRef()
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
-	if cfg.Client.SubscribeToUserPersonalChannel.Enabled {
+	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled {
 		if cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
 			if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
 				return err

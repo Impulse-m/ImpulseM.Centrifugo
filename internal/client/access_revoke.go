@@ -1,6 +1,8 @@
 package client
 
 import (
+	"sync/atomic"
+
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -9,9 +11,13 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-// testHookConnectTracked, if set, runs in OnConnect after the session of a connection is tracked and before the
+// testHookConnectTracked, if set, runs in trackConnect after the session of a connection is tracked and before the
 // connection is rechecked. Tests use it to apply a revocation at that point.
-var testHookConnectTracked func(c *centrifuge.Client)
+var testHookConnectTracked atomic.Pointer[func(c *centrifuge.Client)]
+
+// testHookRefreshTracked, if set, runs in OnRefresh after the session of a refreshed connection is tracked and before
+// the check. Tests use it to apply a revocation at that point.
+var testHookRefreshTracked atomic.Pointer[func(c Client)]
 
 // sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
 // lags when reject_connect_on_lag is set. Without a source it passes.
@@ -85,24 +91,65 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 	return disconnect, revoked
 }
 
-// syncSessionConnection keeps the session index of access revocation up to date for the connection. A
-// connection without a user is indexed by the session of its token, a connection with a user is not.
+// trackConnect sets up a connection which has just connected, and returns the disconnect of a connection which must
+// be closed. The disconnect handler is set first, so a close from here on releases what the connection holds. A
+// connection without a user is indexed by the session of its token before the recheck, so a revocation applied from
+// then on reaches it through the index. Core runs the disconnect handler of a connection closed while it connects
+// after the connect completes, so the connection closed here is released then.
+func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
+	if connStateOf(client) == nil {
+		client.SetExtState(&connState{})
+	}
+	client.OnDisconnect(func(centrifuge.DisconnectEvent) {
+		h.onClientDisconnect(client)
+	})
+	identity := client.TokenIdentity()
+	if h.accessStore != nil && client.UserID() == "" && identity.Session != ([16]byte{}) {
+		h.trackSession(client, identity.Session)
+	}
+	if f := testHookConnectTracked.Load(); f != nil {
+		(*f)(client)
+	}
+	return h.recheckConnection(client)
+}
+
+// syncSessionConnection keeps the session index of access revocation up to date for a refreshed or rebound
+// connection. A connection with a user is not indexed, a connection without a user is indexed by the session of its
+// token.
 func (h *Handler) syncSessionConnection(c Client, userID string, identity centrifuge.TokenIdentity) {
 	if h.accessStore == nil {
 		return
 	}
-	sessions := h.accessStore.SessionConnections()
 	if userID != "" {
-		sessions.Untrack(c.ID())
+		h.accessStore.SessionConnections().Untrack(c.ID())
 		return
 	}
-	sessions.Track(c.ID(), c, identity.Session)
+	h.trackSession(c, identity.Session)
+}
+
+// trackSession sets the session of a connection in the index. A closed connection is not tracked: its disconnect
+// released it, and a session set after that would stay in the index for good. The close marks the connection under the
+// same lock, so a track either happens before the close, which then removes it, or sees the mark.
+func (h *Handler) trackSession(c Client, session [16]byte) {
+	if st := connStateOf(c); st != nil {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if st.closed {
+			return
+		}
+	}
+	h.accessStore.SessionConnections().Track(c.ID(), c, session)
 }
 
 // onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
-// session index entry. Core keeps one disconnect handler per client, so this is the only one set in OnConnect.
+// session index entry. The connection is marked closed first, so no session is tracked for it after the release.
 func (h *Handler) onClientDisconnect(c Client) {
 	h.detachRateLimit(c)
+	if st := connStateOf(c); st != nil {
+		st.mu.Lock()
+		st.closed = true
+		st.mu.Unlock()
+	}
 	if h.accessStore != nil {
 		h.accessStore.SessionConnections().Untrack(c.ID())
 	}
@@ -118,18 +165,19 @@ func (h *Handler) connectTokenIdentity(
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "connect")
 	if result.Verdict != accessrevoke.Allowed {
-		return centrifuge.TokenIdentity{}, connectRevokeError(clientID, token.UserID, result)
+		return centrifuge.TokenIdentity{}, revokeError(clientID, token.UserID, result, centrifuge.ErrorTokenExpired)
 	}
 	return identity, nil
 }
 
-// connectRevokeError maps a failed access check made at connect to the error returned from connecting.
-func connectRevokeError(clientID string, userID string, result accessrevoke.Result) error {
+// revokeError maps a failed access check made by a connect or a refresh to the error returned from it. A revoked
+// connection gets the error revoked, which the caller chooses: a connect and a rebind differ in it.
+func revokeError(clientID string, userID string, result accessrevoke.Result, revoked error) error {
 	switch result.Verdict {
 	case accessrevoke.Blocked:
 		return accessrevoke.DisconnectUserBlocked
 	case accessrevoke.Revoked:
-		return centrifuge.ErrorTokenExpired
+		return revoked
 	case accessrevoke.LoopGuard:
 		accessrevoke.LogLoopGuard(clientID, userID, result)
 		return centrifuge.DisconnectInvalidToken

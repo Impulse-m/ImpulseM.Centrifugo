@@ -302,6 +302,13 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 // flight keeps a record.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	rec.Fingerprint = flight.fingerprint
+	m.finish(key, flight, rec)
+	return nil
+}
+
+// finish is Complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
+// has no fingerprint, and keeps none, so it answers any duplicate.
+func (m *Memory) finish(key Key, flight *Flight, rec Record) {
 	oversize := rec.Err == nil && len(rec.Reply) > m.maxReplyBytes
 	kept := rec
 	if oversize {
@@ -325,7 +332,6 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	}
 	s.mu.Unlock()
 	flight.finish(kept)
-	return nil
 }
 
 // flightOf returns the flight of key which is registered on this store, or nil.
@@ -336,27 +342,27 @@ func (m *Memory) flightOf(key Key) *Flight {
 	return s.flights[key]
 }
 
-// CancelFlight cancels the call of key when it is in flight on this store, and reports whether it was. The
-// call is cancelled outside the lock; its owner completes the flight with the record of the cancelled call.
-func (m *Memory) CancelFlight(key Key) bool {
-	s := m.shardOf(key.Scope)
+// CheckAdmit returns a *RefusedError when the store would not admit scope, and nil when it would. It records nothing,
+// so a caller refuses a scope before it writes anywhere else.
+func (m *Memory) CheckAdmit(scope string) error {
+	s := m.shardOf(scope)
 	s.mu.Lock()
-	running, found := s.flights[key]
-	s.mu.Unlock()
-	if found {
-		running.Cancel()
-	}
-	return found
+	defer s.mu.Unlock()
+	return s.checkAdmit(scope, s.now())
 }
 
-// Cancel implements Store. A flight is cancelled outside the lock. Otherwise the key is kept as cancelled, which
-// counts toward the budgets like any record, and its scope is admitted like the scope of any call.
+// Cancel implements Store. A call which runs on this store is cancelled outside the lock. Otherwise the key is kept as
+// cancelled, which counts toward the budgets like any record, and its scope is admitted like the scope of any call. The
+// flight and the record are looked up under one lock, so a call which begins meanwhile is either found by Cancel, or it
+// finds the cancelled record.
 func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
-	if m.CancelFlight(key) {
-		return nil
-	}
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
+	if running, found := s.flights[key]; found {
+		s.mu.Unlock()
+		running.Cancel()
+		return nil
+	}
 	now := s.now()
 	s.sweepSome(now)
 	if s.liveRecord(key, now) != nil {
@@ -421,16 +427,11 @@ func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 	if sc := s.scopes[scope]; sc != nil {
 		return sc, nil
 	}
+	if err := s.checkAdmit(scope, now); err != nil {
+		return nil, err
+	}
 	p := s.poolFor(scope)
 	user := scopeUser(scope)
-	refusal, refused := s.refusalOf(p, user)
-	for i := 0; refused && i < admitSweeps; i++ {
-		s.sweepSome(now)
-		refusal, refused = s.refusalOf(p, user)
-	}
-	if refused {
-		return nil, &RefusedError{Refusal: refusal}
-	}
 	sc := &scopeState{
 		scope:   scope,
 		user:    user,
@@ -444,6 +445,25 @@ func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 		s.users[user]++
 	}
 	return sc, nil
+}
+
+// checkAdmit returns a *RefusedError when a new scope would meet a limit, after the sweeps of admit, and nil when it
+// would be admitted. A scope which is admitted already is not refused. Caller holds mu.
+func (s *shard) checkAdmit(scope string, now time.Time) error {
+	if s.scopes[scope] != nil {
+		return nil
+	}
+	p := s.poolFor(scope)
+	user := scopeUser(scope)
+	refusal, refused := s.refusalOf(p, user)
+	for i := 0; refused && i < admitSweeps; i++ {
+		s.sweepSome(now)
+		refusal, refused = s.refusalOf(p, user)
+	}
+	if refused {
+		return &RefusedError{Refusal: refusal}
+	}
+	return nil
 }
 
 // refusalOf returns the refusal which a new scope of pool p and user would meet, and whether it meets one. Caller
@@ -632,12 +652,22 @@ func (s *shard) unlink(r *storedRecord) {
 	p.stats.bytes.Add(-r.size)
 }
 
-// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or of its error
-// message when it has an error.
+// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or the bytes of its
+// error when it has one.
 func recordSize(rec Record) int64 {
 	size := int64(RecordOverhead + len(rec.Reply))
 	if rec.Err != nil {
-		size += int64(len(rec.Err.Message))
+		size += errorBytes(rec.Err)
+	}
+	return size
+}
+
+// errorBytes returns the bytes of an error which count toward the budgets: its message, and the keys and values of its
+// metadata, so that an error with metadata is bounded like a reply.
+func errorBytes(err *centrifuge.Error) int64 {
+	size := int64(len(err.Message))
+	for key, value := range err.Metadata {
+		size += int64(len(key) + len(value))
 	}
 	return size
 }

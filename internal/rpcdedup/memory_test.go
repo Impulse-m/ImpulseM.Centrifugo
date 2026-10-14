@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,31 +333,44 @@ func TestMemoryCancelInFlightCancelsOwner(t *testing.T) {
 	checkInvariants(t, store)
 }
 
-func TestMemoryCancelFlight(t *testing.T) {
+// flightCancelled reports whether the flight was cancelled.
+func flightCancelled(flight *Flight) bool {
+	flight.mu.Lock()
+	defer flight.mu.Unlock()
+	return flight.cancelled
+}
+
+func TestMemoryCancelRacingBeginIsNeverLost(t *testing.T) {
 	store, _ := newTestMemory(1024)
-	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
-
-	// Nothing runs: nothing is cancelled and nothing is recorded.
-	require.False(t, store.CancelFlight(key))
-	require.True(t, testIsMiss(t, store, key))
-
-	owner := NewFlight()
-	testBegin(t, store, key, owner)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	owner.Attach(cancel)
-
-	// The call runs: its context is cancelled, and it stays in flight until its owner completes it.
-	require.True(t, store.CancelFlight(key))
-	require.ErrorIs(t, ctx.Err(), context.Canceled)
-	select {
-	case <-owner.Done():
-		t.Fatal("the flight finished before its owner completed it")
-	default:
+	scope := testScope("u1", "a")
+	for i := uint64(1); i <= 2000; i++ {
+		key := Key{Scope: scope, MsgID: i}
+		owner := NewFlight()
+		var lookup Lookup
+		var beginErr, cancelErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			lookup, beginErr = store.Begin(key, owner)
+		}()
+		go func() {
+			defer wg.Done()
+			cancelErr = store.Cancel(key, testCancelled)
+		}()
+		wg.Wait()
+		require.NoError(t, beginErr)
+		require.NoError(t, cancelErr)
+		// The cancel either reached the registered flight, or it left the record which the begin answers. A miss
+		// which the cancel did not reach would run a call that was cancelled before it began.
+		if lookup.Outcome == OutcomeMiss {
+			require.True(t, flightCancelled(owner), "a cancel which was ordered before the call is lost, msg_id %d", i)
+			require.NoError(t, store.Complete(key, owner, Record{Err: testCancelled}))
+			continue
+		}
+		require.Equal(t, OutcomeDone, lookup.Outcome, "msg_id %d", i)
+		require.Same(t, testCancelled, lookup.Record.Err)
 	}
-	lookup := testBegin(t, store, key, NewFlight())
-	require.Equal(t, OutcomeInFlight, lookup.Outcome)
-	require.Same(t, owner, lookup.Flight)
 	checkInvariants(t, store)
 }
 
@@ -968,6 +982,38 @@ func TestMemoryCancelTombstoneRefusedWhenFull(t *testing.T) {
 	err = store.Cancel(Key{Scope: testScope("u", "2"), MsgID: 1}, testCancelled)
 	require.Equal(t, RefusalUser, testRefused(t, err))
 	require.Equal(t, 1, testEntries(store))
+	checkInvariants(t, store)
+}
+
+// CheckAdmit refuses a scope the store would refuse, and records nothing for any scope.
+func TestMemoryCheckAdmitRecordsNothing(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.MaxScopesPerUser = 1
+	store := NewMemory(options)
+	testAnswer(t, store, Key{Scope: testScope("u", "1"), MsgID: 1}, "ok")
+
+	require.Equal(t, RefusalUser, testRefused(t, store.CheckAdmit(testScope("u", "2"))))
+	require.NoError(t, store.CheckAdmit(testScope("u", "1")))
+	require.NoError(t, store.CheckAdmit(testScope("other", "1")))
+	require.Equal(t, 1, testEntries(store))
+	require.True(t, testIsMiss(t, store, Key{Scope: testScope("other", "1"), MsgID: 1}))
+	checkInvariants(t, store)
+}
+
+// The metadata of an error counts toward the share of a record, as its message does, so an error with large metadata
+// is kept as uncached.
+func TestMemoryErrorMetadataCountsTowardShare(t *testing.T) {
+	store, _ := newTestMemory(1 << 20)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	owner := NewFlight()
+	testBegin(t, store, key, owner)
+	failure := &centrifuge.Error{Code: 107, Message: "small", Metadata: map[string]string{"k": strings.Repeat("v", 4096)}}
+	require.NoError(t, store.Complete(key, owner, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
 	checkInvariants(t, store)
 }
 

@@ -136,17 +136,19 @@ func newRateLimitHandler(t *testing.T, rl configtypes.RateLimit, namespaces ...s
 	return node
 }
 
-// connectRateLimitClient connects an anonymous client and returns it with its transport.
-func connectRateLimitClient(t *testing.T, node *centrifuge.Node) (*centrifuge.Client, *recordingTransport) {
+// connectTestClient connects an anonymous client to node, which advertises flag in its connect request as an SDK
+// does. It returns the client, its transport and the connect result.
+func connectTestClient(t *testing.T, node *centrifuge.Node, flag int64) (*centrifuge.Client, *recordingTransport, *protocol.ConnectResult) {
 	t.Helper()
 	transport := newRecordingTransport()
 	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = closeFn() })
-	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{Flag: flag}})
 	reply := transport.waitReply(t, 1)
 	require.Nil(t, reply.Error)
-	return client, transport
+	require.NotNil(t, reply.Connect)
+	return client, transport, reply.Connect
 }
 
 func isRateLimited(reply *protocol.Reply) bool {
@@ -174,7 +176,7 @@ func TestRateLimitSubscribeOverLimit(t *testing.T) {
 			},
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 	before := testutil.ToFloat64(metrics.RateLimitRejectsTotal.WithLabelValues("client_command", "subscribe"))
 
 	for id := uint32(2); id <= 3; id++ {
@@ -191,7 +193,7 @@ func TestRateLimitSubscribeOverLimit(t *testing.T) {
 	require.Equal(t, float64(1), after-before)
 
 	// Limits are per connection: another connection is not affected.
-	other, otherTransport := connectRateLimitClient(t, node)
+	other, otherTransport, _ := connectTestClient(t, node, 0)
 	sendRateLimitCommand(other, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "test:1"}})
 	require.False(t, isRateLimited(otherTransport.waitReply(t, 2)))
 }
@@ -207,7 +209,7 @@ func TestRateLimitUnsubscribeHistoryPresence(t *testing.T) {
 			},
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	sendRateLimitCommand(client, &protocol.Command{Id: 2, Unsubscribe: &protocol.UnsubscribeRequest{Channel: "test:1"}})
 	sendRateLimitCommand(client, &protocol.Command{Id: 3, Unsubscribe: &protocol.UnsubscribeRequest{Channel: "test:1"}})
@@ -235,7 +237,7 @@ func TestRateLimitTotalOrdering(t *testing.T) {
 			},
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	sendRateLimitCommand(client, &protocol.Command{Id: 2, Publish: &protocol.PublishRequest{Channel: "test:1"}})
 	sendRateLimitCommand(client, &protocol.Command{Id: 3, Publish: &protocol.PublishRequest{Channel: "test:1"}})
@@ -267,7 +269,7 @@ func TestRateLimitRPCMethodOverride(t *testing.T) {
 			},
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	sendRateLimitCommand(client, &protocol.Command{Id: 2, Rpc: &protocol.RPCRequest{Method: "slow"}})
 	sendRateLimitCommand(client, &protocol.Command{Id: 3, Rpc: &protocol.RPCRequest{Method: "slow"}})
@@ -291,7 +293,7 @@ func TestRateLimitNamespaceOverride(t *testing.T) {
 			},
 		},
 	}, "chat")
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	for id := uint32(2); id <= 4; id++ {
 		sendRateLimitCommand(client, &protocol.Command{Id: id, Publish: &protocol.PublishRequest{Channel: "chat:a"}})
@@ -314,7 +316,7 @@ func TestRateLimitClientErrorDisconnect(t *testing.T) {
 			Total:   rateLimitBucketsOf(time.Minute, 3),
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	// Unknown namespace errors are protocol errors which are counted.
 	for id := uint32(2); id <= 4; id++ {
@@ -343,7 +345,7 @@ func TestRateLimitClientErrorCountsRateLimitErrors(t *testing.T) {
 			Total:   rateLimitBucketsOf(time.Minute, 2),
 		},
 	})
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	// First error is an unknown channel, the next two are rate limit errors (111) which are counted too.
 	sendRateLimitCommand(client, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "other:a"}})
@@ -364,7 +366,7 @@ func TestRateLimitClientErrorInternalNotCounted(t *testing.T) {
 		},
 	}
 	node := newRateLimitHandler(t, rl)
-	client, transport := connectRateLimitClient(t, node)
+	client, transport, _ := connectTestClient(t, node, 0)
 
 	// Hook is called directly: internal errors are not produced by request handling in tests.
 	hook := (&Handler{}).rateLimitCommandProcessed(ratelimit.NewClientLimiter(rl))
@@ -398,7 +400,7 @@ func TestRateLimitRepeatedConnectKeepsState(t *testing.T) {
 			},
 		},
 	})
-	client, _ := connectRateLimitClient(t, node)
+	client, _, _ := connectTestClient(t, node, 0)
 	state := client.ExtState()
 	require.NotNil(t, state)
 

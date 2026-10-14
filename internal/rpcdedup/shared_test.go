@@ -418,7 +418,7 @@ func TestSharedRemoteInFlightWaitsForAnswer(t *testing.T) {
 	duplicate := NewCallFlight(sharedFingerprintA, time.Second)
 	duplicateLookup, err := fx.shared.Begin(sharedKey, duplicate)
 	require.NoError(t, err)
-	require.Equal(t, OutcomeInFlight, duplicateLookup.Outcome)
+	require.Equal(t, OutcomeInFlightRemote, duplicateLookup.Outcome)
 	require.Same(t, owner, duplicateLookup.Flight)
 
 	// Node-b completes the call; the watcher completes the local flight, which wakes both duplicates.
@@ -429,6 +429,24 @@ func TestSharedRemoteInFlightWaitsForAnswer(t *testing.T) {
 	lookup, err = fx.shared.Begin(sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
 	require.NoError(t, err)
 	require.Equal(t, OutcomeDone, lookup.Outcome)
+}
+
+func TestSharedCancelBeforeRemoteMarkIsSentToOwner(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	// The cancel arrives within the round trip of the begin: the flight is registered, and has no call to cancel yet.
+	fx.backend.onBegin = func() {
+		require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	}
+
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}}, fx.notified)
+
+	fx.backend.finish(sharedKey, Record{Reply: []byte("answer")})
+	waitDone(t, owner)
 }
 
 func TestSharedRemoteKeyVanishingAbandonsFlight(t *testing.T) {

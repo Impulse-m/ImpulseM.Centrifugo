@@ -70,11 +70,13 @@ func (f *Flight) Cancel() {
 	}
 }
 
-// markRemote marks the flight as waiting for a call which runs on another node.
-func (f *Flight) markRemote() {
+// markRemote marks the flight as waiting for a call which runs on another node. It reports whether the flight was
+// cancelled before, while it had no call to cancel: the caller then tells the node which runs the call.
+func (f *Flight) markRemote() bool {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.remote = true
-	f.mu.Unlock()
+	return f.cancelled
 }
 
 // isRemote reports whether the flight waits for a call which runs on another node.

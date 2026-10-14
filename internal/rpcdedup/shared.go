@@ -141,6 +141,11 @@ func (s *Shared) Begin(key Key, flight *Flight) (Lookup, error) {
 		return lookup, nil
 	case OutcomeMiss:
 		return s.beginShared(key, flight)
+	case OutcomeInFlight:
+		// A duplicate of a call which runs on another node waits for it too, and counts as a remote wait.
+		if lookup.Flight.isRemote() {
+			lookup.Outcome = OutcomeInFlightRemote
+		}
 	}
 	return lookup, nil
 }
@@ -177,7 +182,10 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
 		return Lookup{Outcome: OutcomeMismatch}, nil
 	case BeginInFlight:
-		flight.markRemote()
+		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now.
+		if flight.markRemote() && res.Owner != s.nodeID && s.notifier != nil {
+			s.notifier(res.Owner, key)
+		}
 		go s.watch(key, flight)
 		return Lookup{Outcome: OutcomeInFlightRemote, Flight: flight}, nil
 	}

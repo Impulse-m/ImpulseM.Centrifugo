@@ -129,5 +129,6 @@ func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	require.Equal(t, configtypes.RPCDedupFailClosed, cfg.RPC.Registry.Dedup.OnStoreError)
 	require.Equal(t, uint32(107), cfg.RPC.Registry.Errors.MsgIDInvalid.Code)
 	require.Equal(t, uint32(110), cfg.RPC.Registry.Errors.ResultEvicted.Code)
+	require.Equal(t, uint32(107), cfg.RPC.Registry.Errors.MsgIDReused.Code)
 	require.Equal(t, uint32(108), cfg.RPC.Registry.Errors.DedupUnavailable.Code)
 }

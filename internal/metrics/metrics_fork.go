@@ -34,6 +34,9 @@ type forkRegistry struct {
 	rpcRegistryCallsTotal   *prometheus.CounterVec
 	rpcRegistryErrorsTotal  *prometheus.CounterVec
 	rpcRegistryReloadsTotal *prometheus.CounterVec
+	rpcRegistryDedupTotal   *prometheus.CounterVec
+	rpcRegistryDedupWait    prometheus.Histogram
+	rpcRegistryDedupEntries prometheus.Gauge
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -202,6 +205,30 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"trigger", "result"})
 
+	m.rpcRegistryDedupTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_total",
+		Help:        "Number of exactly-once RPC calls by outcome.",
+		ConstLabels: constLabels,
+	}, []string{"outcome"})
+
+	m.rpcRegistryDedupWait = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_wait_seconds",
+		Help:        "Time duplicate RPC calls waited for the call they joined.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_entries",
+		Help:        "Number of exactly-once RPC answers kept by the node.",
+		ConstLabels: constLabels,
+	})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -223,6 +250,9 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryCallsTotal,
 		m.rpcRegistryErrorsTotal,
 		m.rpcRegistryReloadsTotal,
+		m.rpcRegistryDedupTotal,
+		m.rpcRegistryDedupWait,
+		m.rpcRegistryDedupEntries,
 	}
 }
 
@@ -275,4 +305,7 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryCallsTotal = m.rpcRegistryCallsTotal
 	RPCRegistryErrorsTotal = m.rpcRegistryErrorsTotal
 	RPCRegistryReloadsTotal = m.rpcRegistryReloadsTotal
+	RPCRegistryDedupTotal = m.rpcRegistryDedupTotal
+	RPCRegistryDedupWaitSeconds = m.rpcRegistryDedupWait
+	RPCRegistryDedupEntries = m.rpcRegistryDedupEntries
 }

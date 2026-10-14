@@ -201,3 +201,92 @@ func (s *rpcRegistryAppTypeSet) label(value string) string {
 	s.values[value] = struct{}{}
 	return value
 }
+
+// RPCRegistryDedupTotal counts the calls of exactly-once RPC by outcome. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupTotal *prometheus.CounterVec
+
+// RPCRegistryDedupWaitSeconds is the time duplicates wait for the call they joined. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupWaitSeconds prometheus.Histogram
+
+// RPCRegistryDedupEntries is the number of answers the dedup store keeps. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupEntries prometheus.Gauge
+
+// RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
+type RPCRegistryDedupOutcome int
+
+// Outcomes of exactly-once RPC calls. Each is counted once per tracked call, or once per cancel command.
+const (
+	RPCRegistryDedupMiss RPCRegistryDedupOutcome = iota
+	RPCRegistryDedupHitDone
+	RPCRegistryDedupHitInFlightLocal
+	RPCRegistryDedupEvicted
+	RPCRegistryDedupCancelled
+	RPCRegistryDedupStoreError
+	RPCRegistryDedupMsgIDInvalid
+	RPCRegistryDedupMsgIDReused
+	RPCRegistryDedupNoScope
+)
+
+// rpcRegistryDedupOutcomeLabels holds the outcome label of each RPCRegistryDedupOutcome, in the same order.
+var rpcRegistryDedupOutcomeLabels = [...]string{
+	"miss",
+	"hit_done",
+	"hit_inflight_local",
+	"evicted",
+	"cancelled",
+	"store_error",
+	"msg_id_invalid",
+	"msg_id_reused",
+	"no_scope",
+}
+
+// RPCRegistryDedupMetrics holds the outcome counters of exactly-once RPC, resolved once. A nil value does
+// nothing.
+type RPCRegistryDedupMetrics struct {
+	outcomes    [len(rpcRegistryDedupOutcomeLabels)]prometheus.Counter
+	waitSeconds prometheus.Histogram
+	entries     prometheus.Gauge
+}
+
+// NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
+// initialised.
+func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
+	if RPCRegistryDedupTotal == nil {
+		return nil
+	}
+	var m *RPCRegistryDedupMetrics = &RPCRegistryDedupMetrics{
+		waitSeconds: RPCRegistryDedupWaitSeconds,
+		entries:     RPCRegistryDedupEntries,
+	}
+	for i, label := range rpcRegistryDedupOutcomeLabels {
+		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
+	}
+	return m
+}
+
+// Inc counts one outcome.
+func (m *RPCRegistryDedupMetrics) Inc(outcome RPCRegistryDedupOutcome) {
+	if m == nil {
+		return
+	}
+	m.outcomes[outcome].Inc()
+}
+
+// ObserveWait records the time a duplicate waited for the call it joined.
+func (m *RPCRegistryDedupMetrics) ObserveWait(seconds float64) {
+	if m == nil || m.waitSeconds == nil {
+		return
+	}
+	m.waitSeconds.Observe(seconds)
+}
+
+// SetEntries sets the number of answers the store keeps.
+func (m *RPCRegistryDedupMetrics) SetEntries(n int) {
+	if m == nil || m.entries == nil {
+		return
+	}
+	m.entries.Set(float64(n))
+}

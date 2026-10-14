@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"github.com/centrifugal/centrifuge"
 )
@@ -36,4 +37,25 @@ func benchRegistryCall(b *testing.B, setup func(cfg *config.Config)) {
 // exactly-once RPC.
 func BenchmarkRPCRegistryCallDedupOff(b *testing.B) {
 	benchRegistryCall(b, nil)
+}
+
+// BenchmarkRPCRegistryCallDedupOn runs b.N tracked calls of a non-idempotent method, each with its own msg_id, so
+// each is a miss: one dedup begin and complete, and the connection storage acquired once for the tracking.
+func BenchmarkRPCRegistryCallDedupOn(b *testing.B) {
+	backend := newRegistryTestBackend(b)
+	reg := dedupRegistryConfig()
+	registry := startRegistryTestRegistry(b, reg, backend)
+	cfg := config.DefaultConfig()
+	cfg.Client.ReplyIncludeServerTime = true
+	cfg.RPC.Registry = reg
+	h, _ := newRegistryTestHandler(b, cfg, registry)
+	client := newDedupClient("c1", "42", nil, testInstance)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := dedupCall(h, client, "users.get", dedupMsgID(uint64(i)&(1<<rpcdedup.MsgIDSeqBits-1)), "x"); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

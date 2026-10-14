@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/api"
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 	"github.com/centrifugal/centrifugo/v6/internal/unigrpc"
@@ -78,7 +79,7 @@ func runGRPCAPIServer(cfg config.Config, node *centrifuge.Node, useAPIOpenteleme
 
 func runGRPCUniServer(cfg config.Config, node *centrifuge.Node) (*grpc.Server, error) {
 	grpcUniAddr := net.JoinHostPort(cfg.UniGRPC.Address, strconv.Itoa(cfg.UniGRPC.Port))
-	grpcUniConn, err := net.Listen("tcp", grpcUniAddr)
+	grpcUniConn, err := clientaddr.Listen("tcp", grpcUniAddr, cfg.ClientAddress)
 	if err != nil {
 		return nil, fmt.Errorf("cannot listen to address %s", grpcUniAddr)
 	}
@@ -109,7 +110,7 @@ func runGRPCUniServer(cfg config.Config, node *centrifuge.Node) (*grpc.Server, e
 	grpcOpts = append(grpcOpts, grpc.KeepaliveEnforcementPolicy(keepAliveEnforcementPolicy))
 	grpcOpts = append(grpcOpts, grpc.KeepaliveParams(keepAliveServerParams))
 	grpcUniServer := grpc.NewServer(grpcOpts...)
-	_ = unigrpc.RegisterService(grpcUniServer, unigrpc.NewService(node, cfg.UniGRPC))
+	_ = unigrpc.RegisterService(grpcUniServer, unigrpc.NewService(node, cfg.UniGRPC, cfg.ClientAddress))
 	log.Info().Msgf("serving unidirectional GRPC on %s", grpcUniAddr)
 	go func() {
 		if err := grpcUniServer.Serve(grpcUniConn); err != nil {

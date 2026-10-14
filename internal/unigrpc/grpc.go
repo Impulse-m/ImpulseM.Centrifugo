@@ -3,6 +3,8 @@ package unigrpc
 import (
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/unigrpc/unistream"
 
@@ -21,15 +23,18 @@ func RegisterService(server *grpc.Server, service unistream.CentrifugoUniStreamS
 // Service can work with client GRPC connections.
 type Service struct {
 	unistream.UnimplementedCentrifugoUniStreamServer
-	config Config
-	node   *centrifuge.Node
+	config        Config
+	clientAddress configtypes.ClientAddress
+	node          *centrifuge.Node
 }
 
-// NewService creates new Service.
-func NewService(n *centrifuge.Node, c Config) *Service {
+// NewService creates new Service. clientAddress decides whether the peer address of a stream is
+// the client address of its connection.
+func NewService(n *centrifuge.Node, c Config, clientAddress configtypes.ClientAddress) *Service {
 	return &Service{
-		config: c,
-		node:   n,
+		config:        c,
+		clientAddress: clientAddress,
+		node:          n,
 	}
 }
 
@@ -57,7 +62,11 @@ func (s *Service) Consume(req *unistream.ConnectRequest, stream unistream.Centri
 		connectRequest.Subs = subs
 	}
 
-	c, closeFn, err := centrifuge.NewClient(stream.Context(), s.node, transport)
+	ctx := stream.Context()
+	if s.clientAddress.Enabled {
+		ctx = clientaddr.WithPeer(ctx)
+	}
+	c, closeFn, err := centrifuge.NewClient(ctx, s.node, transport)
 	if err != nil {
 		return err
 	}

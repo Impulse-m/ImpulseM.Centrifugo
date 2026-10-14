@@ -16,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
@@ -58,6 +59,7 @@ type Handler struct {
 	proxyMap         *ProxyMap
 	rpcExtension     map[string]RPCExtensionFunc
 	rpcRegistry      *rpcregistry.Registry
+	rpcDedup         rpcdedup.Store
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
 	userLimiter      *ratelimit.UserLimiter
@@ -78,7 +80,7 @@ func NewHandler(
 	subTokenVerifier *jwtverify.VerifierJWT,
 	proxyMap *ProxyMap,
 ) *Handler {
-	return &Handler{
+	h := &Handler{
 		node:             node,
 		cfgContainer:     cfgContainer,
 		tokenVerifier:    tokenVerifier,
@@ -86,6 +88,8 @@ func NewHandler(
 		proxyMap:         proxyMap,
 		rpcExtension:     make(map[string]RPCExtensionFunc),
 	}
+	h.rpcDedup = newRPCDedupStore(cfgContainer)
+	return h
 }
 
 // SetRPCExtension ...
@@ -623,6 +627,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
+	h.storeRPCInstance(storage, e.Instance)
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,

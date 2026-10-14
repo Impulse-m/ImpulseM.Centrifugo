@@ -6,4 +6,6 @@ const (
 	KeyToken     = "token"
 	KeyInstance  = "instance"
 	KeyAuthClass = "auth_class"
+	// KeyRPCInflight holds the calls with a msg_id which run on the connection, for exactly-once RPC.
+	KeyRPCInflight = "rpc_inflight"
 )

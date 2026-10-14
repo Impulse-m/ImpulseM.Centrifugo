@@ -216,6 +216,7 @@ type TestClientMock struct {
 	IsSubscribedFunc func(string) bool
 	ContextFunc      func() context.Context
 	TransportFunc    func() centrifuge.TransportInfo
+	IdentityFunc     func() centrifuge.TokenIdentity
 	storageMu        sync.Mutex
 	storage          map[string]any
 }
@@ -266,6 +267,13 @@ func (m *TestClientMock) Context() context.Context {
 func (m *TestClientMock) Transport() centrifuge.TransportInfo {
 	if m.TransportFunc != nil {
 		return m.TransportFunc()
+	}
+	panic("not implemented")
+}
+
+func (m *TestClientMock) TokenIdentity() centrifuge.TokenIdentity {
+	if m.IdentityFunc != nil {
+		return m.IdentityFunc()
 	}
 	panic("not implemented")
 }

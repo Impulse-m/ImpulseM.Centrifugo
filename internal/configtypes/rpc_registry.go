@@ -61,8 +61,8 @@ type RPCRegistry struct {
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the RPC method registry. When disabled, client RPC calls do not use it."`
 	// File is a path to a JSON or YAML file with the registry entries. Format is chosen by extension.
 	File string `mapstructure:"file" json:"file" envconfig:"file" yaml:"file" toml:"file" expose:"full" doc:"Path to a JSON or YAML file with the registry defaults, targets and methods. Format is chosen by file extension. Must not be combined with inline defaults, targets or methods."`
-	// PollInterval is how often the registry file is checked for changes. Zero means reload on SIGHUP only.
-	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"How often the registry file is checked for changes. Zero means the file is reloaded on SIGHUP only."`
+	// PollInterval is accepted and reserved for file polling. It has no effect yet: the file is read at start and on a configuration reload.
+	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"Accepted and reserved for an upcoming feature, with no effect yet. The registry file is read at start and on a configuration reload (SIGHUP)."`
 	// DrainTimeout is how long connections of removed or replaced targets are kept before they are closed.
 	DrainTimeout Duration `mapstructure:"drain_timeout" default:"30s" json:"drain_timeout" envconfig:"drain_timeout" yaml:"drain_timeout" toml:"drain_timeout" doc:"How long connections of removed or replaced targets stay open before they are closed. Default <<30s>>."`
 	// Errors maps registry-originated errors to Centrifugo protocol errors.
@@ -135,8 +135,8 @@ type RPCMethodDefaults struct {
 	MaxRequestBytes int `mapstructure:"max_request_bytes" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Request size limit in bytes for methods which do not set one. Zero means the built-in default of 64 KiB."`
 	// MaxResponseBytes is the response size limit of methods and targets which do not set one.
 	MaxResponseBytes int `mapstructure:"max_response_bytes" json:"max_response_bytes" envconfig:"max_response_bytes" yaml:"max_response_bytes" toml:"max_response_bytes" doc:"Response size limit in bytes for methods and targets which do not set one. Zero means the built-in default of 1 MiB."`
-	// Idempotent is the default idempotency of methods.
-	Idempotent bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Whether methods are idempotent by default. Idempotent methods may be retried safely."`
+	// Idempotent is the default idempotency of methods. It is accepted and reserved for an upcoming feature, and has no effect yet.
+	Idempotent bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Accepted and reserved for an upcoming feature, with no effect yet: calls are not retried or deduplicated by it. Default for methods which do not set idempotent."`
 }
 
 // RPCTarget is a gRPC backend the registry methods call.
@@ -175,8 +175,8 @@ type RPCMethod struct {
 	MaxRequestBytes int `mapstructure:"max_request_bytes" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Request size limit in bytes of the method. Zero inherits the defaults."`
 	// MaxResponseBytes is the response size limit of the method.
 	MaxResponseBytes int `mapstructure:"max_response_bytes" json:"max_response_bytes" envconfig:"max_response_bytes" yaml:"max_response_bytes" toml:"max_response_bytes" doc:"Response size limit in bytes of the method. Zero inherits the target or defaults."`
-	// Idempotent overrides the default idempotency of the method. Nil inherits defaults.idempotent.
-	Idempotent *bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Whether the method is idempotent. Unset inherits defaults.idempotent."`
+	// Idempotent overrides the default idempotency of the method. Nil inherits defaults.idempotent. It is accepted and reserved for an upcoming feature, and has no effect yet.
+	Idempotent *bool `mapstructure:"idempotent" json:"idempotent" envconfig:"idempotent" yaml:"idempotent" toml:"idempotent" doc:"Accepted and reserved for an upcoming feature, with no effect yet. Unset inherits defaults.idempotent."`
 	// Headers are per-call client headers forwarded to the target.
 	Headers []string `mapstructure:"headers" json:"headers" envconfig:"headers" yaml:"headers" toml:"headers" expose:"full" doc:"Names of per-call client headers forwarded to the target. Lower-case. Reserved names are rejected."`
 	// ErrorMetadata lists backend trailer keys copied into the protocol error metadata.

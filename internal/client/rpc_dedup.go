@@ -1,8 +1,6 @@
 package client
 
 import (
-	"encoding/hex"
-
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -27,17 +25,19 @@ func newRPCDedupStore(cfgContainer *config.Container) rpcdedup.Store {
 }
 
 // rpcDedupScope returns the dedup scope of a connection. A connection with a token session is scoped to
-// the session. Otherwise it is scoped to its install instance, stored at connect. A connection with neither
-// has no scope, and its calls are not deduplicated.
+// the session of its user. Otherwise it is scoped to its install instance, stored at connect, and its user.
+// The user is part of both, so an instance seen on one account cannot replay calls of another. A connection
+// with neither has no scope, and its calls are not deduplicated.
 func rpcDedupScope(c Client, storage map[string]any) string {
 	var identity centrifuge.TokenIdentity = c.TokenIdentity()
+	var userID string = c.UserID()
 	if identity.Session != ([16]byte{}) {
-		return "s:" + hex.EncodeToString(identity.Session[:])
+		return rpcdedup.ScopeOf("s", userID, identity.Session[:])
 	}
 	var instance string
 	instance, _ = storage[clientstorage.KeyInstance].(string)
 	if instance != "" {
-		return "i:" + instance
+		return rpcdedup.ScopeOf("i", userID, []byte(instance))
 	}
 	return ""
 }

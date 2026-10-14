@@ -21,8 +21,10 @@ import (
 	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -69,6 +71,9 @@ func (b *dedupBackend) handle(_ any, stream grpc.ServerStream) error {
 	b.calls = append(b.calls, tools.GRPCBytesCall{Method: method, Metadata: md})
 	b.mu.Unlock()
 	b.entered <- struct{}{}
+	if string(in) == "fail" {
+		return status.Error(codes.Unauthenticated, "denied")
+	}
 	// Clients send JSON, so a payload of the JSON string "gate" is a gated call too.
 	if string(in) == "gate" || string(in) == `"gate"` {
 		select {
@@ -562,6 +567,31 @@ func TestRPCDedupCancelWhileSemaphoreIsFull(t *testing.T) {
 
 	backend.releaseGate()
 	require.Nil(t, transport.waitReply(t, 3).Error)
+}
+
+// A backend answer which the status mapping turns into a disconnect is final: the retransmit gets that answer as
+// a protocol error, and the backend is not called again.
+func TestRPCDedupDisconnectIsFinalAnswer(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	reg.GRPCStatusToCodeTransforms = configtypes.RPCGRPCStatusToCodeTransforms{
+		{Status: "UNAUTHENTICATED", ToDisconnect: configtypes.TransformDisconnect{Code: 3501, Reason: "sign in again"}},
+	}
+	h := newDedupHandler(t, reg, backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(16)
+
+	_, err := dedupCall(h, client, "users.put", msgID, "fail")
+	var disconnect *centrifuge.Disconnect
+	require.ErrorAs(t, err, &disconnect)
+	require.Equal(t, uint32(3501), disconnect.Code)
+
+	retransmit := dedupCallAsyncResult(t, h, client, "users.put", msgID, "fail")
+	protoErr := requireProtocolError(t, retransmit.err)
+	require.Equal(t, uint32(3501), protoErr.Code)
+	require.Equal(t, "sign in again", protoErr.Message)
+	require.True(t, retransmit.reply.Cached)
+	require.Len(t, backend.Calls(), 1)
 }
 
 // A retransmit and a call without updates reach the target as headers, and a plain call carries neither.

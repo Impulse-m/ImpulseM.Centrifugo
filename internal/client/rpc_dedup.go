@@ -243,8 +243,9 @@ func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegis
 	return centrifuge.RPCReply{Data: rec.Reply, Cached: true}, nil
 }
 
-// rpcRecordOf returns the record of a call which ran: its reply, or its protocol error. A call which ended
-// with a disconnect gave no answer, so nothing is kept for it and its retransmit runs again.
+// rpcRecordOf returns the final record of a call which ran: its reply, or its error. A disconnect is final too:
+// the backend answered, and a retransmit must not run the call again. The record holds the disconnect as a
+// protocol error, with its code and reason.
 func rpcRecordOf(reply centrifuge.RPCReply, err error) rpcdedup.Record {
 	if err == nil {
 		return rpcdedup.Record{Reply: reply.Data}
@@ -253,5 +254,9 @@ func rpcRecordOf(reply centrifuge.RPCReply, err error) rpcdedup.Record {
 	if errors.As(err, &protoErr) {
 		return rpcdedup.Record{Err: protoErr}
 	}
-	return rpcdedup.Record{Abandoned: true}
+	var disconnect *centrifuge.Disconnect
+	if errors.As(err, &disconnect) {
+		return rpcdedup.Record{Err: &centrifuge.Error{Code: disconnect.Code, Message: disconnect.Reason}}
+	}
+	return rpcdedup.Record{Err: centrifuge.ErrorInternal}
 }

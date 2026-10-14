@@ -21,6 +21,12 @@ func coreUserID(token jwtverify.ConnectToken) string {
 	return token.UserID
 }
 
+// tokenAuthClassName returns the auth class name a refresh reply reports for the verified token.
+func (h *Handler) tokenAuthClassName(token jwtverify.ConnectToken) string {
+	class, _ := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
+	return h.authClassName(class)
+}
+
 // personalChannelSubscription returns the personal channel of userID with the options it is subscribed with.
 func (h *Handler) personalChannelSubscription(userID string) (string, centrifuge.SubscribeOptions, error) {
 	personalChannel := h.cfgContainer.PersonalChannel(userID)

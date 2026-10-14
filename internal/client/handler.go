@@ -413,6 +413,9 @@ func (h *Handler) OnClientConnecting(
 	var processClientChannels bool
 
 	storage := map[string]any{}
+	// replyUser is the user of the token or of the connect proxy, which the reply reports. Core may see no
+	// user for the connection, see coreUserID.
+	var replyUser string
 
 	if e.Token != "" {
 		token, err := h.tokenVerifier.VerifyConnectToken(e.Token, cfg.Client.InsecureSkipTokenSignatureVerify)
@@ -456,6 +459,7 @@ func (h *Handler) OnClientConnecting(
 		if token.Meta != nil {
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
+		replyUser = token.UserID
 		if !h.storeRegistryToken(storage, credentials, e.Token, token) {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
@@ -475,6 +479,9 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, accessrevoke.DisconnectUserBlocked
 		}
 		credentials = connectReply.Credentials
+		if credentials != nil {
+			replyUser = credentials.UserID
+		}
 		if connectReply.Subscriptions != nil {
 			subscriptions = connectReply.Subscriptions
 		}
@@ -605,6 +612,8 @@ func (h *Handler) OnClientConnecting(
 		ClientSideRefresh: !refreshProxyEnabled,
 		Flags:             h.registryConnectFlags(),
 	}
+	finalReply.User = replyUser
+	finalReply.AuthClass = h.authClassName(authClassOf(storage, h.registryConfig().AuthClassClaim, replyUser))
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
@@ -688,6 +697,8 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		ExpireAt:      token.ExpireAt,
 		Info:          token.Info,
 		TokenIdentity: &identity,
+		User:          token.UserID,
+		AuthClass:     h.tokenAuthClassName(token),
 	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
 }
 

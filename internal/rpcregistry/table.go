@@ -22,6 +22,21 @@ const (
 	AuthClassBot
 )
 
+// String returns the name of the class, as the config names it. The zero value has no name.
+func (a AuthClass) String() string {
+	switch a {
+	case AuthClassAnonymous:
+		return configtypes.RPCAuthClassAnonymous
+	case AuthClassPending2FA:
+		return configtypes.RPCAuthClassPending2FA
+	case AuthClassAuthenticated:
+		return configtypes.RPCAuthClassAuthenticated
+	case AuthClassBot:
+		return configtypes.RPCAuthClassBot
+	}
+	return ""
+}
+
 // Admits reports whether a connection of class conn may call a method which requires the class a.
 // The zero value admits nothing.
 func (a AuthClass) Admits(conn AuthClass) bool {

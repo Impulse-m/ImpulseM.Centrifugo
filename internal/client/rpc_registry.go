@@ -252,16 +252,31 @@ func registryConnection(c Client, claim string) (string, rpcregistry.AuthClass) 
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	token, _ := storage[clientstorage.KeyToken].(string)
+	return token, authClassOf(storage, claim, userID)
+}
+
+// authClassOf returns the auth class of a connection with the storage of the connection, its user and the
+// claim, as registryConnection describes it.
+func authClassOf(storage map[string]any, claim string, userID string) rpcregistry.AuthClass {
 	stored, ok := storage[clientstorage.KeyAuthClass].(registryAuthClass)
 	if ok {
 		if stored.claim == claim {
-			return token, stored.class
+			return stored.class
 		}
-		return token, rpcregistry.AuthClassAnonymous
+		return rpcregistry.AuthClassAnonymous
 	}
 	if claim != "" {
-		return token, rpcregistry.AuthClassAnonymous
+		return rpcregistry.AuthClassAnonymous
 	}
 	class, _ := rpcregistry.ConnectionAuthClass("", userID)
-	return token, class
+	return class
+}
+
+// authClassName returns the name of the auth class reported to the client. It is empty when the registry is
+// disabled, as the auth class has no meaning for the connection then.
+func (h *Handler) authClassName(class rpcregistry.AuthClass) string {
+	if !h.rpcRegistry.Enabled() {
+		return ""
+	}
+	return class.String()
 }

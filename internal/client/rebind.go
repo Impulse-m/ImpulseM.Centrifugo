@@ -76,6 +76,8 @@ func (h *Handler) onRefreshRebind(c Client, token string, verified jwtverify.Con
 		ExpireAt:      verified.ExpireAt,
 		Info:          verified.Info,
 		TokenIdentity: &identity,
+		User:          verified.UserID,
+		AuthClass:     h.tokenAuthClassName(verified),
 	}, RefreshExtra{}, nil
 }
 

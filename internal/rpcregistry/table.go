@@ -22,17 +22,23 @@ const (
 	AuthClassBot
 )
 
+// authClassNames holds the name of each auth class, as the config names it. String and ParseAuthClass read it.
+var authClassNames = [...]struct {
+	class AuthClass
+	name  string
+}{
+	{class: AuthClassAnonymous, name: configtypes.RPCAuthClassAnonymous},
+	{class: AuthClassPending2FA, name: configtypes.RPCAuthClassPending2FA},
+	{class: AuthClassAuthenticated, name: configtypes.RPCAuthClassAuthenticated},
+	{class: AuthClassBot, name: configtypes.RPCAuthClassBot},
+}
+
 // String returns the name of the class, as the config names it. The zero value has no name.
 func (a AuthClass) String() string {
-	switch a {
-	case AuthClassAnonymous:
-		return configtypes.RPCAuthClassAnonymous
-	case AuthClassPending2FA:
-		return configtypes.RPCAuthClassPending2FA
-	case AuthClassAuthenticated:
-		return configtypes.RPCAuthClassAuthenticated
-	case AuthClassBot:
-		return configtypes.RPCAuthClassBot
+	for _, entry := range authClassNames {
+		if entry.class == a {
+			return entry.name
+		}
 	}
 	return ""
 }
@@ -92,15 +98,10 @@ const (
 
 // ParseAuthClass converts an auth class name from the config. It reports false for unknown names.
 func ParseAuthClass(name string) (AuthClass, bool) {
-	switch name {
-	case configtypes.RPCAuthClassAnonymous:
-		return AuthClassAnonymous, true
-	case configtypes.RPCAuthClassPending2FA:
-		return AuthClassPending2FA, true
-	case configtypes.RPCAuthClassAuthenticated:
-		return AuthClassAuthenticated, true
-	case configtypes.RPCAuthClassBot:
-		return AuthClassBot, true
+	for _, entry := range authClassNames {
+		if entry.name == name {
+			return entry.class, true
+		}
 	}
 	return 0, false
 }

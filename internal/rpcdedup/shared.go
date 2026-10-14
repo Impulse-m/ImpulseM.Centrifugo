@@ -38,6 +38,9 @@ const (
 type SharedObserver interface {
 	// AckDropped is called for every ack which is dropped because the ack queue is full.
 	AckDropped()
+	// LostOwnership is called once for a call whose first write of its answer finds no in-flight record of this node,
+	// so the answer is kept on this node only.
+	LostOwnership()
 }
 
 // SharedOptions configure a Shared store.
@@ -269,7 +272,7 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 		cancel()
 		if err == nil {
 			if !owned && attempt == 1 {
-				s.logLostOwnership()
+				s.lostOwnership()
 			}
 			return
 		}
@@ -427,10 +430,11 @@ func (s *Shared) logError(msg string, err error) {
 	}
 }
 
-// logLostOwnership logs at most once per redisshard.ErrorLogInterval that the shared tier holds no in-flight record of this
-// node for a call, so its answer is kept on this node only. It is not counted as a Redis error.
-func (s *Shared) logLostOwnership() {
-	if s.errorLog.Allow() {
-		log.Error().Msg("exactly-once RPC: the shared tier holds no in-flight record of this node for a call, the answer is kept on this node only")
+// lostOwnership counts that the shared tier holds no in-flight record of this node for a call, so its answer is kept on
+// this node only. It is not a Redis error, so it is logged at debug.
+func (s *Shared) lostOwnership() {
+	if s.observer != nil {
+		s.observer.LostOwnership()
 	}
+	log.Debug().Msg("exactly-once RPC: the shared tier holds no in-flight record of this node for a call, the answer is kept on this node only")
 }

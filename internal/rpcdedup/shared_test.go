@@ -269,11 +269,17 @@ type sharedFixture struct {
 	shared   *Shared
 	notified []notifyCall
 	dropped  int
+	lost     int
 }
 
 // AckDropped implements SharedObserver.
 func (fx *sharedFixture) AckDropped() {
 	fx.dropped++
+}
+
+// LostOwnership implements SharedObserver.
+func (fx *sharedFixture) LostOwnership() {
+	fx.lost++
 }
 
 // newSharedFixture returns a shared store of node-a with the given failure mode.
@@ -748,6 +754,24 @@ func TestSharedCompleteLostReplyIsNotAnError(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, byte('d'), entry.state)
 	require.Equal(t, []byte("ok"), entry.rec.Reply)
+	require.Zero(t, fx.lost, "a retried write which finds the record done is not a lost ownership")
+}
+
+func TestSharedCompleteLostOwnershipIsCountedOnce(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// The in-flight record now belongs to another node, as after an expiry and a retransmit there.
+	fx.backend.entries[sharedKey].owner = "node-b"
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "complete"))
+	require.Equal(t, 1, fx.lost)
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.Equal(t, "node-b", entry.owner)
+	require.Equal(t, byte('i'), entry.state)
 }
 
 func TestSharedCancelReachesCallThatBeganDuringCancel(t *testing.T) {
@@ -896,6 +920,10 @@ type droppedAckObserver struct {
 // AckDropped implements SharedObserver.
 func (o *droppedAckObserver) AckDropped() {
 	o.dropped.Add(1)
+}
+
+// LostOwnership implements SharedObserver.
+func (o *droppedAckObserver) LostOwnership() {
 }
 
 func TestSharedAckQueueFullDropsAndCounts(t *testing.T) {

@@ -416,6 +416,15 @@ func (m *RPCRegistryDedupMetrics) AckDropped() {
 	incCounter(m.ackDrops)
 }
 
+// LostOwnership counts one call whose answer the shared tier does not hold for this node. It is counted as a Redis
+// error, and implements rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) LostOwnership() {
+	if m == nil {
+		return
+	}
+	incCounter(m.redisErrors)
+}
+
 // ObserveWait records the time a duplicate waited for the call it joined.
 func (m *RPCRegistryDedupMetrics) ObserveWait(seconds float64) {
 	if m == nil || m.waitSeconds == nil {

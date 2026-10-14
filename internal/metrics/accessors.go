@@ -80,9 +80,8 @@ var (
 
 // RPC method registry metrics - exported for use by client and proxy packages
 var (
-	RPCRegistryCallsTotal   *prometheus.CounterVec
-	RPCRegistryErrorsTotal  *prometheus.CounterVec
-	RPCRegistryReloadsTotal *prometheus.CounterVec
+	RPCRegistryCallsTotal  *prometheus.CounterVec
+	RPCRegistryErrorsTotal *prometheus.CounterVec
 )
 
 // Postgres broker metrics exported for use by pgmapbroker and pgstreambroker.

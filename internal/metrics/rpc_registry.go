@@ -7,6 +7,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// RPCRegistryReloadsTotal counts the reloads of the RPC method registry. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryReloadsTotal *prometheus.CounterVec
+
 // rpcRegistryMaxAppTypes caps the distinct app_type label values per process. Values beyond the cap
 // are reported as rpcRegistryOtherAppType.
 const rpcRegistryMaxAppTypes = 256

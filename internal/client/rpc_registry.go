@@ -101,9 +101,12 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 		Headers:  e.Call.Headers,
 		MsgID:    e.Call.MsgID,
 	})
-	observeRegistryTarget(m.Target.Config.Name, time.Since(started).Seconds(), err)
+	// The client context decides whether the call was cancelled. A CANCELLED status sent by the
+	// backend on a live connection is an ordinary failure of the target.
+	cancelled := errors.Is(c.Context().Err(), context.Canceled)
+	observeRegistryTarget(m.Target.Config.Name, time.Since(started).Seconds(), err, cancelled)
 	if err != nil {
-		return centrifuge.RPCReply{}, registryFailure(m.Name, registryCallResult(err), registryCallError(err, trailers, m, cfg))
+		return centrifuge.RPCReply{}, registryFailure(m.Name, registryCallResult(err, cancelled), registryCallError(err, trailers, m, cfg, cancelled))
 	}
 	metrics.IncRPCRegistryCall(m.Name, metrics.RPCRegistryResultOK)
 	return centrifuge.RPCReply{Data: data}, nil
@@ -112,9 +115,9 @@ func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistr
 // observeRegistryTarget records the duration of a call to a registry target in the proxy metrics,
 // with the target as the name label. A cancelled call is not counted as a proxy error: the client
 // went away, the target did not fail.
-func observeRegistryTarget(target string, seconds float64, err error) {
+func observeRegistryTarget(target string, seconds float64, err error, cancelled bool) {
 	metrics.ProxyCallDurationHistogram.WithLabelValues(registryProxyProtocol, registryProxyType, target).Observe(seconds)
-	if err != nil && registryCallResult(err) != metrics.RPCRegistryResultCancelled {
+	if err != nil && !cancelled {
 		metrics.ProxyCallErrorCount.WithLabelValues(registryProxyProtocol, registryProxyType, target).Inc()
 	}
 }
@@ -123,11 +126,11 @@ func observeRegistryTarget(target string, seconds float64, err error) {
 // is the one place where the mapping lives. A response over the limit and a cancelled call come from
 // the registry config. Any other error goes through the gRPC status mapping, which fills the
 // application fields from the trailers, and may give a disconnect.
-func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, cfg configtypes.RPCRegistry) error {
+func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, cfg configtypes.RPCRegistry, cancelled bool) error {
 	if errors.Is(err, proxy.ErrRPCResponseTooLarge) {
 		return registryError(cfg.Errors.RequestTooLarge)
 	}
-	if isRegistryCallCancelled(err) {
+	if cancelled {
 		return registryError(cfg.Errors.Cancelled)
 	}
 	protoErr, disconnect := proxy.MapGRPCRegistryError(err, trailers, cfg.GRPCStatusToCodeTransforms, cfg.AppError, m.ErrorMetadata)
@@ -137,16 +140,11 @@ func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, c
 	return protoErr
 }
 
-// isRegistryCallCancelled reports whether a registry call ended because it was cancelled, by the
-// client or by its context.
-func isRegistryCallCancelled(err error) bool {
-	return errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled
-}
-
-// registryCallResult returns the result label of a failed registry call.
-func registryCallResult(err error) string {
+// registryCallResult returns the result label of a failed registry call. cancelled tells that the
+// client went away during the call.
+func registryCallResult(err error, cancelled bool) string {
 	switch {
-	case isRegistryCallCancelled(err):
+	case cancelled:
 		return metrics.RPCRegistryResultCancelled
 	case status.Code(err) == codes.DeadlineExceeded:
 		return metrics.RPCRegistryResultTimeout
@@ -155,9 +153,13 @@ func registryCallResult(err error) string {
 	}
 }
 
-// registryFailure counts a registry call which ends with err, and returns err.
+// registryFailure counts a registry call which ends with err, and returns err. A cancelled call is
+// counted in the call counter only, as the proxy error counter does not count it.
 func registryFailure(method string, result string, err error) error {
 	metrics.IncRPCRegistryCall(method, result)
+	if result == metrics.RPCRegistryResultCancelled {
+		return err
+	}
 	var protoErr *centrifuge.Error
 	var appType string
 	if errors.As(err, &protoErr) {

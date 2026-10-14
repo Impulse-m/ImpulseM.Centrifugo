@@ -258,6 +258,55 @@ func TestRegistryCancelledCallIsCancelledError(t *testing.T) {
 	require.Equal(t, "cancelled", protoErr.Message)
 }
 
+func TestRegistryBackendCancelledIsNotCancelledError(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	grpcMethod := registryStatusService + "BackendCancelled"
+	backend.FailMethod(grpcMethod, tools.GRPCBytesFailure{Err: status.Error(codes.Canceled, "backend cancelled")})
+	cfg := registryErrorTestRegistry([]configtypes.RPCMethod{
+		{Method: "status.backendCancelled", GRPCMethod: grpcMethod, Target: "backend"},
+	})
+	h := registryErrorTestHandler(t, backend, cfg)
+	client := newRegistryTestClient("c1", "42", nil, nil)
+
+	cancelledCalls := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("status.backendCancelled", "cancelled"))
+	errorCalls := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("status.backendCancelled", "error"))
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "status.backendCancelled", Data: []byte("x")}, nil)
+	protoErr := requireProtocolError(t, err)
+	// The backend status goes through the status mapping: the internal class, not the cancelled error.
+	require.Equal(t, uint32(100), protoErr.Code)
+	require.Equal(t, "backend cancelled", protoErr.Message)
+	require.NotEqual(t, uint32(107), protoErr.Code)
+
+	require.Equal(t, cancelledCalls, testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("status.backendCancelled", "cancelled")))
+	require.Equal(t, errorCalls+1, testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("status.backendCancelled", "error")))
+}
+
+func TestRegistryClientCancelDoesNotCountAppError(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	cfg := registryErrorTestRegistry([]configtypes.RPCMethod{
+		{Method: "metrics.cancelApp", GRPCMethod: registryStatusService + "Slow", Target: "backend"},
+	})
+	h := registryErrorTestHandler(t, backend, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := newRegistryTestClient("c1", "42", ctx, nil)
+
+	appErrorsBefore := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("metrics.cancelApp", "none"))
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "metrics.cancelApp", Data: []byte(tools.GRPCBytesSlowPayload)}, nil)
+		errCh <- err
+	}()
+	require.Eventually(t, func() bool { return len(backend.Calls()) == 1 }, 5*time.Second, 5*time.Millisecond)
+	cancel()
+	_ = requireProtocolError(t, <-errCh)
+
+	require.Equal(t, appErrorsBefore, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("metrics.cancelApp", "none")))
+}
+
 func TestRegistryCallMetricsLabels(t *testing.T) {
 	backend := newRegistryTestBackend(t)
 	quotaMethod := registryStatusService + "Quota"

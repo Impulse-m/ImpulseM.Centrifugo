@@ -715,3 +715,47 @@ func TestRPCDedupRetransmitAndWithoutUpdatesHeaders(t *testing.T) {
 	require.Equal(t, []string{"1"}, calls[1].Metadata.Get("x-centrifugo-retransmit"))
 	require.Equal(t, []string{"1"}, calls[1].Metadata.Get("x-centrifugo-without-updates"))
 }
+
+// A reload which widens the window does not widen the msg_ids the handler accepts: the window is kept with the
+// store, whose records last for the window at start.
+func TestRPCDedupReloadDoesNotWidenWindow(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	cfg := h.cfgContainer.Config()
+	cfg.RPC.Registry.Dedup.Window = configtypes.Duration(600 * time.Second)
+	require.NoError(t, h.cfgContainer.Reload(cfg))
+	client := newDedupClient("c1", "42", nil, testInstance)
+
+	past := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+	_, err := dedupCall(h, client, "users.get", past, "x")
+	protoErr := requireProtocolError(t, err)
+	require.Equal(t, uint32(107), protoErr.Code)
+	require.Equal(t, "invalid msg_id", protoErr.Message)
+	require.Empty(t, backend.Calls())
+}
+
+// A duplicate which joins a call on its own connection does not take the in-flight entry of the call: a cancel of
+// the msg_id on the connection reaches the call, and both the owner and the duplicate are answered cancelled.
+func TestRPCDedupCancelReachesOwnerOfJoinedCall(t *testing.T) {
+	vec := testDedupOutcomes(t)
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(6)
+
+	owner := dedupCallAsync(h, client, "users.get", msgID, "gate")
+	backend.waitEntered(t)
+	joined := dedupCallAsync(h, client, "users.get", msgID, "gate")
+	// The join is seen on the hit counter, which the duplicate bumps before it waits on the call. The test polls it,
+	// since the store has no signal for a join.
+	require.Eventually(t, func() bool {
+		return testDedupCount(vec, "hit_inflight_local") == 1
+	}, 5*time.Second, time.Millisecond)
+
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
+	require.NoError(t, err)
+	require.Empty(t, reply.Data)
+	requireCancelledError(t, waitDedupResult(t, owner).err)
+	requireCancelledError(t, waitDedupResult(t, joined).err)
+	require.Len(t, backend.Calls(), 1)
+}

@@ -6,7 +6,6 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
-	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -151,74 +150,4 @@ func TestRPCDedupAnonymousScopeRecords(t *testing.T) {
 	require.True(t, retransmit.reply.Cached)
 	require.Len(t, backend.Calls(), 1)
 	require.Zero(t, testDedupCount(vec, "no_scope"))
-}
-
-// A reload which widens the window does not widen the msg_ids the handler accepts: the window is kept with the
-// store, whose records last for the window at start.
-func TestRPCDedupReloadDoesNotWidenWindow(t *testing.T) {
-	backend := newDedupBackend(t)
-	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	cfg := h.cfgContainer.Config()
-	cfg.RPC.Registry.Dedup.Window = configtypes.Duration(600 * time.Second)
-	require.NoError(t, h.cfgContainer.Reload(cfg))
-	client := newDedupClient("c1", "42", nil, testInstance)
-
-	past := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
-	_, err := dedupCall(h, client, "users.get", past, "x")
-	protoErr := requireProtocolError(t, err)
-	require.Equal(t, uint32(107), protoErr.Code)
-	require.Equal(t, "invalid msg_id", protoErr.Message)
-	require.Empty(t, backend.Calls())
-}
-
-// A duplicate which joins a call on its own connection does not take the in-flight entry of the call: a cancel of
-// the msg_id on the connection reaches the call, and both the owner and the duplicate are answered cancelled.
-func TestRPCDedupCancelReachesOwnerOfJoinedCall(t *testing.T) {
-	vec := testDedupOutcomes(t)
-	backend := newDedupBackend(t)
-	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID := dedupMsgID(6)
-
-	owner := dedupCallAsync(h, client, "users.get", msgID, "gate")
-	backend.waitEntered(t)
-	joined := dedupCallAsync(h, client, "users.get", msgID, "gate")
-	require.Eventually(t, func() bool {
-		return testDedupCount(vec, "hit_inflight_local") == 1
-	}, 5*time.Second, time.Millisecond)
-
-	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
-	require.NoError(t, err)
-	require.Empty(t, reply.Data)
-	requireCancelledError(t, waitDedupResult(t, owner).err)
-	requireCancelledError(t, waitDedupResult(t, joined).err)
-	require.Len(t, backend.Calls(), 1)
-}
-
-// The scope of a connection follows the session of its identity when the token is refreshed, so the calls after a
-// refresh are scoped to the new session.
-func TestRPCDedupScopeFollowsRefreshedSession(t *testing.T) {
-	backend := newDedupBackend(t)
-	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	client := newRegistryTestClient("c1", "42", nil, nil)
-	first := [16]byte{1}
-	second := [16]byte{2}
-	storage, release := client.AcquireStorage()
-	h.storeRPCConnection(storage, testInstance, &centrifuge.Credentials{
-		UserID:        "42",
-		TokenIdentity: centrifuge.TokenIdentity{Session: first},
-	})
-	release(storage)
-	require.Equal(t, rpcdedup.ScopeOf("s", "42", first[:]), testStoredScope(client))
-
-	h.refreshRPCScope(client, centrifuge.TokenIdentity{Session: second})
-	require.Equal(t, rpcdedup.ScopeOf("s", "42", second[:]), testStoredScope(client))
-}
-
-// testStoredScope returns the dedup scope stored in the connection storage of client.
-func testStoredScope(client *tools.TestClientMock) string {
-	storage, release := client.AcquireStorage()
-	defer release(storage)
-	scope, _ := storage[rpcScopeKey].(string)
-	return scope
 }

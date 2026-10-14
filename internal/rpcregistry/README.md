@@ -86,7 +86,7 @@ A method admits a connection by its class:
 
 The `anonymous` method class is open to everyone, and its connection token is never forwarded, even when the connection is authenticated. Other methods forward the connection token.
 
-A connection gets its class from the connection token at connect, and a refresh replaces it. The claim named by `rpc.registry.auth_class_claim` holds the class, with one of the values `pending_2fa`, `bot`, `authenticated` or `anonymous`. Each value must agree with the user of the connection: `anonymous` only without a user, `authenticated` and `bot` only with one, and `pending_2fa` with or without one. A claim with any other value, a claim which is not a string, or a value which does not agree with the user, makes the token invalid, so the connect or the refresh is rejected. A refresh with a full token upgrades a pending connection.
+A connection gets its class from the connection token at connect, and a refresh replaces it. The claim named by `rpc.registry.auth_class_claim` holds the class, with one of the values `pending_2fa`, `bot`, `authenticated` or `anonymous`. Each value must agree with the user of the connection: `anonymous` only without a user, `authenticated` and `bot` only with one, and `pending_2fa` with or without one. A claim with any other value, a claim which is not a string, or a value which does not agree with the user, makes the token invalid, so the connect or the refresh is rejected. A refresh with a full token upgrades a pending connection in place, see [Connection identity](#connection-identity).
 
 When `auth_class_claim` is empty, a connection is `anonymous` without a user and `authenticated` with one.
 
@@ -104,6 +104,59 @@ Metadata sent with each call. Later sources win:
 4. values set by Centrifugo: `authorization: Bearer <token>` for non-anonymous methods when the connection has a token, `x-centrifugo-client` with the client ID, and `x-centrifugo-msg-id` for calls with a message ID;
 5. `x-forwarded-for` with the client address, as resolved by `client_address`. When the address is not resolved, no `x-forwarded-for` is sent, even if a source above carried one. Clients cannot set it: the name is reserved;
 6. `traceparent` and `tracestate` from the trace context of the call.
+
+## Connection identity
+
+A connection keeps its user and its auth class across refreshes. Two parts decide what a refresh may change: the pending connection, and the rebind.
+
+### Pending connections are anonymous to the core
+
+A connection whose class is `pending_2fa` has a user in its token, which the registry uses, but the core sees no user for it:
+
+* it gets no personal channel, no user-limited channels and no entry in the user index of the node, so calls which address a user do not reach it;
+* the user is still reported in the connect and refresh results, and the token is still forwarded to `pending_2fa` methods;
+* it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of connections without a user which carry a token session, and a connection leaves it when it gets a user or disconnects. The index also holds anonymous connections with a session;
+* connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them.
+
+### Rebind on refresh
+
+`client.rebind.enabled` lets a refresh move a live connection to another identity without a reconnect. It is off by default: a refresh whose token has another user disconnects the connection, as it always did. `client.rebind.allow_downgrade` is read only when rebind is enabled.
+
+```json
+"client": {
+  "rebind": {
+    "enabled": true,
+    "allow_downgrade": false
+  }
+}
+```
+
+The transitions of the auth class of a connection on refresh, when the user of the token differs from the user of the connection:
+
+| From | To | Result |
+|---|---|---|
+| `anonymous` | `authenticated`, `bot` | rebind to the user |
+| `pending_2fa` | `authenticated` | rebind to the user |
+| `pending_2fa` | `anonymous` | the connection stays anonymous |
+| `authenticated`, `bot` | `anonymous` | with `allow_downgrade`: rebind to anonymous; otherwise disconnect |
+| any other | | refresh error `permission denied`, the class is kept |
+
+A refresh which keeps the user of the connection, such as `anonymous` to `pending_2fa` or `pending_2fa` to `pending_2fa`, takes the refresh path as before, and does not go through the table.
+
+On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.
+
+On a downgrade to anonymous the connection loses its personal channel, its user-limited channels, and the channels of token and proxy sources. Client channels stay when their namespace allows anonymous subscriptions.
+
+Access checks run before the rebind: a blocked user disconnects the connection, a revoked session or invalidated token gets a refresh error `token expired`. A revocation applied between the check and the rebind disconnects the connection, because the connection is checked again after it moves. A user connection limit reached by the new user disconnects with the connection limit disconnect, a refresh of an expired token gets `token expired`, and a connection closed meanwhile is not changed.
+
+`client.rebind.enabled` cannot be combined with `client.proxy.refresh.enabled`: the refresh proxy answers refreshes without the token user, so the config is rejected at startup.
+
+### Reply fields
+
+The connect result and the refresh result carry two fields:
+
+* `user`: the user of the token, which is also the user of a pending connection. Empty for an anonymous token;
+* `auth_class`: the class name (`anonymous`, `pending_2fa`, `authenticated` or `bot`). Empty when the registry is disabled.
 
 ## Error mapping
 
@@ -151,7 +204,7 @@ centrifugo checkconfig -c config.json
 Not implemented yet:
 
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
-* Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
+* A change of auth class with the same user, such as `authenticated` to `bot`, takes the refresh path without the transition table of [Connection identity](#connection-identity). Such a refresh is accepted as before.
 * The `x-centrifugo-retransmit` and `x-centrifugo-without-updates` headers.
 * Cancelling an in-flight call by its `msg_id`.
 * Deduplication of calls with a message ID. `idempotent` is accepted and reserved for it. It has no effect yet.

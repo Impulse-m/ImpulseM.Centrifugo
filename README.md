@@ -64,6 +64,8 @@ Topic guidance:
 * 1 to 6 partitions: every node reads every partition.
 * Restrict producers with topic ACLs: any producer can ban users.
 
+* Connection identity: a `pending_2fa` connection is anonymous to the core (no personal or user channels, no user index entry) and is revocable by session; `client.rebind` moves a live connection to another user on refresh, with the transitions and downgrade rules in the [registry README](internal/rpcregistry/README.md#connection-identity). Off by default.
+
 ### RPC method registry
 
 Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [internal/rpcregistry/README.md](internal/rpcregistry/README.md).

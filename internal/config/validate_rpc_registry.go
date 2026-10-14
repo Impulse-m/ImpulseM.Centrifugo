@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"google.golang.org/grpc/codes"
 )
@@ -77,13 +78,10 @@ func validateRPCDedup(c Config) error {
 	return nil
 }
 
-// rpcDedupShards is the number of shards of the node-local dedup store, which shares each budget out over them.
-// It must match the shard count of rpcdedup.
-const rpcDedupShards = 64
-
 // validateRPCDedupBudgets checks the budgets of the dedup store and the reserves of its scopes. The authenticated
 // and the anonymous pools each need one scope per shard, so that a shard can admit a scope at all, and the reserve
-// bytes must fit the byte budget of the pool, so that the store keeps its reserves.
+// bytes must fit the byte budget of the pool, so that the store keeps its reserves. Each record of a scope is kept up
+// to its share of the reserve bytes, so the share must hold a record which is kept as uncached.
 func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
 	if dedup.LocalMaxEntries <= 0 {
 		return fmt.Errorf("rpc.registry.dedup.local_max_entries: must be positive, got %d", dedup.LocalMaxEntries)
@@ -100,14 +98,17 @@ func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
 	if dedup.ScopeReserveBytes < 1024 {
 		return fmt.Errorf("rpc.registry.dedup.scope_reserve_bytes: must be at least 1024, got %d", dedup.ScopeReserveBytes)
 	}
+	if dedup.ScopeReserveBytes < dedup.ScopeReserve*rpcdedup.RecordOverhead {
+		return fmt.Errorf("rpc.registry.dedup.scope_reserve_bytes: must be at least scope_reserve %d times %d bytes per record, got %d", dedup.ScopeReserve, rpcdedup.RecordOverhead, dedup.ScopeReserveBytes)
+	}
 	if dedup.MaxScopesPerUser < 1 {
 		return fmt.Errorf("rpc.registry.dedup.max_scopes_per_user: must be at least 1, got %d", dedup.MaxScopesPerUser)
 	}
 	if dedup.MaxRecordsPerScope < dedup.ScopeReserve {
 		return fmt.Errorf("rpc.registry.dedup.max_records_per_scope: must be at least scope_reserve %d, got %d", dedup.ScopeReserve, dedup.MaxRecordsPerScope)
 	}
-	if dedup.MaxReplySize > dedup.LocalMaxBytes/rpcDedupShards {
-		return fmt.Errorf("rpc.registry.dedup.max_reply_size: must fit a shard share of local_max_bytes, at most %d, got %d", dedup.LocalMaxBytes/rpcDedupShards, dedup.MaxReplySize)
+	if dedup.MaxReplySize > dedup.LocalMaxBytes/rpcdedup.DefaultShards {
+		return fmt.Errorf("rpc.registry.dedup.max_reply_size: must fit a shard share of local_max_bytes, at most %d, got %d", dedup.LocalMaxBytes/rpcdedup.DefaultShards, dedup.MaxReplySize)
 	}
 	if dedup.LocalAnonymousMaxEntries < 0 || dedup.LocalAnonymousMaxEntries >= dedup.LocalMaxEntries {
 		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be at least 0 and less than local_max_entries %d, got %d", dedup.LocalMaxEntries, dedup.LocalAnonymousMaxEntries)
@@ -116,12 +117,12 @@ func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
 		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be at least 0 and less than local_max_bytes %d, got %d", dedup.LocalMaxBytes, dedup.LocalAnonymousMaxBytes)
 	}
 	authEntries := dedup.LocalMaxEntries - dedup.LocalAnonymousMaxEntries
-	if authEntries < rpcDedupShards*dedup.ScopeReserve {
-		return fmt.Errorf("rpc.registry.dedup.local_max_entries: local_max_entries minus local_anonymous_max_entries must be at least %d, one scope per shard, got %d", rpcDedupShards*dedup.ScopeReserve, authEntries)
+	if authEntries < rpcdedup.DefaultShards*dedup.ScopeReserve {
+		return fmt.Errorf("rpc.registry.dedup.local_max_entries: local_max_entries minus local_anonymous_max_entries must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserve, authEntries)
 	}
 	authBytes := dedup.LocalMaxBytes - dedup.LocalAnonymousMaxBytes
-	if authBytes < rpcDedupShards*dedup.ScopeReserveBytes {
-		return fmt.Errorf("rpc.registry.dedup.local_max_bytes: local_max_bytes minus local_anonymous_max_bytes must be at least %d, one scope per shard, got %d", rpcDedupShards*dedup.ScopeReserveBytes, authBytes)
+	if authBytes < rpcdedup.DefaultShards*dedup.ScopeReserveBytes {
+		return fmt.Errorf("rpc.registry.dedup.local_max_bytes: local_max_bytes minus local_anonymous_max_bytes must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserveBytes, authBytes)
 	}
 	if dedup.LocalAnonymousMaxEntries == 0 {
 		if dedup.LocalAnonymousMaxBytes != 0 {
@@ -129,11 +130,11 @@ func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
 		}
 		return nil
 	}
-	if dedup.LocalAnonymousMaxEntries < rpcDedupShards*dedup.ScopeReserve {
-		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be 0, or at least %d, one scope per shard, got %d", rpcDedupShards*dedup.ScopeReserve, dedup.LocalAnonymousMaxEntries)
+	if dedup.LocalAnonymousMaxEntries < rpcdedup.DefaultShards*dedup.ScopeReserve {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be 0, or at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserve, dedup.LocalAnonymousMaxEntries)
 	}
-	if dedup.LocalAnonymousMaxBytes < rpcDedupShards*dedup.ScopeReserveBytes {
-		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be at least %d, one scope per shard, got %d", rpcDedupShards*dedup.ScopeReserveBytes, dedup.LocalAnonymousMaxBytes)
+	if dedup.LocalAnonymousMaxBytes < rpcdedup.DefaultShards*dedup.ScopeReserveBytes {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserveBytes, dedup.LocalAnonymousMaxBytes)
 	}
 	return nil
 }

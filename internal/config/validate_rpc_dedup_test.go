@@ -127,6 +127,14 @@ func TestValidateRPCDedupRules(t *testing.T) {
 			wantErr: "rpc.registry.dedup.scope_reserve_bytes: must be at least 1024",
 		},
 		{
+			name: "scope reserve bytes must hold a record per reserve",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.ScopeReserve = 100
+				cfg.RPC.Registry.Dedup.MaxRecordsPerScope = 1024
+			},
+			wantErr: "rpc.registry.dedup.scope_reserve_bytes: must be at least scope_reserve 100 times 128 bytes per record",
+		},
+		{
 			name: "max scopes per user must be at least one",
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry.Dedup.MaxScopesPerUser = 0

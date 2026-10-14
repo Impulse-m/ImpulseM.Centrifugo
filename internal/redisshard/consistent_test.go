@@ -13,7 +13,6 @@ func TestJumpConsistentHashSingleBucket(t *testing.T) {
 	}
 }
 
-
 func TestShardIndexDistribution(t *testing.T) {
 	const numUsers = 30000
 	const numShards = 3
@@ -29,7 +28,6 @@ func TestShardIndexDistribution(t *testing.T) {
 		require.InDelta(t, expected, float64(c), expected*0.1)
 	}
 }
-
 
 func TestShardIndexStableAndMinimalMovement(t *testing.T) {
 	const numUsers = 20000
@@ -49,12 +47,10 @@ func TestShardIndexStableAndMinimalMovement(t *testing.T) {
 	require.InDelta(t, numUsers/4, moved, numUsers*0.03)
 }
 
-
 func TestShardIndexSingleShard(t *testing.T) {
 	require.Equal(t, 0, ShardIndex("user-1", 0))
 	require.Equal(t, 0, ShardIndex("user-1", 1))
 }
-
 
 func TestFnv1a64(t *testing.T) {
 	// Reference values of FNV-1a 64.

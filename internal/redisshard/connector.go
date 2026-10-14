@@ -114,14 +114,12 @@ func (c *Connector) Close() {
 	}
 }
 
-
 // retryDelay returns a random delay in [backoff/2, backoff], so nodes started together do not retry in lockstep.
 // The same half-jitter backoff exists in internal/pgschema/pgschema.go (schemaExecBackoff).
 func retryDelay(backoff time.Duration) time.Duration {
 	half := backoff / 2
 	return half + time.Duration(rand.Int64N(int64(half)+1)) //nolint:gosec // Jitter of retries, not a secret.
 }
-
 
 // sleepContext waits for d. It returns false when the context is done first.
 func sleepContext(ctx context.Context, d time.Duration) bool {

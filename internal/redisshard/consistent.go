@@ -9,7 +9,6 @@ func ShardIndex(key string, numShards int) int {
 	return int(jumpConsistentHash(fnv1a64(key), int32(numShards)))
 }
 
-
 // jumpConsistentHash maps key to one of numBuckets buckets (Lamping and Veach). Growing numBuckets by one
 // moves only about 1/numBuckets of the keys, and only to the new bucket.
 func jumpConsistentHash(key uint64, numBuckets int32) int32 {
@@ -22,7 +21,6 @@ func jumpConsistentHash(key uint64, numBuckets int32) int32 {
 	}
 	return int32(b)
 }
-
 
 // fnv1a64 returns FNV-1a hash of s. It does not allocate.
 func fnv1a64(s string) uint64 {

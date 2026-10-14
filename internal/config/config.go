@@ -113,6 +113,8 @@ type Config struct {
 	UserTokensInvalidate configtypes.UserTokensInvalidate `mapstructure:"user_tokens_invalidate" json:"user_tokens_invalidate" envconfig:"user_tokens_invalidate" toml:"user_tokens_invalidate" yaml:"user_tokens_invalidate" doc:"A configuration for invalidating all tokens of a user. Enabled by default."`
 	// AccessRevoke is a configuration for access revocation internals.
 	AccessRevoke configtypes.AccessRevoke `mapstructure:"access_revoke" json:"access_revoke" envconfig:"access_revoke" toml:"access_revoke" yaml:"access_revoke" doc:"A configuration for access revocation internals."`
+	// ClientAddress is a configuration for the client address behind trusted proxies.
+	ClientAddress configtypes.ClientAddress `mapstructure:"client_address" json:"client_address" envconfig:"client_address" toml:"client_address" yaml:"client_address" doc:"Configures the client address behind trusted proxies: forwarded header and PROXY protocol. Disabled by default."`
 
 	// OpenTelemetry is a configuration for OpenTelemetry tracing.
 	OpenTelemetry configtypes.OpenTelemetry `mapstructure:"opentelemetry" json:"opentelemetry" envconfig:"opentelemetry" toml:"opentelemetry" yaml:"opentelemetry" doc:"Configures OpenTelemetry tracing export."`

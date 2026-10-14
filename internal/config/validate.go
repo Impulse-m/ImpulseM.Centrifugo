@@ -26,6 +26,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("external_h2c cannot be used together with enabled TLS for external HTTP server")
 	}
 
+	if err := validateClientAddress(c); err != nil {
+		return err
+	}
+
 	if !slices.Contains(knownBrokers, c.Broker.Type) {
 		return fmt.Errorf("unknown broker: %s", c.Broker.Type)
 	}

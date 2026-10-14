@@ -11,6 +11,7 @@ type Flight struct {
 	mu          sync.Mutex
 	cancel      context.CancelFunc
 	cancelled   bool
+	finished    bool
 	done        chan struct{}
 	record      Record
 	fingerprint [32]byte
@@ -62,8 +63,14 @@ func (f *Flight) Record() Record {
 	return f.record
 }
 
-// finish sets the record, and closes Done. The owner calls it once.
+// finish sets the record, and closes Done. A flight finishes once: a later call keeps the first record.
 func (f *Flight) finish(rec Record) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.finished {
+		return
+	}
+	f.finished = true
 	f.record = rec
 	close(f.done)
 }

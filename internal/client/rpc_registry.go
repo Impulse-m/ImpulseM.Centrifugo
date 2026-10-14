@@ -207,9 +207,17 @@ func (h *Handler) storeRegistryToken(
 	credentials.UserID = coreUserID(verified)
 	if h.rpcRegistry.Enabled() {
 		storage[clientstorage.KeyToken] = token
+	}
+	if h.keepsAuthClass() {
 		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: authClass, claim: h.registryConfig().AuthClassClaim}
 	}
 	return true
+}
+
+// keepsAuthClass reports whether the auth class of a connection is stored. It is stored for the registry, and for
+// rebind, which needs the class of the connection to check a transition even when the registry is disabled.
+func (h *Handler) keepsAuthClass() bool {
+	return h.rpcRegistry.Enabled() || h.cfgContainer.ConfigRef().Client.Rebind.Enabled
 }
 
 // replaceRegistryToken replaces the connection token and auth class of the client with the ones of a
@@ -220,13 +228,15 @@ func (h *Handler) replaceRegistryToken(c Client, token string, verified jwtverif
 	if !ok {
 		return false
 	}
-	if !h.rpcRegistry.Enabled() {
+	if !h.keepsAuthClass() {
 		return true
 	}
 	claim := h.registryConfig().AuthClassClaim
 	storage, release := c.AcquireStorage()
 	defer release(storage)
-	storage[clientstorage.KeyToken] = token
+	if h.rpcRegistry.Enabled() {
+		storage[clientstorage.KeyToken] = token
+	}
 	storage[clientstorage.KeyAuthClass] = registryAuthClass{class: authClass, claim: claim}
 	return true
 }

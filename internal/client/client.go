@@ -18,4 +18,7 @@ type Client interface {
 	WritePublication(channel string, publication *centrifuge.Publication, sp centrifuge.StreamPosition) error
 	Disconnect(disconnect ...centrifuge.Disconnect)
 	ExtState() any
+	Rebind(opts centrifuge.RebindOptions) error
+	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsWithContext() map[string]centrifuge.ChannelContext
 }

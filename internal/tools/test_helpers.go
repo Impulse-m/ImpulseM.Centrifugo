@@ -218,6 +218,10 @@ type TestClientMock struct {
 	TransportFunc    func() centrifuge.TransportInfo
 	ExtStateFunc     func() any
 	DisconnectFunc   func(disconnect ...centrifuge.Disconnect)
+	RebindFunc       func(opts centrifuge.RebindOptions) error
+	SubscribeFunc    func(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsFunc     func() map[string]centrifuge.ChannelContext
+	UnsubscribeFunc  func(ch string, unsubscribe ...centrifuge.Unsubscribe)
 	storageMu        sync.Mutex
 	storage          map[string]any
 }
@@ -236,6 +240,27 @@ func (m *TestClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
 func (m *TestClientMock) ExtState() any {
 	if m.ExtStateFunc != nil {
 		return m.ExtStateFunc()
+	}
+	return nil
+}
+
+func (m *TestClientMock) Rebind(opts centrifuge.RebindOptions) error {
+	if m.RebindFunc != nil {
+		return m.RebindFunc(opts)
+	}
+	return nil
+}
+
+func (m *TestClientMock) Subscribe(channel string, opts ...centrifuge.SubscribeOption) error {
+	if m.SubscribeFunc != nil {
+		return m.SubscribeFunc(channel, opts...)
+	}
+	return nil
+}
+
+func (m *TestClientMock) ChannelsWithContext() map[string]centrifuge.ChannelContext {
+	if m.ChannelsFunc != nil {
+		return m.ChannelsFunc()
 	}
 	return nil
 }
@@ -292,6 +317,7 @@ func (m *TestClientMock) AcquireStorage() (map[string]any, func(map[string]any))
 }
 
 func (m *TestClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
-	//TODO implement me
-	panic("implement me")
+	if m.UnsubscribeFunc != nil {
+		m.UnsubscribeFunc(ch, unsubscribe...)
+	}
 }

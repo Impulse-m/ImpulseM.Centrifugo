@@ -669,8 +669,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if coreUserID(token) != c.UserID() {
-		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+		return h.onRefreshRebind(c, e.Token, token)
 	}
 	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")

@@ -19,10 +19,17 @@ import (
 // class claim, and its access revocation store. The node serves real connections.
 func newPendingTestHandler(t *testing.T) (*Handler, *accessrevoke.Store, *centrifuge.Node) {
 	t.Helper()
-	node := tools.NodeWithMemoryEngineNoHandlers()
-	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 	cfg := config.DefaultConfig()
 	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	return newAuthClassTestHandler(t, cfg)
+}
+
+// newAuthClassTestHandler returns a set up handler with cfg, which reads the auth class claim, and its access
+// revocation store. The node serves real connections.
+func newAuthClassTestHandler(t *testing.T, cfg config.Config) (*Handler, *accessrevoke.Store, *centrifuge.Node) {
+	t.Helper()
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{

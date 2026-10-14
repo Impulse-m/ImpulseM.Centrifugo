@@ -528,8 +528,9 @@ func (s *shard) sweepSome(now time.Time) {
 
 // insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool, and returns
 // the record as it is kept. A reply over the share of a record is kept as uncached, and so is one which fits no room:
-// it never fails. Caller holds mu, and key has no record: a key with a flight has none, since Begin answers a live
-// record without a flight, and only insert writes records.
+// it never fails. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
+// No record of key exists under its flight: Begin removes an expired record and answers a live one without a flight,
+// and only the owner of the flight inserts. The removal above keeps the counts right if that ever changes.
 func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Record {
 	p := sc.pool
 	size := recordSize(rec)
@@ -540,20 +541,23 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Recor
 	}
 	// The scope is held while its records are evicted: its last record may go before the new one is in.
 	sc.flights++
+	if old := s.done[key]; old != nil {
+		s.drop(old, sc)
+	}
 	for sc.records.len > 0 && sc.records.len >= s.maxScope {
-		s.evict(sc.records.front(), EvictionScopeCap)
+		s.evict(sc.records.front(), EvictionScopeCap, sc)
 	}
 	for p.overBudget(size) {
 		if f := s.order.front(); f != nil && !now.Before(f.expireAt) {
-			s.remove(f)
+			s.drop(f, sc)
 			continue
 		}
 		if sc.records.len > 0 && sc.records.len+1 > p.reserveEntries {
-			s.evict(sc.records.front(), EvictionOverReserve)
+			s.evict(sc.records.front(), EvictionOverReserve, sc)
 			continue
 		}
 		if v := p.surplus.front(); v != nil {
-			s.evict(v.records.front(), EvictionSurplus)
+			s.evict(v.records.front(), EvictionSurplus, sc)
 			continue
 		}
 		if !rec.Uncached {
@@ -607,9 +611,9 @@ func (s *shard) updateSurplus(sc *scopeState) {
 	}
 }
 
-// evict removes r to make room for another record, and counts the eviction for reason. Caller holds mu.
-func (s *shard) evict(r *storedRecord, reason string) {
-	s.remove(r)
+// evict removes r to make room for a record of inserting, and counts the eviction for reason. Caller holds mu.
+func (s *shard) evict(r *storedRecord, reason string, inserting *scopeState) {
+	s.drop(r, inserting)
 	s.observe(reason)
 }
 
@@ -622,6 +626,26 @@ func (s *shard) observe(reason string) {
 
 // remove drops a done record from the shard, and releases its scope when that holds nothing else. Caller holds mu.
 func (s *shard) remove(r *storedRecord) {
+	s.unlink(r)
+	s.updateSurplus(r.scope)
+	s.releaseIfEmpty(r.scope)
+}
+
+// drop is remove for a record which makes room for a record of inserting. The surplus membership of inserting is
+// left to insert, which sets it once the new record is in: a scope which drops one record and takes another stays
+// where it is in the surplus scopes, so its place in the order of going over its reserve is kept. The scope of a
+// record being dropped holds a flight while it is inserted, so it is not released. Caller holds mu.
+func (s *shard) drop(r *storedRecord, inserting *scopeState) {
+	s.unlink(r)
+	if r.scope != inserting {
+		s.updateSurplus(r.scope)
+		s.releaseIfEmpty(r.scope)
+	}
+}
+
+// unlink removes a done record from the shard, from the order of the shard and of its scope, and from the counts of
+// its scope and pool. Caller holds mu.
+func (s *shard) unlink(r *storedRecord) {
 	delete(s.done, r.key)
 	s.order.remove(r)
 	sc := r.scope
@@ -632,8 +656,6 @@ func (s *shard) remove(r *storedRecord) {
 	p.bytes -= r.size
 	p.stats.entries.Add(-1)
 	p.stats.bytes.Add(-r.size)
-	s.updateSurplus(sc)
-	s.releaseIfEmpty(sc)
 }
 
 // recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or of its error

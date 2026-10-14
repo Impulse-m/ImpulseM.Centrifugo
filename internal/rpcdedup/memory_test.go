@@ -695,6 +695,43 @@ func TestMemorySurplusDrainsLongestFirst(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+// A scope over its reserve which evicts its own oldest record keeps its place among the surplus scopes, so the scope
+// which went over first is still drained first. Scope A goes over its reserve first, then B, and C is within its
+// reserve. A takes a sixth record: its own oldest goes, and A is over its reserve still. C then evicts from the front of
+// the surplus, which is A, and B keeps its five records.
+func TestMemorySurplusKeepsPlaceOnChurn(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.MaxEntries = 12
+	observer := newCountingObserver()
+	options.Observer = observer
+	store := NewMemory(options)
+	scopeA := testScope("a", "a")
+	scopeB := testScope("b", "a")
+	scopeC := testScope("c", "a")
+
+	for msgID := uint64(1); msgID <= 5; msgID++ {
+		testAnswer(t, store, Key{Scope: scopeA, MsgID: msgID}, "a")
+	}
+	for msgID := uint64(1); msgID <= 5; msgID++ {
+		testAnswer(t, store, Key{Scope: scopeB, MsgID: msgID}, "b")
+	}
+	testAnswer(t, store, Key{Scope: scopeC, MsgID: 1}, "c")
+	testAnswer(t, store, Key{Scope: scopeC, MsgID: 2}, "c")
+	require.Equal(t, 12, testEntries(store))
+
+	testAnswer(t, store, Key{Scope: scopeA, MsgID: 6}, "a")
+	require.Equal(t, 1, observer.counts[EvictionOverReserve])
+	require.Equal(t, 5, testRecordCount(store, scopeA))
+
+	testAnswer(t, store, Key{Scope: scopeC, MsgID: 3}, "c")
+	require.Equal(t, 1, observer.counts[EvictionSurplus])
+	require.True(t, testIsMiss(t, store, Key{Scope: scopeA, MsgID: 2}), "A, the scope which went over first, is drained first")
+	require.Equal(t, 4, testRecordCount(store, scopeA))
+	require.Equal(t, 5, testRecordCount(store, scopeB))
+	checkInvariants(t, store)
+}
+
 // A reply over the share of a record of its scope is kept as uncached, so a retransmit is answered with
 // result_evicted and the call is not run again. With a 2 KiB byte reserve and 4 records, a record is kept up to
 // 512 bytes: a 256-byte reply makes a 512-byte record, and a 257-byte reply is over the share.

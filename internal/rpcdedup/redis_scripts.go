@@ -17,7 +17,7 @@ if r[1] == false then
 	return {'miss'}
 end
 if r[1] == 'c' then
-	return {'cancelled', r[5]}
+	return {'cancelled', r[5] or ''}
 end
 if r[2] ~= ARGV[1] then
 	return {'mismatch'}

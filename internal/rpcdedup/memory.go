@@ -13,8 +13,9 @@ import (
 const DefaultShards = 64
 
 // RecordOverhead is the size counted for a record besides its reply or error message, so that records without a
-// reply count too.
-const RecordOverhead = 128
+// reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
+// done map of the shard which holds the record.
+const RecordOverhead = 256
 
 // zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.
 var zeroFingerprint [32]byte
@@ -22,6 +23,11 @@ var zeroFingerprint [32]byte
 // sweepLimit is the number of expired records which one access removes at most. The insert loop removes the
 // expired records it needs before it evicts a live one, so the cap delays no budget.
 const sweepLimit = 64
+
+// admitSweeps is the number of sweeps which an admission makes, while the pool or the user of the scope is at its
+// limit. The expired records which they remove release their scopes, so a new scope is refused only when the limit
+// holds after them.
+const admitSweeps = 4
 
 // Pool indexes. The authenticated pool holds the scopes of users, the anonymous pool the scopes of anonymous
 // connections, so that a flood of anonymous instances cannot refuse or evict an authenticated scope.
@@ -332,7 +338,7 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 		}
 		return Lookup{Outcome: OutcomeInFlight, Flight: running}, nil
 	}
-	sc, err := s.admit(key.Scope)
+	sc, err := s.admit(key.Scope, now)
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -385,7 +391,7 @@ func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
 		s.mu.Unlock()
 		return nil
 	}
-	sc, err := s.admit(key.Scope)
+	sc, err := s.admit(key.Scope, now)
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -436,19 +442,22 @@ func (s *shard) poolFor(scope string) *pool {
 	return &s.pools[poolAuthenticated]
 }
 
-// admit returns the admitted scope of scope, admitting it when it is new. It returns a *RefusedError when the pool
-// is at its scope limit, or the user is at MaxScopesPerUser. Caller holds mu.
-func (s *shard) admit(scope string) (*scopeState, error) {
+// admit returns the admitted scope of scope, admitting it when it is new. While the pool of the scope is at its scope
+// limit, or its user is at MaxScopesPerUser, it sweeps the expired records, up to admitSweeps times, since the scopes
+// they hold are released. It returns a *RefusedError when a limit still holds. Caller holds mu.
+func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 	if sc := s.scopes[scope]; sc != nil {
 		return sc, nil
 	}
 	p := s.poolFor(scope)
-	if p.scopes >= p.maxScopes {
-		return nil, &RefusedError{Refusal: RefusalPool}
-	}
 	user := scopeUser(scope)
-	if user != "" && s.users[user] >= s.maxScopesPerUser {
-		return nil, &RefusedError{Refusal: RefusalUser}
+	refusal, refused := s.refusalOf(p, user)
+	for i := 0; refused && i < admitSweeps; i++ {
+		s.sweepSome(now)
+		refusal, refused = s.refusalOf(p, user)
+	}
+	if refused {
+		return nil, &RefusedError{Refusal: refusal}
 	}
 	sc := &scopeState{
 		scope:   scope,
@@ -463,6 +472,18 @@ func (s *shard) admit(scope string) (*scopeState, error) {
 		s.users[user]++
 	}
 	return sc, nil
+}
+
+// refusalOf returns the refusal which a new scope of pool p and user would meet, and whether it meets one. Caller
+// holds mu.
+func (s *shard) refusalOf(p *pool, user string) (Refusal, bool) {
+	if p.scopes >= p.maxScopes {
+		return RefusalPool, true
+	}
+	if user != "" && s.users[user] >= s.maxScopesPerUser {
+		return RefusalUser, true
+	}
+	return "", false
 }
 
 // releaseIfEmpty releases sc when it holds no record and no call: its pool slot and its user slot are freed.

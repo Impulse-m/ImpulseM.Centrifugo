@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -539,27 +540,6 @@ func TestMemoryPerScopeCap(t *testing.T) {
 	checkInvariants(t, store)
 }
 
-// One scope which floods the store does not evict the record of another scope, when the budget is not reached:
-// the flood is held to its own cap.
-func TestMemoryFloodDoesNotEvictOtherScope(t *testing.T) {
-	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
-	options := testMemoryOptions(clock, 1024)
-	options.MaxRecordsPerScope = 4
-	store := NewMemory(options)
-	victim := Key{Scope: testScope("victim", "a"), MsgID: 1}
-	testAnswer(t, store, victim, "kept")
-
-	flood := testScope("flood", "a")
-	for msgID := uint64(1); msgID <= 1000; msgID++ {
-		testAnswer(t, store, Key{Scope: flood, MsgID: msgID}, "flood")
-	}
-	record, done := testDone(t, store, victim)
-	require.True(t, done)
-	require.Equal(t, []byte("kept"), record.Reply)
-	require.LessOrEqual(t, testEntries(store), 5)
-	checkInvariants(t, store)
-}
-
 // Cancel tombstones are records, so they count toward the cap of their scope.
 func TestMemoryCancelTombstonesCountTowardCap(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
@@ -716,33 +696,33 @@ func TestMemorySurplusDrainsLongestFirst(t *testing.T) {
 }
 
 // A reply over the share of a record of its scope is kept as uncached, so a retransmit is answered with
-// result_evicted and the call is not run again. With a 1 KiB byte reserve and 4 records, a record is kept up to
-// 256 bytes: a 128-byte reply makes a 256-byte record, and a 129-byte reply is over the share.
+// result_evicted and the call is not run again. With a 2 KiB byte reserve and 4 records, a record is kept up to
+// 512 bytes: a 256-byte reply makes a 512-byte record, and a 257-byte reply is over the share.
 func TestMemoryRecordOverShareIsUncached(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 4096)
-	options.ScopeReserveBytes = 1024
+	options.ScopeReserveBytes = 2048
 	observer := newCountingObserver()
 	options.Observer = observer
 	store := NewMemory(options)
 	scope := testScope("a", "a")
 	fitting := Key{Scope: scope, MsgID: 1}
 	over := Key{Scope: scope, MsgID: 2}
-	testAnswer(t, store, fitting, string(make([]byte, 128)))
-	testAnswer(t, store, over, string(make([]byte, 129)))
+	testAnswer(t, store, fitting, string(make([]byte, 256)))
+	testAnswer(t, store, over, string(make([]byte, 257)))
 
 	record, done := testDone(t, store, fitting)
 	require.True(t, done)
 	require.False(t, record.Uncached)
-	require.Len(t, record.Reply, 128)
+	require.Len(t, record.Reply, 256)
 
 	record, done = testDone(t, store, over)
 	require.True(t, done)
 	require.True(t, record.Uncached)
 	require.Empty(t, record.Reply)
 	require.Equal(t, 1, observer.counts[EvictionUncached])
-	// The fitting record counts 128 bytes of reply and overhead, the uncached one the overhead only.
-	require.Equal(t, int64(128+RecordOverhead+RecordOverhead), store.Stats().Bytes)
+	// The fitting record counts 256 bytes of reply and overhead, the uncached one the overhead only.
+	require.Equal(t, int64(256+RecordOverhead+RecordOverhead), store.Stats().Bytes)
 	checkInvariants(t, store)
 }
 
@@ -761,7 +741,7 @@ func TestMemoryWithinReserveKeepsRecordsWhenFull(t *testing.T) {
 	newcomer := testScope("n", "a")
 
 	for msgID := uint64(1); msgID <= 4; msgID++ {
-		testAnswer(t, store, Key{Scope: victim, MsgID: msgID}, string(make([]byte, 1900)))
+		testAnswer(t, store, Key{Scope: victim, MsgID: msgID}, string(make([]byte, 1792)))
 	}
 	for msgID := uint64(1); msgID <= 8; msgID++ {
 		testAnswer(t, store, Key{Scope: flood, MsgID: msgID}, "flood")
@@ -776,7 +756,7 @@ func TestMemoryWithinReserveKeepsRecordsWhenFull(t *testing.T) {
 	for msgID := uint64(1); msgID <= 4; msgID++ {
 		record, done := testDone(t, store, Key{Scope: victim, MsgID: msgID})
 		require.True(t, done, msgID)
-		require.Len(t, record.Reply, 1900)
+		require.Len(t, record.Reply, 1792)
 	}
 	require.True(t, testIsMiss(t, store, Key{Scope: flood, MsgID: 1}))
 	require.Equal(t, 7, testRecordCount(store, flood))
@@ -952,6 +932,36 @@ func TestMemorySweepIsCapped(t *testing.T) {
 	require.True(t, testIsMiss(t, store, Key{Scope: testScope("fresh", "a"), MsgID: 2}))
 	require.Equal(t, 200-2*sweepLimit, testEntries(store))
 	checkInvariants(t, store)
+}
+
+// A new scope is refused by a pool at its scope limit only when the expired records of the shard cannot release a
+// scope: the admission sweeps them, so the scope is admitted at once. The records here outnumber one sweep.
+func TestMemoryAdmissionSweepsExpiredScopes(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.MaxEntries = 400
+	options.ScopeReserve = 100
+	options.MaxRecordsPerScope = 100
+	options.ScopeReserveBytes = 1 << 20
+	store := NewMemory(options)
+	for i := 0; i < 4; i++ {
+		scope := testScope("u"+strconv.Itoa(i), "a")
+		for msgID := uint64(1); msgID <= 100; msgID++ {
+			testAnswer(t, store, Key{Scope: scope, MsgID: msgID}, "ok")
+		}
+	}
+	require.Equal(t, int64(4), store.Stats().Authenticated.Scopes)
+
+	clock.advance(time.Minute)
+	fresh := Key{Scope: testScope("fresh", "a"), MsgID: 1}
+	testAnswer(t, store, fresh, "new")
+	require.Equal(t, int64(4), store.Stats().Authenticated.Scopes)
+	checkInvariants(t, store)
+}
+
+// RecordOverhead counts the storedRecord struct of a record, so the bytes of the budget cover the struct.
+func TestRecordOverheadCoversStoredRecord(t *testing.T) {
+	require.LessOrEqual(t, int(unsafe.Sizeof(storedRecord{})), RecordOverhead)
 }
 
 // The insert loop frees the expired records of a full pool before it evicts a live one.

@@ -30,6 +30,8 @@ type fakeBackend struct {
 	connected bool
 	calls     []string
 	acks      [][]ScopeAcks
+	// completeFailures is the number of the next complete calls which fail, as a timed-out write does.
+	completeFailures int
 	// onBegin and onComplete run when the call is made, before it takes effect and outside the lock.
 	onBegin    func()
 	onComplete func()
@@ -148,6 +150,10 @@ func (f *fakeBackend) Complete(_ context.Context, key Key, nodeID string, rec Re
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.completeFailures > 0 {
+		f.completeFailures--
+		return false, errors.New("write timed out")
+	}
 	e := f.entries[key]
 	if e == nil || e.state != 'i' || e.owner != nodeID {
 		return false, nil
@@ -641,6 +647,39 @@ func TestSharedCompleteErrorUnderLimitIsKept(t *testing.T) {
 	require.True(t, found)
 	require.False(t, entry.rec.Uncached)
 	require.Equal(t, testCancelled.Message, entry.rec.Err.Message)
+}
+
+func TestSharedCompleteRetriesFailedWrite(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.completeFailures = 2
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Equal(t, 3, countCalls(fx.backend.callLog(), "complete"))
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.Equal(t, byte('d'), entry.state)
+	require.Equal(t, []byte("ok"), entry.rec.Reply)
+}
+
+func TestSharedCompleteGivesUpAndKeepsRecordLocally(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.completeFailures = 100
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Equal(t, sharedCompleteAttempts, countCalls(fx.backend.callLog(), "complete"))
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.Equal(t, byte('i'), entry.state, "the shared tier kept no record")
+
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, []byte("ok"), lookup.Record.Reply)
 }
 
 func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {

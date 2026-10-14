@@ -28,6 +28,11 @@ const (
 	sharedDefaultAckBatch      = 1024
 	// sharedErrorLogInterval is the minimum time between two logged errors of the shared tier.
 	sharedErrorLogInterval = 10 * time.Second
+	// sharedCompleteAttempts is the number of tries of a record's write to the shared tier, and sharedCompleteBackoff
+	// the delay before the first retry, which doubles. The retries stop within half the in-flight grace, so the
+	// in-flight record of the call is still there for them.
+	sharedCompleteAttempts = 4
+	sharedCompleteBackoff  = 50 * time.Millisecond
 )
 
 // SharedObserver observes the shared tier. Methods may be called from any goroutine.
@@ -238,14 +243,27 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 }
 
 // completeShared writes the record of a call which this node owns to the shared tier. A record over the limit is
-// written as uncached. A Redis error is logged and counted, and the record is still kept locally.
+// written as uncached. A failed write is retried with backoff: the owner check makes a retry idempotent, and the
+// in-flight record of the call outlives its method timeout by the in-flight grace. When the retries fail, the record
+// is still kept locally, and a retransmit on another node runs the call again once the in-flight record expires.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
 	if s.overLimit(rec) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
-	if _, err := s.backend.Complete(context.Background(), key, s.nodeID, stored, s.ttl); err != nil {
-		s.logError("exactly-once RPC: the shared tier failed to keep a record", err)
+	start := time.Now()
+	delay := sharedCompleteBackoff
+	for attempt := 1; ; attempt++ {
+		_, err := s.backend.Complete(context.Background(), key, s.nodeID, stored, s.ttl)
+		if err == nil {
+			return
+		}
+		if attempt >= sharedCompleteAttempts || time.Since(start)+delay > s.inflightGrace/2 {
+			s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
+			return
+		}
+		time.Sleep(delay)
+		delay *= 2
 	}
 }
 

@@ -74,7 +74,7 @@ func validateRPCDedup(c Config) error {
 		return err
 	}
 	// A cancel records its message as an answer, which is kept only up to a share of a record, so the message must fit it.
-	share := dedup.ScopeReserveBytes / dedup.ScopeReserve
+	share := dedup.ScopeShare()
 	messageLen := len(c.RPC.Registry.Errors.Cancelled.Message)
 	if rpcdedup.RecordOverhead+messageLen > share {
 		return fmt.Errorf("rpc.registry.errors.cancelled.message: must fit a record share of scope_reserve_bytes / scope_reserve, %d bytes with the %d bytes of overhead, got %d bytes", share, rpcdedup.RecordOverhead, messageLen)
@@ -97,8 +97,8 @@ func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
 		}
 		return nil
 	}
-	if _, err := redisshard.ParseRedisShardConfigs(redis.Redis); err != nil {
-		return fmt.Errorf("rpc.registry.dedup.redis: %w", err)
+	if _, err := redisshard.ConfigsOf(redis.Redis, "rpc.registry.dedup.redis"); err != nil {
+		return err
 	}
 	if redis.Prefix == "" {
 		return errors.New("rpc.registry.dedup.redis.prefix: must not be empty")

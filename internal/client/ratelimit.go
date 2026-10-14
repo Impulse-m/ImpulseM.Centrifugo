@@ -2,11 +2,9 @@ package client
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
-	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
@@ -66,24 +64,11 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 func newRedisUserLimiter(cfg config.Config) (*ratelimit.RedisUserLimiter, error) {
 	rc := cfg.Client.RateLimit.RedisUserCommand
 	redisConf, prefix := redisConfigOf(rc.Redis.ReuseFromEngine, rc.Redis.RedisPrefixed, cfg.Engine.Redis.RedisPrefixed)
-	configs, err := redisshard.ParseRedisShardConfigs(redisConf)
+	configs, err := redisshard.ConfigsOf(redisConf, "redis_user_command: Redis configuration")
 	if err != nil {
-		return nil, fmt.Errorf("redis_user_command: Redis configuration: %w", err)
+		return nil, err
 	}
 	return ratelimit.NewRedisUserLimiter(rc, prefix, configs, redisConf.IOTimeout.ToDuration()), nil
-}
-
-// redisConfigOf returns the Redis configuration and the prefix of a Redis user of the rate limits or of the dedup: its
-// own, or the engine's when reuseFromEngine is set.
-func redisConfigOf(
-	reuseFromEngine bool,
-	own configtypes.RedisPrefixed,
-	engine configtypes.RedisPrefixed,
-) (configtypes.Redis, string) {
-	if reuseFromEngine {
-		return engine.Redis, engine.Prefix
-	}
-	return own.Redis, own.Prefix
 }
 
 // rateLimitCommandRead allocates connection rate limit state on connect. For other commands it checks

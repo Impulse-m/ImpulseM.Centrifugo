@@ -21,15 +21,6 @@ import (
 // rpcInflightKey is the connection storage key of the in-flight map of exactly-once RPC.
 const rpcInflightKey = "rpc_inflight"
 
-// rpcDedupNotifyLogInterval is the minimum time between two logged failures of a cancel notification.
-const rpcDedupNotifyLogInterval = 10 * time.Second
-
-// replyLimitOf returns the largest answer which the stores keep, in both tiers: max_reply_size, and at most the share of
-// an answer of a scope's reserve. The same limit applies to a reply and to an error.
-func replyLimitOf(dedup configtypes.RPCDedup) int {
-	return min(dedup.MaxReplySize, dedup.ScopeReserveBytes/dedup.ScopeReserve)
-}
-
 // rpcScopeKey is the connection storage key of the dedup scope of the connection. It is computed at connect, and
 // again at refresh, from the user and the identity of the connection, and each call reads it.
 const rpcScopeKey = "rpc_scope"
@@ -76,7 +67,7 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 		ScopeReserveBytes:   int64(dedup.ScopeReserveBytes),
 		MaxScopesPerUser:    dedup.MaxScopesPerUser,
 		TTL:                 rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes:       replyLimitOf(dedup),
+		MaxReplyBytes:       dedup.ReplyLimit(),
 		Observer:            dedupMetrics,
 	})
 	return &rpcDedupState{
@@ -86,7 +77,7 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 		window:    dedup.Window.ToDuration(),
 		maxSkew:   dedup.MaxSkew.ToDuration(),
 		anonymous: dedup.LocalAnonymousMaxEntries > 0,
-		notifyLog: tools.NewIntervalLimiter(rpcDedupNotifyLogInterval),
+		notifyLog: tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
 }
 

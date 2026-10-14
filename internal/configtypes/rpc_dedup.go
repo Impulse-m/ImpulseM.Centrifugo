@@ -56,3 +56,15 @@ type RPCDedup struct {
 	// Redis is the shared tier of the records, see rpc.registry.dedup.redis.enabled.
 	Redis RPCDedupRedis `mapstructure:"redis" json:"redis" envconfig:"redis" yaml:"redis" toml:"redis" doc:"Redis of the shared tier, see rpc.registry.dedup.redis.enabled."`
 }
+
+// ScopeShare returns the bytes of an answer which a scope keeps in its reserve: scope_reserve_bytes divided by
+// scope_reserve. The configuration is validated before it is used.
+func (d RPCDedup) ScopeShare() int {
+	return d.ScopeReserveBytes / d.ScopeReserve
+}
+
+// ReplyLimit returns the largest answer which the stores keep, in both tiers: max_reply_size, and at most the ScopeShare.
+// The same limit applies to a reply and to an error.
+func (d RPCDedup) ReplyLimit() int {
+	return min(d.MaxReplySize, d.ScopeShare())
+}

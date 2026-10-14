@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -26,9 +25,9 @@ func (h *Handler) setupRPCDedupRedis() error {
 		return nil
 	}
 	redisConf, prefix := redisConfigOf(dedup.Redis.ReuseFromEngine, dedup.Redis.RedisPrefixed, cfg.Engine.Redis.RedisPrefixed)
-	configs, err := redisshard.ParseRedisShardConfigs(redisConf)
+	configs, err := redisshard.ConfigsOf(redisConf, "rpc.registry.dedup.redis")
 	if err != nil {
-		return fmt.Errorf("rpc.registry.dedup.redis: %w", err)
+		return err
 	}
 	failOpen := dedup.OnStoreError == configtypes.RPCDedupFailOpen
 	connector := redisshard.NewConnector(configs, rpcDedupConnectLog(failOpen))
@@ -40,7 +39,7 @@ func (h *Handler) setupRPCDedupRedis() error {
 		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
 		NodeID:        h.node.ID(),
 		TTL:           rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes: replyLimitOf(dedup),
+		MaxReplyBytes: dedup.ReplyLimit(),
 		FailOpen:      failOpen,
 		Notifier:      h.notifyRPCDedupCancel,
 		Observer:      h.rpcDedup.metrics,

@@ -4,7 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// forkRegistry holds metrics of ImpulseM features: access revocation and rate limits. It is embedded
+// forkRegistry holds metrics of fork features: access revocation, rate limits and the RPC registry. It is embedded
 // into Registry, so the metrics are created by initForkMetrics and exported by setForkMetrics.
 type forkRegistry struct {
 	// Access revocation metrics

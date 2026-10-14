@@ -265,18 +265,20 @@ func runRebindCase(t *testing.T, tt rebindCase) {
 // class stored under the claim, so a change of its identity is refused, and its renewal of the same user is not.
 func TestRebindConnectProxyUserMayNotRebind(t *testing.T) {
 	tests := []struct {
-		name    string
-		toUser  string
-		toClass string
-		wantErr error
+		name           string
+		toUser         string
+		toClass        string
+		allowDowngrade bool
+		wantErr        error
 	}{
 		{name: "to another user", toUser: "43", toClass: "authenticated", wantErr: centrifuge.ErrorPermissionDenied},
-		{name: "to anonymous", toUser: "", toClass: "anonymous", wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "to anonymous", toUser: "", toClass: "anonymous", allowDowngrade: true, wantErr: centrifuge.ErrorPermissionDenied},
+		{name: "to anonymous without allow_downgrade", toUser: "", toClass: "anonymous", wantErr: centrifuge.DisconnectInvalidToken},
 		{name: "renewal of the same user", toUser: "42", toClass: "authenticated"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, false)
+			h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: tt.allowDowngrade}, false)
 			client, state := newRebindTestClient("42", "")
 
 			_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{

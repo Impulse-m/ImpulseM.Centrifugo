@@ -31,6 +31,11 @@ func (h *Handler) onRefreshRebind(
 		log.Info().Str("token_user", verified.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	// A logout of a connection with a user disconnects it unless allow_downgrade is set. The check comes before the
+	// class check, so a connection made through a connect proxy, which has no class, is disconnected the same way.
+	if verified.UserID == "" && c.UserID() != "" && !cfg.Client.Rebind.AllowDowngrade {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
 	claim := h.registryConfig().AuthClassClaim
 	// A connection with a user and no class under the claim came through a connect proxy: its user is not
 	// proven by a token, so it may not move to another identity.

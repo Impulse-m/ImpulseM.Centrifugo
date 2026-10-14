@@ -1,12 +1,12 @@
 package middleware
 
 import (
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
 )
 
 // AuthThrottle limits repeated failing requests per client IP within a time
@@ -100,59 +100,7 @@ func (t *AuthThrottle) recordFailure(ip string) {
 	t.failures[ip]++
 }
 
-// clientIP derives the client address used as the throttle key.
-//
-// Forwarded headers are only trusted when the immediate socket peer is a private
-// or loopback address, i.e. a local reverse proxy or load balancer (Centrifugo is
-// commonly deployed behind one). For a direct public client the headers are
-// client-controlled and ignored.
-//
-// Behind such a proxy the last (rightmost) X-Forwarded-For entry is used: it is
-// the address the proxy in front of Centrifugo appended for the connection it
-// received, while entries further left can come from the client. With several
-// proxies in a row this is the address of the previous proxy, so their clients
-// share one key - coarse, but not something a client can choose. Proxies must
-// append to (or overwrite) X-Forwarded-For rather than pass a client's value on
-// unchanged. X-Real-IP is not used. A value which is not an address falls back
-// to the peer, so junk cannot inflate map keys or fragment the keyspace.
+// clientIP derives the client address used as the throttle key. See clientaddr.ThrottleKey.
 func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer := net.ParseIP(host)
-	if peer == nil || !isInternalIP(peer) {
-		return host
-	}
-	// Peer is a trusted local proxy: use the address it appended.
-	values := r.Header.Values("X-Forwarded-For")
-	if len(values) == 0 {
-		return peer.String()
-	}
-	last := values[len(values)-1]
-	if i := strings.LastIndexByte(last, ','); i >= 0 {
-		last = last[i+1:]
-	}
-	if ip := parseForwardedIP(last); ip != nil {
-		return ip.String()
-	}
-	return peer.String()
-}
-
-func isInternalIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate()
-}
-
-// parseForwardedIP parses one X-Forwarded-For entry: an address, optionally
-// with a port ("1.2.3.4:5678", "[2001:db8::1]:443"). It returns nil for
-// anything else.
-func parseForwardedIP(s string) net.IP {
-	s = strings.TrimSpace(s)
-	if ip := net.ParseIP(s); ip != nil {
-		return ip
-	}
-	if host, _, err := net.SplitHostPort(s); err == nil {
-		return net.ParseIP(host)
-	}
-	return nil
+	return clientaddr.ThrottleKey(r)
 }

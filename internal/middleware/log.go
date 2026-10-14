@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
+
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/rs/zerolog/log"
@@ -18,13 +20,7 @@ func LogRequest(h http.Handler) http.Handler {
 		start := time.Now()
 		lrw := &statusResponseWriter{w, http.StatusOK}
 		h.ServeHTTP(lrw, r)
-		addr := r.Header.Get("X-Real-IP")
-		if addr == "" {
-			addr = r.Header.Get("X-Forwarded-For")
-			if addr == "" {
-				addr = r.RemoteAddr
-			}
-		}
+		addr := clientaddr.LogAddr(r)
 		log.Debug().Str("method", r.Method).Int("status", lrw.Status()).Str("path", r.URL.Path).Str("addr", addr).Str("duration", time.Since(start).String()).Msg("http request")
 	})
 }

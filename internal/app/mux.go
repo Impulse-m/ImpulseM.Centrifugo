@@ -13,6 +13,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/admin"
 	"github.com/centrifugal/centrifugo/v6/internal/api"
+	"github.com/centrifugal/centrifugo/v6/internal/clientaddr"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/conninit"
 	"github.com/centrifugal/centrifugo/v6/internal/health"
@@ -111,6 +112,14 @@ func Mux(
 	cfg := cfgContainer.Config()
 
 	var commonMiddlewares []alice.Constructor
+
+	if cfg.ClientAddress.Enabled {
+		clientAddrResolver, err := clientaddr.New(cfg.ClientAddress)
+		if err != nil {
+			log.Fatal().Err(err).Msg("can not configure client address")
+		}
+		commonMiddlewares = append(commonMiddlewares, clientaddr.Middleware(clientAddrResolver))
+	}
 
 	useLoggingMW := zerolog.GlobalLevel() <= zerolog.DebugLevel
 	if useLoggingMW {

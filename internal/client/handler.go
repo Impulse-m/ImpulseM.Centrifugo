@@ -452,7 +452,10 @@ func (h *Handler) OnClientConnecting(
 		if token.Meta != nil {
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
-		h.storeRegistryToken(storage, e.Token)
+		if !h.storeRegistryToken(storage, e.Token, token) {
+			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
+			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
+		}
 
 		processClientChannels = true
 	} else if connectProxyHandler != nil {
@@ -700,10 +703,13 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
+	if !h.replaceRegistryToken(c, e.Token, token) {
+		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
-	h.replaceRegistryToken(c, e.Token)
 	return centrifuge.RefreshReply{
 		ExpireAt:      token.ExpireAt,
 		Info:          token.Info,

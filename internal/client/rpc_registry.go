@@ -7,6 +7,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -73,10 +74,8 @@ func (h *Handler) registryErrors() configtypes.RPCRegistryErrors {
 // callRPCRegistry checks the connection against the method and calls its gRPC target.
 func (h *Handler) callRPCRegistry(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()
-	// Anonymous methods are open to everyone. pending_2fa and bot methods are checked
-	// like authenticated ones for now: the class claims that tell them apart come with
-	// the auth upgrade work, so they are not invented here.
-	if m.AuthClass != rpcregistry.AuthClassAnonymous && c.UserID() == "" {
+	// The class of the connection decides whether it may call the method, see AuthClass.Admits.
+	if !m.AuthClass.Admits(connectionAuthClass(c)) {
 		authErr := registryError(cfg.Errors.AuthClass)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultDenied, authErr)
 	}
@@ -174,21 +173,37 @@ func registryError(e configtypes.RPCRegistryError) error {
 	}
 }
 
-// storeRegistryToken stores the verified connection token for the registry, when the registry is enabled.
-func (h *Handler) storeRegistryToken(storage map[string]any, token string) {
+// storeRegistryToken stores the verified connection token and its auth class for the registry, when the
+// registry is enabled. It reports false when the auth class of the token is invalid for its user, and the
+// connection must be rejected.
+func (h *Handler) storeRegistryToken(storage map[string]any, token string, verified jwtverify.ConnectToken) bool {
+	authClass, ok := rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
+	if !ok {
+		return false
+	}
 	if h.rpcRegistry.Enabled() {
 		storage[clientstorage.KeyToken] = token
+		storage[clientstorage.KeyAuthClass] = authClass
 	}
+	return true
 }
 
-// replaceRegistryToken replaces the connection token of the client with the one from a refresh.
-func (h *Handler) replaceRegistryToken(c Client, token string) {
+// replaceRegistryToken replaces the connection token and auth class of the client with the ones of a
+// refresh. It reports false, and changes nothing, when the auth class of the refresh token is invalid for
+// its user.
+func (h *Handler) replaceRegistryToken(c Client, token string, verified jwtverify.ConnectToken) bool {
+	authClass, ok := rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
+	if !ok {
+		return false
+	}
 	if !h.rpcRegistry.Enabled() {
-		return
+		return true
 	}
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	storage[clientstorage.KeyToken] = token
+	storage[clientstorage.KeyAuthClass] = authClass
+	return true
 }
 
 // connectionToken returns the connection token stored for the client, or empty when there is none.
@@ -197,4 +212,19 @@ func connectionToken(c Client) string {
 	defer release(storage)
 	token, _ := storage[clientstorage.KeyToken].(string)
 	return token
+}
+
+// connectionAuthClass returns the auth class stored for the client at connect or refresh. A client
+// without one, such as a client connected through a connect proxy which has no token, gets the class
+// of its user without a claim.
+func connectionAuthClass(c Client) rpcregistry.AuthClass {
+	userID := c.UserID()
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	authClass, ok := storage[clientstorage.KeyAuthClass].(rpcregistry.AuthClass)
+	if ok {
+		return authClass
+	}
+	fallback, _ := rpcregistry.ConnectionAuthClass("", userID)
+	return fallback
 }

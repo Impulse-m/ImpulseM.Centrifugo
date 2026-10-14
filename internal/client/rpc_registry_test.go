@@ -10,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
@@ -107,13 +108,25 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 // newRegistryTestHandler returns a handler with cfg, which uses registry for RPC calls.
 func newRegistryTestHandler(t *testing.T, cfg config.Config, registry *rpcregistry.Registry) (*Handler, *config.Container) {
 	t.Helper()
+	return newRegistryTestHandlerWithClaim(t, cfg, registry, "")
+}
+
+// newRegistryTestHandlerWithClaim is newRegistryTestHandler whose connection token verifier reads the
+// auth class from authClassClaim.
+func newRegistryTestHandlerWithClaim(t *testing.T, cfg config.Config, registry *rpcregistry.Registry, authClassClaim string) (*Handler, *config.Container) {
+	t.Helper()
 	node := tools.NodeWithMemoryEngine()
 	t.Cleanup(func() {
 		_ = node.Shutdown(context.Background())
 	})
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{
+		HMACSecretKey:  "secret",
+		AuthClassClaim: authClassClaim,
+	}, cfgContainer)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
 	h.SetRPCRegistry(registry)
 	return h, cfgContainer
 }
@@ -296,5 +309,163 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	_, ok := reply.Storage[clientstorage.KeyToken]
 	require.False(t, ok)
+}
+
+// registryAuthClassTestRegistry returns the registry config of the auth class tests: the test registry
+// with methods of class pending_2fa and bot, and the auth class claim set.
+func registryAuthClassTestRegistry() configtypes.RPCRegistry {
+	reg := registryTestRegistryConfig()
+	reg.AuthClassClaim = "auth_class"
+	reg.Methods = append(reg.Methods,
+		configtypes.RPCMethod{
+			Method:     "users.checkPassword",
+			GRPCMethod: registryTestBackendMethod,
+			Target:     "backend",
+			AuthClass:  configtypes.RPCAuthClassPending2FA,
+		},
+		configtypes.RPCMethod{
+			Method:     "bots.answer",
+			GRPCMethod: registryTestBackendMethod,
+			Target:     "backend",
+			AuthClass:  configtypes.RPCAuthClassBot,
+		},
+	)
+	return reg
+}
+
+// newRegistryAuthClassHandler returns a handler which reads the auth class claim, and the backend of its registry.
+func newRegistryAuthClassHandler(t *testing.T) (*Handler, *tools.GRPCBytesBackend) {
+	t.Helper()
+	backend := newRegistryTestBackend(t)
+	reg := registryAuthClassTestRegistry()
+	registry := startRegistryTestRegistry(t, reg, backend)
+	cfg := config.DefaultConfig()
+	cfg.RPC.Registry = reg
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, registry, "auth_class")
+	return h, backend
+}
+
+func TestRPCRegistryPending2FAConnectionCallsOnlyItsClass(t *testing.T) {
+	h, backend := newRegistryAuthClassHandler(t)
+
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "pending_2fa"}),
+	}, nil, false)
+	require.NoError(t, err)
+	stored, ok := reply.Storage[clientstorage.KeyAuthClass]
+	require.True(t, ok)
+	require.Equal(t, rpcregistry.AuthClassPending2FA, stored)
+
+	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "bots.answer", Data: []byte("x")}, nil)
+	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
+	require.Empty(t, backend.Calls())
+
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.checkPassword", Data: []byte("x")}, nil)
+	require.NoError(t, err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+func TestRPCRegistryBotMethodNeedsBotClass(t *testing.T) {
+	h, backend := newRegistryAuthClassHandler(t)
+
+	// A connection of an authenticated user, with no class stored, is not a bot.
+	authenticated := newRegistryTestClient("c1", "42", nil, nil)
+	_, err := h.OnRPC(authenticated, centrifuge.RPCEvent{Method: "bots.answer", Data: []byte("x")}, nil)
+	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
+	require.Empty(t, backend.Calls())
+
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "bot"}),
+	}, nil, false)
+	require.NoError(t, err)
+	bot := newRegistryTestClient("c2", "42", reply.Context, reply.Storage)
+	_, err = h.OnRPC(bot, centrifuge.RPCEvent{Method: "bots.answer", Data: []byte("x")}, nil)
+	require.NoError(t, err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+func TestRPCRegistryConnectionWithoutStoredClassFallsBackToUser(t *testing.T) {
+	h, backend := newRegistryAuthClassHandler(t)
+
+	// A client without a stored class, such as one connected through a connect proxy, has the class of its user.
+	user := newRegistryTestClient("c1", "42", nil, nil)
+	_, err := h.OnRPC(user, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	require.NoError(t, err)
+
+	anonymous := newRegistryTestClient("c2", "", nil, nil)
+	_, err = h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
+	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("raw"), reply.Data)
+	require.Len(t, backend.Calls(), 2)
+}
+
+func TestRPCRegistryRefreshFromPendingUpgradesGate(t *testing.T) {
+	h, _ := newRegistryAuthClassHandler(t)
+
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "pending_2fa"}),
+	}, nil, false)
+	require.NoError(t, err)
+	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
+
+	// A refresh with an invalid class is rejected, and the stored class stays the one of the connection.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "anonymous"}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectInvalidToken, err)
+	stored, _ := registryTestStored(client, clientstorage.KeyAuthClass)
+	require.Equal(t, rpcregistry.AuthClassPending2FA, stored)
+
+	// A refresh with a full token upgrades the connection.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "authenticated"}),
+	}, nil)
+	require.NoError(t, err)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	require.NoError(t, err)
+}
+
+func TestRPCRegistryConnectRejectsInvalidAuthClass(t *testing.T) {
+	h, _ := newRegistryAuthClassHandler(t)
+	testCases := []struct {
+		name   string
+		claims map[string]any
+	}{
+		{
+			name:   "anonymous class with a user",
+			claims: map[string]any{"sub": "42", "auth_class": "anonymous"},
+		},
+		{
+			name:   "bot class without a user",
+			claims: map[string]any{"auth_class": "bot"},
+		},
+		{
+			name:   "authenticated class without a user",
+			claims: map[string]any{"auth_class": "authenticated"},
+		},
+		{
+			name:   "unknown class",
+			claims: map[string]any{"sub": "42", "auth_class": "root"},
+		},
+		{
+			name:   "class which is not a string",
+			claims: map[string]any{"sub": "42", "auth_class": 1},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+				Token: getConnTokenWithClaims(t, tc.claims),
+			}, nil, false)
+			require.Equal(t, centrifuge.DisconnectInvalidToken, err)
+		})
+	}
 }
 

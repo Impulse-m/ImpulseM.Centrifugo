@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"google.golang.org/grpc/codes"
@@ -80,6 +81,27 @@ func validateRPCDedup(c Config) error {
 	}
 	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
 		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)
+	}
+	if dedup.Redis.Enabled {
+		return validateRPCDedupRedis(c, dedup.Redis)
+	}
+	return nil
+}
+
+// validateRPCDedupRedis checks the shared tier of exactly-once RPC: either it reuses the Redis of the engine, or its own
+// Redis configuration is valid and has a prefix.
+func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
+	if redis.ReuseFromEngine {
+		if c.Engine.Type != "redis" {
+			return errors.New("rpc.registry.dedup.redis.reuse_from_engine requires engine.type to be redis")
+		}
+		return nil
+	}
+	if _, err := redisshard.ParseRedisShardConfigs(redis.Redis); err != nil {
+		return fmt.Errorf("rpc.registry.dedup.redis: %w", err)
+	}
+	if redis.Prefix == "" {
+		return errors.New("rpc.registry.dedup.redis.prefix: must not be empty")
 	}
 	return nil
 }

@@ -13,6 +13,17 @@ var RPCDedupStoreErrors = []string{
 	RPCDedupFailOpen,
 }
 
+// RPCDedupRedis configures the shared tier of exactly-once RPC. It has the shape of the Redis config of
+// client.rate_limit.redis_user_command: reuse_from_engine, or a prefix and a Redis config.
+type RPCDedupRedis struct {
+	// Enabled keeps the records in Redis, shared by all nodes.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Keeps the records of exactly-once RPC in Redis, shared by all nodes, with the node-local store as a cache. Off by default: records are then node-local. Read at start: a change takes effect after a restart."`
+	// ReuseFromEngine uses the Redis of the engine.
+	ReuseFromEngine bool `mapstructure:"reuse_from_engine" json:"reuse_from_engine" envconfig:"reuse_from_engine" yaml:"reuse_from_engine" toml:"reuse_from_engine" doc:"Use the Redis and the prefix of the Redis engine. Requires engine.type redis."`
+	// RedisPrefixed is a Redis configuration. Ignored when ReuseFromEngine is set.
+	RedisPrefixed `mapstructure:",squash" yaml:",inline"`
+}
+
 // RPCDedup configures exactly-once RPC. A non-idempotent registry call with a msg_id is recorded, and a
 // retransmit of it is answered from the record instead of running the call again. Off by default.
 type RPCDedup struct {
@@ -41,5 +52,7 @@ type RPCDedup struct {
 	// MaxRecordsPerScope bounds the answers kept for one scope.
 	MaxRecordsPerScope int `mapstructure:"max_records_per_scope" default:"1024" json:"max_records_per_scope" envconfig:"max_records_per_scope" yaml:"max_records_per_scope" toml:"max_records_per_scope" doc:"Maximum number of answers kept for one scope, which is a user session or install. Over it, the oldest answer of the scope is dropped, and a retransmit of its call runs the call again. At least scope_reserve. Default <<1024>>."`
 	// OnStoreError is what a tracked call does when the dedup store fails.
-	OnStoreError string `mapstructure:"on_store_error" default:"fail_closed" json:"on_store_error" envconfig:"on_store_error" yaml:"on_store_error" toml:"on_store_error" expose:"full" doc:"What a tracked call does when the dedup store fails: fail_closed answers it with rpc.registry.errors.dedup_unavailable, fail_open runs it without dedup. It also applies to a call of a new scope which the node cannot admit within its budgets. A call which runs under fail_open is not recorded, so a retransmit of it on another connection, while it runs, can run it again. On the same connection the retransmit is answered with dedup_unavailable. Default <<fail_closed>>."`
+	OnStoreError string `mapstructure:"on_store_error" default:"fail_closed" json:"on_store_error" envconfig:"on_store_error" yaml:"on_store_error" toml:"on_store_error" expose:"full" doc:"What a tracked call does when the dedup store fails: fail_closed answers it with rpc.registry.errors.dedup_unavailable, fail_open runs it without dedup. It also applies to a call of a new scope which the node cannot admit within its budgets. A call which runs under fail_open is not recorded, so a retransmit of it on another connection, while it runs, can run it again. On the same connection the retransmit is answered with dedup_unavailable. With rpc.registry.dedup.redis.enabled, fail_open runs the call with node-local dedup when Redis fails. Default <<fail_closed>>."`
+	// Redis is the shared tier of the records, see rpc.registry.dedup.redis.enabled.
+	Redis RPCDedupRedis `mapstructure:"redis" json:"redis" envconfig:"redis" yaml:"redis" toml:"redis" doc:"Redis of the shared tier, see rpc.registry.dedup.redis.enabled."`
 }

@@ -255,9 +255,74 @@ func TestValidateRPCDedupRules(t *testing.T) {
 	}
 }
 
+func TestValidateRPCDedupRedis(t *testing.T) {
+	testCases := []struct {
+		name    string
+		modify  func(cfg *Config)
+		wantErr string
+	}{
+		{
+			name: "valid",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+			},
+		},
+		{
+			name: "reuse without a redis engine",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.ReuseFromEngine = true
+				cfg.Engine.Type = "memory"
+			},
+			wantErr: "reuse_from_engine requires engine.type to be redis",
+		},
+		{
+			name: "reuse with a redis engine",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.ReuseFromEngine = true
+				cfg.Engine.Type = "redis"
+			},
+		},
+		{
+			name: "empty address",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+			},
+			wantErr: "rpc.registry.dedup.redis:",
+		},
+		{
+			name: "empty prefix",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = ""
+			},
+			wantErr: "rpc.registry.dedup.redis.prefix: must not be empty",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := dedupConfig()
+			tc.modify(&cfg)
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
+	require.False(t, cfg.RPC.Registry.Dedup.Redis.Enabled)
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())
 	require.Equal(t, 2048, cfg.RPC.Registry.Dedup.MaxReplySize)

@@ -13,12 +13,15 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -146,14 +149,14 @@ func dedupRegistryConfig() configtypes.RPCRegistry {
 	reg.Errors.ResultEvicted = configtypes.RPCRegistryError{Code: 110, Message: "result expired"}
 	reg.Errors.DedupUnavailable = configtypes.RPCRegistryError{Code: 108, Message: "dedup unavailable"}
 	reg.Dedup = configtypes.RPCDedup{
-		Enabled:         true,
-		Window:          configtypes.Duration(120 * time.Second),
-		MaxSkew:         configtypes.Duration(30 * time.Second),
-		MaxReplySize:    65536,
+		Enabled:            true,
+		Window:             configtypes.Duration(120 * time.Second),
+		MaxSkew:            configtypes.Duration(30 * time.Second),
+		MaxReplySize:       65536,
 		LocalMaxEntries:    1000,
 		LocalMaxBytes:      1 << 28,
 		MaxRecordsPerScope: 1024,
-		OnStoreError:    configtypes.RPCDedupFailClosed,
+		OnStoreError:       configtypes.RPCDedupFailClosed,
 	}
 	return reg
 }
@@ -245,19 +248,39 @@ func requireCancelledError(t *testing.T, err error) {
 	require.Equal(t, "bad request", protoErr.Message)
 }
 
+// testDedupOutcomes replaces the dedup outcome counter of the metrics with a test vector, restored when the test
+// ends. It must be called before the handler is made, which resolves its counters.
+func testDedupOutcomes(t *testing.T) *prometheus.CounterVec {
+	t.Helper()
+	vec := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_total"}, []string{"outcome"})
+	previous := metrics.RPCRegistryDedupTotal
+	metrics.RPCRegistryDedupTotal = vec
+	t.Cleanup(func() {
+		metrics.RPCRegistryDedupTotal = previous
+	})
+	return vec
+}
+
+// testDedupCount returns the count of an outcome of the test vector.
+func testDedupCount(vec *prometheus.CounterVec, outcome string) float64 {
+	return testutil.ToFloat64(vec.WithLabelValues(outcome))
+}
+
 func TestRPCDedupSameNodeDuplicateJoinsOneCall(t *testing.T) {
+	vec := testDedupOutcomes(t)
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	first := newDedupClient("c1", "42", nil, testInstance)
 	second := newDedupClient("c2", "42", nil, testInstance)
-	msgID :=dedupMsgID(1)
+	msgID := dedupMsgID(1)
 
 	firstDone := dedupCallAsync(h, first, "users.get", msgID, "gate")
 	backend.waitEntered(t)
 	secondDone := dedupCallAsync(h, second, "users.get", msgID, "gate")
-	// The duplicate joins the call in flight. Should it arrive after the release, it gets the record: either
-	// way the backend runs once.
-	time.Sleep(50 * time.Millisecond)
+	// The duplicate joins the call in flight: it is counted as a local join before the call is released.
+	require.Eventually(t, func() bool {
+		return testDedupCount(vec, "hit_inflight_local") == 1
+	}, 5*time.Second, time.Millisecond)
 	backend.releaseGate()
 
 	r1 := waitDedupResult(t, firstDone)
@@ -270,6 +293,76 @@ func TestRPCDedupSameNodeDuplicateJoinsOneCall(t *testing.T) {
 	require.Len(t, backend.Calls(), 1)
 }
 
+// A duplicate whose connection closes while it waits frees its slot at once, and the call it joined goes on.
+func TestRPCDedupClosedDuplicateFreesSlot(t *testing.T) {
+	vec := testDedupOutcomes(t)
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	first := newDedupClient("c1", "42", nil, testInstance)
+	var duplicateCtx context.Context
+	var closeDuplicate context.CancelFunc
+	duplicateCtx, closeDuplicate = context.WithCancel(context.Background())
+	duplicate := newDedupClient("c2", "42", duplicateCtx, testInstance)
+	msgID := dedupMsgID(17)
+
+	owner := dedupCallAsync(h, first, "users.get", msgID, "gate")
+	backend.waitEntered(t)
+	joined := dedupCallAsync(h, duplicate, "users.get", msgID, "gate")
+	require.Eventually(t, func() bool {
+		return testDedupCount(vec, "hit_inflight_local") == 1
+	}, 5*time.Second, time.Millisecond)
+
+	closeDuplicate()
+	requireCancelledError(t, waitDedupResult(t, joined).err)
+
+	backend.releaseGate()
+	require.NoError(t, waitDedupResult(t, owner).err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A cancel with a msg_id outside the window is refused, and records nothing.
+func TestRPCDedupCancelOutsideWindowIsRefused(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	stale := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: stale}}, nil)
+	protoErr := requireProtocolError(t, err)
+	require.Equal(t, uint32(107), protoErr.Code)
+	require.Equal(t, "invalid msg_id", protoErr.Message)
+	require.Equal(t, 0, h.rpcDedup.store.Len())
+}
+
+// With the dedup off, a cancel command is an ordinary call: it is not answered before the lookup.
+func TestRPCDedupOffCancelFallsThrough(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RPC.Registry = registryTestRegistryConfig()
+	registry := startRegistryTestRegistry(t, cfg.RPC.Registry, newRegistryTestBackend(t))
+	h, _ := newRegistryTestHandler(t, cfg, registry)
+	client := newRegistryTestClient("c1", "42", nil, nil)
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: 5}}, nil)
+	require.Equal(t, uint32(104), requireProtocolError(t, err).Code)
+}
+
+// A non-idempotent call without a scope is cancelled by a disconnect, as an idempotent call is: nothing is
+// recorded for it, so its commit gives no answer a retransmit could take.
+func TestRPCDedupNoScopeMutationCancelledOnDisconnect(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	var ctx context.Context
+	var disconnect context.CancelFunc
+	ctx, disconnect = context.WithCancel(context.Background())
+	client := newDedupClient("c1", "42", ctx, "")
+
+	done := dedupCallAsync(h, client, "users.get", dedupMsgID(18), "gate")
+	backend.waitEntered(t)
+	disconnect()
+
+	requireCancelledError(t, waitDedupResult(t, done).err)
+}
+
 func TestRPCDedupOwnerDisconnectKeepsMutation(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
@@ -277,7 +370,7 @@ func TestRPCDedupOwnerDisconnectKeepsMutation(t *testing.T) {
 	var disconnectOwner context.CancelFunc
 	ownerCtx, disconnectOwner = context.WithCancel(context.Background())
 	owner := newDedupClient("c1", "42", ownerCtx, testInstance)
-	msgID :=dedupMsgID(2)
+	msgID := dedupMsgID(2)
 
 	ownerDone := dedupCallAsync(h, owner, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -323,7 +416,7 @@ func TestRPCDedupCancelThenRetransmit(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(4)
+	msgID := dedupMsgID(4)
 
 	done := dedupCallAsync(h, client, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -344,7 +437,7 @@ func TestRPCDedupCancelBeforeCallNeverRuns(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(5)
+	msgID := dedupMsgID(5)
 
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
 	require.NoError(t, err)
@@ -389,7 +482,7 @@ func TestRPCDedupNoScopeRunsEachTime(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, "")
-	msgID :=dedupMsgID(6)
+	msgID := dedupMsgID(6)
 
 	for i := 0; i < 2; i++ {
 		r := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
@@ -404,7 +497,7 @@ func TestRPCDedupAckRemovesRecord(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(7)
+	msgID := dedupMsgID(7)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
 	require.NoError(t, first.err)
@@ -427,7 +520,7 @@ func TestRPCDedupReusedMsgIDWithOtherDataIsRefused(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(8)
+	msgID := dedupMsgID(8)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "a")
 	require.NoError(t, first.err)
@@ -453,7 +546,7 @@ func TestRPCDedupReusedMsgIDInFlightIsNotJoined(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(9)
+	msgID := dedupMsgID(9)
 
 	owner := dedupCallAsync(h, client, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -469,7 +562,7 @@ func TestRPCDedupReusedMsgIDInFlightIsNotJoined(t *testing.T) {
 func TestRPCDedupInstanceOfAnotherAccountCannotReplay(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	msgID :=dedupMsgID(10)
+	msgID := dedupMsgID(10)
 
 	owner := newDedupClient("c1", "42", nil, testInstance)
 	require.NoError(t, dedupCallAsyncResult(t, h, owner, "users.get", msgID, "x").err)
@@ -493,7 +586,7 @@ func (s failingDedupStore) Begin(key rpcdedup.Key, flight *rpcdedup.Flight) (rpc
 func TestRPCDedupStoreFailureFailsClosed(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
-	h.rpcDedup = failingDedupStore{Memory: h.rpcDedup.(*rpcdedup.Memory)}
+	h.rpcDedup.store = failingDedupStore{Memory: h.rpcDedup.store.(*rpcdedup.Memory)}
 	client := newDedupClient("c1", "42", nil, testInstance)
 
 	_, err := dedupCall(h, client, "users.get", dedupMsgID(11), "x")
@@ -512,7 +605,7 @@ func TestRPCDedupStoreFailureFailsOpen(t *testing.T) {
 	reg := dedupRegistryConfig()
 	reg.Dedup.OnStoreError = configtypes.RPCDedupFailOpen
 	h := newDedupHandler(t, reg, backend)
-	h.rpcDedup = failingDedupStore{Memory: h.rpcDedup.(*rpcdedup.Memory)}
+	h.rpcDedup.store = failingDedupStore{Memory: h.rpcDedup.store.(*rpcdedup.Memory)}
 	client := newDedupClient("c1", "42", nil, testInstance)
 
 	r := dedupCallAsyncResult(t, h, client, "users.get", dedupMsgID(13), "x")
@@ -599,7 +692,7 @@ func TestRPCDedupRetransmitAndWithoutUpdatesHeaders(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	client := newDedupClient("c1", "42", nil, testInstance)
-	msgID :=dedupMsgID(14)
+	msgID := dedupMsgID(14)
 
 	first := dedupCallAsyncResult(t, h, client, "users.get", msgID, "x")
 	require.NoError(t, first.err)

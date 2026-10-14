@@ -38,11 +38,16 @@ func (h *Handler) onRPCRegistry(c Client, e centrifuge.RPCEvent, rpcProxyHandler
 		}
 		return centrifuge.RPCReply{}, false, nil
 	}
-	track := h.rpcTrackCall(c, e.Call)
-	h.rpcAck(track, e.Call.Ack)
-	if e.Call.Cancel != 0 {
-		// A cancel command names no method, and is answered before the lookup.
-		return h.cancelRPCRegistry(track, e.Call.Cancel), true, nil
+	var track *rpcTrack
+	if h.rpcDedup != nil {
+		track = h.rpcTrackCall(c, e.Call)
+		h.rpcAck(track, e.Call.Ack)
+		if e.Call.Cancel != 0 {
+			// A cancel command names no method, and is answered before the lookup. With the dedup off it is an
+			// ordinary call, as it was before exactly-once RPC.
+			reply, err := h.cancelRPCRegistry(track, e.Call.Cancel)
+			return reply, true, err
+		}
 	}
 	m := h.rpcRegistry.Lookup(e.Method)
 	if m == nil {

@@ -19,18 +19,18 @@ const testInstance string = "install_0123456789abcdef"
 
 // rpcDedupTestConfig returns a config with the registry and the dedup on.
 func rpcDedupTestConfig() config.Config {
-	cfg :=config.DefaultConfig()
+	cfg := config.DefaultConfig()
 	cfg.Client.ReplyIncludeServerTime = true
 	cfg.RPC.Registry = registryTestRegistryConfig()
 	cfg.RPC.Registry.Dedup = configtypes.RPCDedup{
-		Enabled:         true,
-		Window:          configtypes.Duration(120 * time.Second),
-		MaxSkew:         configtypes.Duration(30 * time.Second),
-		MaxReplySize:    65536,
+		Enabled:            true,
+		Window:             configtypes.Duration(120 * time.Second),
+		MaxSkew:            configtypes.Duration(30 * time.Second),
+		MaxReplySize:       65536,
 		LocalMaxEntries:    1000,
 		LocalMaxBytes:      1 << 28,
 		MaxRecordsPerScope: 1024,
-		OnStoreError:    configtypes.RPCDedupFailClosed,
+		OnStoreError:       configtypes.RPCDedupFailClosed,
 	}
 	return cfg
 }
@@ -38,7 +38,7 @@ func rpcDedupTestConfig() config.Config {
 // newRPCDedupTestClient returns a client of userID whose token session is session, and whose identity is
 // zero when session is empty.
 func newRPCDedupTestClient(userID string, session [16]byte, storage map[string]any) *tools.TestClientMock {
-	client :=newRegistryTestClient("c1", userID, nil, storage)
+	client := newRegistryTestClient("c1", userID, nil, storage)
 	client.IdentityFunc = func() centrifuge.TokenIdentity {
 		return centrifuge.TokenIdentity{Session: session}
 	}
@@ -51,47 +51,44 @@ func testScopeOf(client *tools.TestClientMock, storage map[string]any) string {
 }
 
 func TestRPCDedupScopePrefersSession(t *testing.T) {
-	session :=[16]byte{1, 2, 3}
-	storage :=map[string]any{clientstorage.KeyInstance: testInstance}
+	session := [16]byte{1, 2, 3}
+	storage := map[string]any{clientstorage.KeyInstance: testInstance}
 
-	scope :=testScopeOf(newRPCDedupTestClient("42", session, storage), storage)
+	scope := testScopeOf(newRPCDedupTestClient("42", session, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("s", "42", session[:]), scope)
 	require.NotEqual(t, rpcdedup.ScopeOf("i", "42", []byte(testInstance)), scope)
 }
 
 func TestRPCDedupScopeFallsBackToInstance(t *testing.T) {
-	storage :=map[string]any{clientstorage.KeyInstance: testInstance}
+	storage := map[string]any{clientstorage.KeyInstance: testInstance}
 
-	scope :=testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	scope := testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("i", "42", []byte(testInstance)), scope)
 }
 
 // The same instance on another account is another scope.
 func TestRPCDedupScopeBoundToUser(t *testing.T) {
-	storage :=map[string]any{clientstorage.KeyInstance: testInstance}
+	storage := map[string]any{clientstorage.KeyInstance: testInstance}
 
-	first :=testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
-	second :=testScopeOf(newRPCDedupTestClient("43", [16]byte{}, storage), storage)
-	anonymous :=testScopeOf(newRPCDedupTestClient("", [16]byte{}, storage), storage)
+	first := testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	second := testScopeOf(newRPCDedupTestClient("43", [16]byte{}, storage), storage)
+	anonymous := testScopeOf(newRPCDedupTestClient("", [16]byte{}, storage), storage)
 	require.NotEqual(t, first, second)
 	require.NotEqual(t, first, anonymous)
 }
 
 func TestRPCDedupScopeNoneWithoutSessionOrInstance(t *testing.T) {
-	storage :=map[string]any{}
+	storage := map[string]any{}
 
-	scope :=testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
+	scope := testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	require.Empty(t, scope)
 }
 
 func TestRPCDedupConnectStoresValidInstance(t *testing.T) {
-	registry :=startRegistryTestRegistry(t, rpcDedupTestConfig().RPC.Registry, newRegistryTestBackend(t))
-	var h *Handler
-	h, _ = newRegistryTestHandler(t, rpcDedupTestConfig(), registry)
+	registry := startRegistryTestRegistry(t, rpcDedupTestConfig().RPC.Registry, newRegistryTestBackend(t))
+	h, _ := newRegistryTestHandler(t, rpcDedupTestConfig(), registry)
 
-	var reply centrifuge.ConnectReply
-	var err error
-	reply, err = h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 		ClientID: "c1",
 		Token:    getConnTokenHS("42", 0),
 		Instance: testInstance,
@@ -101,14 +98,17 @@ func TestRPCDedupConnectStoresValidInstance(t *testing.T) {
 }
 
 func TestRPCDedupConnectDropsInvalidInstance(t *testing.T) {
-	registry :=startRegistryTestRegistry(t, rpcDedupTestConfig().RPC.Registry, newRegistryTestBackend(t))
-	var h *Handler
-	h, _ = newRegistryTestHandler(t, rpcDedupTestConfig(), registry)
+	registry := startRegistryTestRegistry(t, rpcDedupTestConfig().RPC.Registry, newRegistryTestBackend(t))
+	h, _ := newRegistryTestHandler(t, rpcDedupTestConfig(), registry)
 
-	for _, instance := range []string{"short", "has space in the middle!!", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefX"} {
-		var reply centrifuge.ConnectReply
-		var err error
-		reply, err = h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+	instances := []string{
+		"short",
+		"has space in the middle!!",
+		"0123456789abcdef01234",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefX",
+	}
+	for _, instance := range instances {
+		reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 			ClientID: "c1",
 			Token:    getConnTokenHS("42", 0),
 			Instance: instance,
@@ -120,15 +120,12 @@ func TestRPCDedupConnectDropsInvalidInstance(t *testing.T) {
 }
 
 func TestRPCDedupOffStoresNoInstance(t *testing.T) {
-	cfg :=rpcDedupTestConfig()
+	cfg := rpcDedupTestConfig()
 	cfg.RPC.Registry.Dedup.Enabled = false
-	registry :=startRegistryTestRegistry(t, cfg.RPC.Registry, newRegistryTestBackend(t))
-	var h *Handler
-	h, _ = newRegistryTestHandler(t, cfg, registry)
+	registry := startRegistryTestRegistry(t, cfg.RPC.Registry, newRegistryTestBackend(t))
+	h, _ := newRegistryTestHandler(t, cfg, registry)
 
-	var reply centrifuge.ConnectReply
-	var err error
-	reply, err = h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 		ClientID: "c1",
 		Token:    getConnTokenHS("42", 0),
 		Instance: testInstance,

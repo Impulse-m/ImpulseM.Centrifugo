@@ -26,12 +26,15 @@ const rpcScopeKey = "rpc_scope"
 // rpcDedupState is the exactly-once RPC state of a handler: the store, the metrics of its outcomes, and the
 // window and the skew of the msg_id check. The window and the skew are captured here, with the store, since the
 // store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
+// joined, when set, is called each time a duplicate joins a call in flight on this node, before it waits. Tests set
+// it to learn of a join.
 type rpcDedupState struct {
 	store     rpcdedup.Store
 	metrics   *metrics.RPCRegistryDedupMetrics
 	window    time.Duration
 	maxSkew   time.Duration
 	anonymous bool
+	joined    func()
 }
 
 // newRPCDedupState returns the exactly-once RPC state of the config, or nil when the dedup is off. The state is
@@ -54,7 +57,7 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 		ScopeReserve:        dedup.ScopeReserve,
 		ScopeReserveBytes:   int64(dedup.ScopeReserveBytes),
 		MaxScopesPerUser:    dedup.MaxScopesPerUser,
-		TTL:                 dedup.Window.ToDuration(),
+		TTL:                 rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
 		MaxReplyBytes:       dedup.MaxReplySize,
 		Observer:            dedupMetrics,
 	})
@@ -152,8 +155,8 @@ type rpcTrack struct {
 }
 
 // rpcTrackCall returns the dedup state of a call. It is nil when the dedup is off, or the call carries nothing to
-// track. The connection storage is acquired once, to create the in-flight map and to read the scope. A connection
-// which has no scope stored yet gets one computed here.
+// track. The connection storage is acquired once, to create the in-flight map and to read the scope. The user and
+// the identity are read only when a connection has no scope stored yet.
 func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTrack {
 	if h.rpcDedup == nil {
 		return nil
@@ -161,12 +164,7 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 	if call.MsgID == 0 && call.Cancel == 0 && len(call.Ack) == 0 {
 		return nil
 	}
-	userID := c.UserID()
-	identity := c.TokenIdentity()
-	var storage map[string]any
-	var release func(map[string]any)
-	storage, release = c.AcquireStorage()
-	defer release(storage)
+	storage, release := c.AcquireStorage()
 	var inflight *rpcdedup.InFlight
 	inflight, _ = storage[rpcInflightKey].(*rpcdedup.InFlight)
 	if inflight == nil {
@@ -174,11 +172,28 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 		storage[rpcInflightKey] = inflight
 	}
 	scope, found := storage[rpcScopeKey].(string)
+	release(storage)
 	if !found {
-		scope = h.rpcConnectionScope(userID, identity, storage)
-		storage[rpcScopeKey] = scope
+		scope = h.storeMissingRPCScope(c)
 	}
 	return &rpcTrack{scope: scope, inflight: inflight}
+}
+
+// storeMissingRPCScope computes the dedup scope of a connection which has none stored, and stores it. The user and
+// the identity are read before the storage is acquired, which the client accessors may lock. A scope stored
+// meanwhile, by a refresh, is kept.
+func (h *Handler) storeMissingRPCScope(c Client) string {
+	userID := c.UserID()
+	identity := c.TokenIdentity()
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	stored, found := storage[rpcScopeKey].(string)
+	if found {
+		return stored
+	}
+	scope := h.rpcConnectionScope(userID, identity, storage)
+	storage[rpcScopeKey] = scope
+	return scope
 }
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies.
@@ -256,7 +271,10 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 		return h.rpcRecordedReply(lookup.Record, cfg)
 	case rpcdedup.OutcomeInFlight:
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupHitInFlightLocal)
-		return h.rpcJoin(ctx, c, m, cfg, lookup.Flight)
+		if h.rpcDedup.joined != nil {
+			h.rpcDedup.joined()
+		}
+		return h.rpcJoin(c, m, cfg, lookup.Flight)
 	case rpcdedup.OutcomeMismatch:
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDReused)
 		reusedErr := registryError(cfg.Errors.MsgIDReused)
@@ -335,16 +353,16 @@ func (h *Handler) observeDedupStore() {
 }
 
 // rpcJoin waits for the call which a duplicate joined, and answers the duplicate with its record. The wait ends
-// when the call is done, when the duplicate is cancelled, when its connection closes, or at the method timeout.
-// A closed duplicate frees its slot at once. A duplicate is not registered in the in-flight map of its connection.
-func (h *Handler) rpcJoin(ctx context.Context, c Client, m *rpcregistry.Method, cfg configtypes.RPCRegistry, flight *rpcdedup.Flight) (centrifuge.RPCReply, error) {
+// when the call is done, when the connection of the duplicate closes, or at the method timeout. A cancel of the
+// duplicate's msg_id does not end the wait: the store cancels the call of its owner, which then completes, and the
+// duplicate is answered with the owner's record. A closed duplicate frees its slot at once. A duplicate is not
+// registered in the in-flight map of its connection.
+func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRegistry, flight *rpcdedup.Flight) (centrifuge.RPCReply, error) {
 	started := time.Now()
 	timer := time.NewTimer(m.Timeout)
 	defer timer.Stop()
 	select {
 	case <-flight.Done():
-	case <-ctx.Done():
-		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultCancelled, registryError(cfg.Errors.Cancelled))
 	case <-c.Context().Done():
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultCancelled, registryError(cfg.Errors.Cancelled))
 	case <-timer.C:

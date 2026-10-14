@@ -216,6 +216,25 @@ func dedupCall(h *Handler, client *tools.TestClientMock, method string, msgID ui
 	}, nil)
 }
 
+// testJoinSignal makes h signal each join of a duplicate to the returned channel, before the duplicate waits.
+func testJoinSignal(h *Handler) <-chan struct{} {
+	joined := make(chan struct{}, 8)
+	h.rpcDedup.joined = func() {
+		joined <- struct{}{}
+	}
+	return joined
+}
+
+// requireJoined waits until a duplicate joins a call in flight, as signalled by testJoinSignal.
+func requireJoined(t *testing.T, joined <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the duplicate did not join the call in flight")
+	}
+}
+
 // dedupResult is the result of an asynchronous call.
 type dedupResult struct {
 	reply centrifuge.RPCReply
@@ -280,11 +299,11 @@ func TestRPCDedupSameNodeDuplicateJoinsOneCall(t *testing.T) {
 
 	firstDone := dedupCallAsync(h, first, "users.get", msgID, "gate")
 	backend.waitEntered(t)
+	joinSignal := testJoinSignal(h)
 	secondDone := dedupCallAsync(h, second, "users.get", msgID, "gate")
 	// The duplicate joins the call in flight: it is counted as a local join before the call is released.
-	require.Eventually(t, func() bool {
-		return testDedupCount(vec, "hit_inflight_local") == 1
-	}, 5*time.Second, time.Millisecond)
+	requireJoined(t, joinSignal)
+	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_local"))
 	backend.releaseGate()
 
 	r1 := waitDedupResult(t, firstDone)
@@ -311,10 +330,10 @@ func TestRPCDedupClosedDuplicateFreesSlot(t *testing.T) {
 
 	owner := dedupCallAsync(h, first, "users.get", msgID, "gate")
 	backend.waitEntered(t)
+	joinSignal := testJoinSignal(h)
 	joined := dedupCallAsync(h, duplicate, "users.get", msgID, "gate")
-	require.Eventually(t, func() bool {
-		return testDedupCount(vec, "hit_inflight_local") == 1
-	}, 5*time.Second, time.Millisecond)
+	requireJoined(t, joinSignal)
+	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_local"))
 
 	closeDuplicate()
 	requireCancelledError(t, waitDedupResult(t, joined).err)
@@ -745,12 +764,11 @@ func TestRPCDedupCancelReachesOwnerOfJoinedCall(t *testing.T) {
 
 	owner := dedupCallAsync(h, client, "users.get", msgID, "gate")
 	backend.waitEntered(t)
+	joinSignal := testJoinSignal(h)
 	joined := dedupCallAsync(h, client, "users.get", msgID, "gate")
-	// The join is seen on the hit counter, which the duplicate bumps before it waits on the call. The test polls it,
-	// since the store has no signal for a join.
-	require.Eventually(t, func() bool {
-		return testDedupCount(vec, "hit_inflight_local") == 1
-	}, 5*time.Second, time.Millisecond)
+	// The join is signalled before the duplicate waits on the call, and counted on the hit counter.
+	requireJoined(t, joinSignal)
+	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_local"))
 
 	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
 	require.NoError(t, err)

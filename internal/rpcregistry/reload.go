@@ -1,6 +1,7 @@
 package rpcregistry
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -80,6 +81,29 @@ func (r *Registry) PrepareReload(cfg configtypes.RPCRegistry) (func(), func(), e
 	return apply, discard, nil
 }
 
+// contentError marks an error of the registry entries themselves: the file or the inline config does
+// not decode or validate. The same content fails the same way every time, unlike a dial error, so the
+// poller does not retry the content which caused it.
+type contentError struct {
+	err error
+}
+
+// Error returns the message of the wrapped error.
+func (e *contentError) Error() string {
+	return e.err.Error()
+}
+
+// Unwrap returns the wrapped error.
+func (e *contentError) Unwrap() error {
+	return e.err
+}
+
+// isContentError reports whether err is, or wraps, a contentError.
+func isContentError(err error) bool {
+	var content *contentError
+	return errors.As(err, &content)
+}
+
 // prepared is a table built by prepare, with what publishing it changes.
 type prepared struct {
 	cfg     configtypes.RPCRegistry
@@ -106,14 +130,14 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 		}
 		resolved, err := config.ResolveRPCRegistryContent(cfg, snap.data)
 		if err != nil {
-			return nil, err
+			return nil, &contentError{err: err}
 		}
 		file = resolved
 		source = snap.fileSource
 	case cfg.Enabled:
 		resolved, err := config.ResolveRPCRegistry(cfg)
 		if err != nil {
-			return nil, err
+			return nil, &contentError{err: err}
 		}
 		file = resolved
 	}
@@ -220,7 +244,7 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 		}
 		authClass, ok := ParseAuthClass(authClassName)
 		if !ok {
-			return fail(fmt.Errorf("rpc registry method %q: unknown auth class %q", def.Method, authClassName))
+			return fail(&contentError{err: fmt.Errorf("rpc registry method %q: unknown auth class %q", def.Method, authClassName)})
 		}
 		idempotent := defaults.Idempotent
 		if def.Idempotent != nil {

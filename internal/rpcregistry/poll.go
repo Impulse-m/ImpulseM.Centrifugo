@@ -64,6 +64,7 @@ func (p *poller) check() {
 	info, err := os.Stat(cfg.File)
 	if err == nil && info.Size() == r.source.size && info.ModTime().Equal(r.source.modTime) {
 		r.reloadMu.Unlock()
+		p.lastErr = ""
 		return
 	}
 	snap, err := snapshotFile(cfg.File)
@@ -72,12 +73,12 @@ func (p *poller) check() {
 		p.logFailure(err)
 		return
 	}
-	p.lastErr = ""
 	if snap.hash == r.source.hash {
 		// A touch without a change of content. Remember the new stat, so the next check does not read
 		// the file again.
 		r.source = snap.fileSource
 		r.reloadMu.Unlock()
+		p.lastErr = ""
 		return
 	}
 	if p.rejected && snap.hash == p.rejectedHash {
@@ -88,22 +89,31 @@ func (p *poller) check() {
 	if err != nil {
 		r.reloadMu.Unlock()
 		r.pollReloads.Inc(false)
+		if !isContentError(err) {
+			// A dial error, for example a certificate which is being rotated. The content is not
+			// latched, so the next tick tries it again.
+			p.logFailure(err)
+			return
+		}
 		p.rejected = true
 		p.rejectedHash = snap.hash
+		p.lastErr = ""
 		log.Error().Err(err).Msg("error reloading RPC registry file, keeping the current registry")
 		return
 	}
 	p.rejected = false
+	p.lastErr = ""
 	apply, _ := r.stage(prepared, r.pollReloads)
 	apply()
 	log.Info().Str("file", cfg.File).Msg("RPC registry file reloaded")
 }
 
-// logFailure logs a failure to stat or read the registry file, once until the failure changes.
+// logFailure logs a failure of the poll which is retried on the next tick, once until the failure
+// changes.
 func (p *poller) logFailure(err error) {
 	if err.Error() == p.lastErr {
 		return
 	}
 	p.lastErr = err.Error()
-	log.Error().Err(err).Msg("error reading RPC registry file, keeping the current registry")
+	log.Error().Err(err).Msg("error reloading RPC registry file, keeping the current registry, retrying")
 }

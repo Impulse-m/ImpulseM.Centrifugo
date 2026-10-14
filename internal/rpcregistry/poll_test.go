@@ -2,10 +2,13 @@ package rpcregistry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +153,46 @@ func TestPollerKeepsOldTableOnInvalidFile(t *testing.T) {
 	replaceRegistryFile(t, path, registryContent("user.get", "user.list"))
 	require.Eventually(t, func() bool {
 		return r.Lookup("user.list") != nil
+	}, 5*time.Second, 5*time.Millisecond)
+	require.Equal(t, float64(1), reloadCount(counter, metrics.RPCRegistryReloadTriggerPoll, metrics.RPCRegistryResultError))
+	require.Equal(t, float64(1), reloadCount(counter, metrics.RPCRegistryReloadTriggerPoll, metrics.RPCRegistryResultOK))
+}
+
+func TestTransientDialFailureIsRetriedWithoutContentChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.yaml")
+	replaceRegistryFile(t, path, registryContent("user.get"))
+	counter := useReloadCounter(t)
+	var failing atomic.Bool
+	r := New()
+	r.dial = func(target *Target) (io.Closer, error) {
+		if target.Config.Name == "catalog" && failing.Swap(false) {
+			return nil, errors.New("dial refused")
+		}
+		return &fakeConn{}, nil
+	}
+	reloadWith(t, r, pollingRegistry(path, 5*time.Millisecond))
+	runService(t, r)
+
+	// The new file adds a target, whose first dial fails. The content does not change after that.
+	failing.Store(true)
+	replaceRegistryFile(t, path, "version: 1\n"+
+		"targets:\n"+
+		"  - name: users\n"+
+		"    endpoint: dns:///users.example:9000\n"+
+		"  - name: catalog\n"+
+		"    endpoint: dns:///catalog.example:9000\n"+
+		"methods:\n"+
+		"  - method: user.get\n"+
+		"    grpc_method: /example.v1.UserService/Get\n"+
+		"    target: users\n"+
+		"    auth_class: anonymous\n"+
+		"  - method: catalog.get\n"+
+		"    grpc_method: /example.v1.CatalogService/Get\n"+
+		"    target: catalog\n"+
+		"    auth_class: anonymous\n")
+
+	require.Eventually(t, func() bool {
+		return r.Lookup("catalog.get") != nil
 	}, 5*time.Second, 5*time.Millisecond)
 	require.Equal(t, float64(1), reloadCount(counter, metrics.RPCRegistryReloadTriggerPoll, metrics.RPCRegistryResultError))
 	require.Equal(t, float64(1), reloadCount(counter, metrics.RPCRegistryReloadTriggerPoll, metrics.RPCRegistryResultOK))

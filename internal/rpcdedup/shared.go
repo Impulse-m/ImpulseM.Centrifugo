@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/cenkalti/backoff/v5"
@@ -26,8 +27,6 @@ const (
 	// acks which flush at once.
 	sharedDefaultAckFlushEvery = 100 * time.Millisecond
 	sharedDefaultAckBatch      = 1024
-	// sharedErrorLogInterval is the minimum time between two logged errors of the shared tier.
-	sharedErrorLogInterval = 10 * time.Second
 	// sharedCompleteAttempts is the number of tries of a record's write to the shared tier, and sharedCompleteBackoff
 	// the delay before the first retry, which doubles. The retries stop within half the in-flight grace, so the
 	// in-flight record of the call is still there for them.
@@ -126,7 +125,7 @@ func NewShared(opts SharedOptions) *Shared {
 		ackFlushEvery: opts.AckFlushEvery,
 		ackBatch:      opts.AckBatch,
 		acks:          make(chan Key, opts.AckQueueSize),
-		errorLog:      tools.NewIntervalLimiter(sharedErrorLogInterval),
+		errorLog:      tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
 }
 
@@ -147,7 +146,9 @@ func (s *Shared) Begin(key Key, flight *Flight) (Lookup, error) {
 	case OutcomeMiss:
 		return s.beginShared(key, flight)
 	case OutcomeInFlight:
-		// A duplicate of a call which runs on another node waits for it too, and counts as a remote wait.
+		// A duplicate of a call which runs on another node waits for it too, and counts as a remote wait. A duplicate
+		// which joins the flight before beginShared marks it remote counts as a local join: the metric undercounts
+		// that narrow window, and nothing else depends on it.
 		if lookup.Flight.isRemote() {
 			lookup.Outcome = OutcomeInFlightRemote
 		}
@@ -169,6 +170,7 @@ func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 // done, mismatch or running on another node. A Redis error degrades to node-local dedup with fail-open, and refuses
 // the call with fail-closed.
 func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
+	flight.begun = time.Now()
 	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace)
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to begin a call", err)
@@ -191,7 +193,8 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
 		return Lookup{Outcome: OutcomeMismatch}, nil
 	case BeginInFlight:
-		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now.
+		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now. The
+		// notifier is called before the answer, so a slow notifier delays the duplicate by one publish.
 		if flight.markRemote() && res.Owner != s.nodeID && s.notifier != nil {
 			s.notifier(res.Owner, key)
 		}
@@ -243,22 +246,34 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 }
 
 // completeShared writes the record of a call which this node owns to the shared tier. A record over the limit is
-// written as uncached. A failed write is retried with backoff: the owner check makes a retry idempotent, and the
-// in-flight record of the call outlives its method timeout by the in-flight grace. When the retries fail, the record
-// is still kept locally, and a retransmit on another node runs the call again once the in-flight record expires.
+// written as uncached. A failed write is retried with backoff: the owner check makes a retry idempotent. The retries
+// stop at half the in-flight grace, and at the in-flight TTL of the call, which is counted from its begin: the write of
+// each attempt is cut at that limit, and a retry which would start after it is not made. When the retries fail, the
+// record is still kept locally, and a retransmit on another node runs the call again once the in-flight record
+// expires. A write which reports that this node does not own the in-flight record is not retried.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
-	if s.overLimit(rec) {
+	if overReplyLimit(rec, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
-	start := time.Now()
+	limit := time.Now().Add(s.inflightGrace / 2)
+	if !flight.begun.IsZero() {
+		if expiry := flight.begun.Add(flight.timeout + s.inflightGrace); expiry.Before(limit) {
+			limit = expiry
+		}
+	}
 	delay := sharedCompleteBackoff
 	for attempt := 1; ; attempt++ {
-		_, err := s.backend.Complete(context.Background(), key, s.nodeID, stored, s.ttl)
+		ctx, cancel := context.WithDeadline(context.Background(), limit)
+		owned, err := s.backend.Complete(ctx, key, s.nodeID, stored, s.ttl)
+		cancel()
 		if err == nil {
+			if !owned && attempt == 1 {
+				s.logLostOwnership()
+			}
 			return
 		}
-		if attempt >= sharedCompleteAttempts || time.Since(start)+delay > s.inflightGrace/2 {
+		if attempt >= sharedCompleteAttempts || !time.Now().Add(delay).Before(limit) {
 			s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
 			return
 		}
@@ -267,13 +282,14 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	}
 }
 
-// overLimit reports whether the shared tier keeps rec as uncached: a reply over the limit, or an error whose encoded
-// form is over it, so that an error with a large message or metadata is not kept for the full TTL.
-func (s *Shared) overLimit(rec Record) bool {
+// overReplyLimit reports whether the shared tier keeps rec as uncached, and the node-local store with it: a reply over
+// the limit, or an error whose encoded form is over it, so that an error with a large message or metadata is not kept
+// for the full TTL.
+func overReplyLimit(rec Record, limit int) bool {
 	if rec.Err != nil {
-		return len(encodeError(rec.Err)) > s.maxReplyBytes
+		return len(encodeError(rec.Err)) > limit
 	}
-	return len(rec.Reply) > s.maxReplyBytes
+	return len(rec.Reply) > limit
 }
 
 // Cancel implements Store. A call which runs on this node is cancelled here, and its owner keeps the record. Otherwise
@@ -297,9 +313,14 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 	}
 	switch res.State {
 	case CancelTombstone:
-		return s.local.Cancel(key, failure)
+		// The shared tier holds the cancelled error for key, so a done record which this node still caches for it is
+		// replaced: the other nodes answer the tombstone, and so must this one.
+		return s.local.Tombstone(key, failure)
 	case CancelInFlight:
-		if res.Owner != s.nodeID && s.notifier != nil {
+		// A call which began on this node after the first check above has its flight now, and is cancelled here.
+		if res.Owner == s.nodeID {
+			s.CancelFlight(key)
+		} else if s.notifier != nil {
 			s.notifier(res.Owner, key)
 		}
 	}
@@ -399,9 +420,17 @@ func (s *Shared) flushAcks(keys []Key) {
 	}
 }
 
-// logError logs an error of the shared tier at most once per sharedErrorLogInterval.
+// logError logs an error of the shared tier at most once per redisshard.ErrorLogInterval.
 func (s *Shared) logError(msg string, err error) {
 	if s.errorLog.Allow() {
 		log.Error().Err(err).Msg(msg)
+	}
+}
+
+// logLostOwnership logs at most once per redisshard.ErrorLogInterval that the shared tier holds no in-flight record of this
+// node for a call, so its answer is kept on this node only. It is not counted as a Redis error.
+func (s *Shared) logLostOwnership() {
+	if s.errorLog.Allow() {
+		log.Error().Msg("exactly-once RPC: the shared tier holds no in-flight record of this node for a call, the answer is kept on this node only")
 	}
 }

@@ -32,9 +32,15 @@ type fakeBackend struct {
 	acks      [][]ScopeAcks
 	// completeFailures is the number of the next complete calls which fail, as a timed-out write does.
 	completeFailures int
-	// onBegin and onComplete run when the call is made, before it takes effect and outside the lock.
+	// lostReplies is the number of the next complete calls which take effect and then fail, as a write whose reply
+	// is lost does.
+	lostReplies int
+	// blockComplete makes every complete call wait until its context is done, as an unanswered Redis does.
+	blockComplete bool
+	// onBegin, onComplete and onCancel run when the call is made, before it takes effect and outside the lock.
 	onBegin    func()
 	onComplete func()
+	onCancel   func()
 }
 
 // newFakeBackend returns a connected backend without records.
@@ -141,12 +147,16 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 }
 
 // Complete implements Backend with the semantics of completeScript: only the owner completes its record.
-func (f *fakeBackend) Complete(_ context.Context, key Key, nodeID string, rec Record, _ time.Duration) (bool, error) {
+func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ time.Duration) (bool, error) {
 	if err := f.enter("complete"); err != nil {
 		return false, err
 	}
 	if f.onComplete != nil {
 		f.onComplete()
+	}
+	if f.blockComplete {
+		<-ctx.Done()
+		return false, ctx.Err()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -154,13 +164,23 @@ func (f *fakeBackend) Complete(_ context.Context, key Key, nodeID string, rec Re
 		f.completeFailures--
 		return false, errors.New("write timed out")
 	}
+	owned := f.applyComplete(key, nodeID, rec)
+	if f.lostReplies > 0 {
+		f.lostReplies--
+		return false, errors.New("reply lost")
+	}
+	return owned, nil
+}
+
+// applyComplete writes rec for key when nodeID owns the in-flight record of key. Caller holds mu.
+func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) bool {
 	e := f.entries[key]
 	if e == nil || e.state != 'i' || e.owner != nodeID {
-		return false, nil
+		return false
 	}
 	if rec.Abandoned {
 		delete(f.entries, key)
-		return true, nil
+		return true
 	}
 	e.state = 'd'
 	e.owner = ""
@@ -169,13 +189,16 @@ func (f *fakeBackend) Complete(_ context.Context, key Key, nodeID string, rec Re
 	} else {
 		e.rec = rec
 	}
-	return true, nil
+	return true
 }
 
 // Cancel implements Backend with the semantics of cancelScript.
 func (f *fakeBackend) Cancel(_ context.Context, key Key, failure *centrifuge.Error, _ time.Duration) (CancelResult, error) {
 	if err := f.enter("cancel"); err != nil {
 		return CancelResult{}, err
+	}
+	if f.onCancel != nil {
+		f.onCancel()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -680,6 +703,106 @@ func TestSharedCompleteGivesUpAndKeepsRecordLocally(t *testing.T) {
 	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Equal(t, []byte("ok"), lookup.Record.Reply)
+}
+
+func TestSharedCompleteIsCutAtItsBudget(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.inflightGrace = 400 * time.Millisecond
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// Redis accepts the write and never answers: the attempt is cut at half the grace, and no retry starts after it.
+	fx.backend.blockComplete = true
+
+	start := time.Now()
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Less(t, time.Since(start), fx.shared.inflightGrace)
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "complete"))
+}
+
+func TestSharedCompleteStopsAtInflightDeadline(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// The in-flight record of the call expired at the grace from its begin, which has passed: a retry could only land
+	// after it, so none is made.
+	owner.begun = time.Now().Add(-fx.shared.inflightGrace)
+	fx.backend.completeFailures = 100
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "complete"))
+}
+
+func TestSharedCompleteLostReplyIsNotAnError(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// The first write lands, and its reply is lost. The retry finds the record done: the answer is in the shared tier.
+	fx.backend.lostReplies = 1
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Equal(t, 2, countCalls(fx.backend.callLog(), "complete"))
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.Equal(t, byte('d'), entry.state)
+	require.Equal(t, []byte("ok"), entry.rec.Reply)
+}
+
+func TestSharedCancelReachesCallThatBeganDuringCancel(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The call begins after the cancel found no flight, and before the shared tier answers it: the record is owned by
+	// this node, and the cancel must reach the flight which the call registered.
+	fx.backend.onCancel = func() {
+		lookup, err := fx.shared.Begin(sharedKey, owner)
+		require.NoError(t, err)
+		require.Equal(t, OutcomeMiss, lookup.Outcome)
+		owner.Attach(cancel)
+	}
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Empty(t, fx.notified, "the owner is this node, which is not notified")
+}
+
+func TestSharedCancelTombstoneReplacesCachedDoneRecord(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	// This node answered the call, and its record was acked on another node, so the shared tier holds nothing.
+	testAnswer(t, fx.local, sharedKey, "ok")
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.Equal(t, []string{"cancel"}, fx.backend.callLog())
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err, "the answer of this node is the one of the shared tier")
+	checkInvariants(t, fx.local)
+}
+
+func TestSharedErrorOverReplyLimitIsUncachedInBothTiers(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.maxReplyBytes = 512
+	fx.local.maxReplyBytes = 512
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 600)}
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: failure}))
+
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.True(t, entry.rec.Uncached)
+	require.Nil(t, entry.rec.Err)
+
+	// This node holds the same answer, uncached, so a retransmit here and on another node get the same result.
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	checkInvariants(t, fx.local)
 }
 
 func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {

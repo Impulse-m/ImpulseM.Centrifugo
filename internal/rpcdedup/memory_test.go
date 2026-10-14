@@ -396,6 +396,59 @@ func TestMemoryCancelLeavesDoneRecord(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+func TestMemoryCancelFlight(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	owner := NewFlight()
+	testBegin(t, store, key, owner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner.Attach(cancel)
+
+	// A cancel of a flight cancels its call, and keeps nothing: the owner completes the key.
+	require.NoError(t, store.Cancel(key, testCancelled))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Equal(t, 0, testEntries(store))
+
+	// A cancel of a key which has no flight keeps a tombstone.
+	other := Key{Scope: testScope("u1", "a"), MsgID: 8}
+	require.NoError(t, store.Cancel(other, testCancelled))
+	require.Equal(t, 1, testEntries(store))
+	lookup := testBegin(t, store, other, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	checkInvariants(t, store)
+}
+
+func TestMemoryTombstoneReplacesDoneRecord(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	testAnswer(t, store, key, "ok")
+
+	require.NoError(t, store.Tombstone(key, testCancelled))
+	lookup := testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.get", []byte("x"))))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	require.Equal(t, 1, testEntries(store))
+	checkInvariants(t, store)
+}
+
+func TestMemoryErrorOverReplyLimitIsUncached(t *testing.T) {
+	store, _ := newTestMemory(512)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 600)}
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	// The error is over the limit, as the shared tier measures it, so it is kept without its message.
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	checkInvariants(t, store)
+}
+
 func TestMemoryUncachedReplyIsNotKept(t *testing.T) {
 	store, _ := newTestMemory(4)
 	key := Key{Scope: testScope("u1", "a"), MsgID: 7}

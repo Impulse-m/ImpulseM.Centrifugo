@@ -145,6 +145,46 @@ func TestSharedTwoNodesOwnerCrashAbandonsWaiters(t *testing.T) {
 	require.Equal(t, OutcomeMiss, lookup.Outcome)
 }
 
+func TestSharedTwoNodesStaleCancelAfterAckAnswersTheSameOnEveryNode(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	nodeA := newIntegrationNode(t, prefix, "node-a")
+	nodeB := newIntegrationNode(t, prefix, "node-b")
+	key := Key{Scope: testScope("u1", "a"), MsgID: 12}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+
+	owner := NewCallFlight(fingerprint, time.Second)
+	_, err := nodeA.shared.Begin(key, owner)
+	require.NoError(t, err)
+	require.NoError(t, nodeA.shared.Complete(key, owner, Record{Reply: []byte("answer")}))
+
+	// The client acknowledges the reply to node-b, so Redis forgets the record. Node-a still caches it.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- nodeB.shared.Run(ctx) }()
+	require.NoError(t, nodeB.shared.Ack(key.Scope, []uint64{key.MsgID}))
+	redisKey := RedisKey(prefix, key)
+	require.Eventually(t, func() bool {
+		return !integrationExists(t, nodeA.connector, redisKey)
+	}, 5*time.Second, time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	// A stale cancel reaches node-a. The shared tier holds nothing, so it leaves a tombstone, and node-a answers it.
+	require.NoError(t, nodeA.shared.Cancel(key, testCancelled))
+	lookup, err := nodeA.shared.Begin(key, NewFlightWithFingerprint(fingerprint))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, testCancelled.Code, lookup.Record.Err.Code)
+
+	// Node-b never cached the reply: it reads the same tombstone from Redis.
+	lookup, err = nodeB.shared.Begin(key, NewFlightWithFingerprint(fingerprint))
+	require.NoError(t, err)
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Equal(t, testCancelled.Code, lookup.Record.Err.Code)
+	require.Equal(t, testCancelled.Message, lookup.Record.Err.Message)
+}
+
 func TestSharedTwoNodesAckRemovesRedisRecordAndKeepsLocalCache(t *testing.T) {
 	prefix := uniqueRedisPrefix()
 	nodeA := newIntegrationNode(t, prefix, "node-a")

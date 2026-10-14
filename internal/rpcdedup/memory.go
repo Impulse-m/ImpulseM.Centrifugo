@@ -309,7 +309,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 // finish is Complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
 // has no fingerprint, and keeps none, so it answers any duplicate.
 func (m *Memory) finish(key Key, flight *Flight, rec Record) {
-	oversize := rec.Err == nil && len(rec.Reply) > m.maxReplyBytes
+	oversize := overReplyLimit(rec, m.maxReplyBytes)
 	kept := rec
 	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
@@ -356,6 +356,17 @@ func (m *Memory) CheckAdmit(scope string) error {
 // flight and the record are looked up under one lock, so a call which begins meanwhile is either found by Cancel, or it
 // finds the cancelled record.
 func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
+	return m.cancel(key, failure, false)
+}
+
+// Tombstone keeps key as cancelled, as the shared tier does when it holds nothing for key. Unlike Cancel, it replaces a
+// done record which key holds: the shared tier has no answer for key, so the answer of this store must not outlive it.
+func (m *Memory) Tombstone(key Key, failure *centrifuge.Error) error {
+	return m.cancel(key, failure, true)
+}
+
+// cancel is Cancel, and with replace it keeps the cancelled record in place of a done record of key.
+func (m *Memory) cancel(key Key, failure *centrifuge.Error, replace bool) error {
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
 	if running, found := s.flights[key]; found {
@@ -365,7 +376,7 @@ func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
 	}
 	now := s.now()
 	s.sweepSome(now)
-	if s.liveRecord(key, now) != nil {
+	if !replace && s.liveRecord(key, now) != nil {
 		s.mu.Unlock()
 		return nil
 	}

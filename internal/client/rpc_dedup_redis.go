@@ -40,7 +40,7 @@ func (h *Handler) setupRPCDedupRedis() error {
 		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
 		NodeID:        h.node.ID(),
 		TTL:           rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes: min(dedup.MaxReplySize, dedup.ScopeReserveBytes/dedup.ScopeReserve),
+		MaxReplyBytes: replyLimitOf(dedup),
 		FailOpen:      failOpen,
 		Notifier:      h.notifyRPCDedupCancel,
 		Observer:      h.rpcDedup.metrics,

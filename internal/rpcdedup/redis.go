@@ -8,15 +8,11 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/redis/rueidis"
-	"github.com/rs/zerolog/log"
 )
 
 // InflightGrace is the time an in-flight record is kept beyond the method timeout of its call. The owner
 // completes the record within the method timeout, so the grace only matters when the owner node died.
 const InflightGrace = 10 * time.Second
-
-// defaultRedisTimeout bounds each Redis call of the shared tier when the configuration has no IO timeout.
-const defaultRedisTimeout = 4 * time.Second
 
 // BeginState is the state of a key which Backend.Begin found, or started.
 type BeginState uint8
@@ -115,7 +111,7 @@ type Redis struct {
 // default. observer may be nil.
 func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Duration, observer BackendObserver) *Redis {
 	if ioTimeout <= 0 {
-		ioTimeout = defaultRedisTimeout
+		ioTimeout = redisshard.DefaultIOTimeout
 	}
 	return &Redis{
 		prefix:    prefix,
@@ -143,8 +139,9 @@ func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID
 	return result, err
 }
 
-// Complete implements Backend with the complete script. It returns false when this node does not own the in-flight
-// record, which is counted as a Redis error and logged at debug: the record of the call is then kept locally only.
+// Complete implements Backend with the complete script. It returns false, and no error, when this node does not own the
+// in-flight record. That is not a failed call: a retried write finds the record done by its first attempt, whose reply
+// was lost, so the owner counts it as a Redis error only when the call fails. The caller logs the ownership it lost.
 func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error) {
 	reply, errJSON, uncached := recordArgs(rec)
 	abandoned := "0"
@@ -166,10 +163,6 @@ func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record
 	})
 	if err != nil {
 		return false, err
-	}
-	if !owned {
-		r.countError()
-		log.Debug().Msg("exactly-once RPC: the in-flight record is not owned by this node, the record is kept locally")
 	}
 	return owned, nil
 }
@@ -215,7 +208,10 @@ func (r *Redis) Poll(ctx context.Context, key Key) (PollResult, error) {
 }
 
 // Ack implements Backend. The acks of each shard are one pipeline, with one ack script per scope. A failed shard
-// is counted, and the first error is returned; the records of the failed keys expire at their TTL.
+// is counted, and the first error is returned; the records of the failed keys expire at their TTL. While the
+// connector is not connected, each call counts one error, so an outage counts once per flush. The shards are flushed
+// one after another, and a Redis which accepts connections but does not answer delays each flush by one IO timeout per
+// shard, which the shutdown flush waits for too.
 func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 	shards := r.connector.Shards()
 	if shards == nil {

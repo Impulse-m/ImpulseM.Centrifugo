@@ -323,6 +323,23 @@ func TestRedisBackendAckDeletesDoneAndTombstonesOnly(t *testing.T) {
 	require.True(t, integrationExists(t, connector, RedisKey(prefix, inflight)))
 }
 
+func TestRedisBackendCancelledWithoutErrorAnswersNoError(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 14}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+
+	// A cancelled key with no error, as a write of another client under the prefix leaves it.
+	integrationDo(connector, func(c rueidis.Client) rueidis.Completed {
+		return c.B().Hset().Key(RedisKey(prefix, key)).FieldValue().FieldValue("s", "c").Build()
+	})
+	res, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	require.NoError(t, err)
+	require.Equal(t, BeginCancelled, res.State)
+	require.Nil(t, res.Record.Err)
+}
+
 func TestRedisBackendPollStates(t *testing.T) {
 	prefix := uniqueRedisPrefix()
 	backend, _ := newIntegrationBackend(t, prefix)

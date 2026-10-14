@@ -96,13 +96,13 @@ type RPCRegistryErrors struct {
 	// Cancelled is returned when the client cancels a call.
 	Cancelled RPCRegistryError `mapstructure:"cancelled" json:"cancelled" envconfig:"cancelled" yaml:"cancelled" toml:"cancelled" doc:"Error returned when the client cancels the call."`
 	// MsgIDInvalid is returned when the msg_id of a call is outside the dedup window.
-	MsgIDInvalid RPCRegistryError `mapstructure:"msg_id_invalid" json:"msg_id_invalid" envconfig:"msg_id_invalid" yaml:"msg_id_invalid" toml:"msg_id_invalid" doc:"Error returned when the msg_id of a call is outside the dedup window or above 53 bits. The reply carries the server time, so the client can correct its clock."`
+	MsgIDInvalid RPCRegistryError `mapstructure:"msg_id_invalid" json:"msg_id_invalid" envconfig:"msg_id_invalid" yaml:"msg_id_invalid" toml:"msg_id_invalid" doc:"Error returned when the msg_id of a call is outside the dedup window or above 53 bits. The reply carries the server time, so the client can correct its clock. The error metadata has <<x-centrifugo-retry>> set to <<new_msg_id>>: the call was not executed, and the client sends it again with a new msg_id."`
 	// MsgIDReused is returned when a msg_id is sent again with a different method or data.
 	MsgIDReused RPCRegistryError `mapstructure:"msg_id_reused" json:"msg_id_reused" envconfig:"msg_id_reused" yaml:"msg_id_reused" toml:"msg_id_reused" doc:"Error returned when a msg_id is sent again with another method or data than its first call. The first call is neither joined nor answered."`
 	// ResultEvicted is returned to a retransmit whose answer was not kept, because the reply was over the size limit.
 	ResultEvicted RPCRegistryError `mapstructure:"result_evicted" json:"result_evicted" envconfig:"result_evicted" yaml:"result_evicted" toml:"result_evicted" doc:"Error returned to a retransmit whose call ran, but whose reply was not kept: the reply was over the dedup size limit. The call is not run again."`
 	// DedupUnavailable is returned to a tracked call when the dedup store fails. It is sent as temporary.
-	DedupUnavailable RPCRegistryError `mapstructure:"dedup_unavailable" json:"dedup_unavailable" envconfig:"dedup_unavailable" yaml:"dedup_unavailable" toml:"dedup_unavailable" doc:"Temporary error returned to a tracked call when the dedup store fails, with on_store_error fail_closed. Clients retry it later."`
+	DedupUnavailable RPCRegistryError `mapstructure:"dedup_unavailable" json:"dedup_unavailable" envconfig:"dedup_unavailable" yaml:"dedup_unavailable" toml:"dedup_unavailable" doc:"Temporary error returned to a tracked call when the dedup store fails, with on_store_error fail_closed, or when the call it joined does not answer in time. Clients retry it later. The error metadata has <<x-centrifugo-retry>> set to <<later>>: the call was not executed, and the client sends it again later with the same msg_id."`
 }
 
 // RPCRegistryError is a protocol error with optional application-level code and type.

@@ -130,7 +130,7 @@ A failed gRPC call becomes a protocol error with the default mapping below. The 
 * With the default mapping, the protocol error `message` is the gRPC status message, cut to 256 bytes.
 * The application error code comes from the `app_error.code_key` trailer as a decimal `int32`. Without it, the code is 401 for `UNAUTHENTICATED`, 403 for `PERMISSION_DENIED`, 420 for `RESOURCE_EXHAUSTED`, 400 for `INVALID_ARGUMENT`, and 500 otherwise.
 * The application error type comes from the `app_error.type_key` trailer and must match `^[A-Z0-9_]{1,64}$`. Without a valid trailer, the status message is used when it matches that pattern.
-* Protocol error `metadata` holds only the trailers listed in the method's `error_metadata`, nothing else.
+* Protocol error `metadata` holds only the trailers listed in the method's `error_metadata`, and the `x-centrifugo-retry` key the server sets itself, see [Exactly-once calls](#exactly-once-calls).
 
 Check the registry in CI with the usual config check. It validates the registry file too, when `rpc.registry.enabled` is true:
 
@@ -159,6 +159,7 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 * Ack. A call lists in `ack` the `msg_id`s whose replies it received. Their records are removed.
 * Mutations and disconnects. A non-idempotent call in a scope runs on a context which a disconnect does not cancel, so a backend commit completes, and its answer is kept. A disconnect which the status mapping makes of the answer is kept as a protocol error with its code and reason, so a retransmit gets it without a second backend call. A non-idempotent call without a scope, and an idempotent call, are cancelled by a disconnect.
 * A store failure answers a tracked call with the temporary `errors.dedup_unavailable` under `on_store_error: fail_closed`, the default. Under `fail_open` the call runs without dedup. The same applies to a call of a new scope which the node cannot admit within its budgets, see Admission. Idempotent calls do not use the store.
+* Retry signal. An error which tells the client that its call was not executed carries the metadata key `x-centrifugo-retry`, which the server sets itself. Its value is `new_msg_id` on `errors.msg_id_invalid` for a `msg_id` outside the window, and `later` on `errors.dedup_unavailable`, when the store refuses the call under `fail_closed`, when a duplicate waits past the method timeout for the call it joined, and when the call it joined was abandoned. `new_msg_id` means the client re-syncs its clock from the reply time and sends the call again with a new `msg_id`. `later` means the client sends the same call again, with the same `msg_id`, after a short delay. A cancel is never sent again. No other error carries the key: a call which ran, `errors.msg_id_reused`, `errors.result_evicted`, a cancel, and the gate errors do not. These errors are never recorded, so a retransmit never replays the key. Clients which do not know the key ignore it.
 * Records are node-local. A retransmit which reaches another node runs again.
 * Secrecy. The instance is a bearer secret. It must be random, made by the application, of at least 128 bits (22 base64url characters), kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit and cancel calls in its scope. The server never logs the instance or a scope.
 

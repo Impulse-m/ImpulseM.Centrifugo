@@ -66,7 +66,7 @@ Topic guidance:
 
 ### RPC method registry
 
-Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [docs/rpc_registry.md](docs/rpc_registry.md).
+Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [internal/rpcregistry/README.md](internal/rpcregistry/README.md).
 
 ### Not implemented (yet)
 

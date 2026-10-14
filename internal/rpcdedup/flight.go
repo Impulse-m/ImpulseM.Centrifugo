@@ -19,9 +19,10 @@ type Flight struct {
 	// timeout is the method timeout of the call, zero when unknown. It bounds the in-flight record of the
 	// call in a shared tier.
 	timeout time.Duration
-	// begun is the time the in-flight record of the call was begun in a shared tier, the start of its in-flight TTL.
+	// begun is the time in Unix nanoseconds when the in-flight record of the call was begun in a shared tier, the start
+	// of its in-flight TTL, or zero when it was not. An integer keeps a flight small when the shared tier is off.
 	// The owner sets it and reads it.
-	begun time.Time
+	begun int64
 	// localOnly is set when the call runs without the shared tier, see Shared.Begin.
 	localOnly bool
 	// remote is set when the call runs on another node, and this flight waits for its answer.

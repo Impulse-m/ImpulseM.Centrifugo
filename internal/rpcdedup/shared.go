@@ -173,7 +173,7 @@ func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 // done, mismatch or running on another node. A Redis error degrades to node-local dedup with fail-open, and refuses
 // the call with fail-closed.
 func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
-	flight.begun = time.Now()
+	flight.begun = time.Now().UnixNano()
 	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace)
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to begin a call", err)
@@ -260,8 +260,8 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
 	limit := time.Now().Add(s.inflightGrace / 2)
-	if !flight.begun.IsZero() {
-		if expiry := flight.begun.Add(flight.timeout + s.inflightGrace); expiry.Before(limit) {
+	if flight.begun != 0 {
+		if expiry := time.Unix(0, flight.begun).Add(flight.timeout + s.inflightGrace); expiry.Before(limit) {
 			limit = expiry
 		}
 	}

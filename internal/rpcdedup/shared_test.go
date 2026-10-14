@@ -733,7 +733,7 @@ func TestSharedCompleteStopsAtInflightDeadline(t *testing.T) {
 	require.NoError(t, err)
 	// The in-flight record of the call expired at the grace from its begin, which has passed: a retry could only land
 	// after it, so none is made.
-	owner.begun = time.Now().Add(-fx.shared.inflightGrace)
+	owner.begun = time.Now().Add(-fx.shared.inflightGrace).UnixNano()
 	fx.backend.completeFailures = 100
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))

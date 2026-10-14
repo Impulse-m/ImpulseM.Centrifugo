@@ -9,6 +9,10 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
+// testHookConnectTracked, if set, runs in OnConnect after the session of a connection is tracked and before the
+// connection is rechecked. Tests use it to apply a revocation at that point.
+var testHookConnectTracked func(c *centrifuge.Client)
+
 // sourceGate returns accessrevoke.ErrorNotReady while the access revocation source is not ready, or
 // lags when reject_connect_on_lag is set. Without a source it passes.
 //

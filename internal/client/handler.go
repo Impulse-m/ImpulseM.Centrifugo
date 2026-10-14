@@ -213,16 +213,23 @@ func (h *Handler) Setup() error {
 	}
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
-		disconnect, revoked := h.recheckConnection(client)
-		if revoked {
-			client.Disconnect(disconnect)
-			return
-		}
-		h.attachRateLimit(client, client.UserID())
-		h.syncSessionConnection(client, client.UserID(), client.TokenIdentity())
+		// The disconnect handler is set first, so no close leaves an index entry behind. The session is tracked
+		// before the recheck: a revocation applied from then on reaches the connection through the index.
 		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
 			h.onClientDisconnect(client)
 		})
+		h.syncSessionConnection(client, client.UserID(), client.TokenIdentity())
+		if testHookConnectTracked != nil {
+			testHookConnectTracked(client)
+		}
+		disconnect, revoked := h.recheckConnection(client)
+		if revoked {
+			client.Disconnect(disconnect)
+			// The disconnect handler does not run for a connection which is still connecting.
+			h.onClientDisconnect(client)
+			return
+		}
+		h.attachRateLimit(client, client.UserID())
 
 		var semaphore chan struct{}
 		if concurrency > 1 {

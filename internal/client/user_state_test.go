@@ -126,6 +126,38 @@ func TestPendingConnectionLeavesSessionIndexOnDisconnect(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 }
 
+// TestConnectRevocationAfterTrackDisconnects applies a session revocation between the tracking and the recheck of a
+// connect. The session is in the index by then, so the connection is disconnected, and it leaves the index.
+func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
+	_, store, node := newPendingTestHandler(t)
+	now := time.Now().Unix()
+	queue := accessrevoke.NewDisconnectQueue(10000, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = queue.Run(ctx) }()
+	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+	sessionKey, _ := accessrevoke.Key(revokeTestUUID)
+
+	var trackedAtHook int
+	testHookConnectTracked = func(*centrifuge.Client) {
+		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
+		require.NoError(t, revoker.RevokeSession("", revokeTestUUID, now, 0))
+	}
+	t.Cleanup(func() { testHookConnectTracked = nil })
+
+	connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
+		"sub":        "42",
+		"jti":        revokeTestUUID,
+		"iat":        now - 10,
+		"auth_class": "pending_2fa",
+	}))
+	require.Equal(t, 1, trackedAtHook)
+	require.Eventually(t, func() bool {
+		return len(node.Hub().Connections()) == 0
+	}, 5*time.Second, 5*time.Millisecond)
+	require.Empty(t, store.SessionConnections().Connections(sessionKey))
+}
+
 func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	h, store, _ := newPendingTestHandler(t)
 	now := time.Now().Unix()

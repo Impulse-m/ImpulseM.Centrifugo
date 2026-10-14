@@ -114,6 +114,18 @@ func testDone(t *testing.T, store Store, key Key) (Record, bool) {
 	return lookup.Record, lookup.Outcome == OutcomeDone
 }
 
+// testRecordCount returns the number of records kept for scope.
+func testRecordCount(store *Memory, scope string) int {
+	s := store.shardOf(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc := s.scopes[scope]
+	if sc == nil {
+		return 0
+	}
+	return sc.records.len
+}
+
 // testRefused returns the refusal of err, and fails the test when err is not a refusal.
 func testRefused(t *testing.T, err error) Refusal {
 	t.Helper()
@@ -198,13 +210,17 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 		for r := sc.records.head; r != nil; r = r.byScope.next {
 			n++
 			bytes += r.size
+			require.LessOrEqual(t, r.size, p.recordBytes, "a record is kept within its share of the reserve")
 			require.Same(t, sc, r.scope)
 			require.Same(t, r, s.done[r.key])
 		}
 		require.Equal(t, sc.records.len, n)
 		require.Equal(t, sc.bytes, bytes)
+		if n <= p.reserveEntries {
+			require.LessOrEqual(t, bytes, p.reserveBytes, "a scope within its record reserve fits its byte reserve")
+		}
 
-		over := n > p.reserveEntries || bytes > p.reserveBytes
+		over := n > p.reserveEntries
 		require.Equal(t, over, sc.surplus)
 		if over {
 			surplus[pi]++
@@ -339,8 +355,9 @@ func TestMemoryUncachedReplyIsNotKept(t *testing.T) {
 	testBegin(t, store, key, flight)
 	testComplete(t, store, key, flight, "too large")
 
-	// The duplicates which joined the call got the reply, later duplicates get the uncached marker.
-	require.Equal(t, []byte("too large"), flight.Record().Reply)
+	// The duplicates which joined the call get the uncached marker too, as later duplicates do.
+	require.True(t, flight.Record().Uncached)
+	require.Empty(t, flight.Record().Reply)
 	lookup := testBegin(t, store, key, NewFlightWithFingerprint(fingerprint))
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.True(t, lookup.Record.Uncached)
@@ -471,15 +488,15 @@ func TestMemoryCancelledRecordAnswersAnyFingerprint(t *testing.T) {
 	checkInvariants(t, store)
 }
 
-// The byte budget holds: eight scopes of one 528-byte record each fill 8 KiB, and every further record stays
-// within its scope's reserve, so the scopes keep one record each.
+// The byte budget holds: a record is kept up to its share of the reserve, 1024/4 = 256 bytes, so a 128-byte reply
+// makes a 256-byte record. Eight scopes fill 8 KiB with 32 records, four per scope, which is each scope's reserve.
 func TestMemoryByteBudget(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 1024)
 	options.MaxBytes = 8 * 1024
 	options.ScopeReserveBytes = 1024
 	store := NewMemory(options)
-	reply := make([]byte, 400)
+	reply := make([]byte, 128)
 	scopes := make([]string, 8)
 	for i := range scopes {
 		scopes[i] = testScope("u"+strconv.Itoa(i), "a")
@@ -490,9 +507,12 @@ func TestMemoryByteBudget(t *testing.T) {
 		testBegin(t, store, key, flight)
 		require.NoError(t, store.Complete(key, flight, Record{Reply: reply}))
 	}
-	// 8 KiB holds 15 records of 528 bytes.
+	// 8 KiB holds 32 records of 256 bytes, and each of the eight scopes keeps its four records.
 	require.LessOrEqual(t, store.Stats().Bytes, int64(8*1024))
-	require.LessOrEqual(t, store.Len(), 15)
+	require.Equal(t, 32, store.Len())
+	for _, scope := range scopes {
+		require.Equal(t, 4, testRecordCount(store, scope))
+	}
 	checkInvariants(t, store)
 }
 
@@ -689,70 +709,71 @@ func TestMemorySurplusDrainsLongestFirst(t *testing.T) {
 	checkInvariants(t, store)
 }
 
-// A reply which fits no room is kept as uncached: the record stays, so a retransmit is answered with
-// result_evicted and the call is not run again. A 2 KiB reply is over the 1 KiB reserve of its scope, and the
-// other scopes are within theirs, so there is no surplus to take from.
-func TestMemoryByteBudgetKeepsRecordUncached(t *testing.T) {
+// A reply over the share of a record of its scope is kept as uncached, so a retransmit is answered with
+// result_evicted and the call is not run again. With a 1 KiB byte reserve and 4 records, a record is kept up to
+// 256 bytes: a 128-byte reply makes a 256-byte record, and a 129-byte reply is over the share.
+func TestMemoryRecordOverShareIsUncached(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 4096)
-	options.MaxEntries = 1000
-	options.MaxBytes = 3 * 1024
 	options.ScopeReserveBytes = 1024
 	observer := newCountingObserver()
 	options.Observer = observer
 	store := NewMemory(options)
-	scopeA := testScope("a", "a")
-	scopeB := testScope("b", "a")
-	scopeC := testScope("c", "a")
-	testAnswer(t, store, Key{Scope: scopeA, MsgID: 1}, string(make([]byte, 800)))
-	testAnswer(t, store, Key{Scope: scopeB, MsgID: 1}, string(make([]byte, 800)))
+	scope := testScope("a", "a")
+	fitting := Key{Scope: scope, MsgID: 1}
+	over := Key{Scope: scope, MsgID: 2}
+	testAnswer(t, store, fitting, string(make([]byte, 128)))
+	testAnswer(t, store, over, string(make([]byte, 129)))
 
-	key := Key{Scope: scopeC, MsgID: 1}
-	flight := NewFlight()
-	require.Equal(t, OutcomeMiss, testBegin(t, store, key, flight).Outcome)
-	require.NoError(t, store.Complete(key, flight, Record{Reply: make([]byte, 2048)}))
+	record, done := testDone(t, store, fitting)
+	require.True(t, done)
+	require.False(t, record.Uncached)
+	require.Len(t, record.Reply, 128)
 
-	lookup := testBegin(t, store, key, NewFlight())
-	require.Equal(t, OutcomeDone, lookup.Outcome)
-	require.True(t, lookup.Record.Uncached)
-	require.Empty(t, lookup.Record.Reply)
+	record, done = testDone(t, store, over)
+	require.True(t, done)
+	require.True(t, record.Uncached)
+	require.Empty(t, record.Reply)
 	require.Equal(t, 1, observer.counts[EvictionUncached])
-	require.Empty(t, observer.counts[EvictionSurplus])
+	// The fitting record counts 128 bytes of reply and overhead, the uncached one the overhead only.
+	require.Equal(t, int64(128+RecordOverhead+RecordOverhead), store.Stats().Bytes)
 	checkInvariants(t, store)
 }
 
-// A scope over its byte reserve is drained first, and the reply is kept with its reply.
-func TestMemoryByteSurplusIsDrainedBeforeUncached(t *testing.T) {
+// A scope within its record reserve keeps all its records when the pool is full, whatever their bytes. The victim
+// holds four records of 2 KiB, its byte reserve, and the flooder holds eight: the newcomer evicts the oldest of the
+// flooder, the surplus scope, and not one of the victim's records.
+func TestMemoryWithinReserveKeepsRecordsWhenFull(t *testing.T) {
 	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
 	options := testMemoryOptions(clock, 4096)
-	options.MaxEntries = 1000
-	options.MaxBytes = 3 * 1024
-	options.ScopeReserveBytes = 1024
+	options.MaxEntries = 12
 	observer := newCountingObserver()
 	options.Observer = observer
 	store := NewMemory(options)
-	scopeA := testScope("a", "a")
-	scopeB := testScope("b", "a")
-	scopeC := testScope("c", "a")
+	victim := testScope("v", "a")
+	flood := testScope("f", "a")
+	newcomer := testScope("n", "a")
 
-	// A holds two records of 1000 bytes, over its reserve. B holds one, within its reserve.
-	testAnswer(t, store, Key{Scope: scopeA, MsgID: 1}, string(make([]byte, 872)))
-	testAnswer(t, store, Key{Scope: scopeA, MsgID: 2}, string(make([]byte, 872)))
-	testAnswer(t, store, Key{Scope: scopeB, MsgID: 1}, string(make([]byte, 872)))
+	for msgID := uint64(1); msgID <= 4; msgID++ {
+		testAnswer(t, store, Key{Scope: victim, MsgID: msgID}, string(make([]byte, 1900)))
+	}
+	for msgID := uint64(1); msgID <= 8; msgID++ {
+		testAnswer(t, store, Key{Scope: flood, MsgID: msgID}, "flood")
+	}
+	require.Equal(t, 12, store.Len())
+	require.Empty(t, observer.counts[EvictionSurplus])
 
-	// The reply of C is 1072 bytes: it fits when the oldest record of A has gone.
-	key := Key{Scope: scopeC, MsgID: 1}
-	flight := NewFlight()
-	testBegin(t, store, key, flight)
-	require.NoError(t, store.Complete(key, flight, Record{Reply: make([]byte, 944)}))
-
-	lookup := testBegin(t, store, key, NewFlight())
-	require.Equal(t, OutcomeDone, lookup.Outcome)
-	require.False(t, lookup.Record.Uncached)
-	require.Len(t, lookup.Record.Reply, 944)
+	testAnswer(t, store, Key{Scope: newcomer, MsgID: 1}, "new")
 	require.Equal(t, 1, observer.counts[EvictionSurplus])
-	require.Zero(t, observer.counts[EvictionUncached])
-	require.True(t, testIsMiss(t, store, Key{Scope: scopeA, MsgID: 1}))
+	require.Equal(t, 0, observer.counts[EvictionUncached])
+	require.Equal(t, 4, testRecordCount(store, victim))
+	for msgID := uint64(1); msgID <= 4; msgID++ {
+		record, done := testDone(t, store, Key{Scope: victim, MsgID: msgID})
+		require.True(t, done, msgID)
+		require.Len(t, record.Reply, 1900)
+	}
+	require.True(t, testIsMiss(t, store, Key{Scope: flood, MsgID: 1}))
+	require.Equal(t, 7, testRecordCount(store, flood))
 	checkInvariants(t, store)
 }
 
@@ -966,7 +987,7 @@ func TestMemoryCompleteOverwriteKeepsCounters(t *testing.T) {
 	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte("second")}))
 
 	require.Equal(t, 1, store.Len())
-	require.Equal(t, int64(recordOverhead+len("first")), store.Stats().Bytes)
+	require.Equal(t, int64(RecordOverhead+len("first")), store.Stats().Bytes)
 	record, _ := testDone(t, store, key)
 	require.Equal(t, []byte("first"), record.Reply)
 	checkInvariants(t, store)
@@ -985,7 +1006,7 @@ func TestMemoryKeepReplacesExistingRecord(t *testing.T) {
 	s.mu.Unlock()
 
 	require.Equal(t, 1, store.Len())
-	require.Equal(t, int64(recordOverhead+len("second")), store.Stats().Bytes)
+	require.Equal(t, int64(RecordOverhead+len("second")), store.Stats().Bytes)
 	record, _ := testDone(t, store, key)
 	require.Equal(t, []byte("second"), record.Reply)
 	checkInvariants(t, store)

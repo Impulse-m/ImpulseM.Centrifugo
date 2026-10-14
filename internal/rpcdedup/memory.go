@@ -9,12 +9,12 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-// defaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
-const defaultShards = 64
+// DefaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
+const DefaultShards = 64
 
-// recordOverhead is the size counted for a record besides its reply or error message, so that records without a
+// RecordOverhead is the size counted for a record besides its reply or error message, so that records without a
 // reply count too.
-const recordOverhead = 128
+const RecordOverhead = 128
 
 // zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.
 var zeroFingerprint [32]byte
@@ -66,7 +66,8 @@ type MemoryOptions struct {
 	MaxRecordsPerScope int
 	// ScopeReserve is the number of records every admitted scope keeps, which no other scope can evict.
 	ScopeReserve int
-	// ScopeReserveBytes is the number of bytes every admitted scope keeps, which no other scope can evict.
+	// ScopeReserveBytes is the number of bytes every admitted scope keeps. Each record is kept up to
+	// ScopeReserveBytes/ScopeReserve bytes, so the records of a scope within its reserve fit it.
 	ScopeReserveBytes int64
 	// MaxScopesPerUser bounds the authenticated scopes of one user which hold records or calls on the node.
 	MaxScopesPerUser int
@@ -87,12 +88,14 @@ type MemoryOptions struct {
 // since they share one TTL. Records are not shared between nodes.
 //
 // Scopes and budgets. A scope is admitted when it first holds a record or a call, and is released when it holds
-// neither. An admitted scope is guaranteed ScopeReserve records and ScopeReserveBytes bytes, which no other scope
-// can evict. A pool admits at most maxEntries/ScopeReserve scopes, so the reserves always fit its budget. Above
-// its reserve a scope keeps records as long as the budget has room, and when the budget is full the store makes
-// room in this order: the oldest record of the inserting scope while it is over its reserve, then the oldest
-// record of the scope which has been over its reserve the longest, and otherwise the reply is dropped and the
-// record kept as uncached.
+// neither. An admitted scope is guaranteed ScopeReserve records, which no other scope can evict, and each of its
+// records is kept only up to ScopeReserveBytes/ScopeReserve bytes, so the records of a scope within its reserve
+// fit ScopeReserveBytes. A pool admits at most maxEntries/ScopeReserve scopes and at most maxBytes/ScopeReserveBytes
+// scopes, so the reserves always fit its budgets. Above its reserve a scope keeps records as long as the budget has
+// room, and when the budget is full the store makes room in this order: the oldest record of the inserting scope
+// while it is over its reserve, then the oldest record of the scope which has been over its reserve the longest, and
+// otherwise the reply is dropped and the record kept as uncached. Only a scope over its record reserve is evicted
+// from, so a scope within its reserve keeps all its records.
 //
 // Shards. A scope with a user is kept in the shard of its user, so the scope limit of a user is one counter under
 // one lock.
@@ -126,14 +129,15 @@ type shard struct {
 	observer         EvictionObserver
 }
 
-// pool is the budget of one kind of scope in a shard. Its surplus scopes are the scopes over their reserve, oldest
-// first.
+// pool is the budget of one kind of scope in a shard. Its surplus scopes are the scopes over their record reserve,
+// oldest first.
 type pool struct {
 	maxEntries     int
 	maxBytes       int64
 	maxScopes      int
 	reserveEntries int
 	reserveBytes   int64
+	recordBytes    int64
 	entries        int
 	bytes          int64
 	scopes         int
@@ -189,7 +193,7 @@ type scopeList struct {
 func NewMemory(opts MemoryOptions) *Memory {
 	shards := opts.Shards
 	if shards <= 0 {
-		shards = defaultShards
+		shards = DefaultShards
 	}
 	now := opts.Now
 	if now == nil {
@@ -231,7 +235,9 @@ func shareOf(limit int64, shards int) int64 {
 }
 
 // newPool returns the budget of a pool of one shard, with the scope limit which the reserves allow. The reserves
-// are at least one record and one byte, so the division is defined.
+// are at least one record and one byte, so the division is defined. A record is kept up to its share of the byte
+// reserve, reserveBytes/reserveEntries, so the records of a scope within its reserve fit the byte reserve. Config
+// validation keeps that share at least RecordOverhead, so a record kept as uncached always fits it.
 func newPool(entries int64, bytes int64, opts MemoryOptions, stats *poolStats) pool {
 	reserveEntries := max(opts.ScopeReserve, 1)
 	reserveBytes := max(opts.ScopeReserveBytes, 1)
@@ -245,6 +251,7 @@ func newPool(entries int64, bytes int64, opts MemoryOptions, stats *poolStats) p
 		maxScopes:      int(maxScopes),
 		reserveEntries: reserveEntries,
 		reserveBytes:   reserveBytes,
+		recordBytes:    reserveBytes / int64(reserveEntries),
 		stats:          stats,
 	}
 }
@@ -367,10 +374,16 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 	return Lookup{Outcome: OutcomeMiss}, nil
 }
 
-// Complete implements Store. The record is kept before the flight is removed from the map and woken up, so a
-// call which misses the done records always finds the flight. Only the owner of the flight keeps a record.
+// Complete implements Store. The flight is removed and the record kept in one critical section, so a call which
+// misses the done records always finds the flight or the record. The duplicates which joined the flight are answered
+// with the record as it is kept, so a reply which is kept as uncached is evicted for them too. Only the owner of the
+// flight keeps a record.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	rec.Fingerprint = flight.fingerprint
+	kept := rec
+	if rec.Err == nil && len(rec.Reply) > m.maxReplyBytes {
+		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+	}
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
 	sc := s.scopes[key.Scope]
@@ -378,18 +391,14 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 		delete(s.flights, key)
 		sc.flights--
 		if !rec.Abandoned {
-			kept := rec
-			if rec.Err == nil && len(rec.Reply) > m.maxReplyBytes {
-				kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
-			}
-			s.keep(sc, key, kept, s.now())
+			kept = s.keep(sc, key, kept, s.now())
 		}
 	}
 	if sc != nil {
 		s.releaseIfEmpty(sc)
 	}
 	s.mu.Unlock()
-	flight.finish(rec)
+	flight.finish(kept)
 	return nil
 }
 
@@ -537,22 +546,30 @@ func (s *shard) sweepSome(now time.Time) {
 	}
 }
 
-// keep replaces the record of key with rec, the answer of the flight which sc owns. The scope is held while the
-// old record is removed, so that it is not released before the new one is in. Caller holds mu.
-func (s *shard) keep(sc *scopeState, key Key, rec Record, now time.Time) {
+// keep replaces the record of key with rec, the answer of the flight which sc owns, and returns the record as it is
+// kept. The scope is held while the old record is removed, so that it is not released before the new one is in.
+// Caller holds mu.
+func (s *shard) keep(sc *scopeState, key Key, rec Record, now time.Time) Record {
 	sc.flights++
 	if r := s.done[key]; r != nil {
 		s.remove(r)
 	}
-	s.insert(sc, key, rec, now)
+	kept := s.insert(sc, key, rec, now)
 	sc.flights--
+	return kept
 }
 
-// insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool. It never
-// fails: when no room can be made, the record is kept as uncached. Caller holds mu, and key has no record.
-func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) {
+// insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool, and returns
+// the record as it is kept. A reply over the share of a record is kept as uncached, and so is one which fits no room:
+// it never fails. Caller holds mu, and key has no record.
+func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Record {
 	p := sc.pool
 	size := recordSize(rec)
+	if !rec.Uncached && size > p.recordBytes {
+		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		size = RecordOverhead
+		s.observe(EvictionUncached)
+	}
 	// The scope is held while its records are evicted: its last record may go before the new one is in.
 	sc.flights++
 	for sc.records.len > 0 && sc.records.len >= s.maxScope {
@@ -573,13 +590,16 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) {
 		}
 		if !rec.Uncached {
 			rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
-			size = recordOverhead
+			size = RecordOverhead
 			s.observe(EvictionUncached)
 			continue
 		}
-		// Unreachable: when this branch runs, the scope is within its reserve and no other scope is over its reserve,
-		// so the pool holds at most scopes*reserve <= maxScopes*reserve <= maxEntries records, and at most
-		// scopes*reserveBytes <= maxBytes bytes, leaving room for the record kept as uncached. The record is kept.
+		// Unreachable: when this branch runs, no record is expired, and the scope is within its record reserve,
+		// so it holds at most reserveEntries records of at most recordBytes each, and fits reserveBytes. No other
+		// scope of the pool is over its record reserve, so each of them fits its reserves too. The pool holds at most
+		// scopes*reserveEntries <= maxScopes*reserveEntries <= maxEntries records, and at most
+		// scopes*reserveBytes <= maxScopes*reserveBytes <= maxBytes bytes, the new record included. That contradicts
+		// overBudget, so the record is kept.
 		break
 	}
 	r := &storedRecord{key: key, rec: rec, expireAt: now.Add(s.ttl), size: size, scope: sc}
@@ -593,6 +613,7 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) {
 	p.stats.bytes.Add(size)
 	s.updateSurplus(sc)
 	sc.flights--
+	return rec
 }
 
 // overBudget reports whether a record of size would go over the entry or byte budget of the pool.
@@ -600,11 +621,13 @@ func (p *pool) overBudget(size int64) bool {
 	return p.entries >= p.maxEntries || p.bytes+size > p.maxBytes
 }
 
-// updateSurplus keeps sc in the surplus scopes exactly while it is over its reserve. A scope enters the list when it
-// goes over its reserve, so the list is in the order in which the scopes went over. Caller holds mu.
+// updateSurplus keeps sc in the surplus scopes exactly while it holds more records than its reserve. A scope enters
+// the list when it goes over its reserve, so the list is in the order in which the scopes went over. The bytes of a
+// scope do not make it surplus: a scope within its record reserve keeps all its records, whatever their bytes. Caller
+// holds mu.
 func (s *shard) updateSurplus(sc *scopeState) {
 	p := sc.pool
-	want := sc.records.len > p.reserveEntries || sc.bytes > p.reserveBytes
+	want := sc.records.len > p.reserveEntries
 	if want == sc.surplus {
 		return
 	}
@@ -645,10 +668,10 @@ func (s *shard) remove(r *storedRecord) {
 	s.releaseIfEmpty(sc)
 }
 
-// recordSize returns the size counted for a record: recordOverhead, plus the length of its reply, or of its error
+// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or of its error
 // message when it has an error.
 func recordSize(rec Record) int64 {
-	size := int64(recordOverhead + len(rec.Reply))
+	size := int64(RecordOverhead + len(rec.Reply))
 	if rec.Err != nil {
 		size += int64(len(rec.Err.Message))
 	}

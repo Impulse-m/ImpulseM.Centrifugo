@@ -416,7 +416,6 @@ type ClientProxyContainer struct {
 type Client struct {
 	// Proxy is a configuration for client connection-wide proxies.
 	Proxy ClientProxyContainer `mapstructure:"proxy" json:"proxy" envconfig:"proxy" toml:"proxy" yaml:"proxy" doc:"Configuration for client connection-level proxies (connect and refresh)."`
-
 	// AllowedOrigins is a list of allowed origins for client connections.
 	AllowedOrigins []string `mapstructure:"allowed_origins" json:"allowed_origins" envconfig:"allowed_origins" yaml:"allowed_origins" toml:"allowed_origins" expose:"full" doc:"List of allowed WebSocket origins (CORS). Use <<*>> to allow all origins."`
 	// Token is a configuration for token generation and verification. When enabled, this configuration

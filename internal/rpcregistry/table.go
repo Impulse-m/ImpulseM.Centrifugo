@@ -43,31 +43,29 @@ func (a AuthClass) Admits(conn AuthClass) bool {
 // anonymous without a user and authenticated with one. It reports false when the claim value
 // does not agree with the user, or is unknown: such a connection must be rejected.
 func ConnectionAuthClass(claim string, userID string) (AuthClass, bool) {
-	switch claim {
-	case "":
+	if claim == "" {
 		if userID == "" {
 			return AuthClassAnonymous, true
 		}
 		return AuthClassAuthenticated, true
-	case configtypes.RPCAuthClassPending2FA:
-		return AuthClassPending2FA, true
-	case configtypes.RPCAuthClassBot:
-		if userID == "" {
-			return 0, false
-		}
-		return AuthClassBot, true
-	case configtypes.RPCAuthClassAuthenticated:
-		if userID == "" {
-			return 0, false
-		}
-		return AuthClassAuthenticated, true
-	case configtypes.RPCAuthClassAnonymous:
-		if userID != "" {
-			return 0, false
-		}
-		return AuthClassAnonymous, true
 	}
-	return 0, false
+	class, ok := ParseAuthClass(claim)
+	if !ok {
+		return 0, false
+	}
+	var agrees bool
+	switch class {
+	case AuthClassPending2FA:
+		agrees = true
+	case AuthClassAnonymous:
+		agrees = userID == ""
+	default:
+		agrees = userID != ""
+	}
+	if !agrees {
+		return 0, false
+	}
+	return class, true
 }
 
 // Built-in limits. They apply when neither the method, its target nor the defaults set a value.

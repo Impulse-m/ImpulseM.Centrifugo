@@ -7,6 +7,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// A kind which ScopeOf does not build, and a user with the anonymous kind, have no scope: nothing is tracked under a
+// scope which scopeUser and scopeAnonymous cannot read.
+func TestScopeOfRejectsOtherKinds(t *testing.T) {
+	id := []byte("install_0123456789abcdef")
+	require.Empty(t, ScopeOf("xy", "42", id))
+	require.Empty(t, ScopeOf("x", "42", id))
+	require.Empty(t, ScopeOf("", "42", id))
+	require.Empty(t, ScopeOf("a", "42", id))
+	require.NotEmpty(t, ScopeOf("a", "", id))
+	require.NotEmpty(t, ScopeOf("s", "42", id))
+	require.NotEmpty(t, ScopeOf("i", "42", id))
+}
+
 func TestScopeOfIsBoundToUserAndID(t *testing.T) {
 	id := []byte("install_0123456789abcdef")
 	require.NotEqual(t, ScopeOf("i", "42", id), ScopeOf("i", "43", id))
@@ -72,13 +85,6 @@ func TestScopeUserAndAnonymousShapes(t *testing.T) {
 	}
 }
 
-func TestFingerprintDependsOnMethodAndData(t *testing.T) {
-	require.Equal(t, Fingerprint("users.get", []byte("x")), Fingerprint("users.get", []byte("x")))
-	require.NotEqual(t, Fingerprint("users.get", []byte("x")), Fingerprint("users.get", []byte("y")))
-	require.NotEqual(t, Fingerprint("users.get", []byte("x")), Fingerprint("users.set", []byte("x")))
-	require.NotEqual(t, Fingerprint("a", []byte("bc")), Fingerprint("ab", []byte("c")))
-}
-
 // Hashing a short scope or fingerprint costs one allocation: the scope string itself.
 func TestScopeOfAllocs(t *testing.T) {
 	id := []byte("install_0123456789abcdef")
@@ -86,12 +92,4 @@ func TestScopeOfAllocs(t *testing.T) {
 		_ = ScopeOf("i", "42", id)
 	})
 	require.LessOrEqual(t, allocs, 1.0)
-}
-
-func TestFingerprintAllocs(t *testing.T) {
-	data := []byte(`{"name":"user"}`)
-	allocs := testing.AllocsPerRun(1000, func() {
-		_ = Fingerprint("users.set", data)
-	})
-	require.Zero(t, allocs)
 }

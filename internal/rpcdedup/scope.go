@@ -30,7 +30,12 @@ const encodedBufferSize = 512
 // instance, and userID is the user of the connection. id is the session or the instance. The anonymous kind "a"
 // is scoped by its instance only, and its scope has no user tag. The parts are hashed over a length-prefixed
 // encoding, so no user id or instance can make two scopes equal. The scope does not show id, so it may be logged.
+// A kind which is not "s", "i" or "a", or a user id with kind "a", has no scope, and "" is returned: the shape of
+// the scope must be one which scopeUser and scopeAnonymous read.
 func ScopeOf(kind string, userID string, id []byte) string {
+	if !validScopeKind(kind, userID) {
+		return ""
+	}
 	var stack [encodedBufferSize]byte
 	encoded := appendPartString(stack[:0], kind)
 	encoded = appendPartString(encoded, userID)
@@ -51,14 +56,16 @@ func ScopeOf(kind string, userID string, id []byte) string {
 	return string(out[:n])
 }
 
-// Fingerprint returns the fingerprint of a call: a hash of its method and data. A duplicate msg_id in the
-// same scope with another fingerprint is a different call, and gets neither the in-flight call nor its
-// reply.
-func Fingerprint(method string, data []byte) [32]byte {
-	var stack [encodedBufferSize]byte
-	encoded := appendPartString(stack[:0], method)
-	encoded = appendPartBytes(encoded, data)
-	return sha256.Sum256(encoded)
+// validScopeKind reports whether ScopeOf builds a scope of kind for userID: "s" and "i" for any user, and "a"
+// for no user only.
+func validScopeKind(kind string, userID string) bool {
+	switch kind {
+	case "s", "i":
+		return true
+	case anonymousKind:
+		return userID == ""
+	}
+	return false
 }
 
 // scopeUser returns the user tag of an authenticated scope, which is the shard key of its user. It returns the

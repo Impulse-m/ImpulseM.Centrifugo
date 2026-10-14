@@ -193,14 +193,8 @@ func revokeError(clientID string, userID string, result accessrevoke.Result, rev
 // refreshRevokeReply maps a failed access check made at refresh to the refresh reply and error. A revoked
 // connection gets an expired reply, a blocked or looping one a disconnect.
 func refreshRevokeReply(clientID string, userID string, result accessrevoke.Result) (centrifuge.RefreshReply, RefreshExtra, error) {
-	switch result.Verdict {
-	case accessrevoke.Blocked:
-		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
-	case accessrevoke.Revoked:
+	if result.Verdict == accessrevoke.Revoked {
 		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
-	case accessrevoke.LoopGuard:
-		accessrevoke.LogLoopGuard(clientID, userID, result)
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	return centrifuge.RefreshReply{}, RefreshExtra{}, nil
+	return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(clientID, userID, result, nil)
 }

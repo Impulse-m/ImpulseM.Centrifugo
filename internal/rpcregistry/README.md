@@ -115,7 +115,7 @@ A connection whose class is `pending_2fa` has a user in its token, which the reg
 
 * it gets no personal channel, no user-limited channels and no entry in the user index of the node, so calls which address a user do not reach it;
 * the user is still reported in the connect and refresh results, and the token is still forwarded to `pending_2fa` methods;
-* it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of connections without a user which carry a token session, and a connection leaves it when it gets a user or disconnects. The index also holds anonymous connections with a session;
+* it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of connections without a user which carry a token session, and a connection leaves it when it gets a user or disconnects. The index also holds anonymous connections with a session, so a revocation of their session disconnects them at once and not only in the sweep of all connections;
 * connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them.
 
 ### Rebind on refresh
@@ -137,7 +137,7 @@ The transitions of the auth class of a connection on refresh, when the user of t
 |---|---|---|
 | `anonymous` | `authenticated`, `bot` | rebind to the user |
 | `anonymous` | `pending_2fa` | rebind; the connection stays anonymous to the core and keeps the token user for the registry |
-| `pending_2fa` | `authenticated` | rebind to the user |
+| `pending_2fa` | `authenticated` | rebind to the same user; a token of another user is denied |
 | `pending_2fa` | `anonymous` | rebind to anonymous, dropping the channels of the token and of the user |
 | `authenticated`, `bot` | `anonymous` | with `allow_downgrade`: rebind to anonymous; otherwise disconnect |
 | any other | | refresh error `permission denied`, the class is kept |
@@ -145,7 +145,7 @@ The transitions of the auth class of a connection on refresh, when the user of t
 A connection with a user but no class stored under the current `auth_class_claim`, such as one made through a connect proxy, may not rebind: a refresh which would change its identity gets the same permission error.
 A refresh whose token user is the user the connection already has, and which keeps the user Core sees, takes the refresh path as before. Any other change of the token user takes the rebind path: with rebind off it disconnects, as it did before, and with rebind on the table decides. So `anonymous` to `pending_2fa` of a user, and `pending_2fa` of one user to `pending_2fa` of another, are routed by the table even though Core sees no user change.
 
-On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.
+On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. On a rebind to `pending_2fa` or `anonymous` the connection gets the channels of its token, and no personal channel. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.
 
 On a downgrade to anonymous the connection loses its personal channel, its user-limited channels, and the channels of token and proxy sources. Client channels stay when their namespace allows anonymous subscriptions.
 
@@ -163,7 +163,7 @@ The connect result and the refresh result carry two fields:
 ### Known gaps
 
 * A refresh with the same user whose class changes, such as `authenticated` to `bot`, takes the refresh path without the transition table. The token is still verified, and the class is taken from it.
-* An account switch between two users is denied: a refresh from one `authenticated` user to another gets a permission error. The client must log out, and then connect.
+* An account switch between two users is denied: a refresh of a connection which holds the user of its token (`authenticated`, `bot` or `pending_2fa`) to a token of another user gets a permission error. The client must log out, and then connect.
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
 
 ## Error mapping

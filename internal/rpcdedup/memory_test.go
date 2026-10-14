@@ -224,7 +224,7 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 		require.Equal(t, sc.records.len, n)
 		require.Equal(t, sc.bytes, bytes)
 		if n <= p.reserveEntries {
-			require.LessOrEqual(t, bytes, p.reserveBytes, "a scope within its record reserve fits its byte reserve")
+			require.LessOrEqual(t, bytes, int64(p.reserveEntries)*p.recordBytes, "a scope within its record reserve fits its byte reserve")
 		}
 
 		over := n > p.reserveEntries

@@ -142,7 +142,6 @@ type pool struct {
 	maxBytes       int64
 	maxScopes      int
 	reserveEntries int
-	reserveBytes   int64
 	recordBytes    int64
 	entries        int
 	bytes          int64
@@ -250,7 +249,6 @@ func newPool(entries int64, bytes int64, opts MemoryOptions, stats *poolStats) p
 		maxBytes:       bytes,
 		maxScopes:      int(maxScopes),
 		reserveEntries: reserveEntries,
-		reserveBytes:   reserveBytes,
 		recordBytes:    reserveBytes / int64(reserveEntries),
 		surplus:        intrusiveList[scopeState]{links: surplusLinks},
 		stats:          stats,
@@ -550,7 +548,7 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Recor
 			s.remove(f)
 			continue
 		}
-		if sc.records.len > 0 && (sc.records.len+1 > p.reserveEntries || sc.bytes+size > p.reserveBytes) {
+		if sc.records.len > 0 && sc.records.len+1 > p.reserveEntries {
 			s.evict(sc.records.front(), EvictionOverReserve)
 			continue
 		}

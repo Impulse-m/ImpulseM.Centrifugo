@@ -185,6 +185,7 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 	flightsOf := map[string]int{}
 	for key := range s.flights {
 		flightsOf[key.Scope]++
+		require.Nil(t, s.done[key], "a call in flight has no record")
 	}
 
 	orderLen := 0
@@ -982,8 +983,8 @@ func TestMemoryInsertFreesExpiredBeforeLive(t *testing.T) {
 	checkInvariants(t, store)
 }
 
-// Completing a call twice keeps one record: the second completion is not the owner of the flight.
-func TestMemoryCompleteOverwriteKeepsCounters(t *testing.T) {
+// Completing a flight a second time is ignored: the first record is kept, and the counters count one record.
+func TestMemoryCompleteTwiceKeepsFirstRecord(t *testing.T) {
 	store, _ := newTestMemory(1024)
 	key := Key{Scope: testScope("u1", "a"), MsgID: 1}
 	flight := NewFlight()
@@ -995,25 +996,6 @@ func TestMemoryCompleteOverwriteKeepsCounters(t *testing.T) {
 	require.Equal(t, int64(RecordOverhead+len("first")), store.Stats().Bytes)
 	record, _ := testDone(t, store, key)
 	require.Equal(t, []byte("first"), record.Reply)
-	checkInvariants(t, store)
-}
-
-// keep replaces an existing record of its key, without leaking the list nodes or the counters of the old one.
-func TestMemoryKeepReplacesExistingRecord(t *testing.T) {
-	store, clock := newTestMemory(1024)
-	key := Key{Scope: testScope("u1", "a"), MsgID: 1}
-	testAnswer(t, store, key, "first")
-
-	s := store.shardOf(key.Scope)
-	s.mu.Lock()
-	sc := s.scopes[key.Scope]
-	s.keep(sc, key, Record{Reply: []byte("second")}, clock.now())
-	s.mu.Unlock()
-
-	require.Equal(t, 1, testEntries(store))
-	require.Equal(t, int64(RecordOverhead+len("second")), store.Stats().Bytes)
-	record, _ := testDone(t, store, key)
-	require.Equal(t, []byte("second"), record.Reply)
 	checkInvariants(t, store)
 }
 

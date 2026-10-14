@@ -391,7 +391,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 		delete(s.flights, key)
 		sc.flights--
 		if !rec.Abandoned {
-			kept = s.keep(sc, key, kept, s.now())
+			kept = s.insert(sc, key, kept, s.now())
 		}
 	}
 	if sc != nil {
@@ -540,22 +540,10 @@ func (s *shard) sweepSome(now time.Time) {
 	}
 }
 
-// keep replaces the record of key with rec, the answer of the flight which sc owns, and returns the record as it is
-// kept. The scope is held while the old record is removed, so that it is not released before the new one is in.
-// Caller holds mu.
-func (s *shard) keep(sc *scopeState, key Key, rec Record, now time.Time) Record {
-	sc.flights++
-	if r := s.done[key]; r != nil {
-		s.remove(r)
-	}
-	kept := s.insert(sc, key, rec, now)
-	sc.flights--
-	return kept
-}
-
 // insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool, and returns
 // the record as it is kept. A reply over the share of a record is kept as uncached, and so is one which fits no room:
-// it never fails. Caller holds mu, and key has no record.
+// it never fails. Caller holds mu, and key has no record: a key with a flight has none, since Begin answers a live
+// record without a flight, and only insert writes records.
 func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Record {
 	p := sc.pool
 	size := recordSize(rec)

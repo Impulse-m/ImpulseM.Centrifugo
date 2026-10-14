@@ -31,16 +31,19 @@ type forkRegistry struct {
 	rateLimitRedisDuration         prometheus.Histogram
 
 	// RPC method registry metrics
-	rpcRegistryCallsTotal     *prometheus.CounterVec
-	rpcRegistryErrorsTotal    *prometheus.CounterVec
-	rpcRegistryReloadsTotal   *prometheus.CounterVec
-	rpcRegistryDedupTotal     *prometheus.CounterVec
-	rpcRegistryRetransmits    *prometheus.CounterVec
-	rpcRegistryDedupWait      prometheus.Histogram
-	rpcRegistryDedupEntries   prometheus.Gauge
-	rpcRegistryDedupEvictions *prometheus.CounterVec
-	rpcRegistryDedupScopes    *prometheus.GaugeVec
-	rpcRegistryDedupBytes     *prometheus.GaugeVec
+	rpcRegistryCallsTotal         *prometheus.CounterVec
+	rpcRegistryErrorsTotal        *prometheus.CounterVec
+	rpcRegistryReloadsTotal       *prometheus.CounterVec
+	rpcRegistryDedupTotal         *prometheus.CounterVec
+	rpcRegistryRetransmits        *prometheus.CounterVec
+	rpcRegistryDedupWait          prometheus.Histogram
+	rpcRegistryDedupEntries       prometheus.Gauge
+	rpcRegistryDedupEvictions     *prometheus.CounterVec
+	rpcRegistryDedupScopes        *prometheus.GaugeVec
+	rpcRegistryDedupBytes         *prometheus.GaugeVec
+	rpcRegistryDedupRedisErrors   prometheus.Counter
+	rpcRegistryDedupRedisDuration prometheus.Histogram
+	rpcRegistryDedupRedisAckDrops prometheus.Counter
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -175,13 +178,11 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 	})
 
 	m.rateLimitRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Namespace: metricsNamespace,
-		Subsystem: "rate_limit",
-		Name:      "redis_duration_seconds",
-		Help:      "Duration of redis_user_command rate limit script calls.",
-		Buckets: []float64{
-			0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
-		},
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "redis_duration_seconds",
+		Help:        "Duration of redis_user_command rate limit script calls.",
+		Buckets:     redisDurationBuckets,
 		ConstLabels: constLabels,
 	})
 
@@ -272,6 +273,31 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupBytes.WithLabelValues(pool)
 	}
 
+	m.rpcRegistryDedupRedisErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_errors_total",
+		Help:        "Number of failed Redis operations of the shared exactly-once RPC tier, including calls made while Redis is not connected.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_duration_seconds",
+		Help:        "Duration of the Redis operations of the shared exactly-once RPC tier.",
+		Buckets:     redisDurationBuckets,
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupRedisAckDrops = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_ack_drops_total",
+		Help:        "Number of acks dropped by the shared exactly-once RPC tier because its ack queue was full. The records of such acks expire at their TTL.",
+		ConstLabels: constLabels,
+	})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -300,6 +326,9 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupScopes,
 		m.rpcRegistryDedupBytes,
 		m.rpcRegistryRetransmits,
+		m.rpcRegistryDedupRedisErrors,
+		m.rpcRegistryDedupRedisDuration,
+		m.rpcRegistryDedupRedisAckDrops,
 	}
 }
 
@@ -359,4 +388,12 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupScopes = m.rpcRegistryDedupScopes
 	RPCRegistryDedupBytes = m.rpcRegistryDedupBytes
 	RPCRegistryRetransmitsTotal = m.rpcRegistryRetransmits
+	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
+	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
+	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+}
+
+// redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.
+var redisDurationBuckets = []float64{
+	0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
 }

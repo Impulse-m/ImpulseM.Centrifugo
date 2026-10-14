@@ -244,6 +244,18 @@ var RPCRegistryDedupScopes *prometheus.GaugeVec
 // setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupBytes *prometheus.GaugeVec
 
+// RPCRegistryDedupRedisErrorsTotal counts the failed Redis operations of the shared tier of exactly-once RPC. It is
+// set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisErrorsTotal prometheus.Counter
+
+// RPCRegistryDedupRedisDuration is the duration of the Redis operations of the shared tier. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisDuration prometheus.Histogram
+
+// RPCRegistryDedupRedisAckDropsTotal counts the acks which the shared tier dropped because its ack queue was full.
+// It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
+
 // RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
 type RPCRegistryDedupOutcome int
 
@@ -260,6 +272,7 @@ const (
 	RPCRegistryDedupNoScope
 	RPCRegistryDedupRefusedPool
 	RPCRegistryDedupRefusedUser
+	RPCRegistryDedupHitInFlightRemote
 )
 
 // rpcRegistryDedupOutcomeLabels holds the outcome label of each RPCRegistryDedupOutcome, in the same order.
@@ -275,6 +288,7 @@ var rpcRegistryDedupOutcomeLabels = [...]string{
 	"no_scope",
 	"refused_pool",
 	"refused_user",
+	"hit_inflight_remote",
 }
 
 // rpcRegistryDedupPoolLabels are the pool labels of the dedup gauges, the index of each is the pool index of the store.
@@ -306,6 +320,9 @@ type RPCRegistryDedupMetrics struct {
 	entries          prometheus.Gauge
 	scopes           [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
 	bytes            [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
+	redisErrors      prometheus.Counter
+	redisDuration    prometheus.Histogram
+	ackDrops         prometheus.Counter
 }
 
 // NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
@@ -315,8 +332,11 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 		return nil
 	}
 	m := &RPCRegistryDedupMetrics{
-		waitSeconds: RPCRegistryDedupWaitSeconds,
-		entries:     RPCRegistryDedupEntries,
+		waitSeconds:   RPCRegistryDedupWaitSeconds,
+		entries:       RPCRegistryDedupEntries,
+		redisErrors:   RPCRegistryDedupRedisErrorsTotal,
+		redisDuration: RPCRegistryDedupRedisDuration,
+		ackDrops:      RPCRegistryDedupRedisAckDropsTotal,
 	}
 	for i, label := range rpcRegistryDedupOutcomeLabels {
 		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
@@ -369,6 +389,31 @@ func (m *RPCRegistryDedupMetrics) Inc(outcome RPCRegistryDedupOutcome) {
 		return
 	}
 	m.outcomes[outcome].Inc()
+}
+
+// RedisCall observes the duration of one Redis operation of the shared tier. It implements rpcdedup.BackendObserver.
+func (m *RPCRegistryDedupMetrics) RedisCall(seconds float64) {
+	if m == nil || m.redisDuration == nil {
+		return
+	}
+	m.redisDuration.Observe(seconds)
+}
+
+// RedisError counts one failed Redis operation of the shared tier. It implements rpcdedup.BackendObserver.
+func (m *RPCRegistryDedupMetrics) RedisError() {
+	if m == nil {
+		return
+	}
+	incCounter(m.redisErrors)
+}
+
+// AckDropped counts one ack which the shared tier dropped because its queue was full. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) AckDropped() {
+	if m == nil {
+		return
+	}
+	incCounter(m.ackDrops)
 }
 
 // ObserveWait records the time a duplicate waited for the call it joined.

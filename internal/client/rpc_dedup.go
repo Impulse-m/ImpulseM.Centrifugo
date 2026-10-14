@@ -354,7 +354,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
 	}
-	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater))
+	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryLaterError(cfg))
 }
 
 // storeCancelFailure handles a failed Cancel of the store. A refusal is counted and records nothing. Any other failure
@@ -396,8 +396,7 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	case <-c.Context().Done():
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultCancelled, registryError(cfg.Errors.Cancelled))
 	case <-timer.C:
-		timeoutErr := registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater)
-		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultTimeout, timeoutErr)
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultTimeout, registryLaterError(cfg))
 	}
 	h.rpcDedup.metrics.ObserveWait(time.Since(started).Seconds())
 	rec := flight.Record()
@@ -433,6 +432,12 @@ func registryRetryError(e configtypes.RPCRegistryError, temporary bool, retry st
 		protoErr.Metadata = map[string]string{rpcRetryMetadataKey: retry}
 	}
 	return protoErr
+}
+
+// registryLaterError is the temporary dedup failure of a call which was not executed, and whose msg_id is still good:
+// the client sends it again later.
+func registryLaterError(cfg configtypes.RPCRegistry) *centrifuge.Error {
+	return registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater)
 }
 
 // rpcRecordOf returns the final record of a call which ran: its reply, or its error. A disconnect is final too:

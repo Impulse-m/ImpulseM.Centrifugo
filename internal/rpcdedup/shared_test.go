@@ -531,6 +531,30 @@ func TestSharedCancelOwnedByThisNodeWithoutFlightDoesNothing(t *testing.T) {
 	require.True(t, testIsMiss(t, fx.local, sharedKey))
 }
 
+func TestSharedCancelOfRefusedScopeMakesNoBackendCall(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.MaxScopesPerUser = 1
+	local := NewMemory(options)
+	backend := newFakeBackend()
+	shared := NewShared(SharedOptions{
+		Local:         local,
+		Backend:       backend,
+		NodeID:        "node-a",
+		TTL:           time.Minute,
+		MaxReplyBytes: 1024,
+	})
+	testAnswer(t, local, Key{Scope: testScope("u1", "a"), MsgID: 1}, "ok")
+
+	refusedKey := Key{Scope: testScope("u1", "b"), MsgID: 2}
+	err := shared.Cancel(refusedKey, testCancelled)
+	require.Equal(t, RefusalUser, testRefused(t, err))
+	require.Empty(t, backend.callLog(), "a refused scope is not written to the shared tier")
+	_, found := backend.entry(refusedKey)
+	require.False(t, found)
+	require.Equal(t, 1, testEntries(local))
+}
+
 func TestSharedCancelFailureFollowsOnStoreError(t *testing.T) {
 	fx := newSharedFixture(t, true)
 	fx.backend.setFail(errors.New("redis is down"))

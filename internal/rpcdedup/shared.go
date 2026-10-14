@@ -239,10 +239,14 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 
 // Cancel implements Store. A call which runs on this node is cancelled here, and its owner keeps the record. Otherwise
 // the shared tier decides: a call which runs on another node is cancelled by a notification to that node, and a call
-// which did not start leaves a tombstone, which is also kept locally.
+// which did not start leaves a tombstone, which is also kept locally. A scope which this node refuses is refused
+// before the shared tier, so nothing is written for it.
 func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 	if s.CancelFlight(key) {
 		return nil
+	}
+	if err := s.local.CheckAdmit(key.Scope); err != nil {
+		return err
 	}
 	res, err := s.backend.Cancel(context.Background(), key, failure, s.ttl)
 	if err != nil {

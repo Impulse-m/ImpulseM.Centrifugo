@@ -19,11 +19,19 @@ import (
 // rpcInflightKey is the connection storage key of the in-flight map of exactly-once RPC.
 const rpcInflightKey = "rpc_inflight"
 
-// rpcDedupState is the exactly-once RPC state of a handler: the store and the metrics of its outcomes. A handler
-// has one when the dedup is on, and none otherwise.
+// rpcScopeKey is the connection storage key of the dedup scope of the connection. It is computed at connect, and
+// again at refresh, from the user and the identity of the connection, and each call reads it.
+const rpcScopeKey = "rpc_scope"
+
+// rpcDedupState is the exactly-once RPC state of a handler: the store, the metrics of its outcomes, and the
+// window and the skew of the msg_id check. The window and the skew are captured here, with the store, since the
+// store keeps its records for the window: a reload of them must not widen the msg_ids which are accepted.
 type rpcDedupState struct {
-	store   rpcdedup.Store
-	metrics *metrics.RPCRegistryDedupMetrics
+	store     rpcdedup.Store
+	metrics   *metrics.RPCRegistryDedupMetrics
+	window    time.Duration
+	maxSkew   time.Duration
+	anonymous bool
 }
 
 // newRPCDedupState returns the exactly-once RPC state of the config, or nil when the dedup is off. The state is
@@ -36,44 +44,95 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 	if !dedup.Enabled {
 		return nil
 	}
+	dedupMetrics := metrics.NewRPCRegistryDedupMetrics()
 	store := rpcdedup.NewMemory(rpcdedup.MemoryOptions{
-		MaxEntries:         dedup.LocalMaxEntries,
-		MaxBytes:           int64(dedup.LocalMaxBytes),
-		MaxRecordsPerScope: dedup.MaxRecordsPerScope,
-		TTL:                dedup.Window.ToDuration(),
-		MaxReplyBytes:      dedup.MaxReplySize,
+		MaxEntries:          dedup.LocalMaxEntries,
+		MaxBytes:            int64(dedup.LocalMaxBytes),
+		AnonymousMaxEntries: dedup.LocalAnonymousMaxEntries,
+		AnonymousMaxBytes:   int64(dedup.LocalAnonymousMaxBytes),
+		MaxRecordsPerScope:  dedup.MaxRecordsPerScope,
+		ScopeReserve:        dedup.ScopeReserve,
+		ScopeReserveBytes:   int64(dedup.ScopeReserveBytes),
+		MaxScopesPerUser:    dedup.MaxScopesPerUser,
+		TTL:                 dedup.Window.ToDuration(),
+		MaxReplyBytes:       dedup.MaxReplySize,
+		Observer:            dedupMetrics,
 	})
-	return &rpcDedupState{store: store, metrics: metrics.NewRPCRegistryDedupMetrics()}
+	return &rpcDedupState{
+		store:     store,
+		metrics:   dedupMetrics,
+		window:    dedup.Window.ToDuration(),
+		maxSkew:   dedup.MaxSkew.ToDuration(),
+		anonymous: dedup.LocalAnonymousMaxEntries > 0,
+	}
 }
 
-// rpcDedupScope returns the dedup scope of a connection, from its user, its token identity and its storage.
-// A connection with a token session is scoped to the session of its user. Otherwise it is scoped to its install
-// instance, stored at connect, and its user. The user is part of both, so an instance seen on one account cannot
-// replay calls of another. A connection with neither has no scope, and its calls are not deduplicated. The
-// caller reads the user and the identity before acquiring the storage, which the client accessors may lock.
+// rpcDedupScope returns the dedup scope of a connection, from its user, its token identity and its storage. A
+// connection with a user is scoped to its token session, or else to its install instance, and the user is part of
+// both, so an instance seen on one account cannot replay calls of another. An anonymous connection has no user, and
+// is scoped to its install instance only. A connection with neither has no scope, and its calls are not
+// deduplicated. The caller reads the user and the identity before acquiring the storage, which the client accessors
+// may lock.
 func rpcDedupScope(userID string, identity centrifuge.TokenIdentity, storage map[string]any) string {
+	var instance string
+	instance, _ = storage[clientstorage.KeyInstance].(string)
+	if userID == "" {
+		if instance == "" {
+			return ""
+		}
+		return rpcdedup.ScopeOf("a", "", []byte(instance))
+	}
 	if identity.Session != ([16]byte{}) {
 		return rpcdedup.ScopeOf("s", userID, identity.Session[:])
 	}
-	var instance string
-	instance, _ = storage[clientstorage.KeyInstance].(string)
 	if instance != "" {
 		return rpcdedup.ScopeOf("i", userID, []byte(instance))
 	}
 	return ""
 }
 
-// storeRPCInstance stores the install instance of a connection, when the dedup is on and the instance is
-// valid. An invalid instance is dropped with a debug log, which never shows the value.
-func (h *Handler) storeRPCInstance(storage map[string]any, instance string) {
-	if h.rpcDedup == nil || instance == "" {
+// rpcConnectionScope returns the dedup scope of a connection. An anonymous connection has one only when the store
+// keeps the scopes of anonymous connections.
+func (h *Handler) rpcConnectionScope(userID string, identity centrifuge.TokenIdentity, storage map[string]any) string {
+	if userID == "" && !h.rpcDedup.anonymous {
+		return ""
+	}
+	return rpcDedupScope(userID, identity, storage)
+}
+
+// storeRPCConnection stores the install instance of a connection, when the dedup is on and the instance is valid,
+// and the dedup scope of the connection, computed from its credentials. An invalid instance is dropped with a debug
+// log, which never shows the value.
+func (h *Handler) storeRPCConnection(storage map[string]any, instance string, credentials *centrifuge.Credentials) {
+	if h.rpcDedup == nil {
 		return
 	}
-	if !rpcdedup.ValidInstance(instance) {
-		log.Debug().Msg("dropped invalid connect instance, the connection has no dedup scope from it")
+	if instance != "" {
+		if rpcdedup.ValidInstance(instance) {
+			storage[clientstorage.KeyInstance] = instance
+		} else {
+			log.Debug().Msg("dropped invalid connect instance, the connection has no dedup scope from it")
+		}
+	}
+	var userID string
+	var identity centrifuge.TokenIdentity
+	if credentials != nil {
+		userID = credentials.UserID
+		identity = credentials.TokenIdentity
+	}
+	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
+}
+
+// refreshRPCScope computes the dedup scope of a connection again after its token is refreshed, since the session
+// of the identity may change. The user is the same, since a refresh of another user is refused.
+func (h *Handler) refreshRPCScope(c Client, identity centrifuge.TokenIdentity) {
+	if h.rpcDedup == nil {
 		return
 	}
-	storage[clientstorage.KeyInstance] = instance
+	userID := c.UserID()
+	storage, release := c.AcquireStorage()
+	defer release(storage)
+	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
 }
 
 // rpcLimit returns the concurrency limit of an OnRPC call. With the dedup on, a cancel command does not wait for
@@ -92,8 +151,9 @@ type rpcTrack struct {
 	inflight *rpcdedup.InFlight
 }
 
-// rpcTrackCall returns the dedup state of a call. It is nil when the dedup is off, or the call carries nothing
-// to track. The connection storage is acquired once, to create the in-flight map and read the scope.
+// rpcTrackCall returns the dedup state of a call. It is nil when the dedup is off, or the call carries nothing to
+// track. The connection storage is acquired once, to create the in-flight map and to read the scope. A connection
+// which has no scope stored yet gets one computed here.
 func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTrack {
 	if h.rpcDedup == nil {
 		return nil
@@ -113,7 +173,12 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 		inflight = rpcdedup.NewInFlight()
 		storage[rpcInflightKey] = inflight
 	}
-	return &rpcTrack{scope: rpcDedupScope(userID, identity, storage), inflight: inflight}
+	scope, found := storage[rpcScopeKey].(string)
+	if !found {
+		scope = h.rpcConnectionScope(userID, identity, storage)
+		storage[rpcScopeKey] = scope
+	}
+	return &rpcTrack{scope: scope, inflight: inflight}
 }
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies.
@@ -124,14 +189,15 @@ func (h *Handler) rpcAck(track *rpcTrack, acks []uint64) {
 	if err := h.rpcDedup.store.Ack(track.scope, acks); err != nil {
 		log.Error().Err(err).Msg("error acknowledging exactly-once RPC records")
 	}
-	h.rpcDedup.metrics.SetEntries(h.rpcDedup.store.Len())
+	h.observeDedupStore()
 }
 
 // cancelRPCRegistry cancels the call msgID of the connection and of its scope. The cancel command has no reply
 // of its own, so it answers an empty reply. A msg_id outside the window is refused, and nothing is recorded for it.
+// A cancel of a scope which the store does not admit records nothing, and is counted as refused.
 func (h *Handler) cancelRPCRegistry(track *rpcTrack, msgID uint64) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()
-	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), cfg.Dedup.Window.ToDuration(), cfg.Dedup.MaxSkew.ToDuration()) {
+	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), h.rpcDedup.window, h.rpcDedup.maxSkew) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDInvalid)
 		return centrifuge.RPCReply{}, registryError(cfg.Errors.MsgIDInvalid)
 	}
@@ -140,9 +206,9 @@ func (h *Handler) cancelRPCRegistry(track *rpcTrack, msgID uint64) (centrifuge.R
 	if track.scope != "" {
 		failure := registryErrorValue(cfg.Errors.Cancelled)
 		if err := h.rpcDedup.store.Cancel(rpcdedup.Key{Scope: track.scope, MsgID: msgID}, failure); err != nil {
-			log.Error().Err(err).Msg("error cancelling exactly-once RPC call")
+			h.storeCancelFailure(err)
 		}
-		h.rpcDedup.metrics.SetEntries(h.rpcDedup.store.Len())
+		h.observeDedupStore()
 	}
 	return centrifuge.RPCReply{}, nil
 }
@@ -153,7 +219,7 @@ func (h *Handler) cancelRPCRegistry(track *rpcTrack, msgID uint64) (centrifuge.R
 // call is cancelled by a disconnect, as it always was.
 func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack) (centrifuge.RPCReply, error) {
 	msgID := e.Call.MsgID
-	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), cfg.Dedup.Window.ToDuration(), cfg.Dedup.MaxSkew.ToDuration()) {
+	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), h.rpcDedup.window, h.rpcDedup.maxSkew) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDInvalid)
 		msgIDErr := registryError(cfg.Errors.MsgIDInvalid)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, msgIDErr)
@@ -170,19 +236,19 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(c.Context()))
 	defer cancel()
-	release := track.inflight.Add(msgID, cancel)
-	defer release()
-	return h.callRPCRecorded(ctx, cancel, c, e, m, cfg, connToken, track.scope)
+	return h.callRPCRecorded(ctx, cancel, c, e, m, cfg, connToken, track)
 }
 
 // callRPCRecorded runs a non-idempotent call in a scope through the dedup store. The call is a miss, a duplicate
 // of a done call, or a duplicate of a call in flight on this node. A duplicate with another fingerprint is refused.
-func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, scope string) (centrifuge.RPCReply, error) {
-	key := rpcdedup.Key{Scope: scope, MsgID: e.Call.MsgID}
+// Only the owner of a miss is registered in the in-flight map of its connection: a duplicate joins the call of the
+// owner, and a cancel of the msg_id reaches the owner, which then answers the duplicate too.
+func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack) (centrifuge.RPCReply, error) {
+	key := rpcdedup.Key{Scope: track.scope, MsgID: e.Call.MsgID}
 	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint(e.Method, e.Data))
 	lookup, err := h.rpcDedup.store.Begin(key, flight)
 	if err != nil {
-		return h.rpcStoreFailure(ctx, c, e, m, cfg, connToken, err)
+		return h.rpcStoreFailure(ctx, cancel, c, e, m, cfg, connToken, track, err)
 	}
 	switch lookup.Outcome {
 	case rpcdedup.OutcomeDone:
@@ -198,6 +264,8 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 	}
 	h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMiss)
 	flight.Attach(cancel)
+	release := track.inflight.Add(e.Call.MsgID, cancel)
+	defer release()
 	// The owner always completes its flight, so its duplicates never wait on a call which ended without an answer.
 	// A panic in the call leaves the flight abandoned, and the duplicates retry.
 	completed := false
@@ -218,23 +286,57 @@ func (h *Handler) completeRPCRecord(key rpcdedup.Key, flight *rpcdedup.Flight, r
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupStoreError)
 		log.Error().Err(err).Msg("error keeping exactly-once RPC record")
 	}
-	h.rpcDedup.metrics.SetEntries(h.rpcDedup.store.Len())
+	h.observeDedupStore()
 }
 
-// rpcStoreFailure handles a failed Begin. With fail_open the call runs without dedup. With fail_closed it is
-// answered with the temporary dedup_unavailable error, which clients retry.
-func (h *Handler) rpcStoreFailure(ctx context.Context, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, storeErr error) (centrifuge.RPCReply, error) {
-	h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupStoreError)
-	log.Error().Err(storeErr).Str("method", m.Name).Msg("exactly-once RPC store failed")
+// rpcStoreFailure handles a failed Begin. A refusal of the scope is counted by its reason, and any other failure
+// is counted as a store error and logged. With fail_open the call runs without dedup, and stays in the in-flight
+// map of its connection, so a cancel reaches it. With fail_closed it is answered with the temporary
+// dedup_unavailable error, which clients retry, and it is not run.
+func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, storeErr error) (centrifuge.RPCReply, error) {
+	var refused *rpcdedup.RefusedError
+	if errors.As(storeErr, &refused) {
+		h.countRefused(refused)
+	} else {
+		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupStoreError)
+		log.Error().Err(storeErr).Str("method", m.Name).Msg("exactly-once RPC store failed")
+	}
 	if cfg.Dedup.OnStoreError == configtypes.RPCDedupFailOpen {
+		release := track.inflight.Add(e.Call.MsgID, cancel)
+		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
 	}
 	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryTemporaryError(cfg.Errors.DedupUnavailable))
 }
 
+// storeCancelFailure handles a failed Cancel of the store. A refusal is counted and records nothing. Any other failure
+// is logged.
+func (h *Handler) storeCancelFailure(err error) {
+	var refused *rpcdedup.RefusedError
+	if errors.As(err, &refused) {
+		h.countRefused(refused)
+		return
+	}
+	log.Error().Err(err).Msg("error cancelling exactly-once RPC call")
+}
+
+// countRefused counts a scope which the store refused, by the limit which refused it.
+func (h *Handler) countRefused(refused *rpcdedup.RefusedError) {
+	if refused.Refusal == rpcdedup.RefusalUser {
+		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupRefusedUser)
+		return
+	}
+	h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupRefusedPool)
+}
+
+// observeDedupStore sets the gauges of the store: its records, its admitted scopes and its bytes, per pool.
+func (h *Handler) observeDedupStore() {
+	h.rpcDedup.metrics.SetStore(h.rpcDedup.store.Stats())
+}
+
 // rpcJoin waits for the call which a duplicate joined, and answers the duplicate with its record. The wait ends
 // when the call is done, when the duplicate is cancelled, when its connection closes, or at the method timeout.
-// A closed duplicate frees its slot at once.
+// A closed duplicate frees its slot at once. A duplicate is not registered in the in-flight map of its connection.
 func (h *Handler) rpcJoin(ctx context.Context, c Client, m *rpcregistry.Method, cfg configtypes.RPCRegistry, flight *rpcdedup.Flight) (centrifuge.RPCReply, error) {
 	started := time.Now()
 	timer := time.NewTimer(m.Timeout)

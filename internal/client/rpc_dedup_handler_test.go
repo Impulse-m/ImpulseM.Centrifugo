@@ -155,6 +155,9 @@ func dedupRegistryConfig() configtypes.RPCRegistry {
 		MaxReplySize:       65536,
 		LocalMaxEntries:    1000,
 		LocalMaxBytes:      1 << 28,
+		ScopeReserve:       4,
+		ScopeReserveBytes:  8192,
+		MaxScopesPerUser:   8,
 		MaxRecordsPerScope: 1024,
 		OnStoreError:       configtypes.RPCDedupFailClosed,
 	}

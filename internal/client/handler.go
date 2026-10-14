@@ -625,7 +625,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
-	h.storeRPCInstance(storage, e.Instance)
+	h.storeRPCConnection(storage, e.Instance, credentials)
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,
@@ -684,6 +684,9 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		if err == nil && extra.Meta != nil {
 			setStorageMeta(c, extra.Meta)
 		}
+		if err == nil && r.TokenIdentity != nil {
+			h.refreshRPCScope(c, *r.TokenIdentity)
+		}
 		return r, RefreshExtra{}, err
 	}
 	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
@@ -711,6 +714,7 @@ func (h *Handler) OnRefresh(c Client, e centrifuge.RefreshEvent, refreshProxyHan
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	h.refreshRPCScope(c, identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}

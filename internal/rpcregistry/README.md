@@ -159,7 +159,7 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 * Ack. A call lists in `ack` the `msg_id`s whose replies it received. Their records are removed.
 * Mutations and disconnects. A non-idempotent call in a scope runs on a context which a disconnect does not cancel, so a backend commit completes, and its answer is kept. A disconnect which the status mapping makes of the answer is kept as a protocol error with its code and reason, so a retransmit gets it without a second backend call. A non-idempotent call without a scope, and an idempotent call, are cancelled by a disconnect.
 * A store failure answers a tracked call with the temporary `errors.dedup_unavailable` under `on_store_error: fail_closed`, the default. Under `fail_open` the call runs without dedup. The same applies to a call of a new scope which the node cannot admit within its budgets, see Admission. Idempotent calls do not use the store.
-* Records are node-local. A retransmit which reaches another node runs again.
+* Records are node-local unless `redis.enabled` is set, see Shared records.
 * Secrecy. The instance is a bearer secret. It must be random, made by the application, of at least 128 bits (22 base64url characters), kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit and cancel calls in its scope. The server never logs the instance or a scope.
 
 | Error | Default `code` | `temporary` |
@@ -169,19 +169,67 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 | `result_evicted` | 110 | no |
 | `dedup_unavailable` | 108 | yes |
 
+### Shared records (Redis)
+
+Off by default. With `rpc.registry.dedup.redis.enabled`, the records are kept in Redis too, so a retransmit which reaches another node is answered from the record of its first call, and a duplicate of a call which runs on another node waits for it. It is read at start: a change takes effect after a restart. It needs `rpc.registry.dedup.enabled`.
+
+```json
+"rpc": {"registry": {"dedup": {"redis": {"enabled": true, "address": ["redis://127.0.0.1:6379"], "prefix": "centrifugo"}}}}
+```
+
+To use the Redis of the engine instead, set `"redis": {"enabled": true, "reuse_from_engine": true}`, which requires `engine.type` to be `redis`. The address, the prefix and the timeouts are then the engine's, and the `address`, `prefix` and TLS settings of the dedup config are not read.
+
+Which tier answers. Redis is authoritative for whether a call ran and what it answered. The node-local store is the node's cache of done records, the join point of the calls which run on the node, and the memory guard. So a done record is answered from memory, and only a local miss, or a record kept without its reply, asks Redis; an answer from Redis is cached on the node. A call which runs on this node is joined locally, as before. A call which runs on another node is found in Redis, and its duplicate waits for it by polling Redis, with a delay which grows from 50 ms to 500 ms. A scope which the node refuses under Admission is refused in both tiers: no record is kept for it in Redis only.
+
+Keys and what is stored. A record is one hash per call, under `<prefix>.rpc.{<scope>}.<msg_id>`. It holds the state of the call, its fingerprint, the node which runs it, its reply or its error, and whether its reply was kept. The scope is the hash tag, so the records of a scope share a slot in Redis Cluster, and each script touches one scope only. The scope is a hash of the user and its session or instance, so the only identifier which reaches Redis is that hash: no user ID and no instance is stored, and the instance is never logged.
+
+Lifetimes. An in-flight record lives for the method timeout plus 10 seconds, so it outlives its call only when the node which runs the call died. A done record and a cancel record live for the window and the skew, as the node-local records do. When the node which runs a call dies, its in-flight record expires. A retransmit which arrives after that runs the call again. A duplicate which waited for that call sees the record disappear, and is answered with the temporary `errors.dedup_unavailable`, so its retransmit runs the call. The backend receives the `msg_id` on every call, and a backend which must not repeat a commit should check it, as the node-local store already asks.
+
+Cross-node wait and cancel. A duplicate on a node which finds a call running on another node waits for its answer, and gets the answer as a retransmit of a done call does. Its wait ends at the method timeout, as a local join does. A cancel of a call which runs on another node is sent to that node as a targeted node notification, and the node cancels its call, so the call answers `errors.cancelled` and its record is kept as a cancelled one, as on one node. The notification needs a cluster broker which carries node control messages, the same as the access revocation does. Nodes which share the Redis without such a broker still deduplicate across nodes, but a cancel of a call which runs on another node then does not reach it: the call runs to its method timeout, and its record is whatever it answered.
+
+Under `on_store_error`, a failure of the shared tier is handled as follows.
+
+| Redis | `fail_closed` (default) | `fail_open` |
+|---|---|---|
+| Unreachable at start | the node starts; tracked calls answer the temporary `errors.dedup_unavailable` until Redis is reachable | the node starts; tracked calls run with node-local dedup until Redis is reachable |
+| `begin` fails | the temporary `errors.dedup_unavailable`, and the call is not run | the call runs with node-local dedup |
+| `complete` fails | the record is kept on the node; the in-flight record in Redis expires at its TTL, so a retransmit on another node waits for it and is told to retry | the same |
+| `cancel` fails | logged; nothing is recorded in Redis | a local cancel, or a local cancel record |
+| ack fails or its queue is full | counted; the records expire at their TTL | the same |
+
+The node never refuses to start because Redis is down. Idempotent methods do not use either tier. With `fail_open`, a node degrades to node-local dedup, which is what it gives without Redis; it never degrades to no dedup while its node-local store is healthy.
+
+The bounds of the node-local store do not all carry over. Redis enforces no budget of its own, so:
+
+| Node-local guarantee | In Redis |
+|---|---|
+| `max_records_per_scope` | Not enforced. The records of a scope are bounded by their TTL and by acks only. |
+| `scope_reserve`, `scope_reserve_bytes` and surplus eviction | Not enforced. Records live until their TTL, their ack, or the eviction of Redis under `maxmemory`. |
+| `max_scopes_per_user` | Per node: a user may hold that many scopes on each node. |
+| Anonymous pool | Per node: an anonymous scope writes to Redis once the node admits it. `local_anonymous_max_entries: 0` keeps anonymous calls out of both tiers. |
+| Reply limit | The same. A reply over `min(max_reply_size, scope_reserve_bytes / scope_reserve)`, which is 2048 bytes at the defaults, is kept as uncached in both tiers. |
+| TTL | The window and the skew for done records and cancel records; the method timeout plus 10 seconds for a call in flight. |
+
+What a flood can do. A client with a valid scope which sends distinct `msg_id`s as fast as it can writes one record per call, and each record lives for the window, the skew and one second, which is 151 seconds at the defaults. With acks withheld, that is about the call rate times 151 times 2.3 KiB per scope in the worst case, and `max_records_per_scope` does not limit it in Redis. At 10 000 recorded calls per second cluster-wide with 1 KiB average records, that is about 1.5 GiB without acks, and much less with them. The guards are, in order: `client.rate_limit` on RPC, with `redis_user_command`, which shares the same Redis and bounds a user cluster-wide; the admission of each node, which writes nothing for a scope the node refuses; and the `maxmemory` of Redis.
+
+Recommended deployment. Use a dedicated Redis for the shared tier, with `maxmemory` set and `maxmemory-policy volatile-lru` (or `volatile-ttl`). Every key has a TTL, so an evicted record only makes a retransmit of its call run again, which is the eviction semantics of the node-local store. Do not use an `allkeys-*` policy on a Redis which the engine shares: a Redis under `noeviction` fails the writes of `begin` at `maxmemory`, and those then follow `on_store_error`. `reuse_from_engine` suits small deployments, where the records live in the `rpc` namespace under the engine prefix. Redis 6 or later is required. The scripts do not call `TIME`, so they replicate and run on Redis 6 and later.
+
 ## Metrics
 
 * `centrifugo_rpc_registry_calls_total{rpc_method, result}`: calls by method and result (`ok`, `error`, `cancelled`, `timeout`, `denied`, `unknown`). A call to a name which is not in the registry counts as `unknown`.
 * `centrifugo_rpc_registry_errors_total{rpc_method, app_type}`: failed calls with an application error type. Cancelled calls are not counted here.
 * `centrifugo_rpc_registry_reloads_total{trigger, result}`: reloads of the registry. `trigger` is `signal` for a configuration reload on SIGHUP, and `poll` for a change of the registry file found by the poll. `result` is `ok` or `error`. A touch without a change of content is not a reload. A reload which fails, on a content or a dial error, counts as `error`. A file which cannot be read is logged and not counted.
 * Per target, the proxy metrics with protocol `grpc` and type `rpc`: `centrifugo_proxy_duration_seconds`, `centrifugo_proxy_duration_seconds_histogram`, `centrifugo_proxy_errors` and `centrifugo_proxy_inflight_requests`. A call cancelled by the client is not observed in them, as the proxy handler does for a closed client; `centrifugo_proxy_inflight_requests` still counts it while it runs.
-* `centrifugo_rpc_registry_dedup_total{outcome}`: exactly-once calls by outcome (`miss`, `hit_done`, `hit_inflight_local`, `evicted`, `cancelled`, `store_error`, `msg_id_invalid`, `msg_id_reused`, `no_scope`, `refused_pool`, `refused_user`). `cancelled` counts cancel commands. `refused_pool` is a new scope which its pool cannot admit, and `refused_user` a user at `max_scopes_per_user`; both count a call or a cancel command, and are not counted as `store_error`. Answers from a record are counted here and not in `calls_total`, which counts backend calls. No ID is in any label.
+* `centrifugo_rpc_registry_dedup_total{outcome}`: exactly-once calls by outcome (`miss`, `hit_done`, `hit_inflight_local`, `hit_inflight_remote`, `evicted`, `cancelled`, `store_error`, `msg_id_invalid`, `msg_id_reused`, `no_scope`, `refused_pool`, `refused_user`). `hit_inflight_remote` is a duplicate which waited for a call running on another node, see Shared records. `cancelled` counts cancel commands. `refused_pool` is a new scope which its pool cannot admit, and `refused_user` a user at `max_scopes_per_user`; both count a call or a cancel command, and are not counted as `store_error`. Answers from a record are counted here and not in `calls_total`, which counts backend calls. No ID is in any label.
 * `centrifugo_rpc_registry_dedup_evictions_total{reason}`: answers the node evicted to make room. `scope_cap` is the oldest answer of a scope over `max_records_per_scope`, `over_reserve` the oldest answer of the scope which is over its reserve while the budget is full, `surplus` the oldest answer of the scope which has been over its reserve the longest, evicted for another scope, and `uncached` a reply over its share of `scope_reserve_bytes / scope_reserve`, whose record is kept without it, and `reply_size` a reply over `max_reply_size`, whose record is kept without it when the call completes. A rise of `surplus` with `refused_*` is the signature of a flood. A rise of `uncached` means replies are larger than the share, so raise `scope_reserve_bytes` to keep them. A rise of `reply_size` means replies are larger than `max_reply_size`, so raise it, and `scope_reserve_bytes` too when they are over the share.
-* `centrifugo_rpc_registry_dedup_entries`: answers the node keeps, of both pools.
+* `centrifugo_rpc_registry_dedup_entries`: answers the node keeps, of both pools. Like `dedup_scopes` and `dedup_bytes`, it is node-local: the occupancy of the shared tier is read from Redis, with `INFO memory`, or `DBSIZE` of a dedicated instance.
 * `centrifugo_rpc_registry_dedup_scopes{pool}`: scopes the node admits, by `pool` (`authenticated`, `anonymous`). Compare it with the limit of its pool, per shard: the smaller of its entries / `scope_reserve` and bytes / `scope_reserve_bytes`, times 64. The authenticated pool takes `local_max_entries` and `local_max_bytes` less their anonymous parts, and the anonymous pool takes the anonymous parts. Each shard is limited by its own share, see Budgets and the reserve.
 * `centrifugo_rpc_registry_dedup_bytes{pool}`: bytes of the answers the node keeps, by `pool`.
 * Suggested alerts: `rate(centrifugo_rpc_registry_dedup_total{outcome=~"refused_.*"}) > 0`, and per pool `centrifugo_rpc_registry_dedup_scopes / limit > 0.8`, where the authenticated limit is `64 * min((local_max_entries - local_anonymous_max_entries) / 64 / scope_reserve, (local_max_bytes - local_anonymous_max_bytes) / 64 / scope_reserve_bytes)` and the anonymous limit is `64 * min(local_anonymous_max_entries / 64 / scope_reserve, local_anonymous_max_bytes / 64 / scope_reserve_bytes)`. With the defaults these are 28672 and 4096.
-* `centrifugo_rpc_registry_dedup_wait_seconds`: time a duplicate waited for the call it joined.
+* `centrifugo_rpc_registry_dedup_wait_seconds`: time a duplicate waited for the call it joined, on this node or on another one.
+* `centrifugo_rpc_registry_dedup_redis_errors_total`: failed Redis operations of the shared tier, including calls made while Redis is not connected, and a `complete` which found the in-flight record not owned by the node. Alert on any rise: `rate(centrifugo_rpc_registry_dedup_redis_errors_total[5m]) > 0`.
+* `centrifugo_rpc_registry_dedup_redis_duration_seconds`: duration of the Redis operations of the shared tier.
+* `centrifugo_rpc_registry_dedup_redis_ack_drops_total`: acks dropped because the ack queue of the shared tier was full. The records of such acks expire at their TTL.
 * `centrifugo_rpc_registry_retransmit_total{rpc_method}`: calls which the client sent again after a transport loss.
 * The series are created when the registry is built. Each registry method exports one zero-valued `calls_total` series per result, so N methods export 6·N series. Each target exports its four proxy series, the same way. The `unknown` method label is the exception: its series are created on the first call to an unknown name.
 
@@ -191,5 +239,4 @@ Not implemented yet:
 
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
 * Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
-* Shared exactly-once records across nodes. Until then a retransmit which reaches another node runs again.
-* The `after` field, which orders a call after other `msg_id`s, and the wakeup of duplicates across nodes by notification.
+* The `after` field, which orders a call after other `msg_id`s, and the wakeup by notification instead of polling for duplicates of a call on another node.

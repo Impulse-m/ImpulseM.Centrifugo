@@ -462,6 +462,8 @@ type Client struct {
 	ConnectionRateLimit int `mapstructure:"connection_rate_limit" json:"connection_rate_limit" envconfig:"connection_rate_limit" yaml:"connection_rate_limit" toml:"connection_rate_limit" doc:"Maximum number of new client connections per second this node will accept. Zero means no rate limit."`
 	// ConnectIncludeServerTime allows to include server time in connect reply of client protocol.
 	ConnectIncludeServerTime bool `mapstructure:"connect_include_server_time" json:"connect_include_server_time" envconfig:"connect_include_server_time" yaml:"connect_include_server_time" toml:"connect_include_server_time" doc:"Includes the current server Unix time in the connect reply sent to clients."`
+	// ReplyIncludeServerTime allows to include server time in replies to client commands.
+	ReplyIncludeServerTime bool `mapstructure:"reply_include_server_time" json:"reply_include_server_time" envconfig:"reply_include_server_time" yaml:"reply_include_server_time" toml:"reply_include_server_time" doc:"Includes the current server Unix time in milliseconds in replies to client commands (not in pushes)."`
 	// HistoryMaxPublicationLimit is a maximum number of publications Centrifugo returns in client history requests.
 	HistoryMaxPublicationLimit int `mapstructure:"history_max_publication_limit" json:"history_max_publication_limit" envconfig:"history_max_publication_limit" default:"300" yaml:"history_max_publication_limit" toml:"history_max_publication_limit" doc:"Maximum number of publications returned per client history request. Default <<300>>."`
 	// RecoveryMaxPublicationLimit is a maximum number of publications Centrifugo returns during client recovery.

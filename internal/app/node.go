@@ -107,6 +107,7 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 	}
 	cfg.HistoryMetaTTL = appCfg.Channel.HistoryMetaTTL.ToDuration()
 	cfg.ClientConnectIncludeServerTime = appCfg.Client.ConnectIncludeServerTime
+	cfg.ReplyIncludeServerTime = appCfg.Client.ReplyIncludeServerTime
 	cfg.LogLevel = logging.CentrifugeLogLevel(strings.ToLower(appCfg.Log.Level))
 	cfg.LogHandler = logHandler
 	if appCfg.Client.ConnectCodeToUnidirectionalDisconnect.Enabled {

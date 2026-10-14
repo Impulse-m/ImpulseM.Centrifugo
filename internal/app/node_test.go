@@ -42,6 +42,24 @@ func TestCentrifugeNodeConfigChannelMediumOptions(t *testing.T) {
 	require.True(t, nodeCfg.GetChannelMediumOptions("top").SharedPositionSync)
 }
 
+func TestCentrifugeNodeConfigReplyIncludeServerTime(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Client.ReplyIncludeServerTime = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	require.True(t, nodeCfg.ReplyIncludeServerTime)
+}
+
+func TestCentrifugeNodeConfigReplyIncludeServerTimeDisabledByDefault(t *testing.T) {
+	cfgContainer, err := config.NewContainer(config.DefaultConfig())
+	require.NoError(t, err)
+
+	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	require.False(t, nodeCfg.ReplyIncludeServerTime)
+}
+
 func TestCentrifugeNodeConfigChannelMediumOptionsUnsetWithoutMedium(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{

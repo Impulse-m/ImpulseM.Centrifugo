@@ -763,6 +763,27 @@ func TestMemoryRecordOverShareIsUncached(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+// A reply over MaxReplyBytes is kept as uncached when its call completes, and is counted as reply_size, not as uncached,
+// so the reason names the limit which dropped it.
+func TestMemoryReplyOverMaxIsCountedAsReplySize(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 100)
+	observer := newCountingObserver()
+	options.Observer = observer
+	store := NewMemory(options)
+	scope := testScope("a", "a")
+	key := Key{Scope: scope, MsgID: 1}
+	testAnswer(t, store, key, string(make([]byte, 101)))
+
+	record, done := testDone(t, store, key)
+	require.True(t, done)
+	require.True(t, record.Uncached)
+	require.Empty(t, record.Reply)
+	require.Equal(t, 1, observer.counts[EvictionReplySize])
+	require.Equal(t, 0, observer.counts[EvictionUncached])
+	checkInvariants(t, store)
+}
+
 // A scope within its record reserve keeps all its records when the pool is full, whatever their bytes. The victim
 // holds four records of 2 KiB, its byte reserve, and the flooder holds eight: the newcomer evicts the oldest of the
 // flooder, the surplus scope, and not one of the victim's records.

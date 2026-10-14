@@ -290,6 +290,7 @@ var rpcRegistryDedupEvictionReasons = [...]string{
 	rpcdedup.EvictionOverReserve,
 	rpcdedup.EvictionSurplus,
 	rpcdedup.EvictionUncached,
+	rpcdedup.EvictionReplySize,
 }
 
 // RPCRegistryDedupMetrics holds the outcome counters of exactly-once RPC, resolved once. A nil value does
@@ -300,6 +301,7 @@ type RPCRegistryDedupMetrics struct {
 	evictOverReserve prometheus.Counter
 	evictSurplus     prometheus.Counter
 	evictUncached    prometheus.Counter
+	evictReplySize   prometheus.Counter
 	waitSeconds      prometheus.Histogram
 	entries          prometheus.Gauge
 	scopes           [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
@@ -324,6 +326,7 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 		m.evictOverReserve = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionOverReserve)
 		m.evictSurplus = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionSurplus)
 		m.evictUncached = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionUncached)
+		m.evictReplySize = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionReplySize)
 	}
 	if RPCRegistryDedupScopes != nil && RPCRegistryDedupBytes != nil {
 		for i, label := range rpcRegistryDedupPoolLabels {
@@ -348,6 +351,8 @@ func (m *RPCRegistryDedupMetrics) Evicted(reason string) {
 		incCounter(m.evictSurplus)
 	case rpcdedup.EvictionUncached:
 		incCounter(m.evictUncached)
+	case rpcdedup.EvictionReplySize:
+		incCounter(m.evictReplySize)
 	}
 }
 

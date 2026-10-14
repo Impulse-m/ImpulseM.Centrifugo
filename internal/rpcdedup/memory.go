@@ -47,8 +47,11 @@ const (
 	// EvictionSurplus is the oldest record of the scope which has been over its reserve the longest, evicted for
 	// another scope.
 	EvictionSurplus = "surplus"
-	// EvictionUncached is a reply which is dropped to fit the budget: the record is kept without it.
+	// EvictionUncached is a reply which is dropped to fit the share or the budget: the record is kept without it.
 	EvictionUncached = "uncached"
+	// EvictionReplySize is a reply over MaxReplyBytes, which is dropped when the call completes: the record is kept
+	// without it.
+	EvictionReplySize = "reply_size"
 )
 
 // EvictionObserver is told of each record which the store evicts to make room. It is called with the shard lock
@@ -351,8 +354,9 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 // flight keeps a record.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	rec.Fingerprint = flight.fingerprint
+	oversize := rec.Err == nil && len(rec.Reply) > m.maxReplyBytes
 	kept := rec
-	if rec.Err == nil && len(rec.Reply) > m.maxReplyBytes {
+	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
 	}
 	s := m.shardOf(key.Scope)
@@ -362,6 +366,9 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 		delete(s.flights, key)
 		sc.flights--
 		if !rec.Abandoned {
+			if oversize {
+				s.observe(EvictionReplySize)
+			}
 			kept = s.insert(sc, key, kept, s.now())
 		}
 	}

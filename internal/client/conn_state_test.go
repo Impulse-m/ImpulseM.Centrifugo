@@ -59,14 +59,16 @@ func connectRecordOf(t *testing.T, h *Handler, token string) *connState {
 }
 
 // TestDefaultConnectPathHoldsNothing checks that a connect with every feature off puts nothing into the reply storage
-// and allocates no record, and that its reply carries no user, as upstream's reply does, so the default path pays
-// nothing for the connection state.
+// and allocates no record, and that its reply carries no user, as upstream's reply does. The connected client has no
+// ext state either, so the default path pays nothing for the connection state.
 func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
 	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{HMACSecretKey: "secret"}, cfgContainer)
 	require.NoError(t, err)
-	h := NewHandler(tools.NodeWithMemoryEngineNoHandlers(), cfgContainer, verifier, nil, &ProxyMap{})
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
 
 	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 		ClientID: "c1",
@@ -75,6 +77,11 @@ func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, reply.Storage)
 	require.Empty(t, reply.User)
+
+	require.NoError(t, h.Setup())
+	client := connectRevokeTestClient(t, node, getConnTokenHS("42", 0))
+	require.Equal(t, "42", client.UserID())
+	require.Nil(t, client.ExtState())
 }
 
 // TestConnStateOnlyWithFeatures checks that each condition of needsConnState creates a record on its own, and that

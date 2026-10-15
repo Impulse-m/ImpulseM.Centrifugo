@@ -217,8 +217,8 @@ func TestRegistryAppErrorFromTrailersWithCustomKeys(t *testing.T) {
 	require.Nil(t, protoErr.Metadata)
 }
 
-// A backend cannot set the retry signal. Its trailer named x-centrifugo-retry is not copied, as the method does not
-// list it, so the client never resends a call which ran.
+// A backend cannot set the retry signal. The method lists its key in error_metadata, which validation accepts, and the
+// trailer is still not copied, so the client never resends a call which ran.
 func TestRegistryBackendTrailerCannotSetRetrySignal(t *testing.T) {
 	backend := newRegistryTestBackend(t)
 	grpcMethod := registryStatusService + "FailedPreconditionRetry"
@@ -235,7 +235,7 @@ func TestRegistryBackendTrailerCannotSetRetrySignal(t *testing.T) {
 			Method:        "users.put",
 			GRPCMethod:    grpcMethod,
 			Target:        "backend",
-			ErrorMetadata: []string{"x-detail"},
+			ErrorMetadata: []string{rpcRetryMetadataKey, "x-detail"},
 		},
 	})
 	h := registryErrorTestHandler(t, backend, cfg)

@@ -111,6 +111,20 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "invalid presence manager name: p",
 		},
 		{
+			name: "broker named like the controller",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Name = "controller"
+			},
+			wantErr: "invalid broker name: controller is reserved",
+		},
+		{
+			name: "presence manager named like the controller",
+			modify: func(cfg *Config) {
+				cfg.PresenceManagers[0].Name = "controller"
+			},
+			wantErr: "invalid presence manager name: controller is reserved",
+		},
+		{
 			name: "presence manager of type nats",
 			modify: func(cfg *Config) {
 				cfg.PresenceManagers[0].Type = "nats"
@@ -187,6 +201,30 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
 			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "two named redis brokers with the same prefix and another database",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Redis.DB = 1
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
+			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "two named redis brokers with the same prefix and the same host in another form",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1] = namedRedisBroker("rates", "rediss://user:secret@10.0.0.2:6379/3", "centrifugo-broadcast")
+			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis without the scheme and a named redis broker with it",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Redis.Address = []string{"10.0.0.2:6379"}
+				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
+			},
+			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with the same prefix on another redis",
@@ -272,11 +310,18 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "removed namespace",
+			name: "removed namespace which selects a named broker",
 			modify: func(cfg *Config) {
 				cfg.Channel.Namespaces = cfg.Channel.Namespaces[:1]
 			},
-			wantErr: "",
+			wantErr: `namespace engines: broker_name of namespace "rates" changed, a restart is needed`,
+		},
+		{
+			name: "removed namespace which selects a broker and a presence manager",
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces = cfg.Channel.Namespaces[1:]
+			},
+			wantErr: `namespace engines: broker_name of namespace "broadcast" changed, a restart is needed`,
 		},
 		{
 			name: "broker_name of a namespace changed",

@@ -2,8 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -14,6 +14,10 @@ var knownNamedBrokerTypes = []string{"memory", "redis", "nats", "postgres"}
 var knownNamedPresenceManagerTypes = []string{"memory", "redis"}
 
 var knownControllerTypes = []string{"postgres", "redis", "nats"}
+
+// reservedEngineName is the name of the Redis controller's broker. Its metrics and logs carry this name, so
+// no entry may use it.
+const reservedEngineName = "controller"
 
 // redisEngineRef is a Redis broker of the configuration: the default one or a named one.
 type redisEngineRef struct {
@@ -39,6 +43,9 @@ func validateNamespaceEngines(c Config) error {
 		if !nameRe.MatchString(b.Name) {
 			return fmt.Errorf("invalid broker name: %s, must match %s regular expression", b.Name, namePattern)
 		}
+		if b.Name == reservedEngineName {
+			return fmt.Errorf("invalid broker name: %s is reserved", b.Name)
+		}
 		if slices.Contains(brokerNames, b.Name) {
 			return fmt.Errorf("invalid broker name: %s, must be unique", b.Name)
 		}
@@ -56,6 +63,9 @@ func validateNamespaceEngines(c Config) error {
 	for _, pm := range c.PresenceManagers {
 		if !nameRe.MatchString(pm.Name) {
 			return fmt.Errorf("invalid presence manager name: %s, must match %s regular expression", pm.Name, namePattern)
+		}
+		if pm.Name == reservedEngineName {
+			return fmt.Errorf("invalid presence manager name: %s is reserved", pm.Name)
 		}
 		if slices.Contains(presenceManagerNames, pm.Name) {
 			return fmt.Errorf("invalid presence manager name: %s, must be unique", pm.Name)
@@ -150,14 +160,29 @@ func validateNamedRedisPrefixes(c Config) error {
 	return nil
 }
 
-// redisAddressKey identifies a Redis deployment by its addresses and database.
+// redisAddressKey identifies a Redis deployment by its addresses. The database is left out: PUB/SUB is global
+// across databases, so brokers which differ only in database still subscribe the same channels.
 func redisAddressKey(redisCfg configtypes.Redis) string {
 	return strings.Join([]string{
-		strings.Join(redisCfg.Address, ","),
-		strings.Join(redisCfg.ClusterAddress, ","),
-		strings.Join(redisCfg.SentinelAddress, ","),
-		strconv.Itoa(redisCfg.DB),
+		normalizedRedisAddresses(redisCfg.Address),
+		normalizedRedisAddresses(redisCfg.ClusterAddress),
+		normalizedRedisAddresses(redisCfg.SentinelAddress),
 	}, "|")
+}
+
+// normalizedRedisAddresses returns the sorted hosts of the addresses. The scheme, user information and path
+// of an address URL are dropped, so "redis://h:6379" and "h:6379" give the same host.
+func normalizedRedisAddresses(addresses []string) string {
+	hosts := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		host := address
+		if u, err := url.Parse(address); err == nil && u.Host != "" {
+			host = u.Host
+		}
+		hosts = append(hosts, strings.ToLower(host))
+	}
+	slices.Sort(hosts)
+	return strings.Join(hosts, ",")
 }
 
 // CheckNamespaceEnginesReload refuses a reload which changes what the named brokers and presence managers
@@ -171,20 +196,20 @@ func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config) error {
 		return namespaceEnginesChanged("enabled entries of presence_managers")
 	}
 
-	oldRoutings := map[string]namespaceRouting{}
-	for _, r := range namespaceRoutings(oldCfg) {
-		oldRoutings[r.name] = r
-	}
+	// Every namespace of the old config is compared. A namespace removed by the reload has the empty routing
+	// in the new config, so removing a routed namespace is refused: its subscriptions would stay on the named
+	// engine. A namespace added by the reload has no channels yet, so it may select an engine.
+	newRoutings := map[string]namespaceRouting{}
 	for _, r := range namespaceRoutings(newCfg) {
-		oldRouting, ok := oldRoutings[r.name]
-		if !ok {
-			continue
+		newRoutings[r.name] = r
+	}
+	for _, oldRouting := range namespaceRoutings(oldCfg) {
+		newRouting := newRoutings[oldRouting.name]
+		if oldRouting.brokerName != newRouting.brokerName {
+			return namespaceEnginesChanged("broker_name of " + routingLabel(oldRouting.name))
 		}
-		if oldRouting.brokerName != r.brokerName {
-			return namespaceEnginesChanged("broker_name of " + routingLabel(r.name))
-		}
-		if oldRouting.presenceManagerName != r.presenceManagerName {
-			return namespaceEnginesChanged("presence_manager_name of " + routingLabel(r.name))
+		if oldRouting.presenceManagerName != newRouting.presenceManagerName {
+			return namespaceEnginesChanged("presence_manager_name of " + routingLabel(oldRouting.name))
 		}
 	}
 

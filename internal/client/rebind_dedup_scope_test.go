@@ -3,7 +3,6 @@ package client
 import (
 	"testing"
 
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -57,7 +56,7 @@ func TestRebindDowngradeScopesTrackedCallToInstance(t *testing.T) {
 	require.Equal(t, "42", client.UserID())
 
 	storage, release := client.AcquireStorage()
-	storage[clientstorage.KeyInstance] = testInstance
+	storage[rpcInstanceKey] = testInstance
 	release(storage)
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{

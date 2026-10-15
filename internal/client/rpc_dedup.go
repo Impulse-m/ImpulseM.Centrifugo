@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
@@ -24,6 +23,10 @@ const rpcInflightKey = "rpc_inflight"
 // rpcScopeKey is the connection storage key of the dedup scope of the connection. It is computed at connect, and
 // again at refresh, from the user and the identity of the connection, and each call reads it.
 const rpcScopeKey = "rpc_scope"
+
+// rpcInstanceKey is the connection storage key of the install instance of the connection, which its dedup scope is made
+// of. It is set at connect when the dedup is on and the instance is valid.
+const rpcInstanceKey = "instance"
 
 // rpcDedupState is the exactly-once RPC state of a handler: the store, the metrics of its outcomes, and the
 // window and the skew of the msg_id check. The window and the skew are captured here, with the store, since the
@@ -89,7 +92,7 @@ func newRPCDedupState(cfgContainer *config.Container) *rpcDedupState {
 // may lock.
 func rpcDedupScope(userID string, identity centrifuge.TokenIdentity, storage map[string]any) string {
 	var instance string
-	instance, _ = storage[clientstorage.KeyInstance].(string)
+	instance, _ = storage[rpcInstanceKey].(string)
 	if userID == "" {
 		if instance == "" {
 			return ""
@@ -124,7 +127,7 @@ func (h *Handler) storeRPCConnection(storage map[string]any, instance string, cr
 	}
 	if instance != "" {
 		if rpcdedup.ValidInstance(instance) {
-			storage[clientstorage.KeyInstance] = instance
+			storage[rpcInstanceKey] = instance
 		} else {
 			log.Debug().Msg("dropped invalid connect instance, the connection has no dedup scope from it")
 		}

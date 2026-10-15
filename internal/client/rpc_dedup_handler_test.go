@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
@@ -193,7 +192,7 @@ func newDedupHandler(t testing.TB, reg configtypes.RPCRegistry, backend *dedupBa
 func newDedupClient(id string, userID string, ctx context.Context, instance string) *rebindClientMock {
 	storage := map[string]any{}
 	if instance != "" {
-		storage[clientstorage.KeyInstance] = instance
+		storage[rpcInstanceKey] = instance
 	}
 	client := newRegistryTestClient(id, userID, ctx, storage)
 	client.IdentityFunc = func() centrifuge.TokenIdentity {

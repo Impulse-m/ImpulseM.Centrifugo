@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
@@ -54,7 +53,7 @@ func testScopeOf(client *rebindClientMock, storage map[string]any) string {
 
 func TestRPCDedupScopePrefersSession(t *testing.T) {
 	session := [16]byte{1, 2, 3}
-	storage := map[string]any{clientstorage.KeyInstance: testInstance}
+	storage := map[string]any{rpcInstanceKey: testInstance}
 
 	scope := testScopeOf(newRPCDedupTestClient("42", session, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("s", "42", session[:]), scope)
@@ -62,7 +61,7 @@ func TestRPCDedupScopePrefersSession(t *testing.T) {
 }
 
 func TestRPCDedupScopeFallsBackToInstance(t *testing.T) {
-	storage := map[string]any{clientstorage.KeyInstance: testInstance}
+	storage := map[string]any{rpcInstanceKey: testInstance}
 
 	scope := testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	require.Equal(t, rpcdedup.ScopeOf("i", "42", []byte(testInstance)), scope)
@@ -70,7 +69,7 @@ func TestRPCDedupScopeFallsBackToInstance(t *testing.T) {
 
 // The same instance on another account is another scope.
 func TestRPCDedupScopeBoundToUser(t *testing.T) {
-	storage := map[string]any{clientstorage.KeyInstance: testInstance}
+	storage := map[string]any{rpcInstanceKey: testInstance}
 
 	first := testScopeOf(newRPCDedupTestClient("42", [16]byte{}, storage), storage)
 	second := testScopeOf(newRPCDedupTestClient("43", [16]byte{}, storage), storage)
@@ -96,7 +95,7 @@ func TestRPCDedupConnectStoresValidInstance(t *testing.T) {
 		Instance: testInstance,
 	}, nil, false)
 	require.NoError(t, err)
-	require.Equal(t, testInstance, reply.Storage[clientstorage.KeyInstance])
+	require.Equal(t, testInstance, reply.Storage[rpcInstanceKey])
 }
 
 func TestRPCDedupConnectDropsInvalidInstance(t *testing.T) {
@@ -116,7 +115,7 @@ func TestRPCDedupConnectDropsInvalidInstance(t *testing.T) {
 			Instance: instance,
 		}, nil, false)
 		require.NoError(t, err)
-		_, ok := reply.Storage[clientstorage.KeyInstance]
+		_, ok := reply.Storage[rpcInstanceKey]
 		require.False(t, ok, instance)
 	}
 }
@@ -133,7 +132,7 @@ func TestRPCDedupOffStoresNoInstance(t *testing.T) {
 		Instance: testInstance,
 	}, nil, false)
 	require.NoError(t, err)
-	_, ok := reply.Storage[clientstorage.KeyInstance]
+	_, ok := reply.Storage[rpcInstanceKey]
 	require.False(t, ok)
 	require.Nil(t, h.rpcDedup)
 }

@@ -1003,6 +1003,39 @@ func TestRPCDedupPanicAfterBackendRetransmitIsNotRerun(t *testing.T) {
 	require.Len(t, backend.Calls(), 1)
 }
 
+// A panic before the backend call keeps a dedup_unavailable record without the signal, as a panic after it does. The
+// owner's client fails while the call is built, so the backend never runs. A retransmit gets the error from the record
+// and the backend is not called.
+func TestRPCDedupPanicBeforeBackendCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	client.IDFunc = func() string {
+		panic("client id failed")
+	}
+	msgID := dedupMsgID(31)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	require.NotNil(t, <-ownerPanic)
+	require.Empty(t, backend.Calls())
+
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("gate"),
+		Call:   centrifuge.RPCCallOptions{MsgID: msgID, Retransmit: true},
+	}, nil)
+	require.True(t, reply.Cached)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireNoRetrySignal(t, err)
+	require.Empty(t, backend.Calls())
+}
+
 // A retransmit on the same connection, while a call runs untracked under fail_open, is refused without the signal:
 // the call is running, and a resend would run it again.
 func TestRPCDedupStoreFailureFailsOpenRetransmitCarriesNoSignal(t *testing.T) {

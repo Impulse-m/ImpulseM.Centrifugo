@@ -434,16 +434,36 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 }
 
 // rpcRecordedReply answers a duplicate from the record of its call. A reply which was not kept is evicted, and
-// the call is not run again.
+// the call is not run again. A recorded error is replayed without the retry signal: a record written before the
+// signal existed may hold it, and the call ran.
 func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegistry) (centrifuge.RPCReply, error) {
 	if rec.Uncached {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupEvicted)
 		return centrifuge.RPCReply{}, registryError(cfg.Errors.ResultEvicted)
 	}
 	if rec.Err != nil {
-		return centrifuge.RPCReply{Cached: true}, rec.Err
+		return centrifuge.RPCReply{Cached: true}, withoutRetrySignal(rec.Err)
 	}
 	return centrifuge.RPCReply{Data: rec.Reply, Cached: true}, nil
+}
+
+// withoutRetrySignal returns err without the retry signal. An error which does not carry the signal is returned as it
+// is. Otherwise the copy holds the other metadata, and a nil map when none is left.
+func withoutRetrySignal(err *centrifuge.Error) *centrifuge.Error {
+	if _, found := err.Metadata[rpcRetryMetadataKey]; !found {
+		return err
+	}
+	stripped := *err
+	stripped.Metadata = make(map[string]string, len(err.Metadata))
+	for key, value := range err.Metadata {
+		if key != rpcRetryMetadataKey {
+			stripped.Metadata[key] = value
+		}
+	}
+	if len(stripped.Metadata) == 0 {
+		stripped.Metadata = nil
+	}
+	return &stripped
 }
 
 // registryRetryError is the protocol error of a dedup failure, sent as temporary or not. A non-empty retry is the

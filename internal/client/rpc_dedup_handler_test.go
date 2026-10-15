@@ -1140,3 +1140,31 @@ func TestRPCDedupRecordedErrorReplayCarriesNoSignal(t *testing.T) {
 	requireNoRetrySignal(t, retransmit.err)
 	require.Len(t, backend.Calls(), 1)
 }
+
+// A record written before the retry signal existed may hold it. Its replay to a retransmit drops the signal, since the
+// call ran and the client must not send it again. The stored error keeps the signal: only the replay copies it.
+func TestRPCDedupLegacyRecordReplayDropsRetrySignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	h := newDedupHandler(t, reg, backend)
+	msgID := dedupMsgID(47)
+	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
+	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint("users.put", []byte("x")))
+	lookup, err := h.rpcDedup.store.Begin(key, flight)
+	require.NoError(t, err)
+	require.Equal(t, rpcdedup.OutcomeMiss, lookup.Outcome)
+	legacy := &centrifuge.Error{
+		Code:      reg.Errors.DedupUnavailable.Code,
+		Message:   reg.Errors.DedupUnavailable.Message,
+		Temporary: true,
+		Metadata:  map[string]string{rpcRetryMetadataKey: rpcRetryLater},
+	}
+	require.NoError(t, h.rpcDedup.store.Complete(key, flight, rpcdedup.Record{Err: legacy}))
+
+	retransmit := dedupCallAsyncResult(t, h, newDedupClient("c1", "42", nil, testInstance), "users.put", msgID, "x")
+	require.True(t, retransmit.reply.Cached)
+	require.Equal(t, reg.Errors.DedupUnavailable.Code, requireProtocolError(t, retransmit.err).Code)
+	requireNoRetrySignal(t, retransmit.err)
+	require.Empty(t, backend.Calls())
+	require.Equal(t, rpcRetryLater, legacy.Metadata[rpcRetryMetadataKey])
+}

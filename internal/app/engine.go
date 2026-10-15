@@ -204,11 +204,7 @@ func memoryPresenceManagerConfig() (*centrifuge.MemoryPresenceManagerConfig, err
 }
 
 func NatsBroker(node *centrifuge.Node, cfgContainer *config.Container) (*natsbroker.NatsBroker, error) {
-	return natsBrokerFrom(node, cfgContainer, cfgContainer.Config().Broker.Nats)
-}
-
-func natsBrokerFrom(node *centrifuge.Node, cfgContainer *config.Container, natsCfg configtypes.NatsBroker) (*natsbroker.NatsBroker, error) {
-	broker, err := natsbroker.New(node, natsCfg)
+	broker, err := natsbroker.New(node, cfgContainer.Config().Broker.Nats)
 	if err != nil {
 		return nil, err
 	}
@@ -262,16 +258,12 @@ func createRedisEngine(n *centrifuge.Node, cfgContainer *config.Container) (*cen
 
 func createRedisBroker(n *centrifuge.Node, cfgContainer *config.Container) (*centrifuge.RedisBroker, string, error) {
 	cfg := cfgContainer.Config()
-	return createRedisBrokerFrom(n, cfg.Broker.Redis, cfg.Broker.Type == "redisnats")
-}
-
-func createRedisBrokerFrom(n *centrifuge.Node, cfg configtypes.RedisBroker, skipPubSub bool) (*centrifuge.RedisBroker, string, error) {
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.Redis)
+	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.Broker.Redis.Redis)
 	if err != nil {
 		return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
 	}
 	broker, err := confighelpers.CentrifugeRedisBroker(
-		n, cfg.Prefix, redisShards, cfg.RedisBrokerCommon, skipPubSub)
+		n, cfg.Broker.Redis.Prefix, redisShards, cfg.Broker.Redis.RedisBrokerCommon, cfg.Broker.Type == "redisnats")
 	if err != nil {
 		return nil, mode, fmt.Errorf("error creating Redis broker: %w", err)
 	}
@@ -280,24 +272,16 @@ func createRedisBrokerFrom(n *centrifuge.Node, cfg configtypes.RedisBroker, skip
 
 func createRedisPresenceManager(n *centrifuge.Node, cfgContainer *config.Container) (centrifuge.PresenceManager, string, error) {
 	cfg := cfgContainer.Config()
-	presenceManager, _, mode, err := createRedisPresenceManagerFrom(n, cfg.PresenceManager.Redis)
-	return presenceManager, mode, err
-}
-
-func createRedisPresenceManagerFrom(
-	n *centrifuge.Node,
-	cfg configtypes.RedisPresenceManager,
-) (centrifuge.PresenceManager, []*centrifuge.RedisShard, string, error) {
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.Redis)
+	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.PresenceManager.Redis.Redis)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+		return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
 	}
 	presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
-		n, cfg.Prefix, redisShards, cfg.RedisPresenceManagerCommon)
+		n, cfg.PresenceManager.Redis.Prefix, redisShards, cfg.PresenceManager.Redis.RedisPresenceManagerCommon)
 	if err != nil {
-		return nil, redisShards, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
+		return nil, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
 	}
-	return presenceManager, redisShards, mode, nil
+	return presenceManager, mode, nil
 }
 
 func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) error {

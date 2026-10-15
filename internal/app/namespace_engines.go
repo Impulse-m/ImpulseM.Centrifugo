@@ -8,6 +8,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 
 	"github.com/centrifugal/centrifuge"
@@ -262,10 +263,11 @@ func (e *namespaceEngines) createBroker(
 		}
 		return broker, mode, nil
 	case "nats":
-		broker, err := natsBrokerFrom(node, cfgContainer, entry.Nats)
+		broker, err := natsbroker.New(node, entry.Nats)
 		if err != nil {
 			return nil, "", err
 		}
+		broker.SetRawModeDataCheck(rawModeDataCheck(cfgContainer))
 		return broker, "nats", nil
 	case "postgres":
 		broker, err := createPostgresStreamBroker(node, entry.Postgres)
@@ -292,9 +294,14 @@ func createNamedPresenceManager(
 		}
 		return presenceManager, nil, "", nil
 	case "redis":
-		presenceManager, redisShards, mode, err := createRedisPresenceManagerFrom(node, entry.Redis)
+		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
 		if err != nil {
-			return nil, redisShards, mode, err
+			return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+		}
+		presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
+			node, entry.Redis.Prefix, redisShards, entry.Redis.RedisPresenceManagerCommon)
+		if err != nil {
+			return nil, redisShards, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
 		}
 		return presenceManager, redisShards, mode, nil
 	default:

@@ -77,15 +77,10 @@ const (
 
 // ParseAuthClass converts an auth class name from the config. It reports false for unknown names.
 func ParseAuthClass(name string) (AuthClass, bool) {
-	switch name {
-	case configtypes.RPCAuthClassAnonymous:
-		return AuthClassAnonymous, true
-	case configtypes.RPCAuthClassPending2FA:
-		return AuthClassPending2FA, true
-	case configtypes.RPCAuthClassAuthenticated:
-		return AuthClassAuthenticated, true
-	case configtypes.RPCAuthClassBot:
-		return AuthClassBot, true
+	for _, entry := range authClassNames {
+		if entry.name == name {
+			return entry.class, true
+		}
 	}
 	return 0, false
 }

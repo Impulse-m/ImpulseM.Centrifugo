@@ -384,7 +384,9 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 
 // restorePersonalChannel subscribes a connection with a user to its personal channel when it is not subscribed to it. A
 // downgrade removes the channel, and a rebind which Core refuses after the downgrade leaves it removed. The single
-// connection of the user is not enforced again: the connection already holds its user.
+// connection of the user is not enforced again: the connection already holds its user. A personal channel which cannot
+// be resolved, after a config reload removed its namespace, is not restored, and the connection keeps its channels: a
+// refresh does not disconnect it, and a reconnect fails at connect with the same error.
 func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	cfg := h.cfgContainer.ConfigRef()
 	if c.UserID() == "" || !cfg.Client.SubscribeToUserPersonalChannel.Enabled {
@@ -392,7 +394,7 @@ func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	}
 	personalChannel, personalOptions, err := h.personalChannelSubscription(c.UserID())
 	if err != nil {
-		return centrifuge.DisconnectServerError
+		return nil
 	}
 	return subscribeChannels(c, map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions})
 }

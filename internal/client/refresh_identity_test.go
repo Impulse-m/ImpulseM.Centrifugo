@@ -96,6 +96,27 @@ func TestRefreshRestoresPersonalChannelAfterRefusedDowngrade(t *testing.T) {
 	require.EqualValues(t, subsource.UserPersonal, state.channels["#42"].Source)
 }
 
+// TestRefreshKeepsConnectionWhenPersonalNamespaceIsRemoved checks that a refresh with the same user does not disconnect
+// the connection when a config reload removed the namespace of its personal channel, which the connection is not
+// subscribed to. The connection keeps its channels.
+func TestRefreshKeepsConnectionWhenPersonalNamespaceIsRemoved(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	h.cfgContainer.ConfigRef().Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "removed"
+	client, state := newRebindTestClient("42", "authenticated")
+	state.channels = map[string]centrifuge.ChannelContext{
+		"other": {Source: subsource.ClientAllowed},
+	}
+
+	reply, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, reply.TokenIdentity)
+	require.Equal(t, "42", state.user)
+	require.Contains(t, state.channels, "other")
+	require.NotContains(t, state.channels, "removed:#42")
+}
+
 // TestTokenUserOfPendingConnection checks that the user of the token of a pending connection is the user of the record,
 // which Core does not see, and that a connection without a record has the user Core holds.
 func TestTokenUserOfPendingConnection(t *testing.T) {

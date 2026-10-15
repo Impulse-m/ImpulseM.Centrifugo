@@ -87,16 +87,38 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 
 // needsConnState reports whether a connection with userID and identity gets a record. A feature which reads the record
 // needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one only for
-// a connection with no user and a token session, the connections its session index holds. OnClientConnecting and OnConnect
-// both decide with it, from the same user and identity, so a record made at connect is the one OnConnect adopts.
+// a connection with no user and a token session, the connections its session index holds. OnClientConnecting decides
+// with it, from the credentials of the connection. OnConnect decides with clientNeedsConnState, from the same user and
+// identity as Core holds them, so a record made at connect is the one OnConnect adopts.
 func (h *Handler) needsConnState(cfg *config.Config, userID string, identity centrifuge.TokenIdentity) bool {
-	if cfg.Client.Rebind.Enabled ||
+	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID, identity)
+}
+
+// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. The
+// identity of the client is read only when the access store is set and the client has no user, since reading it takes
+// the lock of the client.
+func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
+	if h.configNeedsConnState(cfg) {
+		return true
+	}
+	if h.accessStore == nil || client.UserID() != "" {
+		return false
+	}
+	return h.storeNeedsConnState("", client.TokenIdentity())
+}
+
+// configNeedsConnState reports whether a feature of the configuration needs a record for every connection.
+func (h *Handler) configNeedsConnState(cfg *config.Config) bool {
+	return cfg.Client.Rebind.Enabled ||
 		cfg.RPC.Registry.AuthClassClaim != "" ||
 		h.rpcRegistry.Enabled() ||
 		h.userLimiter != nil ||
-		h.clientLimiter != nil {
-		return true
-	}
+		h.clientLimiter != nil
+}
+
+// storeNeedsConnState reports whether the access store needs a record for a connection with userID and identity: a
+// connection with no user and a token session, which its session index holds.
+func (h *Handler) storeNeedsConnState(userID string, identity centrifuge.TokenIdentity) bool {
 	return h.accessStore != nil && userID == "" && identity.Session != [16]byte{}
 }
 

@@ -60,6 +60,59 @@ func (b *failingBeginBackend) Connected() bool {
 	return true
 }
 
+// remoteInFlightBackend is a shared tier whose call runs on another node, and whose record is gone: its polls find
+// nothing. The other calls are not expected while the test runs.
+type remoteInFlightBackend struct{}
+
+// Begin reports that the call runs on another node.
+func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+	return rpcdedup.BeginResult{State: rpcdedup.BeginInFlight, Owner: "node-x"}, nil
+}
+
+// Complete is not expected: the duplicate of a remote call keeps no record of it.
+func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
+	return false, errors.New("unexpected complete")
+}
+
+// Cancel is not expected.
+func (b *remoteInFlightBackend) Cancel(_ context.Context, _ rpcdedup.Key, _ *centrifuge.Error, _ time.Duration) (rpcdedup.CancelResult, error) {
+	return rpcdedup.CancelResult{}, errors.New("unexpected cancel")
+}
+
+// Poll finds the record gone: the owner abandoned the call, or died.
+func (b *remoteInFlightBackend) Poll(_ context.Context, _ rpcdedup.Key) (rpcdedup.PollResult, error) {
+	return rpcdedup.PollResult{State: rpcdedup.PollMissing}, nil
+}
+
+// Ack does nothing.
+func (b *remoteInFlightBackend) Ack(_ context.Context, _ []rpcdedup.ScopeAcks) error {
+	return nil
+}
+
+// Connected reports that the backend is reachable, so that the store tries it.
+func (b *remoteInFlightBackend) Connected() bool {
+	return true
+}
+
+// A duplicate which joins a call on another node is answered without the retry signal when the record of the call
+// vanishes before an answer: the call may have run there, and a resend with the same msg_id would run it again.
+func TestRPCDedupSharedWatchMissingRecordCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.store = rpcdedup.NewShared(rpcdedup.SharedOptions{
+		Local:         h.rpcDedup.memory,
+		Backend:       &remoteInFlightBackend{},
+		NodeID:        "node-a",
+		TTL:           time.Minute,
+		MaxReplyBytes: dedupRegistryConfig().Dedup.ReplyLimit(),
+	})
+
+	duplicate := dedupCallAsyncResult(t, h, newDedupClient("c2", "42", nil, testInstance), "users.put", dedupMsgID(42), "x")
+	require.True(t, requireProtocolError(t, duplicate.err).Temporary)
+	requireNoRetrySignal(t, duplicate.err)
+	require.Empty(t, backend.Calls())
+}
+
 // A duplicate which joins a call while the shared tier fails to begin it is answered with the later signal, as the
 // owner is: the call never ran, so the client may send it again.
 func TestRPCDedupSharedBeginFailureJoinerCarriesLaterSignal(t *testing.T) {

@@ -655,17 +655,7 @@ func setStorageMeta(c Client, meta json.RawMessage) {
 // OnRefresh ...
 func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refreshProxyHandler proxy.RefreshHandlerFunc) (centrifuge.RefreshReply, RefreshExtra, error) {
 	if refreshProxyHandler != nil {
-		if h.isUserBlocked(c.UserID(), "refresh") {
-			return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
-		}
-		r, extra, err := refreshProxyHandler(c, e, getPerCallData(c))
-		if err == nil && extra.Meta != nil {
-			setStorageMeta(c, extra.Meta)
-		}
-		if err == nil && r.TokenIdentity != nil {
-			h.moveProxyIdentity(c, *r.TokenIdentity)
-		}
-		return r, RefreshExtra{}, err
+		return h.onRefreshProxy(c, e, refreshProxyHandler)
 	}
 	return h.onRefreshToken(c, e)
 }

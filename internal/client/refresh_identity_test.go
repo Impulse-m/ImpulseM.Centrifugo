@@ -142,6 +142,41 @@ func TestProxyRefreshMovesTheRecordIdentity(t *testing.T) {
 	require.Equal(t, accessrevoke.Revoked, result.Verdict)
 }
 
+// TestProxyRefreshWhileAnotherIsInProgressIsRejected runs a refresh with the refresh proxy from the rebind of a token
+// refresh of the same connection. The proxy is not called and the refresh is rejected, and the connection keeps the
+// identity of the token refresh. A refresh with the proxy after both is answered, which shows the flag is released.
+func TestProxyRefreshWhileAnotherIsInProgressIsRejected(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClient("", "anonymous")
+	moved := accessrevoke.Identity(revokeTestOtherUUID, 0, time.Now().Unix()-10)
+	proxyCalls := 0
+	refreshProxy := func(proxy.Client, centrifuge.RefreshEvent, proxy.PerCallData) (centrifuge.RefreshReply, proxy.RefreshExtra, error) {
+		proxyCalls++
+		return centrifuge.RefreshReply{TokenIdentity: &moved}, proxy.RefreshExtra{}, nil
+	}
+	var proxyErr error
+	hook := func(c rebindableClient) {
+		_, _, proxyErr = h.OnRefresh(c, centrifuge.RefreshEvent{}, refreshProxy)
+	}
+	testHookRebound.Store(&hook)
+	t.Cleanup(func() { testHookRebound.Store(nil) })
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, centrifuge.ErrorTooManyRequests, proxyErr)
+	require.Equal(t, 0, proxyCalls)
+	require.Equal(t, "42", state.user)
+	require.Len(t, state.rebinds, 1)
+
+	testHookRebound.Store(nil)
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
+	require.NoError(t, err)
+	require.Equal(t, 1, proxyCalls)
+	require.Equal(t, moved, connStateOf(client).identity.Load().identity)
+}
+
 // TestTokenUserOfPendingConnection checks that the user of the token of a pending connection is the user of the record,
 // which Core does not see, and that a connection without a record has the user Core holds.
 func TestTokenUserOfPendingConnection(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
+	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
@@ -47,12 +48,41 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 	return h.refreshSameIdentity(c, rec, e.Token, token, class)
 }
 
+// onRefreshProxy answers a refresh which the refresh proxy answers. A refresh which finds another one in progress is
+// rejected, as in onRefreshToken, and the flag is held until the identity of the proxy is moved, so the identity of the
+// record is written by one refresh at a time. A connection without a record has no identity to move, and refreshes as
+// upstream does.
+func (h *Handler) onRefreshProxy(
+	c rebindableClient,
+	e centrifuge.RefreshEvent,
+	refreshProxyHandler proxy.RefreshHandlerFunc,
+) (centrifuge.RefreshReply, RefreshExtra, error) {
+	if h.isUserBlocked(c.UserID(), "refresh") {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
+	}
+	rec := connStateOf(c)
+	if rec != nil {
+		if !rec.refreshing.CompareAndSwap(false, true) {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
+		}
+		defer rec.refreshing.Store(false)
+	}
+	r, extra, err := refreshProxyHandler(c, e, getPerCallData(c))
+	if err == nil && extra.Meta != nil {
+		setStorageMeta(c, extra.Meta)
+	}
+	if err == nil && r.TokenIdentity != nil {
+		h.moveProxyIdentity(c, rec, *r.TokenIdentity)
+	}
+	return r, RefreshExtra{}, err
+}
+
 // moveProxyIdentity moves the identity of a connection to the token identity a refresh proxy returned. The user, the
 // account, the class and the token of the record stay as they are: the proxy has no token of this server. The record
 // holds the new identity, so the revoker and the sweep check the new session, and the session index and the dedup
-// scope follow it.
-func (h *Handler) moveProxyIdentity(c rebindableClient, identity centrifuge.TokenIdentity) {
-	if rec := connStateOf(c); rec != nil {
+// scope follow it. When rec is not nil, the caller holds rec.refreshing.
+func (h *Handler) moveProxyIdentity(c rebindableClient, rec *connState, identity centrifuge.TokenIdentity) {
+	if rec != nil {
 		next := *rec.identity.Load()
 		next.identity = identity
 		rec.identity.Store(&next)

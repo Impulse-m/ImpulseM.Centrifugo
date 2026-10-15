@@ -356,6 +356,19 @@ func NewProxyCallChildren(protocol string, kind string, name string) *ProxyCallC
 	}
 }
 
+// Observe records the duration of one proxy call, and counts an error when failed is true. It does
+// nothing on a nil receiver, which NewProxyCallChildren returns when the proxy metrics are not initialised.
+func (c *ProxyCallChildren) Observe(seconds float64, failed bool) {
+	if c == nil {
+		return
+	}
+	c.Duration.Observe(seconds)
+	c.Summary.Observe(seconds)
+	if failed {
+		c.Errors.Inc()
+	}
+}
+
 // setForkMetrics assigns the fork metrics created by initForkMetrics to the package level variables.
 func (m *Registry) setForkMetrics() {
 	AccessRevokeRejectsTotal = m.accessRevokeRejectsTotal

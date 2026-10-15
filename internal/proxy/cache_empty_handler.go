@@ -61,7 +61,7 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 
 		resp, err := p.ProxyNotifyCacheEmpty(ctx, &proxyproto.NotifyCacheEmptyRequest{Channel: e.Channel})
 		duration := time.Since(started).Seconds()
-		observeCacheEmptyCall(calls, duration, err != nil)
+		calls.Observe(duration, err != nil)
 		if err != nil {
 			log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
@@ -69,16 +69,5 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 		return centrifuge.CacheEmptyReply{
 			Populated: resp.Result != nil && resp.Result.Populated,
 		}, nil
-	}
-}
-
-func observeCacheEmptyCall(calls *metrics.ProxyCallChildren, seconds float64, failed bool) {
-	if calls == nil {
-		return
-	}
-	calls.Duration.Observe(seconds)
-	calls.Summary.Observe(seconds)
-	if failed {
-		calls.Errors.Inc()
 	}
 }

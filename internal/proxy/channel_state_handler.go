@@ -43,18 +43,7 @@ func (h *ChannelStateHandler) Handle() func(ctx context.Context, events []*proxy
 		if err == nil && resp.Error != nil {
 			err = proxyproto.ErrorFromProto(resp.Error)
 		}
-		h.observe(duration, err != nil)
+		h.calls.Observe(duration, err != nil)
 		return err
-	}
-}
-
-func (h *ChannelStateHandler) observe(seconds float64, failed bool) {
-	if h.calls == nil {
-		return
-	}
-	h.calls.Duration.Observe(seconds)
-	h.calls.Summary.Observe(seconds)
-	if failed {
-		h.calls.Errors.Inc()
 	}
 }

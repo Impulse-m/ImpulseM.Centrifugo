@@ -304,27 +304,64 @@ func controllerPrefix(controller configtypes.Controller) string {
 	case "nats":
 		return controller.Nats.Prefix
 	case "postgres":
-		return controller.Postgres.TablePrefix
+		return postgresControllerPrefix(controller.Postgres.TablePrefix)
 	default:
 		return ""
 	}
+}
+
+// postgresBrokerPrefix returns the table prefix which the Postgres stream broker uses: trailing underscores are
+// trimmed, and an empty prefix is cf.
+func postgresBrokerPrefix(tablePrefix string) string {
+	prefix := strings.TrimRight(tablePrefix, "_")
+	if prefix == "" {
+		return "cf"
+	}
+	return prefix
+}
+
+// postgresControllerPrefix returns the table prefix which the Postgres controller uses: an empty prefix is cf, and
+// trailing underscores are trimmed.
+func postgresControllerPrefix(tablePrefix string) string {
+	if tablePrefix == "" {
+		tablePrefix = "cf"
+	}
+	return strings.TrimRight(tablePrefix, "_")
 }
 
 func namespaceEnginesChanged(what string) error {
 	return fmt.Errorf("namespace engines: %s changed, a restart is needed", what)
 }
 
-// enabledBrokerKeys identifies the enabled entries by name, type, and the Redis prefix and lists mode, which the
-// running broker keeps from startup. The connection details are left out, since a reload applies them.
+// enabledBrokerKeys identifies the enabled entries by name, type and the settings which the running broker keeps
+// from startup. The connection details are left out, since a reload applies them.
 func enabledBrokerKeys(cfg Config) []string {
 	var keys []string
 	for _, b := range cfg.Brokers {
 		if b.Enabled {
-			keys = append(keys, fmt.Sprintf("%s/%s/%s/%t", b.Name, b.Type, redisPrefix(b.Redis.Prefix), b.Redis.UseLists))
+			keys = append(keys, brokerKey(b))
 		}
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// brokerKey returns the key of an enabled entry of brokers. Only the settings which the type of the entry uses are
+// part of the key: the Redis prefix and lists mode, the Nats prefix and raw mode, or the Postgres table prefix.
+func brokerKey(b configtypes.NamedBroker) string {
+	key := b.Name + "/" + b.Type
+	switch b.Type {
+	case "redis":
+		key += fmt.Sprintf("/%s/%t", redisPrefix(b.Redis.Prefix), b.Redis.UseLists)
+	case "nats":
+		key += fmt.Sprintf("/%s/%t", b.Nats.Prefix, b.Nats.RawMode.Enabled)
+		if b.Nats.RawMode.Enabled {
+			key += fmt.Sprintf("/%s/%v", b.Nats.RawMode.Prefix, b.Nats.RawMode.ChannelReplacements)
+		}
+	case "postgres":
+		key += "/" + postgresBrokerPrefix(b.Postgres.TablePrefix)
+	}
+	return key
 }
 
 // enabledPresenceManagerKeys identifies the enabled entries by name, type and, for Redis, the prefix which the

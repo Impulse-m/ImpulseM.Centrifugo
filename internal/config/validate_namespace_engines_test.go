@@ -532,6 +532,68 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 			wantErr: "namespace engines: prefix of controller changed, a restart is needed",
 		},
 		{
+			name: "prefix of a named Nats broker changed",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.Prefix = "centrifugo-v2"
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "raw mode prefix of a named Nats broker changed",
+			oldModify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "raw-a"
+			},
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "raw-b"
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "raw mode channel replacements of a named Nats broker changed",
+			oldModify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.ChannelReplacements = map[string]string{":": "."}
+			},
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.ChannelReplacements = map[string]string{":": "/"}
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "Redis prefix of a named Nats broker is not used",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Redis.Prefix = "unused"
+			},
+			wantErr: "",
+		},
+		{
+			name: "table prefix of a named Postgres broker changed",
+			modify: func(cfg *Config) {
+				cfg.Brokers[2].Postgres.TablePrefix = "orders"
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "table prefix of a named Postgres broker written with a trailing underscore",
+			modify: func(cfg *Config) {
+				cfg.Brokers[2].Postgres.TablePrefix = "cf_"
+			},
+			wantErr: "",
+		},
+		{
+			name: "postgres controller table prefix written with a trailing underscore",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = postgresControllerConfig("cf")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = postgresControllerConfig("cf_")
+			},
+			wantErr: "",
+		},
+		{
 			name: "prefix of a Redis presence manager changed",
 			modify: func(cfg *Config) {
 				cfg.PresenceManagers[0].Redis.Prefix = "centrifugo-other"

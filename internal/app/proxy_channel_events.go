@@ -27,15 +27,14 @@ func channelStateProxyEnabled(cfg config.Config) bool {
 }
 
 // buildChannelStateProxy creates the channel state proxy of channel.proxy.state. The proxy is shared by
-// all namespaces: one endpoint receives the events of all of them.
+// all namespaces: one endpoint receives the events of all of them. The presence manager does not feed
+// this proxy in this build yet, so no channel state event is sent.
 func buildChannelStateProxy(cfg config.Config) (proxy.ChannelStateProxy, error) {
-	p := cfg.Channel.Proxy.State
-	csp, err := proxy.GetChannelStateProxy("state", p)
+	csp, err := proxy.GetChannelStateProxy("state", cfg.Channel.Proxy.State)
 	if err != nil {
 		return nil, fmt.Errorf("error creating channel state proxy: %w", err)
 	}
-	log.Info().Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("channel state proxy configured")
-	log.Warn().Msg("channel state events are not delivered by this build: the Redis wiring follows in the next release")
+	log.Warn().Msg("no channel state events are sent: the presence manager is not wired to the channel state proxy")
 	return csp, nil
 }
 

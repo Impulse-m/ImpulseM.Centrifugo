@@ -682,7 +682,6 @@ func TestSharedCancelOfRefusedScopeMakesNoBackendCall(t *testing.T) {
 // run to its end on another node, and a local tombstone would answer its retransmit with the cancelled error.
 func TestSharedCancelFailureFollowsOnStoreError(t *testing.T) {
 	fx := newSharedFixture(t, true)
-	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 	fx.backend.setFail(errors.New("redis is down"))
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
 	require.Empty(t, fx.notified)

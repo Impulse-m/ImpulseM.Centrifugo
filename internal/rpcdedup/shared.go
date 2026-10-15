@@ -315,10 +315,11 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to cancel a call", err)
 		if s.failOpen {
-			// No call of key runs on this node (CancelFlight above), so the call runs on another node or has not
-			// started. A local tombstone would answer a later retransmit with the cancelled error even when the call
-			// ran to its end on the other node, and the client could then run it again under a new msg_id. The
-			// cancel is not delivered instead, as the README says for fail_open.
+			// No call of key ran on this node when CancelFlight checked, so the call runs on another node or has not
+			// started, and one which begins here meanwhile is not cancelled. A local tombstone would answer a later
+			// retransmit with the cancelled error even when the call ran to its end on the other node, and the client
+			// could then run it again under a new msg_id. The cancel is not delivered instead, as the README says for
+			// fail_open, whose deployments rely on the forwarded msg_id in the backend while the store fails.
 			return nil
 		}
 		return err

@@ -130,14 +130,11 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 // under reject.
 func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) error {
 	for channel, opts := range subs {
-		chOpts, found, err := h.cfgContainer.ChannelOptionsRef(channel)
-		if err != nil {
-			return err
-		}
-		if !found || chOpts.Compiled.ServerTagsFilterTemplate == nil {
+		tmpl := h.templateOf(channel)
+		if tmpl == nil {
 			continue
 		}
-		filter, err := subscriptionFilter(chOpts.Compiled.ServerTagsFilterTemplate, values, channel, opts.ServerTagsFilter)
+		filter, err := subscriptionFilter(tmpl, values, channel, opts.ServerTagsFilter)
 		if err != nil {
 			return err
 		}
@@ -150,20 +147,23 @@ func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptio
 // channelFilter returns the server tags filter of a client subscription to channel which sets explicit, under the
 // template of the channel's namespace. A channel without a template keeps explicit.
 func (h *Handler) channelFilter(client Client, channel string, explicit *protocol.FilterNode) (*protocol.FilterNode, error) {
-	chOpts, found, err := h.cfgContainer.ChannelOptionsRef(channel)
-	if err != nil {
-		return nil, err
-	}
-	if !found || chOpts.Compiled.ServerTagsFilterTemplate == nil {
+	tmpl := h.templateOf(channel)
+	if tmpl == nil {
 		return explicit, nil
 	}
-	return subscriptionFilter(chOpts.Compiled.ServerTagsFilterTemplate, connectionFilterValues(client), channel, explicit)
+	return subscriptionFilter(tmpl, connectionFilterValues(client), channel, explicit)
 }
 
 // channelHasFilterTemplate reports whether the namespace of channel has a server tags filter template.
 func (h *Handler) channelHasFilterTemplate(channel string) bool {
-	chOpts, found, err := h.cfgContainer.ChannelOptionsRef(channel)
-	return err == nil && found && chOpts.Compiled.ServerTagsFilterTemplate != nil
+	return h.templateOf(channel) != nil
+}
+
+// templateOf returns the server tags filter template of the namespace of channel, or nil when it has none. A channel of
+// an unknown namespace has zero options, so it has no template. The lookup returns no error.
+func (h *Handler) templateOf(channel string) *filtertemplate.Template {
+	chOpts, _, _ := h.cfgContainer.ChannelOptionsRef(channel)
+	return chOpts.Compiled.ServerTagsFilterTemplate
 }
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an
@@ -181,6 +181,7 @@ func subscriptionFilter(
 	}
 	var missing filtertemplate.MissingValueError
 	if !errors.As(err, &missing) {
+		log.Error().Err(err).Str("channel", channel).Msg("server tags filter template failed to render")
 		return nil, err
 	}
 	if tmpl.OnMissing() == filtertemplate.OnMissingSkip {

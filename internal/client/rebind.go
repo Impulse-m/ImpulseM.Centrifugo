@@ -206,9 +206,14 @@ func (h *Handler) onRefreshRebind(
 	if err != nil {
 		rec.identity.Store(prev)
 		h.detachRateLimit(c)
-		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again.
+		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again. A disconnect
+		// which ran between the detach and the attach released nothing, so the attach is released when the connection is
+		// closed by now: the disconnect sets closed before it detaches.
 		if !errors.Is(err, centrifuge.ErrRebindClosed) {
 			h.attachRateLimit(c, oldUser)
+			if rec.closed.Load() {
+				h.detachRateLimit(c)
+			}
 		}
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}

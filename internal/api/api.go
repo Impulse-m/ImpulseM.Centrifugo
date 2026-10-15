@@ -444,9 +444,7 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 		return resp
 	}
 
-	// A server API subscription has no connection whose values a server tags filter template is rendered with, so the
-	// subscription is refused on a channel which has a template.
-	if chOpts.Compiled.ServerTagsFilterTemplate != nil {
+	if refusesAPISubscribe(chOpts) {
 		resp.Error = ErrorNotAvailable
 		return resp
 	}

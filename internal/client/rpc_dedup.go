@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
@@ -454,12 +455,8 @@ func withoutRetrySignal(err *centrifuge.Error) *centrifuge.Error {
 		return err
 	}
 	stripped := *err
-	stripped.Metadata = make(map[string]string, len(err.Metadata))
-	for key, value := range err.Metadata {
-		if key != rpcRetryMetadataKey {
-			stripped.Metadata[key] = value
-		}
-	}
+	stripped.Metadata = maps.Clone(err.Metadata)
+	delete(stripped.Metadata, rpcRetryMetadataKey)
 	if len(stripped.Metadata) == 0 {
 		stripped.Metadata = nil
 	}

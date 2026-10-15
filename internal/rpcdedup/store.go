@@ -14,10 +14,10 @@ type Key struct {
 // when the call failed. Uncached marks a reply over the size limit, which is not kept: a duplicate gets
 // result evicted. A reply over the size limit, or over the share of a record of its scope, is kept as uncached too.
 //
-// Abandoned marks a flight which left no answer and kept no record. The owner of a call never abandons its
+// Abandoned marks a flight which left no answer and kept no record. A call which runs here never abandons its
 // flight: it keeps an error record when it panics. The shared tier does: its watch abandons the flight of a call
-// on another node whose record vanishes or whose polls fail, and a BeginMismatch abandons the flight which local
-// duplicates joined while the shared begin ran. A duplicate of an abandoned flight gets no retry signal, since the
+// on another node whose record vanishes or whose polls fail, and a BeginMismatch of the call which began here
+// abandons the flight which local duplicates joined while the shared begin ran. A duplicate of an abandoned flight gets no retry signal, since the
 // call may have run, unless NotRun is set.
 type Record struct {
 	Reply     []byte

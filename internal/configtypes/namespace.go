@@ -205,6 +205,13 @@ type ChannelOptions struct {
 	// SubscribeStreamBidirectional enables using bidirectional stream proxy for the namespace.
 	SubscribeStreamBidirectional bool `mapstructure:"subscribe_stream_proxy_bidirectional" json:"subscribe_stream_proxy_bidirectional" envconfig:"subscribe_stream_proxy_bidirectional" yaml:"subscribe_stream_proxy_bidirectional" toml:"subscribe_stream_proxy_bidirectional" doc:"Enables bidirectional mode for the subscribe stream proxy, letting clients also send data into the stream."`
 
+	// StateProxyEnabled turns on sending channel state events (occupied, vacated) of the namespace to the channel state proxy.
+	StateProxyEnabled bool `mapstructure:"state_proxy_enabled" json:"state_proxy_enabled" envconfig:"state_proxy_enabled" yaml:"state_proxy_enabled" toml:"state_proxy_enabled" doc:"Sends occupied and vacated events of channels in this namespace to the channel state proxy. Requires presence and the Redis presence manager, and a configured channel state proxy."`
+	// CacheEmptyProxyEnabled turns on calling the cache empty proxy for the namespace.
+	CacheEmptyProxyEnabled bool `mapstructure:"cache_empty_proxy_enabled" json:"cache_empty_proxy_enabled" envconfig:"cache_empty_proxy_enabled" yaml:"cache_empty_proxy_enabled" toml:"cache_empty_proxy_enabled" doc:"Calls the cache empty proxy when a subscriber in cache recovery mode finds no publication in the channel. Requires force_recovery_mode cache and a configured cache empty proxy."`
+	// CacheEmptyProxyName of proxy to use for cache empty events in namespace.
+	CacheEmptyProxyName string `mapstructure:"cache_empty_proxy_name" default:"default" json:"cache_empty_proxy_name" envconfig:"cache_empty_proxy_name" yaml:"cache_empty_proxy_name" toml:"cache_empty_proxy_name" expose:"full" doc:"Name of the configured proxy to use for cache empty events in this namespace. Defaults to <<default>>."`
+
 	// SubscriptionType defines the subscription type for the namespace.
 	// Valid values: "stream", "map", "map_clients", "map_users", "shared_poll".
 	// Default: "stream" (traditional PUB/SUB with history).

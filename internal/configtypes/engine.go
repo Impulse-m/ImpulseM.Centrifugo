@@ -29,6 +29,8 @@ type RedisPresenceManagerCommon struct {
 	PresenceHashFieldTTL bool `mapstructure:"presence_hash_field_ttl" json:"presence_hash_field_ttl" envconfig:"presence_hash_field_ttl" yaml:"presence_hash_field_ttl" toml:"presence_hash_field_ttl" doc:"Use Redis hash per-field expiration for presence (requires Redis 7.4+)."`
 	// PresenceUserMapping enables optimization for presence stats keeping a separate hash of subscribed users in Redis.
 	PresenceUserMapping bool `mapstructure:"presence_user_mapping" json:"presence_user_mapping" envconfig:"presence_user_mapping" yaml:"presence_user_mapping" toml:"presence_user_mapping" doc:"Optimize presence stats by keeping a separate Redis hash of subscribed users."`
+	// ChannelState configures channel state events (occupied, vacated) of the presence manager.
+	ChannelState RedisChannelState `mapstructure:"channel_state" json:"channel_state" envconfig:"channel_state" yaml:"channel_state" toml:"channel_state" doc:"Channel state events (occupied, vacated) settings of the Redis presence manager."`
 }
 
 type EngineRedisPresenceManager struct {

@@ -50,6 +50,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateChannelState(c); err != nil {
+		return err
+	}
+
 	if c.Client.Proxy.Connect.Enabled {
 		if err := validateProxy("default", c.Client.Proxy.Connect.Proxy); err != nil {
 			return fmt.Errorf("in client.proxy.connect: %v", err)
@@ -264,6 +268,9 @@ func validateChannelOptions(c configtypes.ChannelOptions, globalHistoryMetaTTL c
 		return errors.New("both history size and history ttl required for recovery")
 	}
 	if err := validateSharedPositionSync(c, cfg); err != nil {
+		return err
+	}
+	if err := validateChannelStateOptions(c, proxyNames, cfg); err != nil {
 		return err
 	}
 	if c.AutoCacheRecover && (!c.ForceRecovery || c.ForceRecoveryMode != "cache") {

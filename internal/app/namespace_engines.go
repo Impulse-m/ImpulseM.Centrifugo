@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
@@ -21,8 +22,11 @@ type namespaceEngines struct {
 	cfgContainer     *config.Container
 	brokers          map[string]centrifuge.Broker
 	presenceManagers map[string]centrifuge.PresenceManager
-	routeBrokers     bool
-	routePresence    bool
+	// redisShards are the Redis connections of the named Redis brokers. A Redis broker does not close its shards.
+	redisShards   []*centrifuge.RedisShard
+	closeTimeout  time.Duration
+	routeBrokers  bool
+	routePresence bool
 }
 
 // namespaceEnginesService closes the named brokers and presence managers when the service stops.
@@ -35,42 +39,30 @@ type namespaceEnginesService struct {
 func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 	cfg := cfgContainer.Config()
 
-	var hasEntries bool
+	// Routing hooks are set for each kind with an enabled entry, not only for the kinds which a namespace
+	// selects at startup: a reload may add a namespace which selects an existing entry. The validation
+	// guarantees that a selection names an enabled entry, so the entries are the whole condition.
+	var routeBrokers bool
 	for _, entry := range cfg.Brokers {
 		if entry.Enabled {
-			hasEntries = true
-		}
-	}
-	for _, entry := range cfg.PresenceManagers {
-		if entry.Enabled {
-			hasEntries = true
-		}
-	}
-
-	var routeBrokers bool
-	var routePresence bool
-	if cfg.Channel.WithoutNamespace.BrokerName != "" {
-		routeBrokers = true
-	}
-	if cfg.Channel.WithoutNamespace.PresenceManagerName != "" {
-		routePresence = true
-	}
-	for _, ns := range cfg.Channel.Namespaces {
-		if ns.BrokerName != "" {
 			routeBrokers = true
 		}
-		if ns.PresenceManagerName != "" {
+	}
+	var routePresence bool
+	for _, entry := range cfg.PresenceManagers {
+		if entry.Enabled {
 			routePresence = true
 		}
 	}
 
-	if !hasEntries && !routeBrokers && !routePresence {
+	if !routeBrokers && !routePresence {
 		return nil
 	}
 	return &namespaceEngines{
 		cfgContainer:     cfgContainer,
 		brokers:          make(map[string]centrifuge.Broker),
 		presenceManagers: make(map[string]centrifuge.PresenceManager),
+		closeTimeout:     cfg.Shutdown.Timeout.ToDuration(),
 		routeBrokers:     routeBrokers,
 		routePresence:    routePresence,
 	}
@@ -101,7 +93,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		if !entry.Enabled {
 			continue
 		}
-		broker, mode, err := createNamedBroker(node, cfgContainer, entry)
+		broker, mode, err := e.createBroker(node, cfgContainer, entry)
 		if err != nil {
 			return fmt.Errorf("error creating broker %s: %w", entry.Name, err)
 		}
@@ -158,23 +150,29 @@ func (s *namespaceEnginesService) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// close closes the named engines within the shutdown timeout, then the Redis connections of the named brokers.
 func (e *namespaceEngines) close() {
 	if e == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), e.closeTimeout)
+	defer cancel()
 	for name, broker := range e.brokers {
 		if closer, ok := broker.(centrifuge.Closer); ok {
-			if err := closer.Close(context.Background()); err != nil {
+			if err := closer.Close(ctx); err != nil {
 				log.Error().Err(err).Str("kind", "broker").Str("name", name).Msg("error closing namespace engine")
 			}
 		}
 	}
 	for name, presenceManager := range e.presenceManagers {
 		if closer, ok := presenceManager.(centrifuge.Closer); ok {
-			if err := closer.Close(context.Background()); err != nil {
+			if err := closer.Close(ctx); err != nil {
 				log.Error().Err(err).Str("kind", "presence_manager").Str("name", name).Msg("error closing namespace engine")
 			}
 		}
+	}
+	for _, shard := range e.redisShards {
+		shard.Close()
 	}
 }
 
@@ -184,8 +182,9 @@ func (e *namespaceEngines) broker(ch string) (centrifuge.Broker, bool) {
 	if e == nil {
 		return nil, false
 	}
-	chOpts, ok, err := e.cfgContainer.ChannelOptionsRef(ch)
-	if err != nil || !ok || chOpts.BrokerName == "" {
+	// ChannelOptionsRef never fails, so the lookup has no error to handle.
+	chOpts, ok, _ := e.cfgContainer.ChannelOptionsRef(ch)
+	if !ok || chOpts.BrokerName == "" {
 		return nil, false
 	}
 	broker, ok := e.brokers[chOpts.BrokerName]
@@ -198,16 +197,17 @@ func (e *namespaceEngines) presenceManager(ch string) (centrifuge.PresenceManage
 	if e == nil {
 		return nil, false
 	}
-	chOpts, ok, err := e.cfgContainer.ChannelOptionsRef(ch)
-	if err != nil || !ok || chOpts.PresenceManagerName == "" {
+	// ChannelOptionsRef never fails, so the lookup has no error to handle.
+	chOpts, ok, _ := e.cfgContainer.ChannelOptionsRef(ch)
+	if !ok || chOpts.PresenceManagerName == "" {
 		return nil, false
 	}
 	presenceManager, ok := e.presenceManagers[chOpts.PresenceManagerName]
 	return presenceManager, ok
 }
 
-// createNamedBroker creates a named broker by its type. It returns the connection mode for logging.
-func createNamedBroker(
+// createBroker creates a named broker by its type. It returns the connection mode for logging.
+func (e *namespaceEngines) createBroker(
 	node *centrifuge.Node,
 	cfgContainer *config.Container,
 	entry configtypes.NamedBroker,
@@ -224,6 +224,7 @@ func createNamedBroker(
 		if err != nil {
 			return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
 		}
+		e.redisShards = append(e.redisShards, redisShards...)
 		broker, err := centrifuge.NewRedisBroker(node, centrifuge.RedisBrokerConfig{
 			Shards:   redisShards,
 			Prefix:   entry.Redis.Prefix,

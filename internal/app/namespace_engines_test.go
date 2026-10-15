@@ -60,17 +60,17 @@ func TestNamespaceEnginesNilWhenUnused(t *testing.T) {
 
 func TestNamespaceEnginesEnabledEntriesWithoutRouting(t *testing.T) {
 	// Enabled entries are created even when no namespace selects them yet, so their connections are checked
-	// at startup and a reload may route a namespace to them. The node still gets no routing hooks.
+	// at startup. The node gets the routing hook of the kind, so a reload may route a namespace to them.
 	cfg := config.DefaultConfig()
 	cfg.Brokers = configtypes.NamedBrokers{memoryNamedBroker("alpha")}
 	engines, cfgContainer, node := newNamespaceEnginesForTest(t, cfg)
 	require.NotNil(t, engines)
-	require.False(t, engines.routeBrokers)
+	require.True(t, engines.routeBrokers)
 	require.False(t, engines.routePresence)
 
 	nodeCfg := centrifuge.Config{}
 	engines.nodeConfig(&nodeCfg)
-	require.Nil(t, nodeCfg.GetBroker)
+	require.NotNil(t, nodeCfg.GetBroker)
 	require.Nil(t, nodeCfg.GetPresenceManager)
 
 	require.NoError(t, engines.create(node, cfgContainer))
@@ -78,10 +78,9 @@ func TestNamespaceEnginesEnabledEntriesWithoutRouting(t *testing.T) {
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 }
 
-func TestNamespaceEnginesNodeHooksOnlyForRoutedKind(t *testing.T) {
+func TestNamespaceEnginesNodeHooksOnlyForKindWithEntries(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Brokers = configtypes.NamedBrokers{memoryNamedBroker("alpha")}
-	cfg.PresenceManagers = configtypes.NamedPresenceManagers{memoryNamedPresenceManager("presence")}
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{Name: "one", ChannelOptions: configtypes.ChannelOptions{BrokerName: "alpha"}},
 	}
@@ -94,6 +93,29 @@ func TestNamespaceEnginesNodeHooksOnlyForRoutedKind(t *testing.T) {
 	engines.nodeConfig(&nodeCfg)
 	require.NotNil(t, nodeCfg.GetBroker)
 	require.Nil(t, nodeCfg.GetPresenceManager)
+}
+
+func TestNamespaceEnginesRoutesNamespaceAddedByReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Brokers = configtypes.NamedBrokers{memoryNamedBroker("alpha")}
+	engines, cfgContainer, node := newNamespaceEnginesForTest(t, cfg)
+	require.NoError(t, engines.create(node, cfgContainer))
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+
+	broker, ok := engines.broker("news:x")
+	require.False(t, ok)
+	require.Nil(t, broker)
+
+	reloaded := cfg
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "news", ChannelOptions: configtypes.ChannelOptions{BrokerName: "alpha"}},
+	}
+	require.NoError(t, config.CheckNamespaceEnginesReload(cfg, reloaded))
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	broker, ok = engines.broker("news:x")
+	require.True(t, ok)
+	require.Same(t, engines.brokers["alpha"], broker)
 }
 
 func TestNamespaceEnginesNilReceiver(t *testing.T) {
@@ -249,7 +271,8 @@ func (b *closeRecordingBroker) Close(_ context.Context) error {
 func TestNamespaceEnginesCloseOnShutdown(t *testing.T) {
 	broker := &closeRecordingBroker{closed: make(chan struct{})}
 	engines := &namespaceEngines{
-		brokers: map[string]centrifuge.Broker{"alpha": broker},
+		brokers:      map[string]centrifuge.Broker{"alpha": broker},
+		closeTimeout: time.Second,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)

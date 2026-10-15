@@ -246,8 +246,8 @@ func TestRegistryBackendTrailerCannotSetRetrySignal(t *testing.T) {
 	require.Equal(t, map[string]string{"x-detail": "more"}, requireProtocolError(t, err).Metadata)
 }
 
-// The mapping drops the retry signal even when the method names its key in error_metadata. Validation refuses such
-// a config, so this guards a method which was not validated: a backend trailer never carries the signal.
+// The mapping drops the retry signal even when the method names its key in error_metadata, which validation accepts:
+// a backend trailer never carries the signal.
 func TestRegistryCallErrorDropsRetrySignalNamedInErrorMetadata(t *testing.T) {
 	trailers := metadata.Pairs(
 		"x-centrifugo-retry", "new_msg_id",

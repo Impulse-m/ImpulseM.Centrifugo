@@ -818,7 +818,8 @@ func requireNoRetrySignal(t *testing.T, err error) {
 	require.NotContains(t, protoErr.Metadata, rpcRetryMetadataKey)
 }
 
-// The retry signal key is under the reserved prefix: no allow-list can name it, so a backend cannot set it.
+// The retry signal key is under the reserved prefix, which the header allow-lists refuse. A backend cannot set it: the
+// runtime removes it from every error built from a backend trailer.
 func TestRPCRetryMetadataKeyIsReserved(t *testing.T) {
 	require.True(t, strings.HasPrefix(rpcRetryMetadataKey, configtypes.RPCRegistryReservedHeaderPrefix))
 }

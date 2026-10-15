@@ -69,14 +69,7 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		namedProxies[p.Name] = p.Proxy
 	}
 
-	if channelStateProxyEnabled(cfg) {
-		proxyMap.ChannelStateProxy, err = buildChannelStateProxy(cfg)
-		if err != nil {
-			return nil, false, err
-		}
-	}
-
-	err = enableCacheEmptyProxies(proxyMap, cfg, namedProxies)
+	err = enableChannelEventProxies(proxyMap, cfg, namedProxies)
 	if err != nil {
 		return nil, false, err
 	}

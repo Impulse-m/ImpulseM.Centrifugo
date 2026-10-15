@@ -66,6 +66,23 @@ func resolveCacheEmptyProxy(
 	return p, nil
 }
 
+// enableChannelEventProxies creates the channel state proxy, when a namespace enables channel state events, and
+// the cache empty proxies, and records them in proxyMap.
+func enableChannelEventProxies(
+	proxyMap *client.ProxyMap,
+	cfg config.Config,
+	namedProxies map[string]configtypes.Proxy,
+) error {
+	if channelStateProxyEnabled(cfg) {
+		csp, err := buildChannelStateProxy(cfg)
+		if err != nil {
+			return err
+		}
+		proxyMap.ChannelStateProxy = csp
+	}
+	return enableCacheEmptyProxies(proxyMap, cfg, namedProxies)
+}
+
 // enableCacheEmptyProxies creates the cache empty proxies used by channels without namespace and by the
 // namespaces with cache_empty_proxy_enabled, and records them in proxyMap.
 func enableCacheEmptyProxies(

@@ -81,6 +81,9 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	if rl.UserCommand.Enabled {
 		warnDefaultFallback(limiterUserCommand, &rl.UserCommand.RateLimitOperations)
 	}
+	if rl.RedisUserCommand.Enabled {
+		warnDefaultFallback(limiterRedisUserCommand, &rl.RedisUserCommand.RateLimitOperations)
+	}
 	return nil
 }
 

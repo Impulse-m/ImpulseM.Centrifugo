@@ -39,10 +39,11 @@ func (h *Handler) setupRPCDedupRedis() error {
 		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
 		NodeID:        h.node.ID(),
 		TTL:           rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes: dedup.ReplyLimit(),
+		MaxReplyBytes: sharedReplyLimit(dedup),
 		FailOpen:      failOpen,
 		Notifier:      h.notifyRPCDedupCancel,
 		Observer:      h.rpcDedup.metrics,
+		IOTimeout:     redisConf.IOTimeout.ToDuration(),
 	})
 	h.rpcDedup.store = shared
 	h.rpcDedup.shared = shared
@@ -76,6 +77,14 @@ func (s *rpcDedupRedisService) Run(ctx context.Context) error {
 	stopConnector()
 	<-connDone
 	return err
+}
+
+// sharedReplyLimit returns the largest reply the shared tier keeps, which is the largest reply the node-local store keeps,
+// so that both tiers answer the same calls. The node-local store counts the record overhead within the share of a
+// record: the reply limit, or the share less rpcdedup.RecordOverhead, whichever is smaller, and zero when that is
+// negative.
+func sharedReplyLimit(dedup configtypes.RPCDedup) int {
+	return max(min(dedup.ReplyLimit(), dedup.ScopeShare()-rpcdedup.RecordOverhead), 0)
 }
 
 // rpcDedupConnectLog returns the log of the connect attempts of the shared tier. A failure says what the calls do

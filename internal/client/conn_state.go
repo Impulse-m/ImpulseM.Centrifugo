@@ -34,8 +34,6 @@ type connState struct {
 	limits     *ratelimit.ConnState
 	identity   atomic.Pointer[connIdentity]
 	refreshing atomic.Bool
-	// closed is set by the disconnect of the connection, before it releases what the handler holds.
-	closed atomic.Bool
 }
 
 // connIdentity is the identity of a connection: what its token proves and the user it is bound to. It is immutable

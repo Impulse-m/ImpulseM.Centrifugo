@@ -150,9 +150,10 @@ func (h *Handler) trackSession(c rebindableClient, rec *connState, session [16]b
 }
 
 // onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
-// session index entry. The index marks the connection closed, so no session is tracked for it after the release.
+// session index entry. The connection is marked closed first, so a rebind which fails after this point knows it, and no
+// session is tracked for it after the release.
 func (h *Handler) onClientDisconnect(c rebindableClient, rec *connState) {
-	rec.closed.Store(true)
+	rec.track.MarkClosed()
 	h.detachRateLimit(c)
 	if h.accessStore != nil {
 		h.accessStore.SessionConnections().Close(c, &rec.track)

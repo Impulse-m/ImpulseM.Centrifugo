@@ -17,12 +17,19 @@ type Tracked struct {
 	session [16]byte // the session the connection is indexed under; zero when it is not indexed
 }
 
-// Closed reports whether the connection of t is closed: it has left the index for good. It is a test accessor; the
-// server marks a closed connection by Close and needs no read of the mark.
+// Closed reports whether the connection of t is closed: it has left the index for good, or it was marked closed.
 func (t *Tracked) Closed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.closed
+}
+
+// MarkClosed marks the connection of t closed, so a later Track does nothing. The server calls it on disconnect, whether
+// or not the connection is in an index, so a rebind which fails after the disconnect knows the connection is closed.
+func (t *Tracked) MarkClosed() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
 }
 
 // SessionConnections indexes local connections which carry a token session, whether or not they have a user. Such a

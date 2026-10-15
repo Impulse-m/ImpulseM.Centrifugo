@@ -211,7 +211,7 @@ func (h *Handler) onRefreshRebind(
 		// closed by now: the disconnect sets closed before it detaches.
 		if !errors.Is(err, centrifuge.ErrRebindClosed) {
 			h.attachRateLimit(c, oldUser)
-			if rec.closed.Load() {
+			if rec.track.Closed() {
 				h.detachRateLimit(c)
 			}
 		}

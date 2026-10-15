@@ -122,7 +122,7 @@ func parseBegin(parts []string) (BeginResult, error) {
 		}
 		return BeginResult{State: BeginCancelled, Record: rec}, nil
 	case "inflight":
-		if len(parts) != 2 {
+		if len(parts) != 2 || parts[1] == "" {
 			return BeginResult{}, errMalformedReply
 		}
 		return BeginResult{State: BeginInFlight, Owner: parts[1]}, nil
@@ -171,7 +171,7 @@ func parseCancel(parts []string) (CancelResult, error) {
 	case "done":
 		return CancelResult{State: CancelDone}, nil
 	case "inflight":
-		if len(parts) != 2 {
+		if len(parts) != 2 || parts[1] == "" {
 			return CancelResult{}, errMalformedReply
 		}
 		return CancelResult{State: CancelInFlight, Owner: parts[1]}, nil

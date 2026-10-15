@@ -112,6 +112,7 @@ func TestParseBeginMalformed(t *testing.T) {
 		{"unknown"},
 		{"inflight"},
 		{"inflight", "a", "b"},
+		{"inflight", ""},
 		{"cancelled"},
 		{"cancelled", "{bad"},
 		{"done", "reply"},
@@ -181,7 +182,7 @@ func TestParseCancelReplies(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, CancelResult{State: CancelDone}, res)
 
-	for _, parts := range [][]string{nil, {"unknown"}, {"inflight"}, {"inflight", "a", "b"}} {
+	for _, parts := range [][]string{nil, {"unknown"}, {"inflight"}, {"inflight", "a", "b"}, {"inflight", ""}} {
 		_, err = parseCancel(parts)
 		require.ErrorIs(t, err, errMalformedReply, "%v", parts)
 	}

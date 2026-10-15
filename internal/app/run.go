@@ -142,7 +142,10 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error building proxy map")
 	}
 
+	engines := newNamespaceEngines(cfgContainer)
+
 	nodeCfg := centrifugeNodeConfig(build.Version, edition, cfgContainer, centrifugeLogHandler)
+	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error creating Centrifuge Node")
@@ -158,6 +161,11 @@ func Run(cmd *cobra.Command, configFile string) {
 	err = configureEngines(node, cfgContainer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("configure engines error")
+	}
+
+	err = engines.create(node, cfgContainer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("create namespace engines error")
 	}
 
 	err = configureMapBroker(node, cfgContainer)
@@ -302,6 +310,13 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error running node")
 	}
 
+	if err = engines.run(node); err != nil {
+		log.Fatal().Err(err).Msg("error running namespace engines")
+	}
+	if engines != nil {
+		serviceManager.Register(engines.service())
+	}
+
 	serviceDone := runServices(ctx, serviceManager)
 	ingestDone := runServices(ingestCtx, ingestManager)
 
@@ -361,6 +376,9 @@ func reloadConfig(
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
 	rpcRegistry *rpcregistry.Registry,
 ) error {
+	if err := config.CheckNamespaceEnginesReload(cfgContainer.Config(), newCfg); err != nil {
+		return err
+	}
 	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
 	if err != nil {
 		return err

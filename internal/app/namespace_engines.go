@@ -1,0 +1,276 @@
+package app
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/service"
+
+	"github.com/centrifugal/centrifuge"
+	"github.com/rs/zerolog/log"
+)
+
+// namespaceEngines holds the named brokers and presence managers which channels select with the
+// broker_name and presence_manager_name channel options. The maps are filled once, before the node
+// runs, and never change after that, so the routing functions read them without a lock. A nil
+// *namespaceEngines is valid: no namespace selects a named engine, and every method does nothing.
+type namespaceEngines struct {
+	cfgContainer     *config.Container
+	brokers          map[string]centrifuge.Broker
+	presenceManagers map[string]centrifuge.PresenceManager
+	routeBrokers     bool
+	routePresence    bool
+}
+
+// namespaceEnginesService closes the named brokers and presence managers when the service stops.
+type namespaceEnginesService struct {
+	engines *namespaceEngines
+}
+
+// newNamespaceEngines returns nil when no enabled entry of brokers or presence_managers exists and no channel
+// option selects one. Otherwise it returns the engines which create and route them.
+func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
+	cfg := cfgContainer.Config()
+
+	var hasEntries bool
+	for _, entry := range cfg.Brokers {
+		if entry.Enabled {
+			hasEntries = true
+		}
+	}
+	for _, entry := range cfg.PresenceManagers {
+		if entry.Enabled {
+			hasEntries = true
+		}
+	}
+
+	var routeBrokers bool
+	var routePresence bool
+	if cfg.Channel.WithoutNamespace.BrokerName != "" {
+		routeBrokers = true
+	}
+	if cfg.Channel.WithoutNamespace.PresenceManagerName != "" {
+		routePresence = true
+	}
+	for _, ns := range cfg.Channel.Namespaces {
+		if ns.BrokerName != "" {
+			routeBrokers = true
+		}
+		if ns.PresenceManagerName != "" {
+			routePresence = true
+		}
+	}
+
+	if !hasEntries && !routeBrokers && !routePresence {
+		return nil
+	}
+	return &namespaceEngines{
+		cfgContainer:     cfgContainer,
+		brokers:          make(map[string]centrifuge.Broker),
+		presenceManagers: make(map[string]centrifuge.PresenceManager),
+		routeBrokers:     routeBrokers,
+		routePresence:    routePresence,
+	}
+}
+
+// nodeConfig sets the routing hooks of the node config. Hooks are set only for the kinds which some
+// namespace selects, so the node pays nothing for the other kind.
+func (e *namespaceEngines) nodeConfig(cfg *centrifuge.Config) {
+	if e == nil {
+		return
+	}
+	if e.routeBrokers {
+		cfg.GetBroker = e.broker
+	}
+	if e.routePresence {
+		cfg.GetPresenceManager = e.presenceManager
+	}
+}
+
+// create creates every enabled entry of brokers and presence_managers. Entries are created even when no
+// namespace selects them yet, so their connections are checked at startup.
+func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Container) error {
+	if e == nil {
+		return nil
+	}
+	cfg := cfgContainer.Config()
+	for _, entry := range cfg.Brokers {
+		if !entry.Enabled {
+			continue
+		}
+		broker, mode, err := createNamedBroker(node, cfgContainer, entry)
+		if err != nil {
+			return fmt.Errorf("error creating broker %s: %w", entry.Name, err)
+		}
+		e.brokers[entry.Name] = broker
+		log.Info().
+			Str("kind", "broker").
+			Str("name", entry.Name).
+			Str("type", entry.Type).
+			Str("mode", mode).
+			Msg("namespace engine created")
+	}
+	for _, entry := range cfg.PresenceManagers {
+		if !entry.Enabled {
+			continue
+		}
+		presenceManager, mode, err := createNamedPresenceManager(node, entry)
+		if err != nil {
+			return fmt.Errorf("error creating presence manager %s: %w", entry.Name, err)
+		}
+		e.presenceManagers[entry.Name] = presenceManager
+		log.Info().
+			Str("kind", "presence_manager").
+			Str("name", entry.Name).
+			Str("type", entry.Type).
+			Str("mode", mode).
+			Msg("namespace engine created")
+	}
+	return nil
+}
+
+// run registers the event handler of every named broker. It must be called after the node runs: the
+// default broker is registered by the node itself.
+func (e *namespaceEngines) run(node *centrifuge.Node) error {
+	if e == nil {
+		return nil
+	}
+	for name, broker := range e.brokers {
+		if err := broker.RegisterBrokerEventHandler(node); err != nil {
+			return fmt.Errorf("error running broker %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// service returns the service which closes the named engines when the application shuts down.
+func (e *namespaceEngines) service() service.Service {
+	return &namespaceEnginesService{engines: e}
+}
+
+// Run waits for the context to be done, then closes the named engines.
+func (s *namespaceEnginesService) Run(ctx context.Context) error {
+	<-ctx.Done()
+	s.engines.close()
+	return ctx.Err()
+}
+
+func (e *namespaceEngines) close() {
+	if e == nil {
+		return
+	}
+	for name, broker := range e.brokers {
+		if closer, ok := broker.(centrifuge.Closer); ok {
+			if err := closer.Close(context.Background()); err != nil {
+				log.Error().Err(err).Str("kind", "broker").Str("name", name).Msg("error closing namespace engine")
+			}
+		}
+	}
+	for name, presenceManager := range e.presenceManagers {
+		if closer, ok := presenceManager.(centrifuge.Closer); ok {
+			if err := closer.Close(context.Background()); err != nil {
+				log.Error().Err(err).Str("kind", "presence_manager").Str("name", name).Msg("error closing namespace engine")
+			}
+		}
+	}
+}
+
+// broker returns the named broker which the channel selects with broker_name. It returns false for
+// channels whose namespace selects no named broker, and it does not allocate.
+func (e *namespaceEngines) broker(ch string) (centrifuge.Broker, bool) {
+	if e == nil {
+		return nil, false
+	}
+	chOpts, ok, err := e.cfgContainer.ChannelOptionsRef(ch)
+	if err != nil || !ok || chOpts.BrokerName == "" {
+		return nil, false
+	}
+	broker, ok := e.brokers[chOpts.BrokerName]
+	return broker, ok
+}
+
+// presenceManager returns the named presence manager which the channel selects with
+// presence_manager_name. It returns false for channels whose namespace selects none, and it does not allocate.
+func (e *namespaceEngines) presenceManager(ch string) (centrifuge.PresenceManager, bool) {
+	if e == nil {
+		return nil, false
+	}
+	chOpts, ok, err := e.cfgContainer.ChannelOptionsRef(ch)
+	if err != nil || !ok || chOpts.PresenceManagerName == "" {
+		return nil, false
+	}
+	presenceManager, ok := e.presenceManagers[chOpts.PresenceManagerName]
+	return presenceManager, ok
+}
+
+// createNamedBroker creates a named broker by its type. It returns the connection mode for logging.
+func createNamedBroker(
+	node *centrifuge.Node,
+	cfgContainer *config.Container,
+	entry configtypes.NamedBroker,
+) (centrifuge.Broker, string, error) {
+	switch entry.Type {
+	case "memory":
+		broker, err := createMemoryBroker(node)
+		if err != nil {
+			return nil, "", err
+		}
+		return broker, "", nil
+	case "redis":
+		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
+		if err != nil {
+			return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+		}
+		broker, err := centrifuge.NewRedisBroker(node, centrifuge.RedisBrokerConfig{
+			Shards:   redisShards,
+			Prefix:   entry.Redis.Prefix,
+			UseLists: entry.Redis.UseLists,
+			Name:     entry.Name,
+		})
+		if err != nil {
+			return nil, mode, fmt.Errorf("error creating Redis broker: %w", err)
+		}
+		return broker, mode, nil
+	case "nats":
+		broker, err := natsBrokerFrom(node, cfgContainer, entry.Nats)
+		if err != nil {
+			return nil, "", err
+		}
+		return broker, "nats", nil
+	case "postgres":
+		broker, err := createPostgresStreamBroker(node, entry.Postgres)
+		if err != nil {
+			return nil, "", err
+		}
+		return broker, "postgres", nil
+	default:
+		return nil, "", fmt.Errorf("unknown broker type: %s", entry.Type)
+	}
+}
+
+// createNamedPresenceManager creates a named presence manager by its type. It returns the connection
+// mode for logging.
+func createNamedPresenceManager(
+	node *centrifuge.Node,
+	entry configtypes.NamedPresenceManager,
+) (centrifuge.PresenceManager, string, error) {
+	switch entry.Type {
+	case "memory":
+		presenceManager, err := createMemoryPresenceManager(node)
+		if err != nil {
+			return nil, "", err
+		}
+		return presenceManager, "", nil
+	case "redis":
+		presenceManager, mode, err := createRedisPresenceManagerFrom(node, entry.Redis)
+		if err != nil {
+			return nil, mode, err
+		}
+		return presenceManager, mode, nil
+	default:
+		return nil, "", fmt.Errorf("unknown presence manager type: %s", entry.Type)
+	}
+}

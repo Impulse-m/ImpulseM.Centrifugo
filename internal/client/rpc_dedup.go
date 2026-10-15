@@ -312,7 +312,7 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 	completed := false
 	defer func() {
 		if !completed {
-			failure := registryRetryError(cfg.Errors.DedupUnavailable, true, "")
+			failure := registryNoSignalDedupError(cfg)
 			h.completeRPCRecord(key, flight, rpcdedup.Record{Err: failure})
 		}
 	}()
@@ -350,7 +350,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 	if cfg.Dedup.OnStoreError == configtypes.RPCDedupFailOpen {
 		release, admitted := track.inflight.TryAdd(e.Call.MsgID, cancel)
 		if !admitted {
-			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, ""))
+			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryNoSignalDedupError(cfg))
 		}
 		defer release()
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
@@ -404,7 +404,7 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	if rec.Abandoned {
 		// The owner left no answer and kept no record, so the call may have run: no retry signal is sent, and the app
 		// decides. The owner of a call does not leave such a record itself, see callRPCRecorded.
-		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryRetryError(cfg.Errors.DedupUnavailable, true, ""))
+		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryNoSignalDedupError(cfg))
 	}
 	return h.rpcRecordedReply(rec, cfg)
 }
@@ -440,6 +440,12 @@ func registryRetryError(e configtypes.RPCRegistryError, temporary bool, retry st
 // the client sends it again later.
 func registryLaterError(cfg configtypes.RPCRegistry) *centrifuge.Error {
 	return registryRetryError(cfg.Errors.DedupUnavailable, true, rpcRetryLater)
+}
+
+// registryNoSignalDedupError is the temporary dedup failure of a call which may have run, or which runs on its
+// connection: it carries no retry signal, so the client does not send the call again.
+func registryNoSignalDedupError(cfg configtypes.RPCRegistry) *centrifuge.Error {
+	return registryRetryError(cfg.Errors.DedupUnavailable, true, "")
 }
 
 // rpcRecordOf returns the final record of a call which ran: its reply, or its error. A disconnect is final too:

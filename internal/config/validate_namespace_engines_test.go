@@ -279,12 +279,83 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
 		},
 		{
-			name: "two named redis brokers with the same address but a different cluster address",
+			name: "a cluster redis broker and a standalone redis broker with the same prefix on other hosts",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0].Redis.Redis.ClusterAddress = []string{"redis://10.0.0.5:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis cluster and a named redis cluster with the same prefix and hosts written differently",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Prefix = "shared"
+				cfg.Engine.Redis.ClusterAddress = []string{"localhost:7000"}
+				cfg.Brokers[0].Redis.Address = nil
+				cfg.Brokers[0].Redis.ClusterAddress = []string{"127.0.0.1:7000"}
+				cfg.Brokers[0].Redis.Prefix = "shared"
+			},
+			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis cluster and a named redis standalone with the same prefix on other hosts",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Prefix = "shared"
+				cfg.Engine.Redis.ClusterAddress = []string{"10.0.0.5:7000"}
+				cfg.Brokers[0].Redis.Prefix = "shared"
+			},
+			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis cluster and a named redis standalone with another prefix",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Prefix = "shared"
+				cfg.Engine.Redis.ClusterAddress = []string{"10.0.0.5:7000"}
+			},
 			wantErr: "",
+		},
+		{
+			name: "two named postgres brokers with the same DSN and table prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
+			},
+			wantErr: `brokers: "orders" and "ledger" use the same PostgreSQL and the same table_prefix`,
+		},
+		{
+			name: "two named postgres brokers with the same DSN and table prefixes written as cf and cf_",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[2].Postgres.TablePrefix = "cf"
+				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[3].Postgres.TablePrefix = "cf_"
+			},
+			wantErr: `brokers: "orders" and "ledger" use the same PostgreSQL and the same table_prefix`,
+		},
+		{
+			name: "two named postgres brokers with the same DSN and another table prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[3].Postgres.TablePrefix = "ledger"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default postgres broker and a named postgres broker with the same DSN",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "postgres"
+				cfg.Broker.Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
+			},
+			wantErr: `brokers: "broker" and "orders" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
 			name: "controller of type redis",

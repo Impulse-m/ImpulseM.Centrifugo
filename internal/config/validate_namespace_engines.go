@@ -28,9 +28,17 @@ const defaultRedisAddress = "127.0.0.1:6379"
 
 // redisEngineRef is a Redis broker of the configuration: the default one or a named one.
 type redisEngineRef struct {
-	label  string
-	hosts  []string
-	prefix string
+	label   string
+	hosts   []string
+	prefix  string
+	cluster bool
+}
+
+// postgresEngineRef is a Postgres stream broker of the configuration: the default one or a named one.
+type postgresEngineRef struct {
+	label       string
+	dsn         string
+	tablePrefix string
 }
 
 // namespaceRouting is the engine selection of a namespace. The top-level
@@ -102,6 +110,9 @@ func validateNamespaceEngines(c Config) error {
 	if err := validateNamedRedisPrefixes(c); err != nil {
 		return err
 	}
+	if err := validateNamedPostgresTables(c); err != nil {
+		return err
+	}
 
 	if c.Controller.Enabled && !slices.Contains(knownControllerTypes, c.Controller.Type) {
 		return fmt.Errorf("unknown controller type: %s", c.Controller.Type)
@@ -128,20 +139,23 @@ func validateNamespaceEngineRef(
 
 // validateNamedRedisPrefixes rejects two Redis brokers which use the same Redis and the same prefix. In
 // cluster or sharded PUB/SUB modes such brokers subscribe the same channels, so a node would receive and
-// deliver each publication twice.
+// deliver each publication twice. A cluster broker conflicts with any broker of the same prefix, since the
+// cluster hosts are not resolved when the configuration is validated.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
 		refs = append(refs, redisEngineRef{
-			label:  "engine",
-			hosts:  redisHosts(c.Engine.Redis.Redis),
-			prefix: redisPrefix(c.Engine.Redis.Prefix),
+			label:   "engine",
+			hosts:   redisHosts(c.Engine.Redis.Redis),
+			prefix:  redisPrefix(c.Engine.Redis.Prefix),
+			cluster: usesRedisCluster(c.Engine.Redis.Redis),
 		})
 	} else if c.Broker.Enabled && c.Broker.Type == "redis" {
 		refs = append(refs, redisEngineRef{
-			label:  "broker",
-			hosts:  redisHosts(c.Broker.Redis.Redis),
-			prefix: redisPrefix(c.Broker.Redis.Prefix),
+			label:   "broker",
+			hosts:   redisHosts(c.Broker.Redis.Redis),
+			prefix:  redisPrefix(c.Broker.Redis.Prefix),
+			cluster: usesRedisCluster(c.Broker.Redis.Redis),
 		})
 	}
 	for _, b := range c.Brokers {
@@ -149,14 +163,18 @@ func validateNamedRedisPrefixes(c Config) error {
 			continue
 		}
 		refs = append(refs, redisEngineRef{
-			label:  b.Name,
-			hosts:  redisHosts(b.Redis.Redis),
-			prefix: redisPrefix(b.Redis.Prefix),
+			label:   b.Name,
+			hosts:   redisHosts(b.Redis.Redis),
+			prefix:  redisPrefix(b.Redis.Prefix),
+			cluster: usesRedisCluster(b.Redis.Redis),
 		})
 	}
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
-			if refs[i].prefix == refs[j].prefix && sharesHost(refs[i].hosts, refs[j].hosts) {
+			if refs[i].prefix != refs[j].prefix {
+				continue
+			}
+			if refs[i].cluster || refs[j].cluster || sharesHost(refs[i].hosts, refs[j].hosts) {
 				return fmt.Errorf(
 					"brokers: %q and %q use the same Redis and the same prefix; set a distinct prefix",
 					refs[i].label, refs[j].label,
@@ -165,6 +183,46 @@ func validateNamedRedisPrefixes(c Config) error {
 		}
 	}
 	return nil
+}
+
+// validateNamedPostgresTables rejects two Postgres stream brokers which use the same DSN and the same table prefix.
+// Each broker's outbox worker reads every row of its tables, so a node would deliver each publication once per
+// broker. The DSNs are compared as written.
+func validateNamedPostgresTables(c Config) error {
+	var refs []postgresEngineRef
+	if c.Broker.Enabled && c.Broker.Type == "postgres" {
+		refs = append(refs, postgresEngineRef{
+			label:       "broker",
+			dsn:         c.Broker.Postgres.DSN,
+			tablePrefix: postgresBrokerPrefix(c.Broker.Postgres.TablePrefix),
+		})
+	}
+	for _, b := range c.Brokers {
+		if !b.Enabled || b.Type != "postgres" {
+			continue
+		}
+		refs = append(refs, postgresEngineRef{
+			label:       b.Name,
+			dsn:         b.Postgres.DSN,
+			tablePrefix: postgresBrokerPrefix(b.Postgres.TablePrefix),
+		})
+	}
+	for i := range refs {
+		for j := i + 1; j < len(refs); j++ {
+			if refs[i].dsn == refs[j].dsn && refs[i].tablePrefix == refs[j].tablePrefix {
+				return fmt.Errorf(
+					"brokers: %q and %q use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
+					refs[i].label, refs[j].label,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+// usesRedisCluster reports whether a Redis configuration connects in cluster mode.
+func usesRedisCluster(redisCfg configtypes.Redis) bool {
+	return len(redisCfg.ClusterAddress) > 0
 }
 
 // redisHosts returns the lowercased hosts which a Redis configuration connects to. As in confighelpers, the

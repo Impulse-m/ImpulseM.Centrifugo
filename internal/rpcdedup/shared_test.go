@@ -37,6 +37,9 @@ type fakeBackend struct {
 	lostReplies int
 	// blockComplete makes every complete call wait until its context is done, as an unanswered Redis does.
 	blockComplete bool
+	// blockAck makes every ack call wait until its context is done, as an unanswered Redis does. It gives up after a
+	// second, so that a flush which ignores its context fails the test instead of hanging it.
+	blockAck bool
 	// onBegin, onComplete and onCancel run when the call is made, before it takes effect and outside the lock.
 	onBegin    func()
 	onComplete func()
@@ -231,9 +234,17 @@ func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
 }
 
 // Ack implements Backend: it deletes the done records and tombstones of the acks, and keeps the batch.
-func (f *fakeBackend) Ack(_ context.Context, acks []ScopeAcks) error {
+func (f *fakeBackend) Ack(ctx context.Context, acks []ScopeAcks) error {
 	if err := f.enter("ack"); err != nil {
 		return err
+	}
+	if f.blockAck {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+			return errors.New("the ack was not cut by its context")
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -993,6 +1004,27 @@ func TestSharedRunFlushesQueueInBatchesOnShutdown(t *testing.T) {
 		flushed += keys
 	}
 	require.Equal(t, 23, flushed, "every queued ack reaches the shared tier")
+}
+
+// A shutdown whose Redis does not answer the acks is held for one IO timeout in all, not one per batch: the first batch
+// is cut by the budget, and the acks which are left are counted as dropped.
+func TestSharedDrainSharesOneIOTimeout(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ackBatch = 10
+	fx.shared.ioTimeout = 100 * time.Millisecond
+	fx.backend.blockAck = true
+	scope := testScope("u1", "a")
+	msgIDs := make([]uint64, 0, 50)
+	for msgID := uint64(1); msgID <= 50; msgID++ {
+		msgIDs = append(msgIDs, msgID)
+	}
+	require.NoError(t, fx.shared.Ack(scope, msgIDs))
+
+	start := time.Now()
+	fx.shared.drainAcks(nil)
+	require.Less(t, time.Since(start), 500*time.Millisecond, "the drain shares one IO timeout of 100ms")
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "ack"), "the first batch is cut, the rest is not sent")
+	require.Equal(t, 40, fx.dropped, "the acks which the budget leaves unsent are counted as dropped")
 }
 
 func TestSharedAckFlushesOnTicker(t *testing.T) {

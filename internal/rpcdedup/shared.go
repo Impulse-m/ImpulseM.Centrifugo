@@ -40,7 +40,8 @@ const (
 
 // SharedObserver observes the shared tier. Methods may be called from any goroutine.
 type SharedObserver interface {
-	// AckDropped is called for every ack which is dropped because the ack queue is full.
+	// AckDropped is called for every ack which is dropped because the ack queue is full, or which a shutdown leaves
+	// unsent.
 	AckDropped()
 	// LostOwnership is called once for a call whose first write of its answer finds no in-flight record of this node,
 	// so the answer is kept on this node only.
@@ -392,37 +393,48 @@ func (s *Shared) Run(ctx context.Context) error {
 		case key := <-s.acks:
 			batch = append(batch, key)
 			if len(batch) >= s.ackBatch {
-				s.flushAcks(batch)
+				s.flushAcks(context.Background(), batch)
 				batch = batch[:0]
 			}
 		case <-ticker.C:
-			s.flushAcks(batch)
+			s.flushAcks(context.Background(), batch)
 			batch = batch[:0]
 		}
 	}
 }
 
 // drainAcks flushes the acks which are queued at the moment, and the batch, without waiting. It flushes in batches of
-// ackBatch keys, as the live path does, so a long queue is not sent in one write which the IO timeout may cut.
+// ackBatch keys, as the live path does, so a long queue is not sent in one write which the IO timeout may cut. The
+// whole drain has one budget of IOTimeout, so a Redis which does not answer holds shutdown for one IO timeout, not one
+// per batch. The acks which the budget leaves unsent are counted as dropped.
 func (s *Shared) drainAcks(batch []Key) {
-	for {
-		select {
-		case key := <-s.acks:
-			batch = append(batch, key)
-			if len(batch) >= s.ackBatch {
-				s.flushAcks(batch)
-				batch = batch[:0]
-			}
-		default:
-			s.flushAcks(batch)
-			return
+	budget, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
+	defer cancel()
+	// Only this goroutine receives from the queue, so the keys counted here are still there to take.
+	queued := len(s.acks)
+	taken := 0
+	for taken < queued && budget.Err() == nil {
+		batch = append(batch, <-s.acks)
+		taken++
+		if len(batch) >= s.ackBatch {
+			s.flushAcks(budget, batch)
+			batch = batch[:0]
+		}
+	}
+	if budget.Err() == nil {
+		s.flushAcks(budget, batch)
+		return
+	}
+	if s.observer != nil {
+		for range len(batch) + queued - taken {
+			s.observer.AckDropped()
 		}
 	}
 }
 
-// flushAcks sends the acks of keys to the shared tier, grouped by scope, as one batch. Errors are counted by the
-// backend, and the records of the failed acks expire at their TTL.
-func (s *Shared) flushAcks(keys []Key) {
+// flushAcks sends the acks of keys to the shared tier, grouped by scope, as one batch, within ctx. Errors are counted
+// by the backend, and the records of the failed acks expire at their TTL.
+func (s *Shared) flushAcks(ctx context.Context, keys []Key) {
 	if len(keys) == 0 {
 		return
 	}
@@ -437,7 +449,7 @@ func (s *Shared) flushAcks(keys []Key) {
 		}
 		acks[i].MsgIDs = append(acks[i].MsgIDs, key.MsgID)
 	}
-	if err := s.backend.Ack(context.Background(), acks); err != nil {
+	if err := s.backend.Ack(ctx, acks); err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to forget acked calls", err)
 	}
 }

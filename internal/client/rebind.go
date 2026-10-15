@@ -71,7 +71,8 @@ func (h *Handler) refreshWithoutRecord(
 }
 
 // refreshReply returns the reply of a refresh which keeps or moves the identity of a connection. The user and the auth
-// class are set only when setIdentity is set, see replyIdentityOn.
+// class are set only when setIdentity is set, see replyIdentityOn. A pending connection carries no info, as on connect,
+// so the reply does not set one: Core would write it into the connection.
 func (h *Handler) refreshReply(
 	token jwtverify.ConnectToken,
 	identity centrifuge.TokenIdentity,
@@ -80,8 +81,10 @@ func (h *Handler) refreshReply(
 ) centrifuge.RefreshReply {
 	reply := centrifuge.RefreshReply{
 		ExpireAt:      token.ExpireAt,
-		Info:          token.Info,
 		TokenIdentity: &identity,
+	}
+	if class != rpcregistry.AuthClassPending2FA {
+		reply.Info = token.Info
 	}
 	if setIdentity {
 		reply.User = token.UserID

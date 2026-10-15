@@ -60,6 +60,40 @@ func TestRebindUpgradeSetsConnInfo(t *testing.T) {
 	require.JSONEq(t, `{"name":"x"}`, string(presenceConnInfo(t, node, client)))
 }
 
+func TestPendingRefreshReplyHasNoConnInfo(t *testing.T) {
+	h, _, node := newAuthClassTestHandler(t, rebindInfoConfig())
+	client := connectRevokeTestClient(t, node, rebindTestToken(t, "42", "pending_2fa", revokeTestUUID, nil))
+	require.Empty(t, client.UserID())
+	subscribeRebindInfoChannel(t, client)
+
+	reply, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "pending_2fa", revokeTestOtherUUID, map[string]any{
+			"info": map[string]any{"name": "x"},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.Empty(t, reply.Info, "a pending refresh reply must not set the connection info")
+	require.Empty(t, client.UserID())
+	require.Empty(t, presenceConnInfo(t, node, client))
+}
+
+func TestRebindToPendingReplyHasNoConnInfo(t *testing.T) {
+	h, _, node := newAuthClassTestHandler(t, rebindInfoConfig())
+	client := connectRevokeTestClient(t, node, rebindTestToken(t, "", "anonymous", revokeTestUUID, nil))
+	require.Empty(t, client.UserID())
+	subscribeRebindInfoChannel(t, client)
+
+	reply, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "pending_2fa", revokeTestOtherUUID, map[string]any{
+			"info": map[string]any{"name": "x"},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.Empty(t, reply.Info, "a rebind to a pending connection must not reply with the connection info")
+	require.Empty(t, client.UserID())
+	require.Empty(t, presenceConnInfo(t, node, client))
+}
+
 func TestRebindDowngradeClearsConnInfo(t *testing.T) {
 	h, _, node := newAuthClassTestHandler(t, rebindInfoConfig())
 	client := connectRevokeTestClient(t, node, rebindTestToken(t, "42", "authenticated", revokeTestUUID, map[string]any{

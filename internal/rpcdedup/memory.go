@@ -663,9 +663,9 @@ func (s *shard) unlink(r *storedRecord) {
 	p.stats.bytes.Add(-r.size)
 }
 
-// memoryOverReplyLimit reports whether the node-local store keeps rec as uncached: a reply over the limit, or an error
-// whose message and metadata are over it. The shared tier counts an error by its encoded form instead, see
-// sharedOverReplyLimit.
+// memoryOverReplyLimit reports whether rec is kept as uncached: a reply over the limit, or an error whose message and
+// metadata are over it. The node-local store and the shared tier both apply this rule, so that they keep the same
+// records, see completeShared.
 func memoryOverReplyLimit(rec Record, limit int) bool {
 	if len(rec.Reply) > limit {
 		return true

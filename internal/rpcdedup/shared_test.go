@@ -914,6 +914,40 @@ func TestSharedErrorOverReplyLimitIsUncachedInBothTiers(t *testing.T) {
 	checkInvariants(t, fx.local)
 }
 
+// An error is kept by both tiers by the same rule, at the limit and one byte over it. Its quote characters make its
+// encoded form twice its message, so a rule which counted the encoded form would split the tiers at this boundary.
+func TestSharedErrorBoundaryIsTheSameInBothTiers(t *testing.T) {
+	tests := []struct {
+		name     string
+		size     int
+		uncached bool
+	}{
+		{name: "at the limit", size: 512, uncached: false},
+		{name: "one byte over", size: 513, uncached: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newSharedFixture(t, false)
+			fx.shared.maxReplyBytes = 512
+			fx.local.maxReplyBytes = 512
+			owner := NewFlightWithFingerprint(sharedFingerprintA)
+			_, err := fx.shared.Begin(sharedKey, owner)
+			require.NoError(t, err)
+			failure := &centrifuge.Error{Code: 108, Message: strings.Repeat(`"`, tc.size)}
+			require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: failure}))
+
+			entry, found := fx.backend.entry(sharedKey)
+			require.True(t, found)
+			require.Equal(t, tc.uncached, entry.rec.Uncached, "the shared tier")
+
+			lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+			require.Equal(t, OutcomeDone, lookup.Outcome)
+			require.Equal(t, tc.uncached, lookup.Record.Uncached, "the node-local store")
+			checkInvariants(t, fx.local)
+		})
+	}
+}
+
 func TestSharedAckRemovesLocallyAtOnceAndFlushesGroupedByScope(t *testing.T) {
 	fx := newSharedFixture(t, false)
 	scopeA := testScope("u1", "a")

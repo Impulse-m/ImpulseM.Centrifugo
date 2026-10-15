@@ -268,9 +268,9 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 // and a retransmit on another node runs the call again once the in-flight record expires. A write which reports that
 // this node does not own the in-flight record is not retried.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
-	errJSON := encodeError(rec.Err)
 	stored := rec
-	if sharedOverReplyLimit(rec, errJSON, s.maxReplyBytes) {
+	errJSON := encodeError(rec.Err)
+	if memoryOverReplyLimit(rec, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 		errJSON = ""
 	}
@@ -298,13 +298,6 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	if !owned && attempts == 1 {
 		s.lostOwnership()
 	}
-}
-
-// sharedOverReplyLimit reports whether the shared tier keeps rec as uncached: a reply over the limit, or the encoded
-// error errJSON of rec over it, so that an error with a large message or metadata is not kept for the full TTL. The
-// node-local store counts an error by its message and metadata, see memoryOverReplyLimit.
-func sharedOverReplyLimit(rec Record, errJSON string, limit int) bool {
-	return len(rec.Reply) > limit || len(errJSON) > limit
 }
 
 // Cancel implements Store. A call which runs on this node is cancelled here, and its owner keeps the record. Otherwise

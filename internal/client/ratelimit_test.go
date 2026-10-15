@@ -429,6 +429,7 @@ func TestRateLimitRepeatedConnectKeepsState(t *testing.T) {
 	require.Same(t, state, client.ExtState())
 }
 
+// TestRateLimitOperationMapping uses channels of namespace aa, registered as a shared poll namespace, and of bb, a plain one.
 func TestRateLimitOperationMapping(t *testing.T) {
 	h, _ := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{}, []configtypes.ChannelNamespace{
 		{Name: "aa", ChannelOptions: configtypes.ChannelOptions{SubscriptionType: "shared_poll"}},

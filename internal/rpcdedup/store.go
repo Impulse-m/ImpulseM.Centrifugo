@@ -12,14 +12,21 @@ type Key struct {
 
 // Record is the answer of a call which is done. Reply is the reply payload, and Err the protocol error
 // when the call failed. Uncached marks a reply over the size limit, which is not kept: a duplicate gets
-// result evicted. Abandoned marks a call which did not complete, so nothing is kept and a duplicate
-// which waited for it must retry. A reply over the size limit, or over the share of a record of its
-// scope, is kept as uncached too.
+// result evicted. A reply over the size limit, or over the share of a record of its scope, is kept as uncached too.
+//
+// Abandoned marks a flight which left no answer and kept no record. A call which runs here never abandons its
+// flight: it keeps an error record when it panics. The shared tier does: its watch abandons the flight of a call
+// on another node whose record vanishes or whose polls fail, and a BeginMismatch of the call which began here
+// abandons the flight which local duplicates joined while the shared begin ran. A duplicate of an abandoned flight gets no retry signal, since the
+// call may have run, unless NotRun is set.
 type Record struct {
 	Reply     []byte
 	Err       *centrifuge.Error
 	Uncached  bool
 	Abandoned bool
+	// NotRun marks an abandoned call which did not run: the shared tier failed to begin it under fail_closed, so no
+	// backend call was made. Its duplicates are answered with the later retry signal, not the no-signal error.
+	NotRun bool
 	// Fingerprint is the fingerprint of the call which the record answers. Zero for a cancelled record,
 	// which has no call, and answers any duplicate.
 	Fingerprint [32]byte

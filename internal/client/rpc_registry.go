@@ -170,6 +170,9 @@ func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, c
 	if disconnect != nil {
 		return disconnect
 	}
+	// The retry signal is set by the server only. A trailer of the backend never carries it, even under a config
+	// which names it in error_metadata.
+	delete(protoErr.Metadata, rpcRetryMetadataKey)
 	return protoErr
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -800,4 +801,369 @@ func TestRPCDedupCancelReachesOwnerOfJoinedCall(t *testing.T) {
 	requireCancelledError(t, waitDedupResult(t, owner).err)
 	requireCancelledError(t, waitDedupResult(t, joined).err)
 	require.Len(t, backend.Calls(), 1)
+}
+
+// requireRetrySignal asserts err is a protocol error whose metadata is the retry signal retry, and nothing else.
+func requireRetrySignal(t *testing.T, err error, retry string) {
+	t.Helper()
+	protoErr := requireProtocolError(t, err)
+	require.Equal(t, map[string]string{rpcRetryMetadataKey: retry}, protoErr.Metadata)
+}
+
+// requireNoRetrySignal asserts err is a protocol error which carries no retry signal.
+func requireNoRetrySignal(t *testing.T, err error) {
+	t.Helper()
+	protoErr := requireProtocolError(t, err)
+	require.NotContains(t, protoErr.Metadata, rpcRetryMetadataKey)
+}
+
+// The retry signal key is under the reserved prefix, which the header allow-lists refuse. A backend cannot set it: the
+// runtime removes it from every error built from a backend trailer.
+func TestRPCRetryMetadataKeyIsReserved(t *testing.T) {
+	require.True(t, strings.HasPrefix(rpcRetryMetadataKey, configtypes.RPCRegistryReservedHeaderPrefix))
+}
+
+// A msg_id outside the window is refused with the new_msg_id signal, and nothing runs.
+func TestRPCDedupMsgIDOutsideWindowCarriesNewMsgIDSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	past := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+
+	_, err := dedupCall(h, client, "users.get", past, "x")
+	require.False(t, requireProtocolError(t, err).Temporary)
+	requireRetrySignal(t, err, rpcRetryNewMsgID)
+	require.Empty(t, backend.Calls())
+}
+
+// A retransmit whose msg_id is outside the window is refused without the signal: its call may have run, so the client
+// must not send it again with a new msg_id. Nothing runs.
+func TestRPCDedupRetransmitOutsideWindowCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	past := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("x"),
+		Call:   centrifuge.RPCCallOptions{MsgID: past, Retransmit: true},
+	}, nil)
+	require.Equal(t, "invalid msg_id", requireProtocolError(t, err).Message)
+	requireNoRetrySignal(t, err)
+	require.Empty(t, backend.Calls())
+}
+
+// A msg_id above 53 bits is refused with the new_msg_id signal, though its time part is in the window, and nothing runs.
+func TestRPCDedupMsgIDAbove53BitsCarriesNewMsgIDSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(26) | 1<<53
+
+	_, err := dedupCall(h, client, "users.get", msgID, "x")
+	requireRetrySignal(t, err, rpcRetryNewMsgID)
+	require.Empty(t, backend.Calls())
+}
+
+// A call refused by the store under fail_closed, for the user limit of scopes, is temporary and carries the later
+// signal, and does not run.
+func TestRPCDedupRefusedUserCarriesLaterSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	testSmallDedupStore(h, 1000, 1)
+	testFillSmallStore(t, h, backend, "4")
+
+	refused := dedupCallAsyncResult(t, h, newDedupClient("c4b", "4", nil, otherTestInstance), "users.get", dedupMsgID(2), "x")
+	require.True(t, requireProtocolError(t, refused.err).Temporary)
+	requireRetrySignal(t, refused.err, rpcRetryLater)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A call which fails at Begin under fail_closed is temporary and carries the later signal, and does not run.
+func TestRPCDedupStoreFailureFailsClosedCarriesLaterSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.store = failingDedupStore{Memory: h.rpcDedup.store.(*rpcdedup.Memory)}
+	client := newDedupClient("c1", "42", nil, testInstance)
+
+	_, err := dedupCall(h, client, "users.get", dedupMsgID(11), "x")
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireRetrySignal(t, err, rpcRetryLater)
+	require.Empty(t, backend.Calls())
+}
+
+// A duplicate which waits past the method timeout for the call it joined is answered with the later signal. The
+// flight is never completed, so the wait ends at the timeout of the method.
+func TestRPCDedupJoinTimeoutCarriesLaterSignal(t *testing.T) {
+	reg := dedupRegistryConfig()
+	reg.Methods = append(reg.Methods, configtypes.RPCMethod{
+		Method:     "users.slow",
+		GRPCMethod: registryTestBackendMethod,
+		Target:     "backend",
+		Timeout:    configtypes.Duration(50 * time.Millisecond),
+	})
+	h := newDedupHandler(t, reg, newDedupBackend(t))
+	m := h.rpcRegistry.Lookup("users.slow")
+	require.NotNil(t, m)
+	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: dedupMsgID(22)}
+	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint("users.slow", []byte("x")))
+	lookup, err := h.rpcDedup.store.Begin(key, flight)
+	require.NoError(t, err)
+	require.Equal(t, rpcdedup.OutcomeMiss, lookup.Outcome)
+
+	duplicate := newDedupClient("c2", "42", nil, testInstance)
+	_, err = h.rpcJoin(duplicate, m, h.registryConfig(), flight)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireRetrySignal(t, err, rpcRetryLater)
+}
+
+// A duplicate of a flight which was abandoned by its owner is answered without the signal: the call may have run.
+func TestRPCDedupAbandonedOwnerCarriesNoSignal(t *testing.T) {
+	h := newDedupHandler(t, dedupRegistryConfig(), newDedupBackend(t))
+	m := h.rpcRegistry.Lookup("users.put")
+	require.NotNil(t, m)
+	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: dedupMsgID(23)}
+	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint("users.put", []byte("x")))
+	lookup, err := h.rpcDedup.store.Begin(key, flight)
+	require.NoError(t, err)
+	require.Equal(t, rpcdedup.OutcomeMiss, lookup.Outcome)
+	h.completeRPCRecord(key, flight, rpcdedup.Record{Abandoned: true})
+
+	duplicate := newDedupClient("c2", "42", nil, testInstance)
+	_, err = h.rpcJoin(duplicate, m, h.registryConfig(), flight)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireNoRetrySignal(t, err)
+}
+
+// A panic after the backend committed keeps a dedup_unavailable record, which the duplicate that joined it gets
+// without the signal: the call ran, so a resend with the same msg_id must not be sent by the client. The backend runs
+// once.
+func TestRPCDedupPanicAfterBackendCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	joined := testJoinSignal(h)
+	h.rpcDedup.afterBackend = func() {
+		panic("reply mapping failed")
+	}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	duplicate := newDedupClient("c2", "42", nil, testInstance)
+	msgID := dedupMsgID(29)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	backend.waitEntered(t)
+	duplicateDone := dedupCallAsync(h, duplicate, "users.put", msgID, "gate")
+	requireJoined(t, joined)
+	backend.releaseGate()
+
+	require.NotNil(t, <-ownerPanic)
+	dup := waitDedupResult(t, duplicateDone)
+	require.True(t, requireProtocolError(t, dup.err).Temporary)
+	requireNoRetrySignal(t, dup.err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A retransmit of a call whose owner panicked after the backend committed gets the error which the panic left in the
+// record, without the signal, and the backend is not called again.
+func TestRPCDedupPanicAfterBackendRetransmitIsNotRerun(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.afterBackend = func() {
+		panic("reply mapping failed")
+	}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(30)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	backend.waitEntered(t)
+	backend.releaseGate()
+	require.NotNil(t, <-ownerPanic)
+
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("gate"),
+		Call:   centrifuge.RPCCallOptions{MsgID: msgID, Retransmit: true},
+	}, nil)
+	require.True(t, reply.Cached)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireNoRetrySignal(t, err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A panic before the backend call keeps a dedup_unavailable record without the signal, as a panic after it does. The
+// owner's client fails while the call is built, so the backend never runs. A retransmit gets the error from the record
+// and the backend is not called.
+func TestRPCDedupPanicBeforeBackendCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	client.IDFunc = func() string {
+		panic("client id failed")
+	}
+	msgID := dedupMsgID(31)
+
+	ownerPanic := make(chan any, 1)
+	go func() {
+		defer func() {
+			ownerPanic <- recover()
+		}()
+		_, _ = dedupCall(h, client, "users.put", msgID, "gate")
+	}()
+	require.NotNil(t, <-ownerPanic)
+	require.Empty(t, backend.Calls())
+
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{
+		Method: "users.put",
+		Data:   []byte("gate"),
+		Call:   centrifuge.RPCCallOptions{MsgID: msgID, Retransmit: true},
+	}, nil)
+	require.True(t, reply.Cached)
+	require.True(t, requireProtocolError(t, err).Temporary)
+	requireNoRetrySignal(t, err)
+	require.Empty(t, backend.Calls())
+}
+
+// A retransmit on the same connection, while a call runs untracked under fail_open, is refused without the signal:
+// the call is running, and a resend would run it again.
+func TestRPCDedupStoreFailureFailsOpenRetransmitCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	reg.Dedup.OnStoreError = configtypes.RPCDedupFailOpen
+	h := newDedupHandler(t, reg, backend)
+	h.rpcDedup.store = failingDedupStore{Memory: h.rpcDedup.store.(*rpcdedup.Memory)}
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(24)
+
+	firstDone := dedupCallAsync(h, client, "users.get", msgID, "gate")
+	backend.waitEntered(t)
+	retransmit := waitDedupResult(t, dedupCallAsync(h, client, "users.get", msgID, "gate"))
+	require.True(t, requireProtocolError(t, retransmit.err).Temporary)
+	requireNoRetrySignal(t, retransmit.err)
+
+	backend.releaseGate()
+	require.NoError(t, waitDedupResult(t, firstDone).err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A msg_id reused with other data is refused without the signal.
+func TestRPCDedupReusedMsgIDCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(25)
+
+	require.NoError(t, dedupCallAsyncResult(t, h, client, "users.get", msgID, "a").err)
+	_, err := dedupCall(h, client, "users.get", msgID, "b")
+	require.Equal(t, "msg_id reused", requireProtocolError(t, err).Message)
+	requireNoRetrySignal(t, err)
+}
+
+// A reply over the dedup size limit is evicted, and its retransmit is refused without the signal: the call ran.
+func TestRPCDedupResultEvictedCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	reg.Methods = append(reg.Methods, configtypes.RPCMethod{
+		Method:           "users.big",
+		GRPCMethod:       registryTestBackendMethod,
+		Target:           "backend",
+		MaxRequestBytes:  1 << 17,
+		MaxResponseBytes: 1 << 17,
+	})
+	h := newDedupHandler(t, reg, backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(26)
+	big := strings.Repeat("x", 70000)
+
+	first := dedupCallAsyncResult(t, h, client, "users.big", msgID, big)
+	require.NoError(t, first.err)
+	retransmit := dedupCallAsyncResult(t, h, client, "users.big", msgID, big)
+	require.Equal(t, uint32(110), requireProtocolError(t, retransmit.err).Code)
+	requireNoRetrySignal(t, retransmit.err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A cancel of a msg_id outside the window is refused without the signal: a cancel is not resent.
+func TestRPCDedupCancelOutsideWindowCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	stale := uint64(time.Now().Add(-200*time.Second).Unix())<<rpcdedup.MsgIDSeqBits | 1
+
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: stale}}, nil)
+	require.Equal(t, "invalid msg_id", requireProtocolError(t, err).Message)
+	requireNoRetrySignal(t, err)
+}
+
+// A call which its cancel ends is answered cancelled, without the signal.
+func TestRPCDedupCancelledCallCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(27)
+
+	done := dedupCallAsync(h, client, "users.get", msgID, "gate")
+	backend.waitEntered(t)
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Call: centrifuge.RPCCallOptions{Cancel: msgID}}, nil)
+	require.NoError(t, err)
+
+	cancelled := waitDedupResult(t, done)
+	requireCancelledError(t, cancelled.err)
+	requireNoRetrySignal(t, cancelled.err)
+}
+
+// An error recorded for a call is replayed to its retransmit without the signal: the record holds the error the
+// backend gave, and the call ran once.
+func TestRPCDedupRecordedErrorReplayCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	client := newDedupClient("c1", "42", nil, testInstance)
+	msgID := dedupMsgID(28)
+
+	first := dedupCallAsyncResult(t, h, client, "users.put", msgID, "fail")
+	firstErr := requireProtocolError(t, first.err)
+	retransmit := dedupCallAsyncResult(t, h, client, "users.put", msgID, "fail")
+	require.True(t, retransmit.reply.Cached)
+	require.Equal(t, firstErr.Code, requireProtocolError(t, retransmit.err).Code)
+	requireNoRetrySignal(t, retransmit.err)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A record written before the retry signal existed may hold it. Its replay to a retransmit drops the signal, since the
+// call ran and the client must not send it again. The stored error keeps the signal: only the replay copies it.
+func TestRPCDedupLegacyRecordReplayDropsRetrySignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	h := newDedupHandler(t, reg, backend)
+	msgID := dedupMsgID(47)
+	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
+	flight := rpcdedup.NewFlightWithFingerprint(rpcdedup.Fingerprint("users.put", []byte("x")))
+	lookup, err := h.rpcDedup.store.Begin(key, flight)
+	require.NoError(t, err)
+	require.Equal(t, rpcdedup.OutcomeMiss, lookup.Outcome)
+	legacy := &centrifuge.Error{
+		Code:      reg.Errors.DedupUnavailable.Code,
+		Message:   reg.Errors.DedupUnavailable.Message,
+		Temporary: true,
+		Metadata:  map[string]string{rpcRetryMetadataKey: rpcRetryLater},
+	}
+	require.NoError(t, h.rpcDedup.store.Complete(key, flight, rpcdedup.Record{Err: legacy}))
+
+	retransmit := dedupCallAsyncResult(t, h, newDedupClient("c1", "42", nil, testInstance), "users.put", msgID, "x")
+	require.True(t, retransmit.reply.Cached)
+	require.Equal(t, reg.Errors.DedupUnavailable.Code, requireProtocolError(t, retransmit.err).Code)
+	requireNoRetrySignal(t, retransmit.err)
+	require.Empty(t, backend.Calls())
+	require.Equal(t, rpcRetryLater, legacy.Metadata[rpcRetryMetadataKey])
 }

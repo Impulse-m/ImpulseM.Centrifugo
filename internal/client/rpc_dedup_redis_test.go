@@ -1,14 +1,148 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"github.com/stretchr/testify/require"
 )
+
+// failingBeginBackend is a shared tier whose Begin waits until the test releases it, and then fails. The other calls
+// fail at once, and are not expected while the test runs.
+type failingBeginBackend struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+// newFailingBeginBackend returns a failingBeginBackend which has not been entered.
+func newFailingBeginBackend() *failingBeginBackend {
+	return &failingBeginBackend{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+// Begin signals that it was entered, waits for the release, and fails.
+func (b *failingBeginBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+	b.entered <- struct{}{}
+	<-b.release
+	return rpcdedup.BeginResult{}, errors.New("shared tier down")
+}
+
+// Complete fails: a call which failed to begin keeps no record.
+func (b *failingBeginBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
+	return false, errors.New("shared tier down")
+}
+
+// Cancel fails.
+func (b *failingBeginBackend) Cancel(_ context.Context, _ rpcdedup.Key, _ *centrifuge.Error, _ time.Duration) (rpcdedup.CancelResult, error) {
+	return rpcdedup.CancelResult{}, errors.New("shared tier down")
+}
+
+// Poll fails.
+func (b *failingBeginBackend) Poll(_ context.Context, _ rpcdedup.Key) (rpcdedup.PollResult, error) {
+	return rpcdedup.PollResult{}, errors.New("shared tier down")
+}
+
+// Ack does nothing.
+func (b *failingBeginBackend) Ack(_ context.Context, _ []rpcdedup.ScopeAcks) error {
+	return nil
+}
+
+// Connected reports that the backend is reachable, so that the store tries it.
+func (b *failingBeginBackend) Connected() bool {
+	return true
+}
+
+// remoteInFlightBackend is a shared tier whose call runs on another node, and whose record is gone: its polls find
+// nothing. The other calls are not expected while the test runs.
+type remoteInFlightBackend struct{}
+
+// Begin reports that the call runs on another node.
+func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+	return rpcdedup.BeginResult{State: rpcdedup.BeginInFlight, Owner: "node-x"}, nil
+}
+
+// Complete is not expected: the duplicate of a remote call keeps no record of it.
+func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
+	return false, errors.New("unexpected complete")
+}
+
+// Cancel is not expected.
+func (b *remoteInFlightBackend) Cancel(_ context.Context, _ rpcdedup.Key, _ *centrifuge.Error, _ time.Duration) (rpcdedup.CancelResult, error) {
+	return rpcdedup.CancelResult{}, errors.New("unexpected cancel")
+}
+
+// Poll finds the record gone: the owner abandoned the call, or died.
+func (b *remoteInFlightBackend) Poll(_ context.Context, _ rpcdedup.Key) (rpcdedup.PollResult, error) {
+	return rpcdedup.PollResult{State: rpcdedup.PollMissing}, nil
+}
+
+// Ack does nothing.
+func (b *remoteInFlightBackend) Ack(_ context.Context, _ []rpcdedup.ScopeAcks) error {
+	return nil
+}
+
+// Connected reports that the backend is reachable, so that the store tries it.
+func (b *remoteInFlightBackend) Connected() bool {
+	return true
+}
+
+// A duplicate which joins a call on another node is answered without the retry signal when the record of the call
+// vanishes before an answer: the call may have run there, and a resend with the same msg_id would run it again.
+func TestRPCDedupSharedWatchMissingRecordCarriesNoSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.store = rpcdedup.NewShared(rpcdedup.SharedOptions{
+		Local:         h.rpcDedup.memory,
+		Backend:       &remoteInFlightBackend{},
+		NodeID:        "node-a",
+		TTL:           time.Minute,
+		MaxReplyBytes: dedupRegistryConfig().Dedup.ReplyLimit(),
+	})
+
+	duplicate := dedupCallAsyncResult(t, h, newDedupClient("c2", "42", nil, testInstance), "users.put", dedupMsgID(42), "x")
+	require.True(t, requireProtocolError(t, duplicate.err).Temporary)
+	requireNoRetrySignal(t, duplicate.err)
+	require.Empty(t, backend.Calls())
+}
+
+// A duplicate which joins a call while the shared tier fails to begin it is answered with the later signal, as the
+// owner is: the call never ran, so the client may send it again.
+func TestRPCDedupSharedBeginFailureJoinerCarriesLaterSignal(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	begin := newFailingBeginBackend()
+	h.rpcDedup.store = rpcdedup.NewShared(rpcdedup.SharedOptions{
+		Local:         h.rpcDedup.memory,
+		Backend:       begin,
+		NodeID:        "node-a",
+		TTL:           time.Minute,
+		MaxReplyBytes: dedupRegistryConfig().Dedup.ReplyLimit(),
+	})
+	joined := testJoinSignal(h)
+	msgID := dedupMsgID(41)
+
+	owner := dedupCallAsync(h, newDedupClient("c1", "42", nil, testInstance), "users.put", msgID, "x")
+	select {
+	case <-begin.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shared tier did not start the call")
+	}
+	duplicate := dedupCallAsync(h, newDedupClient("c2", "42", nil, testInstance), "users.put", msgID, "x")
+	requireJoined(t, joined)
+	close(begin.release)
+
+	requireRetrySignal(t, waitDedupResult(t, owner).err, rpcRetryLater)
+	requireRetrySignal(t, waitDedupResult(t, duplicate).err, rpcRetryLater)
+	require.Empty(t, backend.Calls())
+}
 
 // TestReplyLimitMatchesMemoryBoundary checks the reply limit, which both tiers take from the configuration, against the
 // node-local store: a reply is kept by it exactly when the limit holds, at the boundary and one byte over it.

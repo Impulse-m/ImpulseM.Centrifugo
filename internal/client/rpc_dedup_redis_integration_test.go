@@ -5,6 +5,7 @@ package client
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -219,8 +220,59 @@ func TestRPCDedupRedisFailClosedWhenUnreachable(t *testing.T) {
 	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(108), protoErr.Code)
 	require.True(t, protoErr.Temporary)
+	requireRetrySignal(t, err, rpcRetryLater)
 	require.Equal(t, 1.0, testDedupCount(vec, "store_error"))
 	require.Equal(t, 1.0, testutil.ToFloat64(errorsTotal))
+	require.Empty(t, backend.Calls())
+}
+
+// A call of a user at max_scopes_per_user, refused by the node before the shared tier, is answered with the later
+// signal under fail_closed, and is not run.
+func TestRPCDedupRedisRefusedScopeCarriesLaterSignal(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	cleanupRedisPrefix(t, prefix)
+	backend := newDedupBackend(t)
+	h := newRedisDedupHandler(t, dedupRegistryWithRedis(prefix), backend)
+	local := testSmallDedupStore(h, 1000, 1)
+	h.rpcDedup.store = rpcdedup.NewShared(rpcdedup.SharedOptions{
+		Local:         local,
+		Backend:       rpcdedup.NewRedis(prefix, h.rpcDedup.connector, 0, nil),
+		NodeID:        h.node.ID(),
+		TTL:           time.Minute,
+		MaxReplyBytes: dedupRegistryWithRedis(prefix).Dedup.ReplyLimit(),
+	})
+	testFillSmallStore(t, h, backend, "4")
+
+	refused := dedupCallAsyncResult(t, h, newDedupClient("c4b", "4", nil, otherTestInstance), "users.get", dedupMsgID(35), "x")
+	require.True(t, requireProtocolError(t, refused.err).Temporary)
+	requireRetrySignal(t, refused.err, rpcRetryLater)
+	require.Len(t, backend.Calls(), 1)
+}
+
+// A duplicate which waits on another node for a call the node never completes is answered with the later signal at
+// the method timeout. The owner's record is kept in Redis by the test, as another node would keep it.
+func TestRPCDedupRedisRemoteJoinTimeoutCarriesLaterSignal(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	cleanupRedisPrefix(t, prefix)
+	backend := newDedupBackend(t)
+	reg := dedupRegistryWithRedis(prefix)
+	reg.Methods = append(reg.Methods, configtypes.RPCMethod{
+		Method:     "users.slow",
+		GRPCMethod: registryTestBackendMethod,
+		Target:     "backend",
+		Timeout:    configtypes.Duration(100 * time.Millisecond),
+	})
+	nodeB := newRedisDedupHandler(t, reg, backend)
+	msgID := dedupMsgID(36)
+	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
+	fingerprint := rpcdedup.Fingerprint("users.slow", []byte("x"))
+	owner := rpcdedup.NewRedis(prefix, nodeB.rpcDedup.connector, 0, nil)
+	begin, err := owner.Begin(context.Background(), key, fingerprint, "node-x", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, rpcdedup.BeginMiss, begin.State)
+
+	duplicate := dedupCallAsyncResult(t, nodeB, newDedupClient("b1", "42", nil, testInstance), "users.slow", msgID, "x")
+	requireRetrySignal(t, duplicate.err, rpcRetryLater)
 	require.Empty(t, backend.Calls())
 }
 

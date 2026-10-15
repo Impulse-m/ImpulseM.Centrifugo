@@ -195,7 +195,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 			flight.localOnly = true
 			return Lookup{Outcome: OutcomeMiss}, nil
 		}
-		_ = s.local.Complete(key, flight, Record{Abandoned: true})
+		_ = s.local.Complete(key, flight, Record{Abandoned: true, NotRun: true})
 		return Lookup{}, err
 	}
 	switch res.State {
@@ -222,8 +222,9 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 }
 
 // watch polls the shared tier until the call of key, which runs on another node, is done, and completes the local
-// flight with its answer. A call whose record vanishes, or which does not finish within the in-flight TTL, is
-// abandoned: its duplicates retry. A tombstone completes the flight without a fingerprint, as BeginCancelled does, so
+// flight with its answer. A call whose record vanishes, whose polls fail, or which does not finish within the
+// in-flight TTL, is abandoned without NotRun: its duplicates get no retry signal, since the call may have run on the
+// other node. A tombstone completes the flight without a fingerprint, as BeginCancelled does, so
 // this node answers any duplicate with it, as the shared tier does.
 func (s *Shared) watch(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace

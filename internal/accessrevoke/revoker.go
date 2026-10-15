@@ -146,7 +146,8 @@ func (r *Revoker) disconnectMatching(
 ) bool {
 	dropped := false
 	for _, client := range r.hub.UserConnections(userID) {
-		reason := reasonOf(IdentityOf(client))
+		_, identity := IdentityOf(client)
+		reason := reasonOf(identity)
 		if reason == "" {
 			continue
 		}

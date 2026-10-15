@@ -19,7 +19,7 @@ import (
 
 // newRevokeTestNode creates a node which takes identity from the connect token. Token has form
 // "user|session|generation|iat".
-func newRevokeTestNode(t *testing.T) *centrifuge.Node {
+func newRevokeTestNode(t testing.TB) *centrifuge.Node {
 	t.Helper()
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
@@ -43,7 +43,7 @@ func newRevokeTestNode(t *testing.T) *centrifuge.Node {
 	return node
 }
 
-func connectTestClient(t *testing.T, node *centrifuge.Node, token string) {
+func connectTestClient(t testing.TB, node *centrifuge.Node, token string) {
 	t.Helper()
 	transport := tools.NewTestTransport()
 	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)

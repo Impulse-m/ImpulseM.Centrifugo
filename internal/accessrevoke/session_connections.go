@@ -5,130 +5,160 @@ import (
 	"sync"
 )
 
-// indexShards is the number of shards of each array of SessionConnections. It is a power of two, so a shard is picked
-// with a mask.
+// indexShards is the number of shards of SessionConnections. It is a power of two, so a shard is picked with a mask.
 const indexShards = 64
 
-// SessionConnections indexes local connections which have no user and carry a token session. Such a connection is
-// not in the user index of the hub, so session revocation reaches it only through this index. It holds every
-// user-less connection with a token session, anonymous ones included. A connection leaves the index when it gets a
-// user or disconnects.
+// Tracked is the part of a connection's state which the session index owns. The server embeds it in the record it
+// attaches to a connection, so the index finds the session of the connection without a lookup. mu orders a track
+// against a close of the same connection. The zero value is a connection which is not indexed.
+type Tracked struct {
+	mu      sync.Mutex
+	closed  bool
+	session [16]byte // the session the connection is indexed under; zero when it is not indexed
+}
+
+// Closed reports whether the connection of t is closed: it has left the index for good.
+func (t *Tracked) Closed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closed
+}
+
+// SessionConnections indexes local connections which carry a token session, whether or not they have a user. Such a
+// connection is not in the user index of the hub, so session revocation reaches it only through this index. A
+// connection is in the index while it has a session, and leaves it when it loses the session, gets closed or
+// disconnects.
 //
-// The index is sharded: the session of a connection is found by its ID, so the IDs are sharded by hash, and the
-// connections are sharded by session key. An operation holds the lock of the ID shard while it updates the session
-// shard. Nothing takes the locks in the other order, so the two kinds of shard cannot deadlock.
+// The index is sharded by session. Each shard holds the sessions which hash to it in two maps: one for the sessions
+// with exactly one connection, and more for the sessions with two or more, keyed by connection ID. A lookup checks
+// more and then one, so Connections is one or two map lookups in one shard. Track holds the lock of the connection's
+// Tracked while it moves the connection between two shards, one shard at a time, so no operation holds two shard locks.
+//
+// Measured on a 16-thread Windows machine (Intel Core i5-12600K, go1.26 windows/amd64): 67.9 bytes retained per
+// indexed connection with 1M connections, one session each, after a GC (TestSessionConnectionsRetainedHeap);
+// BenchmarkSessionConnectionsTrackUntrackParallel runs at 425 ns/op with 0 allocs/op.
 type SessionConnections struct {
-	seed          maphash.Seed
-	idShards      [indexShards]connectionIDShard
-	sessionShards [indexShards]sessionConnectionShard
+	seed   maphash.Seed
+	shards [indexShards]sessionShard
 }
 
-// connectionIDShard holds the session of each connection indexed under its ID. The session is kept here and not read
-// from the connection: a rebind sets the identity of the connection before the index moves, and Core sets the identity
-// of a refresh only when its reply has an expiry, so the connection does not always hold the indexed session.
-// BenchmarkSessionConnectionsTrackUntrackParallel runs at 1256 ns/op, 64 B/op and 2 allocs/op with the flat map of the
-// session shards, and at 14521 ns/op, 364 B/op and 3 allocs/op with a map per session. Both were measured on a 16-thread
-// Windows machine.
-type connectionIDShard struct {
-	mu        sync.Mutex
-	sessionOf map[string][16]byte
-}
-
-// sessionConnectionShard holds the connections of its sessions in one map, keyed by session and connection ID. The
-// map holds no per-session map: an anonymous token session has one connection, so a map per session costs more than
-// the connection it holds. A session is found by scanning its shard, so a revocation costs one shard, which is 1/64
-// of the index. The retained heap is 451.6 bytes per connection with a map per session, and 177.0 bytes per connection
-// with this flat map. Both were measured with 1M connections, one session each, after a GC.
-type sessionConnectionShard struct {
-	mu    sync.Mutex
-	conns map[sessionConnKey]Connection
-}
-
-// sessionConnKey is the key of a connection in a session shard.
-type sessionConnKey struct {
-	session [16]byte
-	id      string
+// sessionShard holds the sessions of one shard: one connection in one, and two or more in more.
+type sessionShard struct {
+	mu   sync.Mutex
+	one  map[[16]byte]Connection
+	more map[[16]byte]map[string]Connection
 }
 
 // newSessionConnections creates an empty index.
 func newSessionConnections() *SessionConnections {
 	s := &SessionConnections{seed: maphash.MakeSeed()}
-	for i := range s.idShards {
-		s.idShards[i].sessionOf = make(map[string][16]byte)
-	}
-	for i := range s.sessionShards {
-		s.sessionShards[i].conns = make(map[sessionConnKey]Connection)
+	for i := range s.shards {
+		s.shards[i].one = make(map[[16]byte]Connection)
+		s.shards[i].more = make(map[[16]byte]map[string]Connection)
 	}
 	return s
 }
 
-// Track sets the session of the connection with id to session, and adds the connection to the index. A zero
-// session removes it. Track is called on connect, and on every refresh and rebind of a connection without a user.
-func (s *SessionConnections) Track(id string, conn Connection, session [16]byte) {
-	shard := s.idShard(id)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	if old, ok := shard.sessionOf[id]; ok {
-		s.removeFromSession(old, id)
-		delete(shard.sessionOf, id)
+// Track moves the connection into session. A zero session removes it. Track does nothing once the connection is
+// closed. Track is called on connect, and on every refresh and rebind of a connection which has no user.
+func (s *SessionConnections) Track(conn Connection, t *Tracked, session [16]byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.session == session {
+		return
 	}
+	s.leave(conn, t)
 	if session == ([16]byte{}) {
 		return
 	}
-	shard.sessionOf[id] = session
-	s.addToSession(session, id, conn)
+	s.shardOf(session).add(session, conn)
+	t.session = session
 }
 
-// Untrack removes the connection with id from the index. It is called on disconnect and when the connection
-// gets a user.
-func (s *SessionConnections) Untrack(id string) {
-	shard := s.idShard(id)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	old, ok := shard.sessionOf[id]
-	if !ok {
-		return
-	}
-	delete(shard.sessionOf, id)
-	s.removeFromSession(old, id)
+// Untrack removes the connection from the index. The connection can be tracked again.
+func (s *SessionConnections) Untrack(conn Connection, t *Tracked) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s.leave(conn, t)
 }
 
-// Connections returns the indexed connections of session. It scans the session shard, see sessionConnectionShard.
+// Close removes the connection from the index and marks it closed, so a later Track does nothing. It is called on
+// disconnect.
+func (s *SessionConnections) Close(conn Connection, t *Tracked) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closed = true
+	s.leave(conn, t)
+}
+
+// Connections returns the indexed connections of session. It is one lookup in one shard, and a second lookup only
+// for a session with several connections.
 func (s *SessionConnections) Connections(session [16]byte) []Connection {
-	shard := s.sessionShard(session)
+	shard := s.shardOf(session)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	var out []Connection
-	for key, conn := range shard.conns {
-		if key.session == session {
-			out = append(out, conn)
-		}
+	if conn, ok := shard.one[session]; ok {
+		return []Connection{conn}
+	}
+	members, ok := shard.more[session]
+	if !ok {
+		return nil
+	}
+	out := make([]Connection, 0, len(members))
+	for _, conn := range members {
+		out = append(out, conn)
 	}
 	return out
 }
 
-// idShard returns the shard of the connection ID.
-func (s *SessionConnections) idShard(id string) *connectionIDShard {
-	return &s.idShards[maphash.String(s.seed, id)&(indexShards-1)]
+// shardOf returns the shard of session. The hash is taken over all bytes, because session IDs of different versions
+// share their first byte.
+func (s *SessionConnections) shardOf(session [16]byte) *sessionShard {
+	return &s.shards[maphash.Bytes(s.seed, session[:])&(indexShards-1)]
 }
 
-// sessionShard returns the shard of the session key.
-func (s *SessionConnections) sessionShard(session [16]byte) *sessionConnectionShard {
-	return &s.sessionShards[session[0]&(indexShards-1)]
+// leave removes the connection from the session t is indexed under, and clears the session. The caller holds t.mu.
+func (s *SessionConnections) leave(conn Connection, t *Tracked) {
+	if t.session == ([16]byte{}) {
+		return
+	}
+	s.shardOf(t.session).remove(t.session, conn)
+	t.session = [16]byte{}
 }
 
-// addToSession adds the connection with id to session. The caller holds the ID shard lock.
-func (s *SessionConnections) addToSession(session [16]byte, id string, conn Connection) {
-	shard := s.sessionShard(session)
+// add puts conn into session. The caller holds no lock; add takes the shard lock.
+func (shard *sessionShard) add(session [16]byte, conn Connection) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	shard.conns[sessionConnKey{session: session, id: id}] = conn
+	if members, ok := shard.more[session]; ok {
+		members[conn.ID()] = conn
+		return
+	}
+	first, ok := shard.one[session]
+	if !ok {
+		shard.one[session] = conn
+		return
+	}
+	shard.more[session] = map[string]Connection{first.ID(): first, conn.ID(): conn}
+	delete(shard.one, session)
 }
 
-// removeFromSession removes the connection with id from session. The caller holds the ID shard lock.
-func (s *SessionConnections) removeFromSession(session [16]byte, id string) {
-	shard := s.sessionShard(session)
+// remove takes conn out of session. The caller holds no lock; remove takes the shard lock. When one of two connections
+// goes, the other moves back to the one map.
+func (shard *sessionShard) remove(session [16]byte, conn Connection) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	delete(shard.conns, sessionConnKey{session: session, id: id})
+	if members, ok := shard.more[session]; ok {
+		delete(members, conn.ID())
+		if len(members) == 1 {
+			for _, last := range members {
+				shard.one[session] = last
+			}
+			delete(shard.more, session)
+		}
+		return
+	}
+	if first, ok := shard.one[session]; ok && first.ID() == conn.ID() {
+		delete(shard.one, session)
+	}
 }

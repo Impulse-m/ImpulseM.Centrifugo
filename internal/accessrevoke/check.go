@@ -17,21 +17,20 @@ func OptionsFromConfig(cfg *config.Config) CheckOptions {
 	}
 }
 
-// StorageKeyIdentity is the storage key of the token identity the server keeps for a connection. Core sets the identity
-// of a connection only when its token has an expiry, so the server keeps the identity of every token it accepts here,
-// and IdentityOf reads it.
-const StorageKeyIdentity = "token_identity"
+// Identified is implemented by the ext state the server attaches to a connection. It returns the user the token of the
+// connection was issued for and the identity of that token. They may differ from what Core holds: Core sees no user for
+// a pending connection, and it keeps the identity of a refresh only when the token expires.
+type Identified interface {
+	AccessIdentity() (userID string, identity centrifuge.TokenIdentity)
+}
 
-// IdentityOf returns the token identity of a connection: the one the server kept for it, or the one Core holds when the
-// server kept none, as for a connection made through a connect proxy.
-func IdentityOf(client *centrifuge.Client) centrifuge.TokenIdentity {
-	storage, release := client.AcquireStorage()
-	identity, ok := storage[StorageKeyIdentity].(centrifuge.TokenIdentity)
-	release(storage)
-	if ok {
-		return identity
+// IdentityOf returns the user and the token identity to check a connection against. Without an Identified ext state,
+// as for a connection the server did not attach a record to, these are the ones Core holds.
+func IdentityOf(client *centrifuge.Client) (string, centrifuge.TokenIdentity) {
+	if id, ok := client.ExtState().(Identified); ok {
+		return id.AccessIdentity()
 	}
-	return client.TokenIdentity()
+	return client.UserID(), client.TokenIdentity()
 }
 
 // CheckConnection checks a connection registered in the hub against the store. It returns the
@@ -45,14 +44,14 @@ func CheckConnection(
 	opts CheckOptions,
 	stage string,
 ) (centrifuge.Disconnect, Reason, bool) {
-	identity := IdentityOf(client)
+	userID, identity := IdentityOf(client)
 	if identity == (centrifuge.TokenIdentity{}) {
 		opts = CheckOptions{Block: opts.Block}
 	}
-	result := store.Check(client.UserID(), identity, opts)
+	result := store.Check(userID, identity, opts)
 	CountReject(result, stage)
 	if result.Verdict == LoopGuard {
-		LogLoopGuard(client.ID(), client.UserID(), result)
+		LogLoopGuard(client.ID(), userID, result)
 	}
 	disconnect, rejected := RejectDisconnect(result, centrifuge.DisconnectExpired)
 	if !rejected {

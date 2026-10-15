@@ -9,8 +9,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Connection is a local client connection which can be disconnected. Satisfied by *centrifuge.Client.
+// Connection is a local client connection which can be disconnected and indexed by its ID. Satisfied by
+// *centrifuge.Client.
 type Connection interface {
+	ID() string
 	Disconnect(disconnect ...centrifuge.Disconnect)
 }
 

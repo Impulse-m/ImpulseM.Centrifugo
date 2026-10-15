@@ -11,9 +11,15 @@ import (
 )
 
 type fakeConnection struct {
+	id          string
 	mu          sync.Mutex
 	disconnects []centrifuge.Disconnect
 	times       []time.Time
+}
+
+// ID implements Connection.
+func (c *fakeConnection) ID() string {
+	return c.id
 }
 
 func (c *fakeConnection) Disconnect(disconnect ...centrifuge.Disconnect) {

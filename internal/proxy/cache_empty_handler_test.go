@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -170,4 +173,82 @@ func TestCacheEmptyHandlerNamedProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, reply.Populated)
 	require.Empty(t, defaultCalls)
+}
+
+// blockingCacheEmptyProxy counts its calls and holds each one until release is closed.
+type blockingCacheEmptyProxy struct {
+	calls   atomic.Int64
+	release chan struct{}
+}
+
+func (p *blockingCacheEmptyProxy) ProxyNotifyCacheEmpty(_ context.Context, _ *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+	p.calls.Add(1)
+	<-p.release
+	return &proxyproto.NotifyCacheEmptyResponse{
+		Result: &proxyproto.NotifyCacheEmptyResult{Populated: true},
+	}, nil
+}
+
+func (p *blockingCacheEmptyProxy) Protocol() string {
+	return "test"
+}
+
+func (p *blockingCacheEmptyProxy) Timeout() time.Duration {
+	return time.Second
+}
+
+// TestCacheEmptyHandlerCoalescesInflightCalls checks that subscribers which find the same channel empty while
+// a call is in flight share one backend call. The release of the backend waits until every subscriber has
+// reached the handler, so all of them join the same call. Without coalescing the backend gets one call per
+// subscriber, and the count assertion fails.
+func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
+	const subscribers = 16
+
+	proxy := &blockingCacheEmptyProxy{release: make(chan struct{})}
+	handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": proxy})
+	opts := configtypes.ChannelOptions{
+		CacheEmptyProxyEnabled: true,
+		CacheEmptyProxyName:    "default",
+		ForceRecoveryMode:      "cache",
+	}
+	cfgContainer := newCacheEmptyTestContainer(t, opts, false)
+	cacheEmpty := handler.Handle(cfgContainer)
+
+	var reached sync.WaitGroup
+	reached.Add(subscribers)
+	start := make(chan struct{})
+	replies := make(chan centrifuge.CacheEmptyReply, subscribers)
+	errs := make(chan error, subscribers)
+	var done sync.WaitGroup
+	for i := 0; i < subscribers; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			<-start
+			reached.Done()
+			reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
+			replies <- reply
+			errs <- err
+		}()
+	}
+	close(start)
+	reached.Wait()
+	close(proxy.release)
+	done.Wait()
+	close(replies)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	for reply := range replies {
+		require.True(t, reply.Populated)
+	}
+	require.Equal(t, int64(1), proxy.calls.Load())
+
+	// A call made after the shared one has finished goes to the backend again: nothing is cached.
+	reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
+	require.NoError(t, err)
+	require.True(t, reply.Populated)
+	require.Equal(t, int64(2), proxy.calls.Load())
 }

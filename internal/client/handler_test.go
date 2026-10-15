@@ -947,6 +947,38 @@ func TestClientSubscribePermissionDeniedForAnonymous(t *testing.T) {
 	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
 }
 
+func TestClientOnSubscribeNamespaceBandwidthOptions(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+		{
+			Name: "room",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient:            true,
+				AllowChannelCompaction:        true,
+				ClientPublishDebounceInterval: configtypes.Duration(50 * time.Millisecond),
+			},
+		},
+	}
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+	client := &tools.TestClientMock{
+		IDFunc:      func() string { return "42" },
+		UserIDFunc:  func() string { return "42" },
+		ContextFunc: func() context.Context { return context.Background() },
+	}
+
+	reply, _, err := h.OnSubscribe(client, centrifuge.SubscribeEvent{
+		Channel: "room:test",
+	}, nil, nil)
+	require.NoError(t, err)
+	require.True(t, reply.Options.AllowChannelCompaction)
+	require.Equal(t, 50*time.Millisecond, reply.Options.ClientPublishDebounceInterval)
+}
+
 func TestClientPublishNotAllowed(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()

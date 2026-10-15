@@ -545,7 +545,8 @@ func (s *shard) sweepSome(now time.Time) {
 
 // insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool, and returns
 // the record as it is kept. A reply over the share of a record is kept as uncached, and so is one which fits no room:
-// it never fails. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
+// it never fails. errJSON is the encoded form of the error of rec, computed by the caller outside mu, and counted in the
+// size of the record. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
 // No record of key exists under its flight: Begin removes an expired record and answers a live one without a flight,
 // and only the owner of the flight inserts. The removal above keeps the counts right if that ever changes.
 func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now time.Time) Record {
@@ -553,7 +554,6 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 	size := recordSize(rec, errJSON)
 	if !rec.Uncached && size > p.recordBytes {
 		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
-		errJSON = ""
 		size = RecordOverhead
 		s.observe(EvictionUncached)
 	}
@@ -580,7 +580,6 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 		}
 		if !rec.Uncached {
 			rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
-			errJSON = ""
 			size = RecordOverhead
 			s.observe(EvictionUncached)
 			continue

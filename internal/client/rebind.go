@@ -188,10 +188,16 @@ func (h *Handler) onRefreshRebind(
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
 	}
+	// A pending connection is anonymous to Core and carries no info, as on connect, see setCoreCredentials.
+	info := verified.Info
+	if nextClass == rpcregistry.AuthClassPending2FA {
+		info = nil
+	}
 	err := c.Rebind(centrifuge.RebindOptions{
 		UserID:        newUser,
 		ExpireAt:      verified.ExpireAt,
 		TokenIdentity: identity,
+		Info:          info,
 	})
 	if err != nil {
 		rec.identity.Store(prev)

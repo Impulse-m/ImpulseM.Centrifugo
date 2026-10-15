@@ -12,6 +12,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
@@ -237,7 +238,7 @@ func (h *Handler) Setup() error {
 					cb(reply, err)
 					return
 				}
-				if extra.CheckSubs && tokenChannelsChanged(client, extra.Subs) {
+				if extra.CheckSubs && h.tokenSubscriptionsChanged(client, extra) {
 					// Check whether server-side subscriptions changed. If yes – disconnect
 					// the client to make its token-based server-side subscriptions actual.
 					// Theoretically we could avoid disconnection here using Subscribe/Unsubscribe
@@ -262,6 +263,9 @@ func (h *Handler) Setup() error {
 		client.OnSubscribe(func(event centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
 			started := h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubscribe(client, event, subscribeProxyHandler, proxySubscribeStreamHandler)
+				if err == nil {
+					err = h.subscribeFilterTemplate(client, event.Channel, &reply.Options)
+				}
 				cb(reply, err)
 			})
 			if !started {
@@ -275,6 +279,9 @@ func (h *Handler) Setup() error {
 		client.OnSubRefresh(func(event centrifuge.SubRefreshEvent, cb centrifuge.SubRefreshCallback) {
 			h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubRefresh(client, subRefreshProxyHandler, event)
+				if err == nil && reply.ServerTagsFilter != nil {
+					reply.ServerTagsFilter, err = h.refreshFilterTemplate(client, event.Channel, reply.ServerTagsFilter)
+				}
 				cb(reply, err)
 			})
 		})
@@ -600,6 +607,9 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
+	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, subscriptions, storage); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
 	storeConnectionTokenFilters(storage, subscriptions)
 	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)
 	h.storeRPCConnection(storage, e.Instance)
@@ -630,8 +640,9 @@ func (h *Handler) OnClientConnecting(
 }
 
 type RefreshExtra struct {
-	Subs      map[string]centrifuge.SubscribeOptions
-	CheckSubs bool
+	Subs                 map[string]centrifuge.SubscribeOptions
+	CheckSubs            bool
+	FilterTemplateClaims filtertemplate.Claims
 }
 
 func getPerCallData(c Client) proxy.PerCallData {

@@ -107,7 +107,7 @@ func (h *Handler) refreshWithoutRecord(
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
-	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true, FilterTemplateClaims: token.FilterTemplateClaims}, nil
 }
 
 // refreshReply returns the reply of a refresh which keeps or moves the identity of a connection. The user and the auth
@@ -274,6 +274,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
+	h.rebindFilterTemplates(c, verified)
 	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
@@ -332,7 +333,7 @@ func (h *Handler) refreshSameIdentity(
 		setStorageMeta(c, verified.Meta)
 	}
 	reply := h.refreshReply(verified, identity, class, h.replyIdentityOn(cfg))
-	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true, FilterTemplateClaims: verified.FilterTemplateClaims}, nil
 }
 
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an
@@ -445,6 +446,9 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 			toSubscribe[channel] = opts
 		}
 	}
+	if err := h.templateSubscriptions(c, toSubscribe); err != nil {
+		return err
+	}
 	return subscribeChannels(c, toSubscribe)
 }
 
@@ -462,7 +466,11 @@ func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	if err != nil {
 		return nil
 	}
-	return subscribeChannels(c, map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions})
+	toSubscribe := map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions}
+	if err := h.templateSubscriptions(c, toSubscribe); err != nil {
+		return err
+	}
+	return subscribeChannels(c, toSubscribe)
 }
 
 // subscribeChannels subscribes c to the channels of toSubscribe which it is not subscribed to yet.

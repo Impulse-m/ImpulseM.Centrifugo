@@ -12,8 +12,8 @@ import (
 // DefaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
 const DefaultShards = 64
 
-// RecordOverhead is the size counted for a record besides its reply or error message, so that records without a
-// reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
+// RecordOverhead is the size counted for a record besides its reply or the encoded form of its error, so that records
+// without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
 // done map of the shard which holds the record.
 const RecordOverhead = 256
 
@@ -309,7 +309,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 // finish is Complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
 // has no fingerprint, and keeps none, so it answers any duplicate.
 func (m *Memory) finish(key Key, flight *Flight, rec Record) {
-	oversize := memoryOverReplyLimit(rec, m.maxReplyBytes)
+	oversize := overReplyLimit(rec, encodeError(rec.Err), m.maxReplyBytes)
 	kept := rec
 	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
@@ -663,32 +663,16 @@ func (s *shard) unlink(r *storedRecord) {
 	p.stats.bytes.Add(-r.size)
 }
 
-// memoryOverReplyLimit reports whether rec is kept as uncached: a reply over the limit, or an error whose message and
-// metadata are over it. The node-local store and the shared tier both apply this rule, so that they keep the same
-// records, see completeShared.
-func memoryOverReplyLimit(rec Record, limit int) bool {
-	if len(rec.Reply) > limit {
-		return true
-	}
-	return rec.Err != nil && errorBytes(rec.Err) > int64(limit)
+// overReplyLimit reports whether a record is kept as uncached at limit: its reply is over it, or its error is over it
+// by the length of the encoded form errJSON, which is the form the shared tier stores. The node-local store and the
+// shared tier both apply this rule, so that they keep the same records, see completeShared.
+func overReplyLimit(rec Record, errJSON string, limit int) bool {
+	return len(rec.Reply) > limit || len(errJSON) > limit
 }
 
-// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or the bytes of its
-// error when it has one.
+// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, plus the length of
+// the encoded form of its error when it has one. The encoded form is counted, not the message, so that the budgets
+// bound the bytes the shared tier stores.
 func recordSize(rec Record) int64 {
-	size := int64(RecordOverhead + len(rec.Reply))
-	if rec.Err != nil {
-		size += errorBytes(rec.Err)
-	}
-	return size
-}
-
-// errorBytes returns the bytes of an error which count toward the budgets: its message, and the keys and values of its
-// metadata, so that an error with metadata is bounded like a reply.
-func errorBytes(err *centrifuge.Error) int64 {
-	size := int64(len(err.Message))
-	for key, value := range err.Metadata {
-		size += int64(len(key) + len(value))
-	}
-	return size
+	return int64(RecordOverhead + len(rec.Reply) + len(encodeError(rec.Err)))
 }

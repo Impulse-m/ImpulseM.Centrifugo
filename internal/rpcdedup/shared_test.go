@@ -679,7 +679,8 @@ func TestSharedCompleteOverLimitErrorStoresUncached(t *testing.T) {
 	owner := NewFlightWithFingerprint(sharedFingerprintA)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 2000)}
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 2048)}
+	require.Greater(t, len(encodeError(failure)), 2048)
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: failure}))
 
 	entry, found := fx.backend.entry(sharedKey)
@@ -914,26 +915,28 @@ func TestSharedErrorOverReplyLimitIsUncachedInBothTiers(t *testing.T) {
 	checkInvariants(t, fx.local)
 }
 
-// An error is kept by both tiers by the same rule, at the limit and one byte over it. Its quote characters make its
-// encoded form twice its message, so a rule which counted the encoded form would split the tiers at this boundary.
+// An error is kept by both tiers by the same rule, its encoded form against the limit: at the limit, one byte over it,
+// and a message under the limit whose quote characters make the encoded form over it.
 func TestSharedErrorBoundaryIsTheSameInBothTiers(t *testing.T) {
+	limit := len(encodeError(&centrifuge.Error{Code: 108, Message: strings.Repeat("e", 512)}))
 	tests := []struct {
 		name     string
-		size     int
+		message  string
 		uncached bool
 	}{
-		{name: "at the limit", size: 512, uncached: false},
-		{name: "one byte over", size: 513, uncached: true},
+		{name: "encoded form at the limit", message: strings.Repeat("e", 512), uncached: false},
+		{name: "encoded form one byte over", message: strings.Repeat("e", 513), uncached: true},
+		{name: "escaped form over, message under", message: strings.Repeat(`"`, 300), uncached: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fx := newSharedFixture(t, false)
-			fx.shared.maxReplyBytes = 512
-			fx.local.maxReplyBytes = 512
+			fx.shared.maxReplyBytes = limit
+			fx.local.maxReplyBytes = limit
 			owner := NewFlightWithFingerprint(sharedFingerprintA)
 			_, err := fx.shared.Begin(sharedKey, owner)
 			require.NoError(t, err)
-			failure := &centrifuge.Error{Code: 108, Message: strings.Repeat(`"`, tc.size)}
+			failure := &centrifuge.Error{Code: 108, Message: tc.message}
 			require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Err: failure}))
 
 			entry, found := fx.backend.entry(sharedKey)

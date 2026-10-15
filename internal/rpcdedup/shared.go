@@ -270,7 +270,7 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
 	errJSON := encodeError(rec.Err)
-	if memoryOverReplyLimit(rec, s.maxReplyBytes) {
+	if overReplyLimit(rec, errJSON, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 		errJSON = ""
 	}

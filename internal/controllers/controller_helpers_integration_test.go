@@ -5,74 +5,46 @@ package controllers
 import (
 	"context"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
 )
 
-// testTransport is a unidirectional transport which records when it is closed. It discards the data
-// written to it, since the tests only check that a client is disconnected.
+// testTransport is a test transport which records when it is closed. The data written to it is discarded,
+// since the tests only check that a client is disconnected.
 type testTransport struct {
-	closed chan struct{}
+	*tools.TestTransport
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 var _ centrifuge.Transport = (*testTransport)(nil)
 
 func newTestTransport() *testTransport {
-	return &testTransport{closed: make(chan struct{})}
+	return &testTransport{
+		TestTransport: tools.NewTestTransport(),
+		closed:        make(chan struct{}),
+	}
 }
 
-func (t *testTransport) Name() string {
-	return "test"
-}
-
-func (t *testTransport) AcceptProtocol() string {
-	return ""
-}
-
-func (t *testTransport) Protocol() centrifuge.ProtocolType {
-	return centrifuge.ProtocolTypeJSON
-}
-
-func (t *testTransport) ProtocolVersion() centrifuge.ProtocolVersion {
-	return centrifuge.ProtocolVersion2
-}
-
+// Unidirectional makes the client connect without sending commands, as the tests need.
 func (t *testTransport) Unidirectional() bool {
 	return true
 }
 
-func (t *testTransport) Emulation() bool {
-	return false
-}
-
-func (t *testTransport) DisabledPushFlags() uint64 {
-	return 0
-}
-
-func (t *testTransport) PingPongConfig() centrifuge.PingPongConfig {
-	return centrifuge.PingPongConfig{PingInterval: -1}
-}
-
-func (t *testTransport) Write(_ []byte) error {
-	return nil
-}
-
-func (t *testTransport) WriteMany(_ ...[]byte) error {
-	return nil
-}
-
-func (t *testTransport) Close(_ centrifuge.Disconnect) error {
-	select {
-	case <-t.closed:
-	default:
+// Close closes the transport and signals the test which waits for it.
+func (t *testTransport) Close(disconnect centrifuge.Disconnect) error {
+	err := t.TestTransport.Close(disconnect)
+	t.closeOnce.Do(func() {
 		close(t.closed)
-	}
-	return nil
+	})
+	return err
 }
 
 // newTestNode returns a node which is not running yet. The controller must be set on it before

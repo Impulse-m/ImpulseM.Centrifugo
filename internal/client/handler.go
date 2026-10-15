@@ -41,6 +41,9 @@ type ProxyMap struct {
 	MapPublishProxies        map[string]proxy.MapPublishProxy
 	MapRemoveProxies         map[string]proxy.MapRemoveProxy
 	SharedPollRefreshProxies map[string]*proxy.SharedPollRefreshHandler
+	// ChannelStateProxy receives channel state events. Nil when no namespace enables state_proxy_enabled.
+	ChannelStateProxy proxy.ChannelStateProxy
+	CacheEmptyProxies map[string]proxy.CacheEmptyProxy
 
 	// UsesEmulatedHeaders is true when at least one configured proxy may forward
 	// client-supplied emulated headers (it has a non-empty emulated_headers list).
@@ -206,6 +209,10 @@ func (h *Handler) Setup() error {
 			}
 			return result, nil
 		})
+	}
+
+	if len(h.proxyMap.CacheEmptyProxies) > 0 {
+		h.node.OnCacheEmpty(proxy.NewCacheEmptyHandler(h.proxyMap.CacheEmptyProxies).Handle(h.cfgContainer))
 	}
 
 	cfg := h.cfgContainer.ConfigRef()

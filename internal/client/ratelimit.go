@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/rs/zerolog/log"
 )
 
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
@@ -69,7 +71,51 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
 	}
+	if rl.ClientCommand.Enabled {
+		warnDefaultFallback(limiterClientCommand, &rl.ClientCommand.RateLimitOperations)
+	}
+	if rl.UserCommand.Enabled {
+		warnDefaultFallback(limiterUserCommand, &rl.UserCommand.RateLimitOperations)
+	}
 	return nil
+}
+
+// warnDefaultFallback logs a warning for each map or track operation which has no buckets while its
+// previous operation (publish or sub_refresh) has buckets, and default has none. Such an operation is not
+// limited after an upgrade: it used to count as publish or sub_refresh and now falls back to default only.
+func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
+	if isDefaultSet(ops.Default) {
+		return
+	}
+	if isChannelBucketsSet(ops.Publish) {
+		warnUnlimitedOperation(section, ratelimit.OperationMapPublish.String(), isChannelBucketsSet(ops.MapPublish))
+		warnUnlimitedOperation(section, ratelimit.OperationMapRemove.String(), isChannelBucketsSet(ops.MapRemove))
+	}
+	if isChannelBucketsSet(ops.SubRefresh) {
+		warnUnlimitedOperation(section, ratelimit.OperationTrack.String(), isChannelBucketsSet(ops.Track))
+		warnUnlimitedOperation(section, ratelimit.OperationUntrack.String(), isChannelBucketsSet(ops.Untrack))
+	}
+}
+
+// warnUnlimitedOperation logs a warning about operation of section when it has no buckets.
+func warnUnlimitedOperation(section string, operation string, set bool) {
+	if set {
+		return
+	}
+	log.Warn().
+		Str("section", section).
+		Str("operation", operation).
+		Msg("rate limit operation has no buckets and no default buckets, its commands are not limited; set its buckets or default buckets")
+}
+
+// isDefaultSet reports whether default buckets are enabled and have at least one bucket.
+func isDefaultSet(buckets configtypes.RateLimitBuckets) bool {
+	return buckets.Enabled && len(buckets.Buckets) > 0
+}
+
+// isChannelBucketsSet reports whether base buckets of a channel operation are enabled and have at least one bucket.
+func isChannelBucketsSet(buckets configtypes.RateLimitChannelBuckets) bool {
+	return buckets.Enabled && len(buckets.Buckets) > 0
 }
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit

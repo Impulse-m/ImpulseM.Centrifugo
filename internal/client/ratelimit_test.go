@@ -17,6 +17,8 @@ import (
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -714,6 +716,39 @@ func TestRateLimitSharedPollTrackWithTokenIsTrack(t *testing.T) {
 	require.False(t, isRateLimited(transport.waitReply(t, 2)), "first track must be allowed")
 	sendRateLimitCommand(client, &protocol.Command{Id: 3, SubRefresh: &protocol.SubRefreshRequest{Channel: "shared:1", Type: 1, Token: "token"}})
 	require.True(t, isRateLimited(transport.waitReply(t, 3)), "second track must be rejected")
+}
+
+// TestRateLimitDefaultFallbackWarning checks that a publish limit without map publish, map remove and default buckets
+// is reported at startup, as map publishes are not limited by it after an upgrade.
+func TestRateLimitDefaultFallbackWarning(t *testing.T) {
+	var logBuf bytes.Buffer
+	savedLogger := log.Logger
+	log.Logger = zerolog.New(&logBuf)
+	defer func() { log.Logger = savedLogger }()
+
+	newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: rateLimitChannelOf(time.Minute, 1),
+			},
+		},
+	})
+	require.Contains(t, logBuf.String(), `"operation":"map_publish"`)
+	require.Contains(t, logBuf.String(), `"operation":"map_remove"`)
+	require.NotContains(t, logBuf.String(), `"operation":"track"`, "sub_refresh is not set, so track is not reported")
+
+	logBuf.Reset()
+	newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: rateLimitChannelOf(time.Minute, 1),
+				Default: rateLimitBucketsOf(time.Minute, 1),
+			},
+		},
+	})
+	require.Empty(t, logBuf.String(), "default buckets cover the map operations, nothing is reported")
 }
 
 func TestRateLimitMapPublishNamespaceOverride(t *testing.T) {

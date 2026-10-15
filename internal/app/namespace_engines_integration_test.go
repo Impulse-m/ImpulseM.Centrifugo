@@ -58,8 +58,15 @@ func TestNamespaceEnginesRedisIntegration(t *testing.T) {
 	iso.Redis.Prefix = isoPrefix
 	iso.Redis.Redis.Address = redisAddress
 	cfg.Brokers = configtypes.NamedBrokers{iso}
+	var presence configtypes.NamedPresenceManager
+	presence.Name = "presence"
+	presence.Enabled = true
+	presence.Type = "redis"
+	presence.Redis.Prefix = isoPrefix + "-presence"
+	presence.Redis.Redis.Address = redisAddress
+	cfg.PresenceManagers = configtypes.NamedPresenceManagers{presence}
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
-		{Name: "iso", ChannelOptions: configtypes.ChannelOptions{BrokerName: "iso"}},
+		{Name: "iso", ChannelOptions: configtypes.ChannelOptions{BrokerName: "iso", PresenceManagerName: "presence"}},
 	}
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
@@ -74,6 +81,8 @@ func TestNamespaceEnginesRedisIntegration(t *testing.T) {
 	node.SetBroker(defaultBroker)
 	node.SetPresenceManager(defaultPresenceManager)
 	require.NoError(t, engines.create(node, cfgContainer))
+	// One shard for the iso broker and one for the presence manager; both are closed by engines.close.
+	require.Len(t, engines.redisShards, 2)
 	require.NoError(t, node.Run())
 	require.NoError(t, engines.run(node))
 	goroutinesRunning := runtime.NumGoroutine()

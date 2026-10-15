@@ -22,7 +22,8 @@ type namespaceEngines struct {
 	cfgContainer     *config.Container
 	brokers          map[string]centrifuge.Broker
 	presenceManagers map[string]centrifuge.PresenceManager
-	// redisShards are the Redis connections of the named Redis brokers. A Redis broker does not close its shards.
+	// redisShards are the Redis connections of the named Redis brokers and presence managers. Neither a Redis
+	// broker nor a Redis presence manager closes its shards, so the engines close them.
 	redisShards   []*centrifuge.RedisShard
 	closeTimeout  time.Duration
 	routeBrokers  bool
@@ -68,8 +69,10 @@ func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 	}
 }
 
-// nodeConfig sets the routing hooks of the node config. Hooks are set only for the kinds which some
-// namespace selects, so the node pays nothing for the other kind.
+// nodeConfig sets the routing hooks of the node config. A hook is set for each kind which has an enabled entry,
+// so a reload may route a namespace to that entry. Once set, the hook costs one channel options lookup for every
+// channel operation, including the channels of namespaces which select no entry. A kind without an enabled entry
+// gets no hook and costs nothing.
 func (e *namespaceEngines) nodeConfig(cfg *centrifuge.Config) {
 	if e == nil {
 		return
@@ -109,7 +112,8 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		if !entry.Enabled {
 			continue
 		}
-		presenceManager, mode, err := createNamedPresenceManager(node, entry)
+		presenceManager, redisShards, mode, err := createNamedPresenceManager(node, entry)
+		e.redisShards = append(e.redisShards, redisShards...)
 		if err != nil {
 			return fmt.Errorf("error creating presence manager %s: %w", entry.Name, err)
 		}
@@ -150,7 +154,8 @@ func (s *namespaceEnginesService) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// close closes the named engines within the shutdown timeout, then the Redis connections of the named brokers.
+// close closes the named brokers and presence managers within the shutdown timeout, then the Redis connections
+// of the named Redis brokers and presence managers.
 func (e *namespaceEngines) close() {
 	if e == nil {
 		return
@@ -252,26 +257,26 @@ func (e *namespaceEngines) createBroker(
 	}
 }
 
-// createNamedPresenceManager creates a named presence manager by its type. It returns the connection
-// mode for logging.
+// createNamedPresenceManager creates a named presence manager by its type. It returns the Redis shards it
+// created, which the caller closes at shutdown, and the connection mode for logging.
 func createNamedPresenceManager(
 	node *centrifuge.Node,
 	entry configtypes.NamedPresenceManager,
-) (centrifuge.PresenceManager, string, error) {
+) (centrifuge.PresenceManager, []*centrifuge.RedisShard, string, error) {
 	switch entry.Type {
 	case "memory":
 		presenceManager, err := createMemoryPresenceManager(node)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
-		return presenceManager, "", nil
+		return presenceManager, nil, "", nil
 	case "redis":
-		presenceManager, mode, err := createRedisPresenceManagerFrom(node, entry.Redis)
+		presenceManager, redisShards, mode, err := createRedisPresenceManagerFrom(node, entry.Redis)
 		if err != nil {
-			return nil, mode, err
+			return nil, redisShards, mode, err
 		}
-		return presenceManager, mode, nil
+		return presenceManager, redisShards, mode, nil
 	default:
-		return nil, "", fmt.Errorf("unknown presence manager type: %s", entry.Type)
+		return nil, nil, "", fmt.Errorf("unknown presence manager type: %s", entry.Type)
 	}
 }

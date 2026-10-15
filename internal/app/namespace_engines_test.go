@@ -43,7 +43,7 @@ func newNamespaceEnginesForTest(t *testing.T, cfg config.Config) (*namespaceEngi
 	return engines, cfgContainer, node
 }
 
-func TestNamespaceEnginesNilWhenUnused(t *testing.T) {
+func TestNamespaceEnginesNilWithoutEnabledEntries(t *testing.T) {
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
 	require.Nil(t, newNamespaceEngines(cfgContainer))

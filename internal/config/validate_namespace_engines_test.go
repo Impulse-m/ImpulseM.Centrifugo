@@ -234,6 +234,51 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "two named redis brokers with an empty prefix and the default prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "")
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifuge")
+			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis with an empty prefix and a named redis broker with the default prefix",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Engine.Redis.Prefix = ""
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "centrifuge")
+			},
+			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+		},
+		{
+			name: "two named redis brokers with the default address and the same prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+				cfg.Brokers[1] = namedRedisBroker("rates", "127.0.0.1:6379", "centrifugo-broadcast")
+			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "two named redis brokers with comma-separated cluster hosts in another order",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+				cfg.Brokers[0].Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379,10.0.0.3:6379"}
+				cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
+				cfg.Brokers[1].Redis.Redis.ClusterAddress = []string{"10.0.0.3:6379", "10.0.0.2:6379"}
+			},
+			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+		},
+		{
+			name: "engine redis cluster address and a named redis address on the same host",
+			modify: func(cfg *Config) {
+				cfg.Engine.Type = "redis"
+				cfg.Engine.Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379"}
+				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
+			},
+			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+		},
+		{
 			name: "two named redis brokers with the same address but a different cluster address",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0].Redis.Redis.ClusterAddress = []string{"redis://10.0.0.5:6379"}
@@ -364,6 +409,20 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-rates")
 			},
 			wantErr: "namespace engines: enabled entries of brokers changed",
+		},
+		{
+			name: "prefix of an entry changed",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "centrifugo-other"
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "use_lists of an entry changed",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.UseLists = true
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
 		},
 		{
 			name: "entry disabled",

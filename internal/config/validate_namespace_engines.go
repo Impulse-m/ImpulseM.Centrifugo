@@ -19,11 +19,17 @@ var knownControllerTypes = []string{"postgres", "redis", "nats"}
 // no entry may use it.
 const reservedEngineName = "controller"
 
+// defaultRedisPrefix is the prefix which Core uses when a Redis broker or presence manager has none.
+const defaultRedisPrefix = "centrifuge"
+
+// defaultRedisAddress is the address which confighelpers uses when a Redis configuration has none.
+const defaultRedisAddress = "127.0.0.1:6379"
+
 // redisEngineRef is a Redis broker of the configuration: the default one or a named one.
 type redisEngineRef struct {
-	label      string
-	addressKey string
-	prefix     string
+	label  string
+	hosts  []string
+	prefix string
 }
 
 // namespaceRouting is the engine selection of a namespace. The top-level
@@ -126,15 +132,15 @@ func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
 		refs = append(refs, redisEngineRef{
-			label:      "engine",
-			addressKey: redisAddressKey(c.Engine.Redis.Redis),
-			prefix:     c.Engine.Redis.Prefix,
+			label:  "engine",
+			hosts:  redisHosts(c.Engine.Redis.Redis),
+			prefix: redisPrefix(c.Engine.Redis.Prefix),
 		})
 	} else if c.Broker.Enabled && c.Broker.Type == "redis" {
 		refs = append(refs, redisEngineRef{
-			label:      "broker",
-			addressKey: redisAddressKey(c.Broker.Redis.Redis),
-			prefix:     c.Broker.Redis.Prefix,
+			label:  "broker",
+			hosts:  redisHosts(c.Broker.Redis.Redis),
+			prefix: redisPrefix(c.Broker.Redis.Prefix),
 		})
 	}
 	for _, b := range c.Brokers {
@@ -142,14 +148,14 @@ func validateNamedRedisPrefixes(c Config) error {
 			continue
 		}
 		refs = append(refs, redisEngineRef{
-			label:      b.Name,
-			addressKey: redisAddressKey(b.Redis.Redis),
-			prefix:     b.Redis.Prefix,
+			label:  b.Name,
+			hosts:  redisHosts(b.Redis.Redis),
+			prefix: redisPrefix(b.Redis.Prefix),
 		})
 	}
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
-			if refs[i].addressKey == refs[j].addressKey && refs[i].prefix == refs[j].prefix {
+			if refs[i].prefix == refs[j].prefix && sharesHost(refs[i].hosts, refs[j].hosts) {
 				return fmt.Errorf(
 					"brokers: %q and %q use the same Redis and the same prefix; set a distinct prefix",
 					refs[i].label, refs[j].label,
@@ -160,34 +166,60 @@ func validateNamedRedisPrefixes(c Config) error {
 	return nil
 }
 
-// redisAddressKey identifies a Redis deployment by its addresses. The database is left out: PUB/SUB is global
-// across databases, so brokers which differ only in database still subscribe the same channels.
-func redisAddressKey(redisCfg configtypes.Redis) string {
-	return strings.Join([]string{
-		normalizedRedisAddresses(redisCfg.Address),
-		normalizedRedisAddresses(redisCfg.ClusterAddress),
-		normalizedRedisAddresses(redisCfg.SentinelAddress),
-	}, "|")
+// redisHosts returns the lowercased hosts which a Redis configuration connects to. As in confighelpers, the
+// cluster addresses take precedence over the sentinel addresses, which take precedence over the addresses, and
+// an empty configuration connects to the default address. Each entry may list comma-separated hosts. The scheme,
+// user information and path of an address URL are dropped, so "redis://h:6379" and "h:6379" give the same host.
+// The database is left out: PUB/SUB is global across databases, so brokers which differ only in database still
+// subscribe the same channels.
+func redisHosts(redisCfg configtypes.Redis) []string {
+	addresses := redisCfg.ClusterAddress
+	if len(addresses) == 0 {
+		addresses = redisCfg.SentinelAddress
+	}
+	if len(addresses) == 0 {
+		addresses = redisCfg.Address
+	}
+	var hosts []string
+	for _, address := range addresses {
+		for _, part := range strings.Split(address, ",") {
+			host := part
+			if u, err := url.Parse(part); err == nil && u.Host != "" {
+				host = u.Host
+			}
+			if host != "" {
+				hosts = append(hosts, strings.ToLower(host))
+			}
+		}
+	}
+	if len(hosts) == 0 {
+		hosts = append(hosts, defaultRedisAddress)
+	}
+	return hosts
 }
 
-// normalizedRedisAddresses returns the sorted hosts of the addresses. The scheme, user information and path
-// of an address URL are dropped, so "redis://h:6379" and "h:6379" give the same host.
-func normalizedRedisAddresses(addresses []string) string {
-	hosts := make([]string, 0, len(addresses))
-	for _, address := range addresses {
-		host := address
-		if u, err := url.Parse(address); err == nil && u.Host != "" {
-			host = u.Host
+// sharesHost reports whether the two lists of hosts have a host in common.
+func sharesHost(hosts []string, others []string) bool {
+	for _, host := range hosts {
+		if slices.Contains(others, host) {
+			return true
 		}
-		hosts = append(hosts, strings.ToLower(host))
 	}
-	slices.Sort(hosts)
-	return strings.Join(hosts, ",")
+	return false
+}
+
+// redisPrefix returns the prefix which Core uses for the given configured prefix.
+func redisPrefix(prefix string) string {
+	if prefix == "" {
+		return defaultRedisPrefix
+	}
+	return prefix
 }
 
 // CheckNamespaceEnginesReload refuses a reload which changes what the named brokers and presence managers
-// route: the set of enabled entries, the engine selection of a namespace, and the controller. Such a change
-// needs a restart. Connection details of the entries are applied on reload as for the default engine.
+// route: the set of enabled entries with their types and Redis prefixes, the engine selection of a namespace,
+// and the controller. Such a change needs a restart. Connection details of the entries are applied on reload as
+// for the default engine.
 func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config) error {
 	if !slices.Equal(enabledBrokerKeys(oldCfg), enabledBrokerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of brokers")
@@ -223,11 +255,13 @@ func namespaceEnginesChanged(what string) error {
 	return fmt.Errorf("namespace engines: %s changed, a restart is needed", what)
 }
 
+// enabledBrokerKeys identifies the enabled entries by name, type, and the Redis prefix and lists mode, which the
+// running broker keeps from startup. The connection details are left out, since a reload applies them.
 func enabledBrokerKeys(cfg Config) []string {
 	var keys []string
 	for _, b := range cfg.Brokers {
 		if b.Enabled {
-			keys = append(keys, b.Name+"/"+b.Type)
+			keys = append(keys, fmt.Sprintf("%s/%s/%s/%t", b.Name, b.Type, redisPrefix(b.Redis.Prefix), b.Redis.UseLists))
 		}
 	}
 	slices.Sort(keys)

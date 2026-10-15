@@ -937,8 +937,9 @@ func TestRPCDedupAbandonedOwnerCarriesNoSignal(t *testing.T) {
 	requireNoRetrySignal(t, err)
 }
 
-// A panic after the backend committed abandons the flight, and the duplicate which joined it is answered without the
-// signal: the call ran, so a resend with the same msg_id must not be sent by the client. The backend runs once.
+// A panic after the backend committed keeps a dedup_unavailable record, which the duplicate that joined it gets
+// without the signal: the call ran, so a resend with the same msg_id must not be sent by the client. The backend runs
+// once.
 func TestRPCDedupPanicAfterBackendCarriesNoSignal(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)

@@ -46,6 +46,32 @@ func TestServerTagsFilterTemplateRebindUserChangeUnsubscribes(t *testing.T) {
 	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
 }
 
+// TestServerTagsFilterTemplateRebindRefusalKeepsIdentity checks a rebind whose token subscription a template refuses is
+// refused before the connection moves: the identity, the values and the channels stay as they were.
+func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	// The token has no sid claim, which the template of chat needs under reject.
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"chat:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+	require.Empty(t, state.rebinds)
+	require.Equal(t, "", state.user)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "lenient:room")
+}
+
 // TestServerTagsFilterTemplateRefreshWithoutClaims checks a refresh of a connection without a token keeps its
 // connection when the refresh token has no value for the template claims, and disconnects it when the token has one,
 // since the values changed.

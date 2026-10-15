@@ -667,10 +667,10 @@ func (s *shard) unlink(r *storedRecord) {
 // whose message and metadata are over it. The shared tier counts an error by its encoded form instead, see
 // sharedOverReplyLimit.
 func memoryOverReplyLimit(rec Record, limit int) bool {
-	if rec.Err != nil {
-		return errorBytes(rec.Err) > int64(limit)
+	if len(rec.Reply) > limit {
+		return true
 	}
-	return len(rec.Reply) > limit
+	return rec.Err != nil && errorBytes(rec.Err) > int64(limit)
 }
 
 // recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or the bytes of its

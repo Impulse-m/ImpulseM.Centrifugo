@@ -80,10 +80,11 @@ type ScopeAcks struct {
 	MsgIDs []uint64
 }
 
-// Backend is the shared tier of a Shared store. Redis implements it; tests use a fake.
+// Backend is the shared tier of a Shared store. Redis implements it; tests use a fake. Complete takes errJSON, the
+// encoded error of rec, which the caller encodes once.
 type Backend interface {
 	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration) (BeginResult, error)
-	Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error)
+	Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (bool, error)
 	Cancel(ctx context.Context, key Key, failure *centrifuge.Error, ttl time.Duration) (CancelResult, error)
 	Poll(ctx context.Context, key Key) (PollResult, error)
 	Ack(ctx context.Context, acks []ScopeAcks) error
@@ -142,8 +143,8 @@ func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID
 // Complete implements Backend with the complete script. It returns false, and no error, when this node does not own the
 // in-flight record. That is not a failed call, so this method does not count it as a Redis error: a retried write finds
 // the record done by its first attempt, whose reply was lost. The caller counts the ownership it lost on its first write.
-func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, ttl time.Duration) (bool, error) {
-	reply, errJSON, uncached := recordArgs(rec)
+func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (bool, error) {
+	reply, uncached := recordArgs(rec)
 	abandoned := "0"
 	if rec.Abandoned {
 		abandoned = "1"

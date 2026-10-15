@@ -449,6 +449,22 @@ func TestMemoryErrorOverReplyLimitIsUncached(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+// A reply over the limit is kept as uncached even when the call also has an error which is under it.
+func TestMemoryReplyOverLimitWithErrorIsUncached(t *testing.T) {
+	store, _ := newTestMemory(512)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte(strings.Repeat("r", 600)), Err: &centrifuge.Error{Code: 107, Message: "small"}}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	require.Empty(t, lookup.Record.Reply)
+	checkInvariants(t, store)
+}
+
 // The node-local store counts an error by its message and metadata, not by its encoded form. A message of quote
 // characters is 1700 bytes, and its encoded form is over 2048, yet the error fits the reply limit and is kept.
 func TestMemoryErrorUnderLimitIsKeptWhenEncodedFormIsOver(t *testing.T) {

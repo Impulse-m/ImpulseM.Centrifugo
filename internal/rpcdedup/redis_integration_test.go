@@ -135,7 +135,7 @@ func TestRedisBackendBeginCompleteLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, BeginMismatch, begin.State)
 
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, time.Minute)
+	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	require.True(t, kept)
 
@@ -178,7 +178,7 @@ func TestRedisBackendCompleteByAnotherNodeIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, BeginMiss, begin.State)
 
-	kept, err := backend.Complete(ctx, key, "node-b", Record{Reply: []byte("stolen")}, time.Minute)
+	kept, err := backend.Complete(ctx, key, "node-b", Record{Reply: []byte("stolen")}, "", time.Minute)
 	require.NoError(t, err)
 	require.False(t, kept)
 
@@ -198,7 +198,7 @@ func TestRedisBackendCompleteAbandonedDeletesRecord(t *testing.T) {
 
 	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
 	require.NoError(t, err)
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Abandoned: true}, time.Minute)
+	kept, err := backend.Complete(ctx, key, "node-a", Record{Abandoned: true}, "", time.Minute)
 	require.NoError(t, err)
 	require.True(t, kept)
 	require.False(t, integrationExists(t, connector, RedisKey(prefix, key)))
@@ -227,7 +227,7 @@ func TestRedisBackendCompleteKeepsDoneRecordWithTTL(t *testing.T) {
 	require.Greater(t, inflightPTTL, (5 * time.Second).Milliseconds())
 	require.LessOrEqual(t, inflightPTTL, (5*time.Second + InflightGrace).Milliseconds())
 
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, time.Minute)
+	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	require.True(t, kept)
 
@@ -250,7 +250,7 @@ func TestRedisBackendUncachedCompleteKeepsNoReply(t *testing.T) {
 
 	_, err := backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
 	require.NoError(t, err)
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("big"), Uncached: true}, time.Minute)
+	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("big"), Uncached: true}, "", time.Minute)
 	require.NoError(t, err)
 	require.True(t, kept)
 
@@ -291,7 +291,7 @@ func TestRedisBackendCancelResults(t *testing.T) {
 	done := Key{Scope: testScope("u1", "a"), MsgID: 9}
 	_, err = backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL)
 	require.NoError(t, err)
-	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, time.Minute)
+	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	res, err = backend.Cancel(ctx, done, testCancelled, time.Minute)
 	require.NoError(t, err)
@@ -310,7 +310,7 @@ func TestRedisBackendAckDeletesDoneAndTombstonesOnly(t *testing.T) {
 
 	_, err := backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL)
 	require.NoError(t, err)
-	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, time.Minute)
+	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	_, err = backend.Cancel(ctx, tombstone, testCancelled, time.Minute)
 	require.NoError(t, err)
@@ -357,7 +357,7 @@ func TestRedisBackendPollStates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PollInFlight, poll.State)
 
-	_, err = backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, time.Minute)
+	_, err = backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	poll, err = backend.Poll(ctx, key)
 	require.NoError(t, err)

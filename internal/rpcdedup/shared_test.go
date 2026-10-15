@@ -147,7 +147,7 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 }
 
 // Complete implements Backend with the semantics of completeScript: only the owner completes its record.
-func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ time.Duration) (bool, error) {
+func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ string, _ time.Duration) (bool, error) {
 	if err := f.enter("complete"); err != nil {
 		return false, err
 	}
@@ -854,6 +854,29 @@ func TestSharedCancelTombstoneReplacesCachedDoneRecord(t *testing.T) {
 	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Same(t, testCancelled, lookup.Record.Err, "the answer of this node is the one of the shared tier")
+	checkInvariants(t, fx.local)
+}
+
+func TestSharedReplyOverLimitWithErrorIsUncachedInBothTiers(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.maxReplyBytes = 512
+	fx.local.maxReplyBytes = 512
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// The error is small, and the reply is over the limit: the record is kept without both, in each tier.
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte(strings.Repeat("r", 600)), Err: testCancelled}))
+
+	entry, found := fx.backend.entry(sharedKey)
+	require.True(t, found)
+	require.True(t, entry.rec.Uncached)
+	require.Nil(t, entry.rec.Err)
+	require.Empty(t, entry.rec.Reply)
+
+	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
 	checkInvariants(t, fx.local)
 }
 

@@ -83,13 +83,14 @@ func decodeError(s string) (*centrifuge.Error, error) {
 	}, nil
 }
 
-// recordArgs returns the arguments of a record for the complete script: the reply, the error JSON, and "1" when the
-// reply is not kept. An uncached record keeps no reply. Abandoned is not an argument of the record, the caller sends it.
-func recordArgs(rec Record) (string, string, string) {
+// recordArgs returns the arguments of a record for the complete script: the reply, and "1" when the reply is not kept.
+// An uncached record keeps no reply. The error JSON and the abandoned flag are arguments of their own, the caller sends
+// them.
+func recordArgs(rec Record) (string, string) {
 	if rec.Uncached {
-		return "", encodeError(rec.Err), "1"
+		return "", "1"
 	}
-	return string(rec.Reply), encodeError(rec.Err), "0"
+	return string(rec.Reply), "0"
 }
 
 // redisTTLMillis returns d in milliseconds for PEXPIRE, at least one millisecond.

@@ -47,26 +47,18 @@ func TestDecodeErrorMalformed(t *testing.T) {
 }
 
 func TestRecordArgs(t *testing.T) {
-	reply, errJSON, uncached := recordArgs(Record{Reply: []byte("ok")})
+	reply, uncached := recordArgs(Record{Reply: []byte("ok")})
 	require.Equal(t, "ok", reply)
-	require.Equal(t, "", errJSON)
-	require.Equal(t, "0", uncached)
-
-	reply, errJSON, uncached = recordArgs(Record{Err: &centrifuge.Error{Code: 3, Message: "bad"}})
-	require.Equal(t, "", reply)
-	require.Equal(t, `{"c":3,"m":"bad"}`, errJSON)
 	require.Equal(t, "0", uncached)
 
 	// An uncached record keeps no reply.
-	reply, errJSON, uncached = recordArgs(Record{Reply: []byte("big"), Uncached: true})
+	reply, uncached = recordArgs(Record{Reply: []byte("big"), Uncached: true})
 	require.Equal(t, "", reply)
-	require.Equal(t, "", errJSON)
 	require.Equal(t, "1", uncached)
 
-	// An abandoned record is not kept, its args are empty.
-	reply, errJSON, uncached = recordArgs(Record{Abandoned: true})
+	// An abandoned record is not kept, its reply is empty.
+	reply, uncached = recordArgs(Record{Abandoned: true})
 	require.Equal(t, "", reply)
-	require.Equal(t, "", errJSON)
 	require.Equal(t, "0", uncached)
 }
 

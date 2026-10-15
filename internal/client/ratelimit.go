@@ -43,7 +43,11 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 		h.redisLimiter = redisLimiter
 	}
 	limiter := ratelimit.NewClientLimiter(rl)
-	h.clientLimiter = limiter
+	// The client limiter gives each connection its state, which the user limiter needs too. A Redis limit needs only the
+	// user, so a configuration with the Redis limit alone gives no connection a record.
+	if rl.ClientCommand.Enabled || rl.ClientError.Enabled || rl.UserCommand.Enabled {
+		h.clientLimiter = limiter
+	}
 	var userLimiter *ratelimit.UserLimiter
 	if rl.UserCommand.Enabled {
 		userLimiter = ratelimit.NewUserLimiter(rl.UserCommand)
@@ -86,10 +90,6 @@ func (h *Handler) rateLimitCommandRead(
 		if !checkCommands && userLimiter == nil && redisLimiter == nil {
 			return nil
 		}
-		st := rateLimitStateOf(c)
-		if st == nil {
-			return nil
-		}
 		op, name, ok := rateLimitOperation(e.Command)
 		if !ok {
 			return nil
@@ -101,11 +101,14 @@ func (h *Handler) rateLimitCommandRead(
 		if needsKey {
 			key = h.rateLimitKey(op, name)
 		}
-		if checkCommands && !limiter.CommandAllowed(st, e.Started, op, key) {
+		// The client and user limits keep their state in the record, so a connection without one passes them. The Redis
+		// limit needs only the user, so it checks a connection without a record too.
+		st := rateLimitStateOf(c)
+		if st != nil && checkCommands && !limiter.CommandAllowed(st, e.Started, op, key) {
 			metrics.RateLimitRejectsTotal.WithLabelValues(limiterClientCommand, op.String()).Inc()
 			return centrifuge.ErrorTooManyRequests
 		}
-		if userLimiter != nil && !userLimiter.CommandAllowed(st, e.Started, op, key) {
+		if st != nil && userLimiter != nil && !userLimiter.CommandAllowed(st, e.Started, op, key) {
 			metrics.RateLimitRejectsTotal.WithLabelValues(limiterUserCommand, op.String()).Inc()
 			return centrifuge.ErrorTooManyRequests
 		}

@@ -22,6 +22,24 @@ func TestRedisRateLimitDisabledRegistersNothing(t *testing.T) {
 	require.True(t, disabled.userConnectAllowed("42"))
 }
 
+// TestRedisRateLimitAloneGivesNoConnectionRecord checks that the Redis user limit alone gives no connection a record: it
+// needs only the user, and the client limiter, which gives each connection its state, is not set for it.
+func TestRedisRateLimitAloneGivesNoConnectionRecord(t *testing.T) {
+	h := newUserRateLimitHandler(t, configtypes.RateLimit{
+		RedisUserCommand: configtypes.RateLimitRedisUserCommand{
+			Enabled: true,
+			Redis: configtypes.RateLimitRedis{
+				RedisPrefixed: configtypes.RedisPrefixed{
+					Redis: configtypes.Redis{Address: []string{"127.0.0.1:1"}},
+				},
+			},
+		},
+	})
+	require.NotNil(t, h.redisLimiter)
+	require.Nil(t, h.clientLimiter)
+	require.False(t, h.configNeedsConnState(h.cfgContainer.ConfigRef()))
+}
+
 func TestRedisRateLimitConfigErrorIsFatal(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })

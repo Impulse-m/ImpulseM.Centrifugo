@@ -57,3 +57,31 @@ func TestRedisRateLimitDefaultFallbackWarning(t *testing.T) {
 	require.Contains(t, logBuf.String(), `"section":"redis_user_command"`)
 	require.Contains(t, logBuf.String(), `"operation":"map_publish"`)
 }
+
+// TestRateLimitNamespaceOverrideFallbackWarning checks that a publish limit given only by a namespace override is
+// reported as well: map publishes of that namespace were limited before the upgrade and are not limited after it.
+func TestRateLimitNamespaceOverrideFallbackWarning(t *testing.T) {
+	var logBuf syncBuffer
+	savedLogger := log.Logger
+	log.Logger = zerolog.New(&logBuf)
+	defer func() { log.Logger = savedLogger }()
+
+	newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Publish: configtypes.RateLimitChannelBuckets{
+					NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+						{
+							NamespaceName: "chat",
+							Enabled:       true,
+							Buckets:       rateLimitChannelOf(time.Minute, 1).Buckets,
+						},
+					},
+				},
+			},
+		},
+	}, "chat")
+	require.Contains(t, logBuf.String(), `"operation":"map_publish"`)
+	require.Contains(t, logBuf.String(), `"section":"client_command"`)
+}

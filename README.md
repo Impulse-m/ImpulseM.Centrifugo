@@ -5,6 +5,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
 ## Added on top of upstream
 
 * [Server-side publication tags filter](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/7): a per-subscriber filter set by the backend that the client can't widen. The filtering itself is upstream's Core implementation; the fork lets the backend set it from the subscription token, connection token `subs`, and subscribe and connect proxy results. Recovery applies the filter; an explicit history call on a filtered subscription is refused, since history is not filtered.
+* [Server tags filter template](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/18): a namespace filter rendered for each connection from its token claims, user and client, so every subscriber gets a filter of its own value, for example echo suppression by session. Combined with an explicit server tags filter by `and`; see [below](#server-tags-filter-template).
 * [User blocking and token revocation](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/10):
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
@@ -91,6 +92,54 @@ With PROXY protocol, the address the PROXY header reports is the previous hop, a
 ```
 
 Off by default, and then the auth throttle and the request log keep their previous rules. When on, the resolved address is used by the auth throttle and the request log, and sent to RPC registry targets as `x-forwarded-for`, or omitted when it is unknown. Not yet exposed to the connect proxy or the connections API. PROXY protocol does not apply to HTTP/3 or WebTransport, which are UDP; the header walk still does. Internal HTTP and gRPC API ports do not read PROXY headers unless they share the external port.
+
+### Server tags filter template
+
+A namespace can set `server_tags_filter_template`: a server tags filter applied to every subscription in the namespace, including server-side subscriptions of the connection token and of the connect proxy, the personal channel and uni-connect channels. Its `val` and `vals` strings may refer to values of the connection. Each subscription gets the template rendered with those values, combined with its explicit server tags filter by `and`. Off by default, and nothing is read from the token unless a template refers to a claim.
+
+```json
+"channel": {
+  "namespaces": [
+    {
+      "name": "chat",
+      "allow_subscribe_for_client": true,
+      "server_tags_filter_template": {
+        "filter": {"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+        "on_missing_value": "reject"
+      }
+    },
+    {
+      "name": "tenant",
+      "server_tags_filter_template": {
+        "filter": {
+          "op": "and",
+          "nodes": [
+            {"key": "tenant", "cmp": "eq", "val": "{{claims.tenant}}"},
+            {"key": "audience", "cmp": "in", "vals": ["all", "user:{{user}}"]}
+          ]
+        },
+        "on_missing_value": "skip"
+      }
+    }
+  ]
+}
+```
+
+* `filter` is a server tags filter tree in the same JSON form as the `server_tags_filter` of the subscription token: `op`, `key`, `cmp`, `val`, `vals`, `nodes`. Variables are allowed only in `val` and in `vals` entries. An empty `filter` means no template. Unknown fields are a config error. `filter` has no environment variable of its own; set namespaces as one JSON value.
+* Variables: `{{claims.<path>}}` reads a gjson path of the connection token claims (`sid`, `org.tenant`, `roles.0`), as `user_id_claim` does; `{{user}}` is the user ID of the connection; `{{client}}` is the client ID. Whitespace inside the braces is trimmed, and literal text around a variable is allowed, as in `"user:{{user}}"`. Any other variable, a `{{` without `}}`, and a `{{` in `op`, `key` or `cmp` are config errors.
+* Values: string claims as they are; numbers as written in the token, so 64-bit integer IDs are exact; `true` and `false`. Null, absent, object, array and empty string are missing. An anonymous connection has no user, so `{{user}}` is missing.
+* `on_missing_value`: `reject` (default) refuses a subscription whose template has a missing value: error 103 on subscribe and subscription refresh, disconnect 3503 at connect for a server-side subscription. `skip` applies no template to that subscription, and the explicit filter still applies. Setting `on_missing_value` without `filter` is a config error. The log names the variable.
+* Values are bound once per connection, at connect, from the verified token. Subscription refreshes render with the same values, so a refresh without a filter keeps the current filter, and a refresh with a new explicit filter keeps the template.
+* A connection refresh whose token has other values of the template claims disconnects with insufficient state, and the client reconnects with the new values. Equal values change nothing.
+* A rebind to a token with other values unsubscribes the channels with a template with code 2500 (insufficient state), and the client resubscribes them with fresh filters.
+* A connect proxy connection has no token claims: `{{user}}` and `{{client}}` work, and `{{claims.*}}` is missing.
+* A config reload which adds a template does not change live subscriptions. A connection verified before the reload has no claims, so its claim variables are missing under the policy until it reconnects.
+
+Consequences inherited from the server tags filter: every subscription in a templated namespace carries a server filter, so delta compression is not negotiated there and explicit `history` calls on those subscriptions are refused. Recovery applies the filter.
+
+Publications without the tag: `neq` and `nin` match a publication which has no such tag, so `session != X` delivers untagged publications, while `eq` and `in` drop them. Tag every publication of a namespace with the session, or use `eq` where untagged publications must not reach the subscriber.
+
+Not supported yet: array or object claims as values, `{{session}}`, values from the connect proxy result, and checking the template structure at config load (the tree is checked when a subscription is made, and an invalid one fails closed with an internal error).
 
 ### Not implemented (yet)
 

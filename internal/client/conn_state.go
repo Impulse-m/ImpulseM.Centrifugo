@@ -1,6 +1,7 @@
 package client
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
@@ -31,12 +32,14 @@ type rebindableClient interface {
 // it, see Handler.needsConnState. Its fields are set once at connect; only the identity changes, through its pointer.
 // The identity is written by connect, by a same-identity refresh, by a rebind, and by a refresh proxy. A refresh proxy
 // writes a copy of the identity which keeps the origin, the account, the class and the token of the connection, and
-// moves only its token identity, see moveProxyIdentity.
+// moves only its token identity, see moveProxyIdentity. The moves of a refresh proxy hold moveMu across the load, the
+// store and the session index sync, so two of them of one connection apply in order.
 type connState struct {
 	track      accessrevoke.Tracked
 	limits     *ratelimit.ConnState
 	identity   atomic.Pointer[connIdentity]
 	refreshing atomic.Bool
+	moveMu     sync.Mutex
 }
 
 // connIdentity is the identity of a connection: what its token proves and the user it is bound to. It is immutable
@@ -271,6 +274,15 @@ func nextIdentity(
 		}
 	}
 	return next
+}
+
+// movedIdentity returns the identity a refresh proxy moves a connection to: a copy of prev with identity as its token
+// identity. The user, the account, the origin, the class and the token stay as prev holds them, see moveProxyIdentity.
+// It lives next to nextIdentity, so the rules which keep those fields are in one place.
+func movedIdentity(prev *connIdentity, identity centrifuge.TokenIdentity) *connIdentity {
+	next := *prev
+	next.identity = identity
+	return &next
 }
 
 // tokenIdentityOf returns the identity of a connection which holds the verified token. Every path which gives a

@@ -190,6 +190,65 @@ func TestProxyRefreshesConcurrentBothSucceed(t *testing.T) {
 	require.Contains(t, identities, connStateOf(client).identity.Load().identity)
 }
 
+// TestProxyMovesOfOneConnectionEndOnTheRecordSession holds the first of two moves of one connection between the store of
+// its identity and the sync of the session index, and starts the second move while the first is held. The second move
+// waits for the first, so the index ends on the session the record holds, which is the one of the second move.
+func TestProxyMovesOfOneConnectionEndOnTheRecordSession(t *testing.T) {
+	h, store := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, _ := newRebindTestClient("", "")
+	now := time.Now().Unix()
+	first := accessrevoke.Identity(revokeTestUUID, 0, now-10)
+	second := accessrevoke.Identity(revokeTestOtherUUID, 0, now-10)
+	identities := []centrifuge.TokenIdentity{first, second}
+	var calls atomic.Int32
+	refreshProxy := func(proxy.Client, centrifuge.RefreshEvent, proxy.PerCallData) (centrifuge.RefreshReply, proxy.RefreshExtra, error) {
+		moved := identities[calls.Add(1)-1]
+		return centrifuge.RefreshReply{TokenIdentity: &moved}, proxy.RefreshExtra{}, nil
+	}
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var holds atomic.Int32
+	hook := func(rebindableClient) {
+		if holds.Add(1) == 1 {
+			close(held)
+			<-release
+		}
+	}
+	testHookProxyMoved.Store(&hook)
+	t.Cleanup(func() { testHookProxyMoved.Store(nil) })
+
+	var group sync.WaitGroup
+	errs := make([]error, len(identities))
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		_, _, errs[0] = h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
+	}()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the first move did not reach the hook")
+	}
+
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		_, _, errs[1] = h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
+	}()
+	// The second move waits for the lock of the first one. The sleep only gives it the chance to run ahead of the first
+	// move, which the lock must stop.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	group.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, second, connStateOf(client).identity.Load().identity)
+	require.Empty(t, store.SessionConnections().Connections(first.Session))
+	require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(second.Session))
+}
+
 // TestSameUserClassChangeOfProxyConnectionIsDenied refreshes a connection made through a connect proxy with a token of its
 // own user and another class. The class of such a connection is its effective class, so the token is refused and the
 // connection keeps its record as it was.

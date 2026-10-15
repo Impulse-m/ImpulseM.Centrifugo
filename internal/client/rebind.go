@@ -49,8 +49,9 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 }
 
 // onRefreshProxy answers a refresh which the refresh proxy answers. The refresh is not rejected for another one in
-// progress: the expiry of a connection calls it too, and a rejection would close the connection. The identity of the
-// record is moved with a compare and swap, see moveProxyIdentity. A connection without a record has no identity to move.
+// progress: the expiry of a connection calls it too, and a rejection would close the connection. Each move of the identity
+// of the record waits for the other ones of the connection, see moveProxyIdentity. A connection without a record has no
+// identity to move.
 func (h *Handler) onRefreshProxy(
 	c rebindableClient,
 	e centrifuge.RefreshEvent,
@@ -71,23 +72,20 @@ func (h *Handler) onRefreshProxy(
 
 // moveProxyIdentity moves the identity of a connection to the token identity a refresh proxy returned. The user, the
 // account, the origin, the class and the token of the record stay as they are: the proxy has no token of this server.
-// The identity is replaced with a compare and swap, so a move which runs concurrently with another one is not lost, and
-// the identity of the record is the one of one of them. The record holds the new identity, so the revoker and the sweep
-// check the new session, and the session index follows it. The dedup scope follows it too, since each call computes its
-// scope from the identity of the record.
+// The moves of one connection are ordered by moveMu, which is held across the load, the store and the sync of the
+// session index, so the index ends on the session the record holds. The record holds the new identity, so the revoker
+// and the sweep check the new session. The dedup scope follows it too, since each call computes its scope from the
+// identity of the record.
 func (h *Handler) moveProxyIdentity(c rebindableClient, rec *connState, identity centrifuge.TokenIdentity) {
 	if rec == nil {
 		return
 	}
-	for {
-		prev := rec.identity.Load()
-		next := *prev
-		next.identity = identity
-		if rec.identity.CompareAndSwap(prev, &next) {
-			break
-		}
-	}
-	h.syncSessionConnection(c, rec, c.UserID(), rec.identity.Load().identity)
+	rec.moveMu.Lock()
+	defer rec.moveMu.Unlock()
+	next := movedIdentity(rec.identity.Load(), identity)
+	rec.identity.Store(next)
+	runTestHook(&testHookProxyMoved, c)
+	h.syncSessionConnection(c, rec, c.UserID(), next.identity)
 }
 
 // refreshWithoutRecord answers a refresh of a connection which has no record. Such a connection has no rebind: a token of

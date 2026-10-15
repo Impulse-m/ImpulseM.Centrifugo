@@ -27,6 +27,10 @@ var testHookRebound atomic.Pointer[func(c rebindableClient)]
 // reads, and before the call runs. Tests use it to change the identity of the connection at that point.
 var testHookRPCTracked atomic.Pointer[func(c rebindableClient)]
 
+// testHookProxyMoved, if set, runs in moveProxyIdentity after the identity of a refresh proxy move is stored and before
+// its session is synced in the index, with the move lock held. Tests use it to start another move at that point.
+var testHookProxyMoved atomic.Pointer[func(c rebindableClient)]
+
 // runTestHook runs the test hook set in p, if any, with c.
 func runTestHook(p *atomic.Pointer[func(c rebindableClient)], c rebindableClient) {
 	if f := p.Load(); f != nil {

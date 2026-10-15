@@ -231,27 +231,37 @@ func TestSessionConnectionsClosedIsNotTracked(t *testing.T) {
 }
 
 func TestRevokerRevokeSessionDisconnectsSessionConnections(t *testing.T) {
-	node := newRevokeTestNode(t)
-	store := NewStore(0)
-	revoker := newTestRevoker(t, node, store)
-	session, _ := Key(testUUID)
-	pending := &fakeConnection{id: "pending"}
-	var tracked Tracked
-	store.SessionConnections().Track(pending, &tracked, session)
+	tests := []struct {
+		name   string
+		userID string
+	}{
+		{name: "with user", userID: "user-1"},
+		{name: "without user", userID: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := newRevokeTestNode(t)
+			store := NewStore(0)
+			revoker := newTestRevoker(t, node, store)
+			session, _ := Key(testUUID)
+			pending := &fakeConnection{id: "pending"}
+			var tracked Tracked
+			store.SessionConnections().Track(pending, &tracked, session)
 
-	require.NoError(t, revoker.RevokeSession("user-1", testUUID, 0, 0))
-	require.Eventually(t, func() bool {
-		disconnects, _ := pending.snapshot()
-		return len(disconnects) == 1
-	}, 5*time.Second, 5*time.Millisecond)
-	disconnects, _ := pending.snapshot()
-	require.Equal(t, centrifuge.DisconnectExpired, disconnects[0])
+			require.NoError(t, revoker.RevokeSession(tt.userID, testUUID, 0, 0))
+			require.Eventually(t, func() bool {
+				disconnects, _ := pending.snapshot()
+				return len(disconnects) == 1
+			}, 5*time.Second, 5*time.Millisecond)
+			disconnects, _ := pending.snapshot()
+			require.Equal(t, centrifuge.DisconnectExpired, disconnects[0])
+		})
+	}
 }
 
-// TestRevokerRevokeSessionWithoutUserLeavesIndexToSweep revokes the session of an indexed connection with an empty user.
-// The sweep checks every local connection, the indexed ones too, so the revoker enqueues nothing for the index and only
-// requests the sweep.
-func TestRevokerRevokeSessionWithoutUserLeavesIndexToSweep(t *testing.T) {
+// TestRevokerRevokeSessionWithoutUserRequestsSweep checks that an empty user also requests the sweep, which finds the
+// connections which the index does not hold.
+func TestRevokerRevokeSessionWithoutUserRequestsSweep(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(0)
 	revoker := newTestRevoker(t, node, store)
@@ -262,10 +272,6 @@ func TestRevokerRevokeSessionWithoutUserLeavesIndexToSweep(t *testing.T) {
 		default:
 		}
 	}
-	session, _ := Key(testUUID)
-	indexed := &fakeConnection{id: "indexed"}
-	var tracked Tracked
-	store.SessionConnections().Track(indexed, &tracked, session)
 
 	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0))
 	select {
@@ -273,8 +279,4 @@ func TestRevokerRevokeSessionWithoutUserLeavesIndexToSweep(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("an empty user did not request the sweep")
 	}
-	require.Never(t, func() bool {
-		disconnects, _ := indexed.snapshot()
-		return len(disconnects) > 0
-	}, 100*time.Millisecond, 5*time.Millisecond)
 }

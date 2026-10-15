@@ -68,21 +68,22 @@ func (r *Revoker) UnblockUser(userID string) error {
 
 // RevokeSession revokes the session and disconnects local connections of userID which have this
 // session with centrifuge.DisconnectExpired. Connections without a user which have this session are
-// disconnected through the session index when userID is set. Empty userID runs a sweep of all local
-// connections in the background, which disconnects every connection with this session, the indexed ones
-// too. The sweep is O(local connections), so passing userID is strongly preferred at scale.
+// disconnected through the session index, with or without userID. Empty userID also runs a sweep of all
+// local connections in the background, which disconnects the connections with this session that the index
+// does not hold. The sweep is O(local connections), so passing userID is strongly preferred at scale.
 func (r *Revoker) RevokeSession(userID string, sessionID string, revokedAt int64, expireAt int64) error {
 	err := r.store.RevokeSession(sessionID, revokedAt, expireAt)
 	if err != nil {
 		return err
 	}
 	sessionKey, _ := Key(sessionID)
+	indexDropped := r.disconnectSessionConnections(sessionKey)
 	if userID == "" {
-		// The sweep checks every local connection, the indexed ones too, so their disconnect is not queued here.
+		// The sweep also finds the indexed connections, and a disconnect is idempotent, so a connection hit by both is
+		// disconnected once in effect.
 		r.requestSweep()
 		return nil
 	}
-	indexDropped := r.disconnectSessionConnections(sessionKey)
 	userDropped := r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
 		if identity.Session == sessionKey {
 			return ReasonSession

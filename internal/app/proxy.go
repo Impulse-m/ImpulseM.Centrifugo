@@ -69,14 +69,11 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		namedProxies[p.Name] = p.Proxy
 	}
 
-	// The channel state proxy is shared by all namespaces: one endpoint receives the events of all of them.
 	if channelStateProxyEnabled(cfg) {
-		p := cfg.Channel.Proxy.State
-		proxyMap.ChannelStateProxy, err = proxy.GetChannelStateProxy("state", p)
+		proxyMap.ChannelStateProxy, err = buildChannelStateProxy(cfg)
 		if err != nil {
-			return nil, false, fmt.Errorf("error creating channel state proxy: %w", err)
+			return nil, false, err
 		}
-		log.Info().Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("channel state proxy configured")
 	}
 
 	subscribeProxyEnabled := cfg.Channel.WithoutNamespace.SubscribeProxyEnabled
@@ -253,21 +250,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 	cacheEmptyProxyEnabled := cfg.Channel.WithoutNamespace.CacheEmptyProxyEnabled
 	cacheEmptyProxyName := cfg.Channel.WithoutNamespace.CacheEmptyProxyName
 	if cacheEmptyProxyEnabled {
-		var p proxy.Config
-		if cacheEmptyProxyName == config.DefaultProxyName {
-			p = cfg.Channel.Proxy.CacheEmpty
-		} else {
-			p, proxyFound = namedProxies[cacheEmptyProxyName]
-			if !proxyFound {
-				return nil, false, fmt.Errorf("cache empty proxy not found: %s", cacheEmptyProxyName)
-			}
-		}
-		if _, ok := proxyMap.CacheEmptyProxies[cacheEmptyProxyName]; !ok {
-			cep, err := proxy.GetCacheEmptyProxy(cacheEmptyProxyName, p)
-			if err != nil {
-				return nil, false, fmt.Errorf("error creating cache empty proxy %s: %w", cacheEmptyProxyName, err)
-			}
-			proxyMap.CacheEmptyProxies[cacheEmptyProxyName] = cep
+		p, err := resolveCacheEmptyProxy(proxyMap, cfg, namedProxies, cacheEmptyProxyName)
+		if err != nil {
+			return nil, false, err
 		}
 		log.Info().Str("proxy_name", cacheEmptyProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("cache empty proxy enabled for channels without namespace")
 	}
@@ -446,21 +431,9 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 
 		if ns.CacheEmptyProxyEnabled {
 			cacheEmptyProxyName := ns.CacheEmptyProxyName
-			var p proxy.Config
-			if cacheEmptyProxyName == config.DefaultProxyName {
-				p = cfg.Channel.Proxy.CacheEmpty
-			} else {
-				p, proxyFound = namedProxies[cacheEmptyProxyName]
-				if !proxyFound {
-					return nil, false, fmt.Errorf("cache empty proxy not found: %s", cacheEmptyProxyName)
-				}
-			}
-			if _, ok := proxyMap.CacheEmptyProxies[cacheEmptyProxyName]; !ok {
-				cep, err := proxy.GetCacheEmptyProxy(cacheEmptyProxyName, p)
-				if err != nil {
-					return nil, false, fmt.Errorf("error creating cache empty proxy %s: %w", cacheEmptyProxyName, err)
-				}
-				proxyMap.CacheEmptyProxies[cacheEmptyProxyName] = cep
+			p, err := resolveCacheEmptyProxy(proxyMap, cfg, namedProxies, cacheEmptyProxyName)
+			if err != nil {
+				return nil, false, err
 			}
 			log.Info().Str("proxy_name", cacheEmptyProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("cache empty proxy enabled for channels in namespace")
 		}
@@ -584,18 +557,4 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 	proxyMap.UsesEmulatedHeaders = keepEmulatedHeadersInContext
 
 	return proxyMap, keepHeadersInContext, nil
-}
-
-// channelStateProxyEnabled reports whether channel state events are enabled for any namespace or
-// for channels without namespace.
-func channelStateProxyEnabled(cfg config.Config) bool {
-	if cfg.Channel.WithoutNamespace.StateProxyEnabled {
-		return true
-	}
-	for _, ns := range cfg.Channel.Namespaces {
-		if ns.StateProxyEnabled {
-			return true
-		}
-	}
-	return false
 }

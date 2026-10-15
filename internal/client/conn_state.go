@@ -104,17 +104,49 @@ func (h *Handler) keptToken(token string) string {
 	return ""
 }
 
-// connectRecord returns the record of a connecting client, nil when no feature needs one. The origin token takes its
+// replyIdentityOn reports whether the connect and refresh replies carry the user and the auth class of the connection.
+// Only the features which act on the identity turn it on, so the replies of a default connection stay as upstream
+// sends them. Each of these features also has a record, see needsConnState.
+func (h *Handler) replyIdentityOn(cfg *config.Config) bool {
+	return cfg.Client.Rebind.Enabled || h.rpcRegistry.Enabled() || cfg.RPC.Registry.AuthClassClaim != ""
+}
+
+// setCoreCredentials sets the user and the info Core gets for a connection of class made with credentials. A pending
+// connection is anonymous to Core and carries no info: the token of an upgrade sets the info.
+func setCoreCredentials(credentials *centrifuge.Credentials, class rpcregistry.AuthClass, userID string) {
+	credentials.UserID = coreUserID(class, userID)
+	if class == rpcregistry.AuthClassPending2FA {
+		credentials.Info = nil
+	}
+}
+
+// tokenUserOf returns the user the token of a connection was issued for. Core sees no user for a pending connection, so
+// the record is read first. Without a record it is the user Core holds.
+func tokenUserOf(c Client) string {
+	rc, ok := c.(rebindableClient)
+	if !ok {
+		return c.UserID()
+	}
+	rec := connStateOf(rc)
+	if rec == nil {
+		return c.UserID()
+	}
+	userID, _ := rec.AccessIdentity()
+	return userID
+}
+
+// connectRecord puts the record of a connecting client into storage, when a feature needs one. The origin token takes its
 // identity from verified, the connect token. The origin proxy takes its user from credentials and has no token.
 func (h *Handler) connectRecord(
 	cfg *config.Config,
+	storage map[string]any,
 	origin connOrigin,
 	token string,
 	verified jwtverify.ConnectToken,
 	credentials *centrifuge.Credentials,
-) *connState {
+) {
 	if !h.needsConnState(cfg) {
-		return nil
+		return
 	}
 	rec := &connState{}
 	if h.clientLimiter != nil {
@@ -132,7 +164,7 @@ func (h *Handler) connectRecord(
 		}
 	}
 	rec.identity.Store(nextIdentity(nil, origin, class, claim, h.keptToken(token), verified))
-	return rec
+	storage[storageKeyConnState] = rec
 }
 
 // adoptConnState moves the record of a connecting client from its storage into its ext state. Core applied the storage
@@ -211,14 +243,18 @@ func coreUserID(class rpcregistry.AuthClass, userID string) string {
 	return userID
 }
 
-// setReplyIdentity sets the user and the auth class which a connect reply reports. The user is the one of the token or of
-// the connect proxy, which Core may not see for a pending connection.
+// setReplyIdentity sets the user and the auth class which a connect reply reports, when replyIdentityOn. The user is the
+// one of the token or of the connect proxy, which Core may not see for a pending connection.
 func (h *Handler) setReplyIdentity(
+	cfg *config.Config,
 	reply *centrifuge.ConnectReply,
 	origin connOrigin,
 	verified jwtverify.ConnectToken,
 	credentials *centrifuge.Credentials,
 ) {
+	if !h.replyIdentityOn(cfg) {
+		return
+	}
 	userID := verified.UserID
 	if origin == originProxy && credentials != nil {
 		userID = credentials.UserID

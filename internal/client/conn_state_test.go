@@ -59,7 +59,8 @@ func connectRecordOf(t *testing.T, h *Handler, token string) *connState {
 }
 
 // TestDefaultConnectPathHoldsNothing checks that a connect with every feature off puts nothing into the reply storage
-// and allocates no record, so the default path pays nothing for the connection state.
+// and allocates no record, and that its reply carries no user, as upstream's reply does, so the default path pays
+// nothing for the connection state.
 func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
@@ -73,7 +74,7 @@ func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 	}, nil, false)
 	require.NoError(t, err)
 	require.Empty(t, reply.Storage)
-	require.Equal(t, "42", reply.User)
+	require.Empty(t, reply.User)
 }
 
 // TestConnStateOnlyWithFeatures checks that each condition of needsConnState creates a record on its own, and that

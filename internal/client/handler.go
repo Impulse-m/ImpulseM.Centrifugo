@@ -459,11 +459,7 @@ func (h *Handler) OnClientConnecting(
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
-		credentials.UserID = coreUserID(class, token.UserID)
-		if class == rpcregistry.AuthClassPending2FA {
-			// A pending connection carries no info: Core shows it to other clients, and the token of an upgrade sets it.
-			credentials.Info = nil
-		}
+		setCoreCredentials(credentials, class, token.UserID)
 		origin = originToken
 		verified = token
 
@@ -603,9 +599,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
-	if rec := h.connectRecord(cfg, origin, e.Token, verified, credentials); rec != nil {
-		storage[storageKeyConnState] = rec
-	}
+	h.connectRecord(cfg, storage, origin, e.Token, verified, credentials)
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,
@@ -615,7 +609,7 @@ func (h *Handler) OnClientConnecting(
 		ClientSideRefresh: !refreshProxyEnabled,
 		Flags:             h.registryConnectFlags(),
 	}
-	h.setReplyIdentity(&finalReply, origin, verified, credentials)
+	h.setReplyIdentity(cfg, &finalReply, origin, verified, credentials)
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
@@ -726,7 +720,7 @@ func (h *Handler) OnSubRefresh(c Client, subRefreshProxyHandler proxy.SubRefresh
 		log.Info().Str("token_channel", token.Channel).Str("channel", e.Channel).Str("client", c.ID()).Str("user", c.UserID()).Msg("sub refresh token channel mismatch")
 		return centrifuge.SubRefreshReply{}, SubRefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	if token.UserID != c.UserID() {
+	if token.UserID != tokenUserOf(c) {
 		log.Info().Str("channel", e.Channel).Str("token_user", token.UserID).Str("client", c.ID()).Str("user", c.UserID()).Msg("sub refresh token user mismatch")
 		return centrifuge.SubRefreshReply{}, SubRefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
@@ -844,7 +838,7 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 			log.Info().Str("channel", e.Channel).Str("token_channel", token.Channel).Str("client", c.ID()).Str("user", c.UserID()).Msg("token channel mismatch")
 			return centrifuge.SubscribeReply{}, SubscribeExtra{}, centrifuge.DisconnectInvalidToken
 		}
-		if token.UserID != c.UserID() {
+		if token.UserID != tokenUserOf(c) {
 			log.Info().Str("channel", e.Channel).Str("token_user", token.UserID).Str("client", c.ID()).Str("user", c.UserID()).Msg("token user mismatch")
 			return centrifuge.SubscribeReply{}, SubscribeExtra{}, centrifuge.DisconnectInvalidToken
 		}

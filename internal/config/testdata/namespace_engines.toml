@@ -1,0 +1,13 @@
+[[brokers]]
+name = "sample"
+enabled = true
+type = "redis"
+
+[brokers.redis]
+address = ["redis://10.0.0.5:6379"]
+prefix = "sample"
+
+[[presence_managers]]
+name = "sample"
+enabled = true
+type = "memory"

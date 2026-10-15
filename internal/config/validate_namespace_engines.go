@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -25,6 +26,9 @@ const defaultRedisPrefix = "centrifuge"
 
 // defaultRedisAddress is the address which confighelpers uses when a Redis configuration has none.
 const defaultRedisAddress = "127.0.0.1:6379"
+
+// defaultRedisPort is the port which a Redis host gets when its address has none.
+const defaultRedisPort = "6379"
 
 // redisEngineRef is a Redis broker of the configuration: the default one or a named one.
 type redisEngineRef struct {
@@ -57,6 +61,9 @@ func validateNamespaceEngines(c Config) error {
 	for _, b := range c.Brokers {
 		if err := validateEntry("broker", b.Name, b.Type, brokerNames, knownNamedBrokerTypes); err != nil {
 			return err
+		}
+		if b.Name == reservedEngineName {
+			return fmt.Errorf("invalid broker name: %s is reserved", b.Name)
 		}
 		brokerNames = append(brokerNames, b.Name)
 		if b.Enabled {
@@ -105,17 +112,20 @@ func validateNamespaceEngines(c Config) error {
 }
 
 // validateEntry checks the name and the type of a named broker or presence manager. The name must match the name
-// pattern, must not be the reserved name, and must be unique among names. The type must be a known type. kind
-// is the entry kind, which the errors name.
+// pattern and must be unique among names. No other name may map to the same environment variables, since
+// CENTRIFUGO_BROKERS_A_B_* would set both a-b and a_b. The type must be a known type. kind is the entry kind,
+// which the errors name.
 func validateEntry(kind string, name string, entryType string, names []string, knownTypes []string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("invalid %s name: %s, must match %s regular expression", kind, name, namePattern)
 	}
-	if name == reservedEngineName {
-		return fmt.Errorf("invalid %s name: %s is reserved", kind, name)
-	}
 	if slices.Contains(names, name) {
 		return fmt.Errorf("invalid %s name: %s, must be unique", kind, name)
+	}
+	for _, other := range names {
+		if strings.EqualFold(configtypes.NameForEnv(other), configtypes.NameForEnv(name)) {
+			return fmt.Errorf("invalid %s name: %s and %s set the same environment variables, use distinct names", kind, other, name)
+		}
 	}
 	if !slices.Contains(knownTypes, entryType) {
 		return fmt.Errorf("%s %s: unknown %s type: %s", kind, name, kind, entryType)
@@ -140,9 +150,11 @@ func validateNamespaceEngineRef(
 	return nil
 }
 
-// validateNamedRedisPrefixes rejects two Redis brokers which use the same Redis and the same prefix. In
-// cluster or sharded PUB/SUB modes such brokers subscribe the same channels, so a node would receive and
-// deliver each publication twice. A cluster broker conflicts with any broker of the same prefix, since the
+// validateNamedRedisPrefixes rejects two Redis brokers which use the same Redis and the same prefix. Core
+// subscribes a channel only on the broker which routes it, so in standalone mode such brokers do not duplicate
+// publications. Core turns on sharded PUB/SUB only with NumShardedPubSubPartitions, which the server does not
+// set; then brokers with one prefix subscribe the same partition channels and deliver each publication twice.
+// The rule keeps that mode safe. A cluster broker conflicts with any broker of the same prefix, since the
 // cluster hosts are not resolved when the configuration is validated.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
@@ -223,17 +235,27 @@ func validateNamedPostgresTables(c Config) error {
 	return nil
 }
 
-// usesRedisCluster reports whether a Redis configuration connects in cluster mode.
+// usesRedisCluster reports whether a Redis configuration connects in cluster mode: it has cluster addresses, or
+// one of its addresses uses the redis+cluster scheme, as in redisshard.
 func usesRedisCluster(redisCfg configtypes.Redis) bool {
-	return len(redisCfg.ClusterAddress) > 0
+	if len(redisCfg.ClusterAddress) > 0 {
+		return true
+	}
+	for _, address := range redisCfg.Address {
+		if strings.HasPrefix(address, "redis+cluster://") {
+			return true
+		}
+	}
+	return false
 }
 
 // redisHosts returns the lowercased hosts which a Redis configuration connects to. As in confighelpers, the
 // cluster addresses take precedence over the sentinel addresses, which take precedence over the addresses, and
-// an empty configuration connects to the default address. Each entry may list comma-separated hosts. The scheme,
-// user information and path of an address URL are dropped, so "redis://h:6379" and "h:6379" give the same host.
-// The database is left out: PUB/SUB is global across databases, so brokers which differ only in database still
-// subscribe the same channels.
+// an empty configuration connects to the default address. Each entry may list comma-separated hosts, and the
+// addr query parameter of an address URL adds hosts, as in redisshard. The scheme, user information and path of
+// an address URL are dropped, and a host without a port gets the default Redis port, so "redis://h", "h" and
+// "h:6379" give the same host. The database is left out: PUB/SUB is global across databases, so brokers which
+// differ only in database still subscribe the same channels.
 func redisHosts(redisCfg configtypes.Redis) []string {
 	addresses := redisCfg.ClusterAddress
 	if len(addresses) == 0 {
@@ -245,12 +267,11 @@ func redisHosts(redisCfg configtypes.Redis) []string {
 	var hosts []string
 	for _, address := range addresses {
 		for _, part := range strings.Split(address, ",") {
-			host := part
-			if u, err := url.Parse(part); err == nil && u.Host != "" {
-				host = u.Host
-			}
-			if host != "" {
-				hosts = append(hosts, strings.ToLower(host))
+			hosts = appendRedisHost(hosts, part)
+			if u, err := url.Parse(part); err == nil {
+				for _, addr := range u.Query()["addr"] {
+					hosts = appendRedisHost(hosts, addr)
+				}
 			}
 		}
 	}
@@ -258,6 +279,21 @@ func redisHosts(redisCfg configtypes.Redis) []string {
 		hosts = append(hosts, defaultRedisAddress)
 	}
 	return hosts
+}
+
+// appendRedisHost appends the host of an address, or of an address URL, in the form redisHosts compares.
+func appendRedisHost(hosts []string, address string) []string {
+	host := address
+	if u, err := url.Parse(address); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	if host == "" {
+		return hosts
+	}
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		host = net.JoinHostPort(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), defaultRedisPort)
+	}
+	return append(hosts, strings.ToLower(host))
 }
 
 // sharesHost reports whether the two lists of hosts have a host in common.
@@ -321,7 +357,13 @@ func (r *NamespaceEnginesRecord) check(newCfg Config) error {
 	newRoutings := namespaceRoutingsByName(newCfg)
 	for _, name := range slices.Sorted(maps.Keys(r.routings)) {
 		recorded := r.routings[name]
-		newRouting := newRoutings[name]
+		newRouting, present := newRoutings[name]
+		if !present {
+			if recorded.brokerName != "" || recorded.presenceManagerName != "" {
+				return namespaceEnginesRemoved(name, recorded)
+			}
+			continue
+		}
 		if recorded.brokerName != newRouting.brokerName {
 			return namespaceEnginesChanged("broker_name of " + routingLabel(name))
 		}
@@ -402,6 +444,21 @@ func postgresControllerPrefix(tablePrefix string) string {
 
 func namespaceEnginesChanged(what string) error {
 	return fmt.Errorf("namespace engines: %s changed, a restart is needed", what)
+}
+
+// namespaceEnginesRemoved names the selection of a namespace which a reload removed while it selected an engine.
+func namespaceEnginesRemoved(name string, recorded namespaceRouting) error {
+	var selections []string
+	if recorded.brokerName != "" {
+		selections = append(selections, fmt.Sprintf("broker_name %q", recorded.brokerName))
+	}
+	if recorded.presenceManagerName != "" {
+		selections = append(selections, fmt.Sprintf("presence_manager_name %q", recorded.presenceManagerName))
+	}
+	return fmt.Errorf(
+		"namespace engines: %s selecting %s was removed, a restart is needed",
+		routingLabel(name), strings.Join(selections, " and "),
+	)
 }
 
 // enabledBrokerKeys identifies the enabled entries by name, type and the settings which the running broker keeps

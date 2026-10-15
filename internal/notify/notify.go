@@ -13,14 +13,7 @@ func RegisterHandlers(
 	revoker *accessrevoke.Revoker,
 	extra map[string]centrifuge.NotificationHandler,
 ) {
-	handlers := notificationHandlers(node, statsSender, revoker)
-	for op, handler := range extra {
-		if _, found := handlers[op]; found {
-			log.Error().Str("op", op).Msg("notification handler is already registered, the extra handler is skipped")
-			continue
-		}
-		handlers[op] = handler
-	}
+	handlers := mergeHandlers(notificationHandlers(node, statsSender, revoker), extra)
 	node.OnNotification(func(event centrifuge.NotificationEvent) {
 		h, ok := handlers[event.Op]
 		if !ok {

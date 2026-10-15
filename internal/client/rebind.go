@@ -147,7 +147,8 @@ func (h *Handler) onRefreshRebind(
 	}
 	claim := h.registryConfig().AuthClassClaim
 	// A connection with a user whose class was derived under another claim is not proven by the claim configured now.
-	if c.UserID() != "" && prev.claim != claim {
+	// The user is read from the record: Core sees no user for a pending connection, which has one.
+	if prev.tokenUser != "" && prev.claim != claim {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
 	// A connection keeps the account it has held, which is the user of its last token with a user, so a logout does not

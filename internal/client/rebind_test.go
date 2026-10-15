@@ -421,6 +421,20 @@ func budgetAllowed(h *Handler, st *ratelimit.ConnState) bool {
 
 // TestRebindRateLimitStateFollowsUser checks that the rate limit state of a connection draws on the budget of its
 // user: after an upgrade the budget of the new user is spent by the connection, and after a downgrade it is not.
+// TestRebindPendingUnderOtherClaimIsRefused checks that a pending connection, which Core sees with no user, keeps the claim
+// check of a connection with a user: its class was derived under another claim, so an upgrade is refused.
+func TestRebindPendingUnderOtherClaimIsRefused(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
+	state.record.identity.Store(nextIdentity(nil, originToken, registryTestClass("pending_2fa"), "other_claim", "",
+		jwtverify.ConnectToken{UserID: "42"}))
+	token := rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil)
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{Token: token}, nil)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+	require.Empty(t, state.rebinds)
+}
+
 func TestRebindRateLimitStateFollowsUser(t *testing.T) {
 	h, _ := newRebindTestHandlerWithUserCommand(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, rebindBudgetUserCommand())
 	client, state := newRebindTestClient("", "anonymous")

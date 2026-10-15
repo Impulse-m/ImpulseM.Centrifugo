@@ -63,6 +63,7 @@ func (h *Handler) refreshWithoutRecord(
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
+	h.refreshRPCScope(c, identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
@@ -202,6 +203,8 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
 	runTestHook(&testHookRebound, c)
+	// The dedup scope follows the user and the identity the connection holds now, see rpcDedupScope.
+	h.refreshRPCScope(c, rec.identity.Load().identity)
 	h.syncSessionConnection(c, rec, newUser, identity)
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
@@ -253,6 +256,7 @@ func (h *Handler) refreshSameIdentity(
 		h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
+	h.refreshRPCScope(c, rec.identity.Load().identity)
 	if err := h.restorePersonalChannel(c); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

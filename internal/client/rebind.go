@@ -299,7 +299,8 @@ func (h *Handler) refreshSameIdentity(
 	// The class of a token changes only through the transition table, and a same-user change between authenticated and
 	// bot is none of its transitions. A connection made through a connect proxy holds no class of its own, so only a token
 	// which gives its user the class the user has is a renewal; the auth class claim does not apply to it. A token
-	// connection keeps its class: a class which was derived under another claim is derived again by the refresh.
+	// connection keeps its class: a refresh whose token derives another class is refused, fail-closed, which includes a
+	// claim changed since the connect.
 	if prev.origin == originProxy {
 		userClass, _ := rpcregistry.ConnectionAuthClass("", c.UserID())
 		if class != userClass {

@@ -26,7 +26,7 @@ const rpcScopeKey = "rpc_scope"
 // rpcRetryMetadataKey is the metadata key of a protocol error which tells the client that its call was not executed
 // and may be sent again. The server sets it itself: the runtime removes it from every error built from a backend
 // trailer, even when the error_metadata of a method names it.
-const rpcRetryMetadataKey = "x-centrifugo-retry"
+const rpcRetryMetadataKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry"
 
 // The values of rpcRetryMetadataKey. rpcRetryNewMsgID means the msg_id of the call was refused: the call is sent
 // again with a new msg_id, after the client re-syncs its clock. rpcRetryLater means the msg_id is still good: the

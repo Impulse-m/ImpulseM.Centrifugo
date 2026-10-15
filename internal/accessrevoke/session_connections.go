@@ -17,7 +17,8 @@ type Tracked struct {
 	session [16]byte // the session the connection is indexed under; zero when it is not indexed
 }
 
-// Closed reports whether the connection of t is closed: it has left the index for good.
+// Closed reports whether the connection of t is closed: it has left the index for good. It is a test accessor; the
+// server marks a closed connection by Close and needs no read of the mark.
 func (t *Tracked) Closed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

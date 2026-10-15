@@ -18,6 +18,8 @@ func applyNamespaceSubscribeOptions(options *centrifuge.SubscribeOptions, chOpts
 	}
 	options.HistoryMetaTTL = chOpts.HistoryMetaTTL.ToDuration()
 	options.MapRemoveClientOnUnsubscribe = chOpts.Map.RemoveClientOnUnsubscribe
+	options.AllowChannelCompaction = chOpts.AllowChannelCompaction
+	options.ClientPublishDebounceInterval = chOpts.ClientPublishDebounceInterval.ToDuration()
 	if chOpts.MapClientsPresenceChannelPrefix != "" {
 		options.MapClientPresenceChannel = chOpts.MapClientsPresenceChannelPrefix + channel
 	}

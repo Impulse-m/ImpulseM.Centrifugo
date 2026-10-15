@@ -266,6 +266,9 @@ func validateChannelOptions(c configtypes.ChannelOptions, globalHistoryMetaTTL c
 	if err := validateSharedPositionSync(c, cfg); err != nil {
 		return err
 	}
+	if err := validateBandwidthOptions(c); err != nil {
+		return err
+	}
 	if c.AutoCacheRecover && (!c.ForceRecovery || c.ForceRecoveryMode != "cache") {
 		return errors.New("auto_cache_recover requires force_recovery and force_recovery_mode set to cache")
 	}

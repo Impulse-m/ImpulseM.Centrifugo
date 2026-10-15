@@ -137,6 +137,17 @@ type ChannelOptions struct {
 	// connection options and whether Centrifugo Node is able to find previous publication in channel.
 	DeltaPublish bool `mapstructure:"delta_publish" json:"delta_publish" envconfig:"delta_publish" yaml:"delta_publish" toml:"delta_publish" doc:"Enables delta publish for all messages in the namespace without setting the flag per publish call. Actual compression still depends on subscriber connection options."`
 
+	// KeepLatestPublication keeps the latest publication of each channel in node memory while the channel
+	// has subscribers. This lets delta compression work for subscribers without positioning or recovery.
+	KeepLatestPublication bool `mapstructure:"keep_latest_publication" json:"keep_latest_publication" envconfig:"keep_latest_publication" yaml:"keep_latest_publication" toml:"keep_latest_publication" doc:"Keeps the latest publication of each channel in node memory while the channel has subscribers, so delta compression also works for subscribers without positioning or recovery (at most once). Requires <<allowed_delta_types>>. Not used for map subscriptions."`
+
+	// AllowChannelCompaction allows clients to negotiate a numeric channel id on subscribe.
+	AllowChannelCompaction bool `mapstructure:"allow_channel_compaction" json:"allow_channel_compaction" envconfig:"allow_channel_compaction" yaml:"allow_channel_compaction" toml:"allow_channel_compaction" doc:"Allows clients to negotiate a numeric channel id on subscribe, which replaces the channel name in publication, join and leave pushes."`
+
+	// ClientPublishDebounceInterval is returned to clients on subscribe. The client SDK coalesces rapid
+	// publishes to the channel and sends only the latest value after this interval. Zero disables it.
+	ClientPublishDebounceInterval Duration `mapstructure:"client_publish_debounce_interval" json:"client_publish_debounce_interval" envconfig:"client_publish_debounce_interval" yaml:"client_publish_debounce_interval" toml:"client_publish_debounce_interval" doc:"Returned to the client on subscribe. The client SDK coalesces rapid publishes to the channel and sends only the latest value after this interval, e.g. <<50ms>>. Pending data is dropped on unsubscribe or disconnect. Zero disables it."`
+
 	// SubscribeForAnonymous allows anonymous clients to subscribe on channels in namespace.
 	SubscribeForAnonymous bool `mapstructure:"allow_subscribe_for_anonymous" json:"allow_subscribe_for_anonymous" envconfig:"allow_subscribe_for_anonymous" yaml:"allow_subscribe_for_anonymous" toml:"allow_subscribe_for_anonymous" doc:"Allows anonymous (empty user ID) clients to subscribe to channels in this namespace."`
 

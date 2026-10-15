@@ -22,6 +22,10 @@ const (
 	OperationSubRefresh
 	OperationRefresh
 	OperationRPC
+	OperationMapPublish
+	OperationMapRemove
+	OperationTrack
+	OperationUntrack
 	// OperationConnect is checked only by user_command limits, on connect, without total.
 	OperationConnect
 	operationCount
@@ -37,6 +41,10 @@ var operationNames = [operationCount]string{
 	OperationSubRefresh:    "sub_refresh",
 	OperationRefresh:       "refresh",
 	OperationRPC:           "rpc",
+	OperationMapPublish:    "map_publish",
+	OperationMapRemove:     "map_remove",
+	OperationTrack:         "track",
+	OperationUntrack:       "untrack",
 	OperationConnect:       "connect",
 }
 
@@ -216,6 +224,10 @@ func wireOperations(
 	ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
 	ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
 	ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+	ops[OperationMapPublish] = alloc.channelLimit(OperationMapPublish, cfg.MapPublish, def)
+	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
+	ops[OperationTrack] = alloc.channelLimit(OperationTrack, cfg.Track, def)
+	ops[OperationUntrack] = alloc.channelLimit(OperationUntrack, cfg.Untrack, def)
 }
 
 // newUserPlan compiles user command rate limits. Resolution is the same as for client commands,

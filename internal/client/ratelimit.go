@@ -23,6 +23,16 @@ const limiterUserCommand = "user_command"
 // limiterRedisUserCommand is a value of the limiter metric label for per-user Redis command limits.
 const limiterRedisUserCommand = "redis_user_command"
 
+// publishTypeMap is the publish request type of a map publication, see PublishRequest.Type.
+const publishTypeMap int32 = 1
+
+// subRefreshTypeTrack and subRefreshTypeUntrack are the sub refresh request types of shared poll
+// track and untrack, see SubRefreshRequest.Type.
+const (
+	subRefreshTypeTrack   int32 = 1
+	subRefreshTypeUntrack int32 = 2
+)
+
 // setupRateLimit creates rate limiters and registers node hooks for client rate limits. Nothing is
 // created or registered when client_command, client_error, user_command and redis_user_command are all disabled.
 func (h *Handler) setupRateLimit(cfg *config.Config) error {
@@ -234,7 +244,7 @@ func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, boo
 	case cmd.Unsubscribe != nil:
 		return ratelimit.OperationUnsubscribe, cmd.Unsubscribe.Channel, true
 	case cmd.Publish != nil:
-		return ratelimit.OperationPublish, cmd.Publish.Channel, true
+		return publishOperation(cmd.Publish), cmd.Publish.Channel, true
 	case cmd.Presence != nil:
 		return ratelimit.OperationPresence, cmd.Presence.Channel, true
 	case cmd.PresenceStats != nil:
@@ -246,7 +256,31 @@ func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, boo
 	case cmd.Refresh != nil:
 		return ratelimit.OperationRefresh, "", true
 	case cmd.SubRefresh != nil:
-		return ratelimit.OperationSubRefresh, cmd.SubRefresh.Channel, true
+		return subRefreshOperation(cmd.SubRefresh), cmd.SubRefresh.Channel, true
 	}
 	return 0, "", false
+}
+
+// publishOperation returns the operation of a publish command: a map publish or a map remove for
+// map channels, a publish otherwise.
+func publishOperation(req *protocol.PublishRequest) ratelimit.Operation {
+	if req.Type != publishTypeMap {
+		return ratelimit.OperationPublish
+	}
+	if req.Removed {
+		return ratelimit.OperationMapRemove
+	}
+	return ratelimit.OperationMapPublish
+}
+
+// subRefreshOperation returns the operation of a sub refresh command: track or untrack keys of a
+// shared poll subscription, a subscription token refresh otherwise.
+func subRefreshOperation(req *protocol.SubRefreshRequest) ratelimit.Operation {
+	switch req.Type {
+	case subRefreshTypeTrack:
+		return ratelimit.OperationTrack
+	case subRefreshTypeUntrack:
+		return ratelimit.OperationUntrack
+	}
+	return ratelimit.OperationSubRefresh
 }

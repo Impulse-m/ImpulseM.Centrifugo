@@ -423,7 +423,78 @@ func TestRateLimitOperationMapping(t *testing.T) {
 		{name: "history", cmd: &protocol.Command{History: &protocol.HistoryRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationHistory, wantKey: "a:b", wantOK: true},
 		{name: "presence", cmd: &protocol.Command{Presence: &protocol.PresenceRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationPresence, wantKey: "a:b", wantOK: true},
 		{name: "presence_stats", cmd: &protocol.Command{PresenceStats: &protocol.PresenceStatsRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationPresenceStats, wantKey: "a:b", wantOK: true},
-		{name: "sub_refresh", cmd: &protocol.Command{SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationSubRefresh, wantKey: "a:b", wantOK: true},
+		{
+			name: "sub_refresh",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b"},
+			},
+			wantOp:  ratelimit.OperationSubRefresh,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "sub_refresh token type is not track",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 0},
+			},
+			wantOp:  ratelimit.OperationSubRefresh,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "track",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 1},
+			},
+			wantOp:  ratelimit.OperationTrack,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "untrack",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 2},
+			},
+			wantOp:  ratelimit.OperationUntrack,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "map publish",
+			cmd: &protocol.Command{
+				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 1},
+			},
+			wantOp:  ratelimit.OperationMapPublish,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "map remove",
+			cmd: &protocol.Command{
+				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 1, Removed: true},
+			},
+			wantOp:  ratelimit.OperationMapRemove,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "regular publish with removed flag stays publish",
+			cmd: &protocol.Command{
+				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 0, Removed: true},
+			},
+			wantOp:  ratelimit.OperationPublish,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
+		{
+			name: "map subscribe is subscribe",
+			cmd: &protocol.Command{
+				Subscribe: &protocol.SubscribeRequest{Channel: "a:b", Type: 1},
+			},
+			wantOp:  ratelimit.OperationSubscribe,
+			wantKey: "a:b",
+			wantOK:  true,
+		},
 		{name: "refresh", cmd: &protocol.Command{Refresh: &protocol.RefreshRequest{}}, wantOp: ratelimit.OperationRefresh, wantOK: true},
 		{name: "rpc", cmd: &protocol.Command{Rpc: &protocol.RPCRequest{Method: "m"}}, wantOp: ratelimit.OperationRPC, wantKey: "m", wantOK: true},
 		{name: "ping not limited", cmd: &protocol.Command{Ping: &protocol.PingRequest{}}, wantOK: false},
@@ -441,4 +512,139 @@ func TestRateLimitOperationMapping(t *testing.T) {
 			require.Equal(t, tt.wantKey, key)
 		})
 	}
+}
+
+func TestRateLimitMapOperationsOverLimit(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				MapPublish: rateLimitChannelOf(time.Minute, 1),
+				MapRemove:  rateLimitChannelOf(time.Minute, 1),
+				Track:      rateLimitChannelOf(time.Minute, 1),
+				Untrack:    rateLimitChannelOf(time.Minute, 1),
+			},
+		},
+	})
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	tests := []struct {
+		name   string
+		op     string
+		newCmd func(id uint32) *protocol.Command
+	}{
+		{
+			name: "map publish",
+			op:   "map_publish",
+			newCmd: func(id uint32) *protocol.Command {
+				return &protocol.Command{Id: id, Publish: &protocol.PublishRequest{Channel: "test:1", Type: 1}}
+			},
+		},
+		{
+			name: "map remove",
+			op:   "map_remove",
+			newCmd: func(id uint32) *protocol.Command {
+				return &protocol.Command{Id: id, Publish: &protocol.PublishRequest{Channel: "test:1", Type: 1, Removed: true}}
+			},
+		},
+		{
+			name: "track",
+			op:   "track",
+			newCmd: func(id uint32) *protocol.Command {
+				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1}}
+			},
+		},
+		{
+			name: "untrack",
+			op:   "untrack",
+			newCmd: func(id uint32) *protocol.Command {
+				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 2}}
+			},
+		},
+	}
+	id := uint32(2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := testutil.ToFloat64(metrics.RateLimitRejectsTotal.WithLabelValues("client_command", tt.op))
+
+			sendRateLimitCommand(client, tt.newCmd(id))
+			require.False(t, isRateLimited(transport.waitReply(t, id)), "first command must be allowed")
+			sendRateLimitCommand(client, tt.newCmd(id+1))
+			require.True(t, isRateLimited(transport.waitReply(t, id+1)), "second command must be rejected")
+			id += 2
+
+			after := testutil.ToFloat64(metrics.RateLimitRejectsTotal.WithLabelValues("client_command", tt.op))
+			require.Equal(t, float64(1), after-before)
+		})
+	}
+}
+
+func TestRateLimitMapOperationsShareDefault(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Default: rateLimitBucketsOf(time.Minute, 1),
+			},
+		},
+	})
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	// Map operations without their own buckets fall back to default, which is shared with regular publish.
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Publish: &protocol.PublishRequest{Channel: "test:1", Type: 1}})
+	require.False(t, isRateLimited(transport.waitReply(t, 2)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, Publish: &protocol.PublishRequest{Channel: "test:1"}})
+	require.True(t, isRateLimited(transport.waitReply(t, 3)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 4, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1}})
+	require.True(t, isRateLimited(transport.waitReply(t, 4)))
+}
+
+func TestRateLimitSubRefreshTokenIsNotTrack(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Track:   rateLimitChannelOf(time.Minute, 1),
+				Untrack: rateLimitChannelOf(time.Minute, 1),
+			},
+		},
+	})
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	// Token refresh of a subscription is sub_refresh, it does not consume track or untrack buckets.
+	for id := uint32(2); id <= 4; id++ {
+		sendRateLimitCommand(client, &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1"}})
+		require.False(t, isRateLimited(transport.waitReply(t, id)), "command %d must be allowed", id)
+	}
+}
+
+func TestRateLimitMapPublishNamespaceOverride(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				MapPublish: configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: rateLimitBucketsOf(time.Minute, 2).Buckets,
+					NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+						{NamespaceName: "chat", Enabled: true, Buckets: rateLimitBucketsOf(time.Minute, 1).Buckets},
+					},
+				},
+			},
+		},
+	}, "chat", "other")
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Publish: &protocol.PublishRequest{Channel: "chat:1", Type: 1}})
+	require.False(t, isRateLimited(transport.waitReply(t, 2)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, Publish: &protocol.PublishRequest{Channel: "chat:1", Type: 1}})
+	require.True(t, isRateLimited(transport.waitReply(t, 3)))
+
+	// Channels of other namespaces use the base buckets of map_publish.
+	sendRateLimitCommand(client, &protocol.Command{Id: 4, Publish: &protocol.PublishRequest{Channel: "other:1", Type: 1}})
+	require.False(t, isRateLimited(transport.waitReply(t, 4)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 5, Publish: &protocol.PublishRequest{Channel: "other:1", Type: 1}})
+	require.False(t, isRateLimited(transport.waitReply(t, 5)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 6, Publish: &protocol.PublishRequest{Channel: "other:1", Type: 1}})
+	require.True(t, isRateLimited(transport.waitReply(t, 6)))
 }

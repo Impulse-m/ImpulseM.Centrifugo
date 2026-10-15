@@ -28,8 +28,12 @@ const limiterRedisUserCommand = "redis_user_command"
 // publishTypeMap is the publish request type of a map publication, see PublishRequest.Type.
 const publishTypeMap int32 = 1
 
+// subscriptionTypeSharedPoll is the subscription type of shared poll namespaces, see ChannelOptions.SubscriptionType.
+const subscriptionTypeSharedPoll = "shared_poll"
+
 // subRefreshTypeTrack and subRefreshTypeUntrack are the sub refresh request types of shared poll
-// track and untrack, see SubRefreshRequest.Type.
+// track and untrack, see SubRefreshRequest.Type. Core uses the same values for typeTrack and typeUntrack
+// in client_keyed.go. Core exports no symbol for them, so a change of those values in Core must be made here too.
 const (
 	subRefreshTypeTrack   int32 = 1
 	subRefreshTypeUntrack int32 = 2
@@ -342,5 +346,5 @@ func (h *Handler) isSharedPollChannel(channel string) bool {
 	if err != nil || !ok {
 		return false
 	}
-	return chOpts.SubscriptionType == "shared_poll"
+	return chOpts.SubscriptionType == subscriptionTypeSharedPoll
 }

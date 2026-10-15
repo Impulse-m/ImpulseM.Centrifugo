@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -366,6 +368,21 @@ func (c *ProxyCallChildren) Observe(seconds float64, failed bool) {
 	c.Summary.Observe(seconds)
 	if failed {
 		c.Errors.Inc()
+	}
+}
+
+// Track starts one proxy call: it raises the inflight gauge and returns the function which ends the call. The
+// function lowers the gauge, and observes the duration of the call and whether it failed. It does nothing on a
+// nil receiver, as Observe does.
+func (c *ProxyCallChildren) Track() func(failed bool) {
+	if c == nil {
+		return func(bool) {}
+	}
+	c.Inflight.Inc()
+	started := time.Now()
+	return func(failed bool) {
+		c.Inflight.Dec()
+		c.Observe(time.Since(started).Seconds(), failed)
 	}
 }
 

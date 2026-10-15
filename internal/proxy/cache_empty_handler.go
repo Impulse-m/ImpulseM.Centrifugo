@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
@@ -64,18 +63,12 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 // reports the channel as populated.
 func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string) (bool, error) {
 	// calls has the same keys as proxies, so the lookup by a name found in proxies always succeeds.
-	calls := h.calls[name]
-	if calls != nil {
-		calls.Inflight.Inc()
-		defer calls.Inflight.Dec()
-	}
-
-	started := time.Now()
+	end := h.calls[name].Track()
 	ctx, cancel := context.WithTimeout(context.Background(), p.Timeout())
 	defer cancel()
 
 	resp, err := p.ProxyNotifyCacheEmpty(ctx, &proxyproto.NotifyCacheEmptyRequest{Channel: channel})
-	calls.Observe(time.Since(started).Seconds(), err != nil)
+	end(err != nil)
 	if err != nil {
 		return false, err
 	}

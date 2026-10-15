@@ -29,21 +29,15 @@ func NewChannelStateHandler(p ChannelStateProxy, timeout time.Duration) *Channel
 // was not delivered and must be delivered again.
 func (h *ChannelStateHandler) Handle() func(ctx context.Context, events []*proxyproto.ChannelEvent) error {
 	return func(ctx context.Context, events []*proxyproto.ChannelEvent) error {
-		started := time.Now()
-		if h.calls != nil {
-			h.calls.Inflight.Inc()
-			defer h.calls.Inflight.Dec()
-		}
-
+		end := h.calls.Track()
 		ctx, cancel := context.WithTimeout(ctx, h.timeout)
 		defer cancel()
 
 		resp, err := h.proxy.ProxyNotifyChannelState(ctx, &proxyproto.NotifyChannelStateRequest{Events: events})
-		duration := time.Since(started).Seconds()
 		if err == nil && resp.Error != nil {
 			err = proxyproto.ErrorFromProto(resp.Error)
 		}
-		h.calls.Observe(duration, err != nil)
+		end(err != nil)
 		return err
 	}
 }

@@ -155,6 +155,22 @@ func GetMapRemoveProxy(name string, p Config) (MapRemoveProxy, error) {
 	return NewGRPCMapRemoveProxy(name, p)
 }
 
+func GetChannelStateProxy(name string, p Config) (ChannelStateProxy, error) {
+	normalizeProxyHeaderNames(&p)
+	if isHttpEndpoint(p.Endpoint) {
+		return NewHTTPChannelStateProxy(p)
+	}
+	return NewGRPCChannelStateProxy(name, p)
+}
+
+func GetCacheEmptyProxy(name string, p Config) (CacheEmptyProxy, error) {
+	normalizeProxyHeaderNames(&p)
+	if isHttpEndpoint(p.Endpoint) {
+		return NewHTTPCacheEmptyProxy(p)
+	}
+	return NewGRPCCacheEmptyProxy(name, p)
+}
+
 func GetSharedPollRefreshProxy(name string, p Config) (SharedPollRefreshProxy, error) {
 	normalizeProxyHeaderNames(&p)
 	if isHttpEndpoint(p.Endpoint) {

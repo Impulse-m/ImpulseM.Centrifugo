@@ -92,7 +92,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("in channel.without_namespace: %v", err)
 	}
 	if err := validateServerTagsFilterTemplate("", c.Channel.WithoutNamespace); err != nil {
-		return fmt.Errorf("in channel.without_namespace: %v", err)
+		return err
 	}
 
 	if err := validateRpcOptions(c.RPC.WithoutNamespace, proxyNames); err != nil {

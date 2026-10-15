@@ -175,6 +175,37 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 	}
 }
 
+func TestValidateServerTagsFilterTemplateRefusesPresence(t *testing.T) {
+	tests := []struct {
+		name    string
+		options configtypes.ChannelOptions
+	}{
+		{name: "presence", options: configtypes.ChannelOptions{Presence: true}},
+		{name: "join_leave", options: configtypes.ChannelOptions{JoinLeave: true}},
+		{name: "force_push_join_leave", options: configtypes.ChannelOptions{ForcePushJoinLeave: true}},
+		{name: "map clients presence prefix", options: configtypes.ChannelOptions{MapClientsPresenceChannelPrefix: "clients:"}},
+		{name: "map users presence prefix", options: configtypes.ChannelOptions{MapUsersPresenceChannelPrefix: "users:"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.options.ServerTagsFilterTemplate = sessionTemplate()
+			require.ErrorContains(t, validateServerTagsFilterTemplate("chat", tt.options), `namespace "chat": presence, join_leave`)
+		})
+	}
+	// Without a template the options are not refused here.
+	require.NoError(t, validateServerTagsFilterTemplate("chat", configtypes.ChannelOptions{Presence: true, JoinLeave: true}))
+}
+
+func TestConfigValidateRefusesPresenceOfTemplatedNamespace(t *testing.T) {
+	cfg := DefaultConfig()
+	ns := namespaceWithTemplate("tenant", sessionTemplate())
+	ns.Presence = true
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{ns}
+	err := cfg.Validate()
+	require.ErrorContains(t, err, `namespace "tenant": presence`)
+	require.NotContains(t, err.Error(), "in channel.without_namespace")
+}
+
 func TestConfigValidateNamesNamespaceOfTemplateError(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
@@ -196,4 +227,14 @@ func TestServerTagsFilterTemplateFromEnvJSON(t *testing.T) {
 	template := namespaces[0].ServerTagsFilterTemplate
 	require.Equal(t, "skip", template.OnMissingValue)
 	require.Equal(t, "{{claims.sid}}", template.Filter["val"])
+}
+
+func TestConfigValidateNamesWithoutNamespaceOfTemplateErrorOnce(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Channel.WithoutNamespace.ServerTagsFilterTemplate = configtypes.ServerTagsFilterTemplate{
+		Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "eq", "val": "{{claims.}}"},
+	}
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "without_namespace: filter")
+	require.NotContains(t, err.Error(), "in channel.without_namespace")
 }

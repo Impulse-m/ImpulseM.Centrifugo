@@ -235,6 +235,7 @@ func (h *Handler) refreshSameIdentity(
 	verified jwtverify.ConnectToken,
 	class rpcregistry.AuthClass,
 ) (centrifuge.RefreshReply, RefreshExtra, error) {
+	cfg := h.cfgContainer.ConfigRef()
 	prev := rec.identity.Load()
 	// The class of a token changes only through the transition table, and a same-user change between authenticated and
 	// bot is none of its transitions. A connection which has no token-derived class yet, as a connect proxy one, takes
@@ -246,7 +247,7 @@ func (h *Handler) refreshSameIdentity(
 	rec.identity.Store(nextIdentity(prev, originToken, class, h.registryConfig().AuthClassClaim, h.keptToken(refreshToken), verified))
 	h.syncSessionConnection(c, rec, c.UserID(), identity)
 	runTestHook(&testHookRefreshTracked, c)
-	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
+	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		rec.identity.Store(prev)
 		h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
@@ -258,7 +259,8 @@ func (h *Handler) refreshSameIdentity(
 	if verified.Meta != nil {
 		setStorageMeta(c, verified.Meta)
 	}
-	return h.refreshReply(verified, identity, class, h.replyIdentityOn(h.cfgContainer.ConfigRef())), RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+	reply := h.refreshReply(verified, identity, class, h.replyIdentityOn(cfg))
+	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
 }
 
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an

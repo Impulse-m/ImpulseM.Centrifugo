@@ -8,7 +8,18 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/rs/zerolog/log"
 )
+
+// newNatsControllerFromConfig creates the Nats controller of the configuration.
+func newNatsControllerFromConfig(node *centrifuge.Node, config configtypes.Controller) (centrifuge.Controller, error) {
+	controller, err := NewNatsController(node, config.Nats)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing Nats controller: %w", err)
+	}
+	log.Info().Str("controller_type", config.Type).Msg("controller is enabled")
+	return controller, nil
+}
 
 // NatsController coordinates the nodes of a cluster over Nats. It is a Nats broker which carries only
 // control messages: the node does not use it for channels, so the connections of channel traffic and

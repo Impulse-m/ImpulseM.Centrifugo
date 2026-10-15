@@ -4,8 +4,29 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
 	"github.com/centrifugal/centrifuge"
+	"github.com/rs/zerolog/log"
 )
+
+// newRedisControllerFromConfig creates the Redis controller of the configuration on its own Redis shards.
+func newRedisControllerFromConfig(node *centrifuge.Node, config configtypes.Controller) (centrifuge.Controller, error) {
+	shards, mode, err := confighelpers.CentrifugeRedisShards(node, config.Redis.Redis)
+	if err != nil {
+		return nil, fmt.Errorf("error creating Redis shards for controller: %w", err)
+	}
+	controller, err := NewRedisController(node, shards, config.Redis.Prefix)
+	if err != nil {
+		for _, shard := range shards {
+			shard.Close()
+		}
+		return nil, fmt.Errorf("error initializing Redis controller: %w", err)
+	}
+	log.Info().Str("controller_type", config.Type).Str("redis_mode", mode).Msg("controller is enabled")
+	return controller, nil
+}
 
 // RedisController coordinates the nodes of a cluster over Redis PUB/SUB. It is a Redis broker which
 // carries only control messages: the node does not use it for channels, so the connections of channel

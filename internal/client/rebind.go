@@ -47,6 +47,20 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 	return h.refreshSameIdentity(c, rec, e.Token, token, class)
 }
 
+// moveProxyIdentity moves the identity of a connection to the token identity a refresh proxy returned. The user, the
+// account, the class and the token of the record stay as they are: the proxy has no token of this server. The record
+// holds the new identity, so the revoker and the sweep check the new session, and the session index and the dedup
+// scope follow it.
+func (h *Handler) moveProxyIdentity(c rebindableClient, identity centrifuge.TokenIdentity) {
+	if rec := connStateOf(c); rec != nil {
+		next := *rec.identity.Load()
+		next.identity = identity
+		rec.identity.Store(&next)
+		h.syncSessionConnection(c, rec, c.UserID(), identity)
+	}
+	h.refreshRPCScope(c, identity)
+}
+
 // refreshWithoutRecord answers a refresh of a connection which has no record. Such a connection has no rebind: a token of
 // its user refreshes it, and a token of another user disconnects it.
 func (h *Handler) refreshWithoutRecord(

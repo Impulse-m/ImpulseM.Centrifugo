@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
@@ -115,6 +117,29 @@ func TestRefreshKeepsConnectionWhenPersonalNamespaceIsRemoved(t *testing.T) {
 	require.Equal(t, "42", state.user)
 	require.Contains(t, state.channels, "other")
 	require.NotContains(t, state.channels, "removed:#42")
+}
+
+// TestProxyRefreshMovesTheRecordIdentity checks that a refresh proxy which answers a new token identity moves the identity
+// of the connection record. A revocation of the new session then fails the connection check, and the record holds the
+// identity of the new session, not the one of the connect.
+func TestProxyRefreshMovesTheRecordIdentity(t *testing.T) {
+	h, store := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, _ := newRebindTestClient("42", "authenticated")
+	now := time.Now().Unix()
+	moved := accessrevoke.Identity(revokeTestOtherUUID, 0, now-10)
+	refreshProxy := func(proxy.Client, centrifuge.RefreshEvent, proxy.PerCallData) (centrifuge.RefreshReply, proxy.RefreshExtra, error) {
+		return centrifuge.RefreshReply{TokenIdentity: &moved}, proxy.RefreshExtra{}, nil
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
+	require.NoError(t, err)
+	userID, identity := connStateOf(client).AccessIdentity()
+	require.Equal(t, "42", userID)
+	require.Equal(t, moved, identity)
+
+	require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+	result := store.Check(userID, identity, accessrevoke.CheckOptions{Session: true})
+	require.Equal(t, accessrevoke.Revoked, result.Verdict)
 }
 
 // TestTokenUserOfPendingConnection checks that the user of the token of a pending connection is the user of the record,

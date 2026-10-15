@@ -663,7 +663,7 @@ func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refre
 			setStorageMeta(c, extra.Meta)
 		}
 		if err == nil && r.TokenIdentity != nil {
-			h.refreshRPCScope(c, *r.TokenIdentity)
+			h.moveProxyIdentity(c, *r.TokenIdentity)
 		}
 		return r, RefreshExtra{}, err
 	}

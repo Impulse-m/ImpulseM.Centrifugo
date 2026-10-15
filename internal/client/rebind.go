@@ -102,7 +102,7 @@ func (h *Handler) refreshWithoutRecord(
 		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	identity := tokenIdentityOf(token)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
@@ -207,7 +207,7 @@ func (h *Handler) onRefreshRebind(
 
 	// The current identity of the connection is still valid, so a rejected token is an error of the
 	// refresh and the connection keeps its identity.
-	identity := accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt)
+	identity := tokenIdentityOf(verified)
 	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.ErrorTokenExpired)
@@ -305,7 +305,7 @@ func (h *Handler) refreshSameIdentity(
 	if prev.class != 0 && prev.class != class {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
-	identity := accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt)
+	identity := tokenIdentityOf(verified)
 	rec.identity.Store(nextIdentity(prev, originToken, class, h.registryConfig().AuthClassClaim, h.keptToken(refreshToken), verified))
 	h.syncSessionConnection(c, rec, c.UserID(), identity)
 	runTestHook(&testHookRefreshTracked, c)

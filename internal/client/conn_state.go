@@ -259,7 +259,7 @@ func nextIdentity(
 		token:     token,
 		tokenUser: verified.UserID,
 		account:   verified.UserID,
-		identity:  accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt),
+		identity:  tokenIdentityOf(verified),
 	}
 	if prev != nil {
 		next.origin = prev.origin
@@ -268,6 +268,12 @@ func nextIdentity(
 		}
 	}
 	return next
+}
+
+// tokenIdentityOf returns the identity of a connection which holds the verified token. Every path which gives a
+// connection the identity of its token builds it here, so the reply to the client and the record agree.
+func tokenIdentityOf(token jwtverify.ConnectToken) centrifuge.TokenIdentity {
+	return accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
 }
 
 // effectiveClass returns the auth class of a connection for the registry under claim, the claim configured now. A class

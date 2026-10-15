@@ -167,7 +167,7 @@ func (h *Handler) connectTokenIdentity(
 	token jwtverify.ConnectToken,
 	cfg *config.Config,
 ) (centrifuge.TokenIdentity, error) {
-	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	identity := tokenIdentityOf(token)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "connect")
 	if result.Verdict != accessrevoke.Allowed {
 		return centrifuge.TokenIdentity{}, revokeError(clientID, token.UserID, result, centrifuge.ErrorTokenExpired)

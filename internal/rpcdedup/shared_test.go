@@ -695,10 +695,10 @@ func TestSharedCompleteRetriesFailedWrite(t *testing.T) {
 	owner := NewFlightWithFingerprint(sharedFingerprintA)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.completeFailures = 2
+	fx.backend.completeFailures = 1
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
-	require.Equal(t, 3, countCalls(fx.backend.callLog(), "complete"))
+	require.Equal(t, sharedCompleteAttempts, countCalls(fx.backend.callLog(), "complete"))
 	entry, found := fx.backend.entry(sharedKey)
 	require.True(t, found)
 	require.Equal(t, byte('d'), entry.state)
@@ -729,13 +729,52 @@ func TestSharedCompleteIsCutAtItsBudget(t *testing.T) {
 	owner := NewFlightWithFingerprint(sharedFingerprintA)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	// Redis accepts the write and never answers: the attempt is cut at half the grace, and no retry starts after it.
+	// Redis accepts the write and never answers: the attempt is cut at the in-flight expiry of the call, which comes
+	// before the IO timeout, and no retry starts after it.
 	fx.backend.blockComplete = true
 
 	start := time.Now()
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
-	require.Less(t, time.Since(start), fx.shared.inflightGrace)
+	require.Less(t, time.Since(start), time.Second, "cut at the expiry, not at the IO timeout of 4 seconds")
 	require.Equal(t, 1, countCalls(fx.backend.callLog(), "complete"))
+}
+
+func TestSharedCompleteReplyReturnsWithinIOTimeout(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ioTimeout = 100 * time.Millisecond
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// Redis accepts the connection and never answers the write: the reply is not held beyond one IO timeout for all
+	// tries together.
+	fx.backend.blockComplete = true
+
+	start := time.Now()
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Less(t, time.Since(start), 3*fx.shared.ioTimeout)
+	require.Equal(t, 1, countCalls(fx.backend.callLog(), "complete"), "the first write uses the whole budget")
+}
+
+func TestSharedCompleteRetryFitsInIOTimeout(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ioTimeout = 100 * time.Millisecond
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	// The first write fails at once, and the retry is blackholed: the retry ends at the budget, and no third try is made.
+	fx.backend.completeFailures = 1
+	var writes int
+	fx.backend.onComplete = func() {
+		writes++
+		if writes == 2 {
+			fx.backend.blockComplete = true
+		}
+	}
+
+	start := time.Now()
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Reply: []byte("ok")}))
+	require.Less(t, time.Since(start), 3*fx.shared.ioTimeout)
+	require.Equal(t, sharedCompleteAttempts, countCalls(fx.backend.callLog(), "complete"))
 }
 
 func TestSharedCompleteStopsAtInflightDeadline(t *testing.T) {

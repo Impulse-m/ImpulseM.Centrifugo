@@ -32,9 +32,9 @@ const (
 	sharedDefaultAckFlushEvery = 100 * time.Millisecond
 	sharedDefaultAckBatch      = 1024
 	// sharedCompleteAttempts is the number of tries of a record's write to the shared tier, and sharedCompleteBackoff
-	// the delay before the first retry, which doubles. The retries stop within half the in-flight grace, so the
-	// in-flight record of the call is still there for them.
-	sharedCompleteAttempts = 4
+	// the delay before the retry, which doubles. The writes of all tries together stay within one IO timeout, so the
+	// reply of the call is not held longer.
+	sharedCompleteAttempts = 2
 	sharedCompleteBackoff  = 50 * time.Millisecond
 )
 
@@ -74,6 +74,9 @@ type SharedOptions struct {
 	AckQueueSize  int
 	AckFlushEvery time.Duration
 	AckBatch      int
+	// IOTimeout bounds the writes of a record to the shared tier which Complete makes, all tries together. Zero means
+	// redisshard.DefaultIOTimeout.
+	IOTimeout time.Duration
 }
 
 // Shared is the Store of a node which shares its records with other nodes. The node-local store is the cache of
@@ -95,6 +98,7 @@ type Shared struct {
 	inflightGrace time.Duration
 	ackFlushEvery time.Duration
 	ackBatch      int
+	ioTimeout     time.Duration
 	acks          chan Key
 	errorLog      *tools.IntervalLimiter
 }
@@ -117,6 +121,9 @@ func NewShared(opts SharedOptions) *Shared {
 	if opts.AckBatch <= 0 {
 		opts.AckBatch = sharedDefaultAckBatch
 	}
+	if opts.IOTimeout <= 0 {
+		opts.IOTimeout = redisshard.DefaultIOTimeout
+	}
 	return &Shared{
 		local:         opts.Local,
 		backend:       opts.Backend,
@@ -131,6 +138,7 @@ func NewShared(opts SharedOptions) *Shared {
 		inflightGrace: InflightGrace,
 		ackFlushEvery: opts.AckFlushEvery,
 		ackBatch:      opts.AckBatch,
+		ioTimeout:     opts.IOTimeout,
 		acks:          make(chan Key, opts.AckQueueSize),
 		errorLog:      tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
@@ -253,39 +261,39 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 }
 
 // completeShared writes the record of a call which this node owns to the shared tier. A record over the limit is
-// written as uncached. A failed write is retried with backoff: the owner check makes a retry idempotent. The retries
-// stop at half the in-flight grace, and at the in-flight TTL of the call, which is counted from its begin: the write of
-// each attempt is cut at that limit, and a retry which would start after it is not made. When the retries fail, the
-// record is still kept locally, and a retransmit on another node runs the call again once the in-flight record
-// expires. A write which reports that this node does not own the in-flight record is not retried.
+// written as uncached. A failed write is retried once, with backoff: the owner check makes a retry idempotent. All the
+// writes of the call stay within one IO timeout, and within the in-flight TTL of the call, which is counted from its
+// begin, so the reply of the call is not held longer than that. When the writes fail, the record is still kept locally,
+// and a retransmit on another node runs the call again once the in-flight record expires. A write which reports that
+// this node does not own the in-flight record is not retried.
 func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	stored := rec
 	if sharedOverReplyLimit(rec, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 	}
-	limit := time.Now().Add(s.inflightGrace / 2)
+	limit := time.Now().Add(s.ioTimeout)
 	if flight.begun != 0 {
 		if expiry := time.Unix(0, flight.begun).Add(flight.timeout + s.inflightGrace); expiry.Before(limit) {
 			limit = expiry
 		}
 	}
-	delay := sharedCompleteBackoff
-	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithDeadline(context.Background(), limit)
-		owned, err := s.backend.Complete(ctx, key, s.nodeID, stored, s.ttl)
-		cancel()
-		if err == nil {
-			if !owned && attempt == 1 {
-				s.lostOwnership()
-			}
-			return
-		}
-		if attempt >= sharedCompleteAttempts || !time.Now().Add(delay).Before(limit) {
-			s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
-			return
-		}
-		time.Sleep(delay)
-		delay *= 2
+	ctx, cancel := context.WithDeadline(context.Background(), limit)
+	defer cancel()
+	b := backoff.NewExponentialBackOff()
+	b.InitialInterval = sharedCompleteBackoff
+	b.Multiplier = 2
+	b.RandomizationFactor = 0.2
+	var attempts int
+	owned, err := backoff.Retry(ctx, func() (bool, error) {
+		attempts++
+		return s.backend.Complete(ctx, key, s.nodeID, stored, s.ttl)
+	}, backoff.WithBackOff(b), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
+	if err != nil {
+		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
+		return
+	}
+	if !owned && attempts == 1 {
+		s.lostOwnership()
 	}
 }
 

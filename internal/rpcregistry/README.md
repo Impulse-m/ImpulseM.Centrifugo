@@ -155,7 +155,7 @@ The account of a connection is the user of its last token with a user. A logout 
 
 On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. On a rebind to `pending_2fa` or `anonymous` the connection gets the channels of its token, and no personal channel. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.
 
-On a downgrade to anonymous the connection loses its personal channel, its user-limited channels, and the channels of token and proxy sources. Client channels stay when their namespace allows anonymous subscriptions.
+On a downgrade to anonymous the connection loses its personal channel, its user-limited channels, and every other channel which is not a client channel: the channels of tokens, of the server API and of proxies. Client channels stay when their namespace allows anonymous subscriptions.
 
 Access checks run before the rebind: a blocked user disconnects the connection, a revoked session or invalidated token gets a refresh error `token expired`. A revocation applied between the check and the rebind disconnects the connection, because the connection is checked again after it moves. A user connection limit reached by the new user gets a refresh error `too many requests`, and the connection keeps its identity. A refresh of an expired token gets `token expired`, and a connection closed meanwhile is not changed.
 
@@ -168,13 +168,17 @@ When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the conn
 * `user`: the user of the token, which is also the user of a pending connection. Empty for an anonymous token;
 * `auth_class`: the class name (`anonymous`, `pending_2fa`, `authenticated` or `bot`). Empty when the registry is disabled.
 
+### Cost of the record
+
+A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, a connection which has no user and a token session also gets one, anonymous ones included, and is indexed by its session. Its connect then reads the token identity of the client under the client lock. The store is set whenever access revocation is in use, so this is the cost of that feature, and a connection with every feature off allocates nothing for the record.
+
 ### Known gaps
 
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
 * A subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left.
 * A token whose expiration passes in the milliseconds between the check of the refresh and the rebind of the core gets the refresh error `token expired` after the user channels have gone. The refresh checks the expiration before the channels move, so this needs the token to expire in that window. Its personal channel comes back on the next refresh with the same user. The channels the client subscribed itself stay unsubscribed until the client subscribes them again or reconnects.
 * A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
-* With `client.rebind` off, an anonymous connection which has no token session at connect is not in the session index. When it refreshes to a token with a session, a revocation of that session reaches it at the next sweep or refresh check, not at once. With `client.rebind` on, every connection has its record and is indexed.
+* With `client.rebind` off, an anonymous connection which has no token session at connect is not in the session index. When it refreshes to a token with a session, it gets no record, so the index does not hold it: a revocation of that session reaches it at the next sweep of all local connections, not at once. With `client.rebind` on, every connection has its record and is indexed.
 
 ## Error mapping
 

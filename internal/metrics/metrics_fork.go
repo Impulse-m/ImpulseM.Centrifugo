@@ -294,7 +294,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_redis_ack_drops_total",
-		Help:        "Number of acks dropped by the shared exactly-once RPC tier because its ack queue was full. The records of such acks expire at their TTL.",
+		Help:        "Number of acks the shared exactly-once RPC tier did not send because its ack queue was full or the node shut down first. The records of such acks expire at their TTL.",
 		ConstLabels: constLabels,
 	})
 

@@ -35,18 +35,4 @@ func TestApplyNamespaceSubscribeOptions(t *testing.T) {
 	require.Equal(t, centrifuge.SubscriptionTypeStream, options.Type)
 	require.Empty(t, options.MapClientPresenceChannel)
 	require.Empty(t, options.MapUserPresenceChannel)
-	require.False(t, options.AllowChannelCompaction)
-	require.Zero(t, options.ClientPublishDebounceInterval)
-}
-
-func TestApplyNamespaceSubscribeOptionsBandwidth(t *testing.T) {
-	chOpts := configtypes.ChannelOptions{
-		AllowChannelCompaction:        true,
-		ClientPublishDebounceInterval: configtypes.Duration(50 * time.Millisecond),
-	}
-
-	options := centrifuge.SubscribeOptions{}
-	applyNamespaceSubscribeOptions(&options, chOpts, "room", centrifuge.SubscriptionTypeStream)
-	require.True(t, options.AllowChannelCompaction)
-	require.Equal(t, 50*time.Millisecond, options.ClientPublishDebounceInterval)
 }

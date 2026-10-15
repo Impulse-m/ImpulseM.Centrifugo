@@ -10,14 +10,12 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/sync/singleflight"
 )
 
 // CacheEmptyHandler answers cache empty events with the cache empty proxy named in the channel options.
 type CacheEmptyHandler struct {
 	proxies map[string]CacheEmptyProxy
 	calls   map[string]*metrics.ProxyCallChildren
-	group   singleflight.Group
 }
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
@@ -51,24 +49,20 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 			log.Error().Str("proxy", name).Str("channel", e.Channel).Msg("cache empty proxy not found")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
-		// Subscribers that find the same channel empty while a call is in flight share its result.
-		key := name + "\x00" + e.Channel
-		populated, err, _ := h.group.Do(key, func() (any, error) {
-			return h.call(name, p, e.Channel)
-		})
+		populated, err := h.call(name, p, e.Channel)
 		if err != nil {
 			log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
 		return centrifuge.CacheEmptyReply{
-			Populated: populated.(bool),
+			Populated: populated,
 		}, nil
 	}
 }
 
 // call makes one cache empty call to the proxy p for the channel and returns whether the backend
 // reports the channel as populated.
-func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string) (any, error) {
+func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string) (bool, error) {
 	// calls has the same keys as proxies, so the lookup by a name found in proxies always succeeds.
 	calls := h.calls[name]
 	if calls != nil {

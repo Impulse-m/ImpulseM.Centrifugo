@@ -2,12 +2,9 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
-
-	"google.golang.org/grpc"
 )
 
 // GRPCCacheEmptyProxy sends cache empty requests to the application backend over gRPC.
@@ -20,21 +17,13 @@ var _ CacheEmptyProxy = (*GRPCCacheEmptyProxy)(nil)
 
 // NewGRPCCacheEmptyProxy creates a cache empty proxy which uses gRPC.
 func NewGRPCCacheEmptyProxy(name string, p Config) (*GRPCCacheEmptyProxy, error) {
-	host, err := getGrpcHost(p.Endpoint)
+	proxyClient, err := newGRPCProxyClient(name, p)
 	if err != nil {
-		return nil, fmt.Errorf("error getting grpc host: %v", err)
-	}
-	dialOpts, err := getDialOpts(name, p)
-	if err != nil {
-		return nil, fmt.Errorf("error creating GRPC dial options: %v", err)
-	}
-	conn, err := grpc.NewClient(host, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("error connecting to GRPC proxy server: %v", err)
+		return nil, err
 	}
 	return &GRPCCacheEmptyProxy{
 		config: p,
-		client: proxyproto.NewCentrifugoProxyClient(conn),
+		client: proxyClient,
 	}, nil
 }
 

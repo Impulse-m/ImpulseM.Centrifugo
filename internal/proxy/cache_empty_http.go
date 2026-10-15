@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
@@ -18,12 +17,12 @@ var _ CacheEmptyProxy = (*HTTPCacheEmptyProxy)(nil)
 
 // NewHTTPCacheEmptyProxy creates a cache empty proxy which uses HTTP.
 func NewHTTPCacheEmptyProxy(p Config) (*HTTPCacheEmptyProxy, error) {
-	httpClient, err := proxyHTTPClient(p, "cache_empty_proxy")
+	httpCaller, err := newHTTPProxyCaller(p, "cache_empty_proxy")
 	if err != nil {
-		return nil, fmt.Errorf("error creating HTTP client: %w", err)
+		return nil, err
 	}
 	return &HTTPCacheEmptyProxy{
-		httpCaller: NewHTTPCaller(httpClient),
+		httpCaller: httpCaller,
 		config:     p,
 	}, nil
 }

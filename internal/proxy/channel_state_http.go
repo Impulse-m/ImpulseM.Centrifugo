@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
@@ -17,12 +16,12 @@ var _ ChannelStateProxy = (*HTTPChannelStateProxy)(nil)
 
 // NewHTTPChannelStateProxy creates a channel state proxy which uses HTTP.
 func NewHTTPChannelStateProxy(p Config) (*HTTPChannelStateProxy, error) {
-	httpClient, err := proxyHTTPClient(p, "channel_state_proxy")
+	httpCaller, err := newHTTPProxyCaller(p, "channel_state_proxy")
 	if err != nil {
-		return nil, fmt.Errorf("error creating HTTP client: %w", err)
+		return nil, err
 	}
 	return &HTTPChannelStateProxy{
-		httpCaller: NewHTTPCaller(httpClient),
+		httpCaller: httpCaller,
 		config:     p,
 	}, nil
 }

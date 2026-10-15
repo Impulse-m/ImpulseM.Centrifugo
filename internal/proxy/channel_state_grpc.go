@@ -2,11 +2,8 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
-
-	"google.golang.org/grpc"
 )
 
 // GRPCChannelStateProxy sends channel state events to the application backend over gRPC.
@@ -19,21 +16,13 @@ var _ ChannelStateProxy = (*GRPCChannelStateProxy)(nil)
 
 // NewGRPCChannelStateProxy creates a channel state proxy which uses gRPC.
 func NewGRPCChannelStateProxy(name string, p Config) (*GRPCChannelStateProxy, error) {
-	host, err := getGrpcHost(p.Endpoint)
+	proxyClient, err := newGRPCProxyClient(name, p)
 	if err != nil {
-		return nil, fmt.Errorf("error getting grpc host: %v", err)
-	}
-	dialOpts, err := getDialOpts(name, p)
-	if err != nil {
-		return nil, fmt.Errorf("error creating GRPC dial options: %v", err)
-	}
-	conn, err := grpc.NewClient(host, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("error connecting to GRPC proxy server: %v", err)
+		return nil, err
 	}
 	return &GRPCChannelStateProxy{
 		config: p,
-		client: proxyproto.NewCentrifugoProxyClient(conn),
+		client: proxyClient,
 	}, nil
 }
 

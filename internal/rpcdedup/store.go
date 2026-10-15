@@ -12,10 +12,13 @@ type Key struct {
 
 // Record is the answer of a call which is done. Reply is the reply payload, and Err the protocol error
 // when the call failed. Uncached marks a reply over the size limit, which is not kept: a duplicate gets
-// result evicted. Abandoned marks a call which did not complete, so nothing is kept and a duplicate
-// which waited for it must retry. No caller of the store abandons a call today: the owner of a call keeps
-// an error record when it panics. The store keeps the Abandoned semantics for a caller which cannot keep
-// a record. A reply over the size limit, or over the share of a record of its scope, is kept as uncached too.
+// result evicted. A reply over the size limit, or over the share of a record of its scope, is kept as uncached too.
+//
+// Abandoned marks a flight which left no answer and kept no record. The owner of a call never abandons its
+// flight: it keeps an error record when it panics. The shared tier does: its watch abandons the flight of a call
+// on another node whose record vanishes or whose polls fail, and a BeginMismatch abandons the flight which local
+// duplicates joined while the shared begin ran. A duplicate of an abandoned flight gets no retry signal, since the
+// call may have run, unless NotRun is set.
 type Record struct {
 	Reply     []byte
 	Err       *centrifuge.Error

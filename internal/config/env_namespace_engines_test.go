@@ -18,6 +18,12 @@ func checkNamespaceEnginesConfig(t *testing.T, conf Config) {
 	require.Len(t, conf.PresenceManagers, 1)
 	require.Equal(t, "sample", conf.PresenceManagers[0].Name)
 	require.Equal(t, "memory", conf.PresenceManagers[0].Type)
+	require.Len(t, conf.MapBrokers, 1)
+	require.Equal(t, "sample", conf.MapBrokers[0].Name)
+	require.True(t, conf.MapBrokers[0].Enabled)
+	require.Equal(t, "redis", conf.MapBrokers[0].Type)
+	require.Equal(t, []string{"redis://10.0.0.6:6379"}, conf.MapBrokers[0].Redis.Address)
+	require.Equal(t, "sample", conf.MapBrokers[0].Redis.Prefix)
 }
 
 func TestNamespaceEnginesJSON(t *testing.T) {
@@ -60,4 +66,18 @@ func TestConfigEnvVarsNamedEngines(t *testing.T) {
 	require.Len(t, conf.PresenceManagers, 1)
 	require.Equal(t, "p", conf.PresenceManagers[0].Name)
 	require.Equal(t, "redis", conf.PresenceManagers[0].Type)
+}
+
+func TestConfigEnvVarsNamedMapBrokers(t *testing.T) {
+	_ = os.Setenv("CENTRIFUGO_MAP_BROKERS_SAMPLE_REDIS_PREFIX", `from-env`)
+	defer func() {
+		_ = os.Unsetenv("CENTRIFUGO_MAP_BROKERS_SAMPLE_REDIS_PREFIX")
+	}()
+	conf, meta := getConfig(t, "testdata/namespace_engines.json")
+	require.Len(t, meta.UnknownEnvs, 0)
+	// The env variables set the fields of the entry of the file with the same name.
+	require.Len(t, conf.MapBrokers, 1)
+	require.Equal(t, "sample", conf.MapBrokers[0].Name)
+	require.Equal(t, "redis", conf.MapBrokers[0].Type)
+	require.Equal(t, "from-env", conf.MapBrokers[0].Redis.Prefix)
 }

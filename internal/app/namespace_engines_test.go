@@ -193,6 +193,54 @@ func TestNamespaceEnginesRouting(t *testing.T) {
 	require.Nil(t, presenceManager)
 }
 
+func TestNamespaceEnginesMapBrokerRouting(t *testing.T) {
+	cursors := configtypes.NamedMapBroker{}
+	cursors.Name = "cursors"
+	cursors.Enabled = true
+	cursors.Type = "memory"
+	scores := cursors
+	scores.Name = "scores"
+
+	cfg := config.DefaultConfig()
+	cfg.MapBrokers = configtypes.NamedMapBrokers{cursors, scores}
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "live", ChannelOptions: configtypes.ChannelOptions{Map: configtypes.MapConfig{BrokerName: "cursors"}}},
+		{Name: "board", ChannelOptions: configtypes.ChannelOptions{Map: configtypes.MapConfig{BrokerName: "scores"}}},
+		{Name: "plain"},
+	}
+	engines, cfgContainer, node := newNamespaceEnginesForTest(t, cfg)
+	require.NoError(t, engines.create(node, cfgContainer))
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+
+	// The hook is set for the map brokers only: no broker or presence manager is enabled.
+	nodeCfg := centrifuge.Config{}
+	engines.nodeConfig(&nodeCfg)
+	require.NotNil(t, nodeCfg.Map.GetMapBroker)
+	require.Nil(t, nodeCfg.GetBroker)
+	require.Nil(t, nodeCfg.GetPresenceManager)
+
+	cursorsBroker := engines.mapBrokers["cursors"]
+	scoresBroker := engines.mapBrokers["scores"]
+	require.NotNil(t, cursorsBroker)
+	require.NotNil(t, scoresBroker)
+
+	mapBroker, ok := engines.mapBroker("live:x")
+	require.True(t, ok)
+	require.Same(t, cursorsBroker, mapBroker)
+
+	mapBroker, ok = engines.mapBroker("board:x")
+	require.True(t, ok)
+	require.Same(t, scoresBroker, mapBroker)
+
+	mapBroker, ok = engines.mapBroker("plain:x")
+	require.False(t, ok)
+	require.Nil(t, mapBroker)
+
+	mapBroker, ok = engines.mapBroker("unknown:x")
+	require.False(t, ok)
+	require.Nil(t, mapBroker)
+}
+
 func TestNamespaceEnginesDisabledEntryNotCreated(t *testing.T) {
 	cfg := config.DefaultConfig()
 	disabledBroker := memoryNamedBroker("off")

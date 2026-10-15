@@ -15,10 +15,12 @@ var knownNamedBrokerTypes = []string{"memory", "redis", "nats", "postgres"}
 
 var knownNamedPresenceManagerTypes = []string{"memory", "redis"}
 
+var knownNamedMapBrokerTypes = []string{"memory", "redis", "postgres"}
+
 var knownControllerTypes = []string{"postgres", "redis", "nats"}
 
 // reservedEngineName is the name of the Redis controller's broker. Its metrics and logs carry this name, so
-// no entry may use it.
+// no broker may use it.
 const reservedEngineName = "controller"
 
 // defaultRedisPrefix is the prefix which Core uses when a Redis broker or presence manager has none.
@@ -30,7 +32,7 @@ const defaultRedisAddress = "127.0.0.1:6379"
 // defaultRedisPort is the port which a Redis host gets when its address has none.
 const defaultRedisPort = "6379"
 
-// redisEngineRef is a Redis broker of the configuration: the default one or a named one.
+// redisEngineRef is a Redis broker of the configuration: the default one, a named one or a named map broker.
 type redisEngineRef struct {
 	label   string
 	hosts   []string
@@ -38,7 +40,8 @@ type redisEngineRef struct {
 	cluster bool
 }
 
-// postgresEngineRef is a Postgres stream broker of the configuration: the default one or a named one.
+// postgresEngineRef is a Postgres broker of the configuration: the default stream broker, a named one or a named
+// map broker.
 type postgresEngineRef struct {
 	label       string
 	dsn         string
@@ -51,10 +54,16 @@ type namespaceRouting struct {
 	name                string
 	brokerName          string
 	presenceManagerName string
+	mapBrokerName       string
 }
 
-// validateNamespaceEngines validates the named brokers and presence managers, the references to them from
-// channel options, and the controller type.
+// selects reports whether the namespace selects a named engine.
+func (r namespaceRouting) selects() bool {
+	return r.brokerName != "" || r.presenceManagerName != "" || r.mapBrokerName != ""
+}
+
+// validateNamespaceEngines validates the named brokers, presence managers and map brokers, the references to
+// them from channel options, and the controller type.
 func validateNamespaceEngines(c Config) error {
 	var brokerNames []string
 	var enabledBrokers []string
@@ -85,14 +94,28 @@ func validateNamespaceEngines(c Config) error {
 		}
 	}
 
+	var mapBrokerNames []string
+	var enabledMapBrokers []string
+	for _, mb := range c.MapBrokers {
+		if err := validateEntry("map broker", mb.Name, mb.Type, mapBrokerNames, knownNamedMapBrokerTypes); err != nil {
+			return err
+		}
+		mapBrokerNames = append(mapBrokerNames, mb.Name)
+		if mb.Enabled {
+			enabledMapBrokers = append(enabledMapBrokers, mb.Name)
+		}
+	}
+
 	if err := validateNamespaceEngineRef(
-		"channel.without_namespace", c.Channel.WithoutNamespace, enabledBrokers, enabledPresenceManagers,
+		"channel.without_namespace", c.Channel.WithoutNamespace,
+		enabledBrokers, enabledPresenceManagers, enabledMapBrokers,
 	); err != nil {
 		return err
 	}
 	for _, ns := range c.Channel.Namespaces {
 		if err := validateNamespaceEngineRef(
-			fmt.Sprintf("namespace %q", ns.Name), ns.ChannelOptions, enabledBrokers, enabledPresenceManagers,
+			fmt.Sprintf("namespace %q", ns.Name), ns.ChannelOptions,
+			enabledBrokers, enabledPresenceManagers, enabledMapBrokers,
 		); err != nil {
 			return err
 		}
@@ -111,9 +134,9 @@ func validateNamespaceEngines(c Config) error {
 	return nil
 }
 
-// validateEntry checks the name and the type of a named broker or presence manager. The name must match the name
-// pattern and must be unique among names. No other name may map to the same environment variables, since
-// CENTRIFUGO_BROKERS_A_B_* would set both a-b and a_b. The type must be a known type. kind is the entry kind,
+// validateEntry checks the name and the type of a named broker, presence manager or map broker. The name must
+// match the name pattern and must be unique among names. No other name may map to the same environment variables,
+// since CENTRIFUGO_BROKERS_A_B_* would set both a-b and a_b. The type must be a known type. kind is the entry kind,
 // which the errors name.
 func validateEntry(kind string, name string, entryType string, names []string, knownTypes []string) error {
 	if !nameRe.MatchString(name) {
@@ -133,13 +156,14 @@ func validateEntry(kind string, name string, entryType string, names []string, k
 	return nil
 }
 
-// validateNamespaceEngineRef checks that the broker and presence manager named by the channel options
+// validateNamespaceEngineRef checks that the broker, presence manager and map broker named by the channel options
 // are enabled entries.
 func validateNamespaceEngineRef(
 	label string,
 	opts configtypes.ChannelOptions,
 	enabledBrokers []string,
 	enabledPresenceManagers []string,
+	enabledMapBrokers []string,
 ) error {
 	if opts.BrokerName != "" && !slices.Contains(enabledBrokers, opts.BrokerName) {
 		return fmt.Errorf("%s: broker_name %q is not an enabled entry of brokers", label, opts.BrokerName)
@@ -147,15 +171,18 @@ func validateNamespaceEngineRef(
 	if opts.PresenceManagerName != "" && !slices.Contains(enabledPresenceManagers, opts.PresenceManagerName) {
 		return fmt.Errorf("%s: presence_manager_name %q is not an enabled entry of presence_managers", label, opts.PresenceManagerName)
 	}
+	if opts.Map.BrokerName != "" && !slices.Contains(enabledMapBrokers, opts.Map.BrokerName) {
+		return fmt.Errorf("%s: map.broker_name %q is not an enabled entry of map_brokers", label, opts.Map.BrokerName)
+	}
 	return nil
 }
 
-// validateNamedRedisPrefixes rejects two Redis brokers which use the same Redis and the same prefix. Core
-// subscribes a channel only on the broker which routes it, so in standalone mode such brokers do not duplicate
-// publications. Core turns on sharded PUB/SUB only with NumShardedPubSubPartitions, which the server does not
-// set; then brokers with one prefix subscribe the same partition channels and deliver each publication twice.
-// The rule keeps that mode safe. A cluster broker conflicts with any broker of the same prefix, since the
-// cluster hosts are not resolved when the configuration is validated.
+// validateNamedRedisPrefixes rejects two Redis brokers, named or default, and named map brokers which use the same
+// Redis and the same prefix. Core subscribes a channel only on the broker which routes it, so in standalone mode
+// such brokers do not duplicate publications. Core turns on sharded PUB/SUB only with NumShardedPubSubPartitions,
+// which the server does not set; then brokers with one prefix subscribe the same partition channels and deliver
+// each publication twice. The rule keeps that mode safe. A cluster broker conflicts with any broker of the same
+// prefix, since the cluster hosts are not resolved when the configuration is validated.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
@@ -178,10 +205,21 @@ func validateNamedRedisPrefixes(c Config) error {
 			continue
 		}
 		refs = append(refs, redisEngineRef{
-			label:   b.Name,
+			label:   fmt.Sprintf("brokers %q", b.Name),
 			hosts:   redisHosts(b.Redis.Redis),
 			prefix:  redisPrefix(b.Redis.Prefix),
 			cluster: usesRedisCluster(b.Redis.Redis),
+		})
+	}
+	for _, mb := range c.MapBrokers {
+		if !mb.Enabled || mb.Type != "redis" {
+			continue
+		}
+		refs = append(refs, redisEngineRef{
+			label:   fmt.Sprintf("map_brokers %q", mb.Name),
+			hosts:   redisHosts(mb.Redis.Redis),
+			prefix:  redisPrefix(mb.Redis.Prefix),
+			cluster: usesRedisCluster(mb.Redis.Redis),
 		})
 	}
 	for i := range refs {
@@ -191,7 +229,7 @@ func validateNamedRedisPrefixes(c Config) error {
 			}
 			if refs[i].cluster || refs[j].cluster || sharesHost(refs[i].hosts, refs[j].hosts) {
 				return fmt.Errorf(
-					"brokers: %q and %q use the same Redis and the same prefix; set a distinct prefix",
+					"%s and %s use the same Redis and the same prefix; set a distinct prefix",
 					refs[i].label, refs[j].label,
 				)
 			}
@@ -200,9 +238,9 @@ func validateNamedRedisPrefixes(c Config) error {
 	return nil
 }
 
-// validateNamedPostgresTables rejects two Postgres stream brokers which use the same DSN and the same table prefix.
-// Each broker's outbox worker reads every row of its tables, so a node would deliver each publication once per
-// broker. The DSNs are compared as written.
+// validateNamedPostgresTables rejects two Postgres brokers, default or named, and named map brokers which use the
+// same DSN and the same table prefix. Each broker's outbox worker reads every row of its tables, so a node would
+// deliver each publication once per broker. The DSNs are compared as written.
 func validateNamedPostgresTables(c Config) error {
 	var refs []postgresEngineRef
 	if c.Broker.Enabled && c.Broker.Type == "postgres" {
@@ -217,16 +255,26 @@ func validateNamedPostgresTables(c Config) error {
 			continue
 		}
 		refs = append(refs, postgresEngineRef{
-			label:       b.Name,
+			label:       fmt.Sprintf("brokers %q", b.Name),
 			dsn:         b.Postgres.DSN,
 			tablePrefix: postgresBrokerPrefix(b.Postgres.TablePrefix),
+		})
+	}
+	for _, mb := range c.MapBrokers {
+		if !mb.Enabled || mb.Type != "postgres" {
+			continue
+		}
+		refs = append(refs, postgresEngineRef{
+			label:       fmt.Sprintf("map_brokers %q", mb.Name),
+			dsn:         mb.Postgres.DSN,
+			tablePrefix: postgresBrokerPrefix(mb.Postgres.TablePrefix),
 		})
 	}
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
 			if refs[i].dsn == refs[j].dsn && refs[i].tablePrefix == refs[j].tablePrefix {
 				return fmt.Errorf(
-					"brokers: %q and %q use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
+					"%s and %s use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
 					refs[i].label, refs[j].label,
 				)
 			}
@@ -324,14 +372,19 @@ type NamespaceEnginesRecord struct {
 }
 
 // NewNamespaceEnginesRecord records the namespaces of the startup configuration. It returns nil when cfg has no
-// enabled entry of brokers or presence_managers.
+// enabled entry of brokers, presence_managers or map_brokers.
 func NewNamespaceEnginesRecord(cfg Config) *NamespaceEnginesRecord {
-	if len(enabledBrokerKeys(cfg)) == 0 && len(enabledPresenceManagerKeys(cfg)) == 0 {
+	if !hasEnabledEngines(cfg) {
 		return nil
 	}
 	record := &NamespaceEnginesRecord{routings: map[string]namespaceRouting{}}
 	record.Commit(cfg)
 	return record
+}
+
+// hasEnabledEngines reports whether cfg has an enabled entry of brokers, presence_managers or map_brokers.
+func hasEnabledEngines(cfg Config) bool {
+	return len(enabledBrokerKeys(cfg)) > 0 || len(enabledPresenceManagerKeys(cfg)) > 0 || len(enabledMapBrokerKeys(cfg)) > 0
 }
 
 // Commit records the namespaces of a configuration which a reload has applied. A recorded name keeps its selection:
@@ -359,7 +412,7 @@ func (r *NamespaceEnginesRecord) check(newCfg Config) error {
 		recorded := r.routings[name]
 		newRouting, present := newRoutings[name]
 		if !present {
-			if recorded.brokerName != "" || recorded.presenceManagerName != "" {
+			if recorded.selects() {
 				return namespaceEnginesRemoved(name, recorded)
 			}
 			continue
@@ -370,20 +423,27 @@ func (r *NamespaceEnginesRecord) check(newCfg Config) error {
 		if recorded.presenceManagerName != newRouting.presenceManagerName {
 			return namespaceEnginesChanged("presence_manager_name of " + routingLabel(name))
 		}
+		if recorded.mapBrokerName != newRouting.mapBrokerName {
+			return namespaceEnginesChanged("map.broker_name of " + routingLabel(name))
+		}
 	}
 	return nil
 }
 
-// CheckNamespaceEnginesReload refuses a reload which changes what the named brokers and presence managers route:
-// the set of enabled entries with their types and Redis prefixes, the engine selection of a namespace (recorded
-// since startup, see NamespaceEnginesRecord), and the controller with its type and prefix. Such a change needs a
-// restart. Connection details of the entries and of the controller are applied on reload as for the default engine.
+// CheckNamespaceEnginesReload refuses a reload which changes what the named brokers, presence managers and map
+// brokers route: the set of enabled entries with their types and Redis or PostgreSQL prefixes, the engine selection
+// of a namespace (recorded since startup, see NamespaceEnginesRecord), and the controller with its type and prefix.
+// Such a change needs a restart. Connection details of the entries and of the controller are applied on reload as
+// for the default engine.
 func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *NamespaceEnginesRecord) error {
 	if !slices.Equal(enabledBrokerKeys(oldCfg), enabledBrokerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of brokers")
 	}
 	if !slices.Equal(enabledPresenceManagerKeys(oldCfg), enabledPresenceManagerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of presence_managers")
+	}
+	if !slices.Equal(enabledMapBrokerKeys(oldCfg), enabledMapBrokerKeys(newCfg)) {
+		return namespaceEnginesChanged("enabled entries of map_brokers")
 	}
 	if err := record.check(newCfg); err != nil {
 		return err
@@ -423,7 +483,7 @@ func controllerPrefix(controller configtypes.Controller) string {
 	}
 }
 
-// postgresBrokerPrefix returns the table prefix which the Postgres stream broker uses: trailing underscores are
+// postgresBrokerPrefix returns the table prefix which the Postgres brokers use: trailing underscores are
 // trimmed, and an empty prefix is cf.
 func postgresBrokerPrefix(tablePrefix string) string {
 	prefix := strings.TrimRight(tablePrefix, "_")
@@ -454,6 +514,9 @@ func namespaceEnginesRemoved(name string, recorded namespaceRouting) error {
 	}
 	if recorded.presenceManagerName != "" {
 		selections = append(selections, fmt.Sprintf("presence_manager_name %q", recorded.presenceManagerName))
+	}
+	if recorded.mapBrokerName != "" {
+		selections = append(selections, fmt.Sprintf("map.broker_name %q", recorded.mapBrokerName))
 	}
 	return fmt.Errorf(
 		"namespace engines: %s selecting %s was removed, a restart is needed",
@@ -510,18 +573,41 @@ func enabledPresenceManagerKeys(cfg Config) []string {
 	return keys
 }
 
+// enabledMapBrokerKeys identifies the enabled entries of map_brokers by name, type and the prefix which the running
+// map broker keeps from startup: the Redis prefix, or the Postgres table prefix.
+func enabledMapBrokerKeys(cfg Config) []string {
+	var keys []string
+	for _, mb := range cfg.MapBrokers {
+		if !mb.Enabled {
+			continue
+		}
+		key := mb.Name + "/" + mb.Type
+		switch mb.Type {
+		case "redis":
+			key += "/" + mb.Redis.Prefix
+		case "postgres":
+			key += "/" + postgresBrokerPrefix(mb.Postgres.TablePrefix)
+		}
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // namespaceRoutings returns the engine selection of channel.without_namespace followed by the one of each namespace.
 func namespaceRoutings(cfg Config) []namespaceRouting {
 	routings := []namespaceRouting{{
 		name:                "",
 		brokerName:          cfg.Channel.WithoutNamespace.BrokerName,
 		presenceManagerName: cfg.Channel.WithoutNamespace.PresenceManagerName,
+		mapBrokerName:       cfg.Channel.WithoutNamespace.Map.BrokerName,
 	}}
 	for _, ns := range cfg.Channel.Namespaces {
 		routings = append(routings, namespaceRouting{
 			name:                ns.Name,
 			brokerName:          ns.BrokerName,
 			presenceManagerName: ns.PresenceManagerName,
+			mapBrokerName:       ns.Map.BrokerName,
 		})
 	}
 	return routings

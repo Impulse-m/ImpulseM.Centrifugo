@@ -7,9 +7,8 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
-// processNamespaceEnginesEnv applies CENTRIFUGO_BROKERS_<NAME>_* and
-// CENTRIFUGO_PRESENCE_MANAGERS_<NAME>_* environment variables to the named
-// broker and presence manager entries, and registers the variables as known.
+// processNamespaceEnginesEnv applies CENTRIFUGO_BROKERS_<NAME>_*, CENTRIFUGO_PRESENCE_MANAGERS_<NAME>_* and
+// CENTRIFUGO_MAP_BROKERS_<NAME>_* environment variables to the named entries, and registers the variables as known.
 func processNamespaceEnginesEnv(conf *Config, knownEnvVars map[string]envconfig.VarInfo) error {
 	err := processEntriesEnv(
 		"CENTRIFUGO_BROKERS_", "brokers", conf.Brokers,
@@ -18,9 +17,16 @@ func processNamespaceEnginesEnv(conf *Config, knownEnvVars map[string]envconfig.
 	if err != nil {
 		return err
 	}
-	return processEntriesEnv(
+	err = processEntriesEnv(
 		"CENTRIFUGO_PRESENCE_MANAGERS_", "presence managers", conf.PresenceManagers,
 		func(entry *configtypes.NamedPresenceManager) string { return entry.Name }, knownEnvVars,
+	)
+	if err != nil {
+		return err
+	}
+	return processEntriesEnv(
+		"CENTRIFUGO_MAP_BROKERS_", "map brokers", conf.MapBrokers,
+		func(entry *configtypes.NamedMapBroker) string { return entry.Name }, knownEnvVars,
 	)
 }
 

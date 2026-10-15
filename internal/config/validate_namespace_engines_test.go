@@ -35,6 +35,34 @@ func namedPostgresBroker(name string) configtypes.NamedBroker {
 	return b
 }
 
+func namedRedisMapBroker(name string, address string, prefix string) configtypes.NamedMapBroker {
+	var mb configtypes.NamedMapBroker
+	mb.Name = name
+	mb.Enabled = true
+	mb.Type = "redis"
+	mb.Redis.Prefix = prefix
+	mb.Redis.Redis.Address = []string{address}
+	return mb
+}
+
+func namedPostgresMapBroker(name string, dsn string, tablePrefix string) configtypes.NamedMapBroker {
+	var mb configtypes.NamedMapBroker
+	mb.Name = name
+	mb.Enabled = true
+	mb.Type = "postgres"
+	mb.Postgres.DSN = dsn
+	mb.Postgres.TablePrefix = tablePrefix
+	return mb
+}
+
+// namespaceWithMapBroker returns a namespace which selects the named map broker for its map channels.
+func namespaceWithMapBroker(name string, mapBrokerName string) configtypes.ChannelNamespace {
+	var ns configtypes.ChannelNamespace
+	ns.Name = name
+	ns.Map.BrokerName = mapBrokerName
+	return ns
+}
+
 func namedRedisPresenceManager(name string, address string) configtypes.NamedPresenceManager {
 	var pm configtypes.NamedPresenceManager
 	pm.Name = name
@@ -197,7 +225,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis and named redis broker with the same address and another prefix",
@@ -224,7 +252,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			modify: func(cfg *Config) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with the same prefix and another database",
@@ -232,14 +260,14 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.DB = 1
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with the same prefix and the same host in another form",
 			modify: func(cfg *Config) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "rediss://user:secret@10.0.0.2:6379/3", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers, one host without a port and the same host with the default port",
@@ -247,7 +275,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers, one with an addr host which the other one uses",
@@ -255,7 +283,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2:6379?addr=10.0.0.4:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "10.0.0.4:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "a redis+cluster address and a standalone redis broker with the same prefix on other hosts",
@@ -263,7 +291,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis+cluster://10.0.0.2:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.9:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis without the scheme and a named redis broker with it",
@@ -272,7 +300,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.Address = []string{"10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with the same prefix on another redis",
@@ -287,7 +315,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "")
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifuge")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis with an empty prefix and a named redis broker with the default prefix",
@@ -297,7 +325,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Prefix = ""
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "centrifuge")
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with the default address and the same prefix",
@@ -305,7 +333,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
 				cfg.Brokers[1] = namedRedisBroker("rates", "127.0.0.1:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "two named redis brokers with comma-separated cluster hosts in another order",
@@ -315,7 +343,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
 				cfg.Brokers[1].Redis.Redis.ClusterAddress = []string{"10.0.0.3:6379", "10.0.0.2:6379"}
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis cluster address and a named redis address on the same host",
@@ -324,7 +352,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "a cluster redis broker and a standalone redis broker with the same prefix on other hosts",
@@ -332,7 +360,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.ClusterAddress = []string{"redis://10.0.0.5:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers: "broadcast" and "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis cluster and a named redis cluster with the same prefix and hosts written differently",
@@ -344,7 +372,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.ClusterAddress = []string{"127.0.0.1:7000"}
 				cfg.Brokers[0].Redis.Prefix = "shared"
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis cluster and a named redis standalone with the same prefix on other hosts",
@@ -354,7 +382,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.ClusterAddress = []string{"10.0.0.5:7000"}
 				cfg.Brokers[0].Redis.Prefix = "shared"
 			},
-			wantErr: `brokers: "engine" and "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
 		},
 		{
 			name: "engine redis cluster and a named redis standalone with another prefix",
@@ -372,7 +400,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
 				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
 			},
-			wantErr: `brokers: "orders" and "ledger" use the same PostgreSQL and the same table_prefix`,
+			wantErr: `brokers "orders" and brokers "ledger" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
 			name: "two named postgres brokers with the same DSN and table prefixes written as cf and cf_",
@@ -383,7 +411,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
 				cfg.Brokers[3].Postgres.TablePrefix = "cf_"
 			},
-			wantErr: `brokers: "orders" and "ledger" use the same PostgreSQL and the same table_prefix`,
+			wantErr: `brokers "orders" and brokers "ledger" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
 			name: "two named postgres brokers with the same DSN and another table prefix",
@@ -403,7 +431,87 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Broker.Postgres.DSN = "postgres://db/main"
 				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
 			},
-			wantErr: `brokers: "broker" and "orders" use the same PostgreSQL and the same table_prefix`,
+			wantErr: `broker and brokers "orders" use the same PostgreSQL and the same table_prefix`,
+		},
+		{
+			name: "valid map broker reference of a namespace",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaceWithMapBroker("cursors", "cursors"))
+			},
+			wantErr: "",
+		},
+		{
+			name: "map.broker_name of channel.without_namespace references an unknown entry",
+			modify: func(cfg *Config) {
+				cfg.Channel.WithoutNamespace.Map.BrokerName = "cursors"
+			},
+			wantErr: `channel.without_namespace: map.broker_name "cursors" is not an enabled entry of map_brokers`,
+		},
+		{
+			name: "map.broker_name references a disabled map broker",
+			modify: func(cfg *Config) {
+				mb := namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")
+				mb.Enabled = false
+				cfg.MapBrokers = configtypes.NamedMapBrokers{mb}
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaceWithMapBroker("cursors", "cursors"))
+			},
+			wantErr: `namespace "cursors": map.broker_name "cursors" is not an enabled entry of map_brokers`,
+		},
+		{
+			name: "map broker of unknown type",
+			modify: func(cfg *Config) {
+				mb := namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")
+				mb.Type = "nats"
+				cfg.MapBrokers = configtypes.NamedMapBrokers{mb}
+			},
+			wantErr: "map broker cursors: unknown map broker type: nats",
+		},
+		{
+			name: "map broker name which sets the same environment variables as another map broker",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{
+					namedRedisMapBroker("cur_sors", "redis://10.0.0.4:6379", "centrifugo-cursors"),
+					namedRedisMapBroker("cur-sors", "redis://10.0.0.5:6379", "centrifugo-scores"),
+				}
+			},
+			wantErr: `invalid map broker name: cur_sors and cur-sors set the same environment variables`,
+		},
+		{
+			name: "map broker named like a broker",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("broadcast", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+			},
+			wantErr: "",
+		},
+		{
+			name: "two named redis map brokers with the same address and prefix",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{
+					namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors"),
+					namedRedisMapBroker("scores", "redis://10.0.0.4:6379", "centrifugo-cursors"),
+				}
+			},
+			wantErr: `map_brokers "cursors" and map_brokers "scores" use the same Redis and the same prefix`,
+		},
+		{
+			name: "named redis map broker and named redis broker with the same address and prefix",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{
+					namedRedisMapBroker("cursors", "redis://10.0.0.2:6379", "centrifugo-broadcast"),
+				}
+			},
+			wantErr: `brokers "broadcast" and map_brokers "cursors" use the same Redis and the same prefix`,
+		},
+		{
+			name: "two named postgres map brokers with the same DSN and table prefix",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{
+					namedPostgresMapBroker("cursors", "postgres://db/app", "cf"),
+					namedPostgresMapBroker("scores", "postgres://db/app", "cf_"),
+				}
+			},
+			wantErr: `map_brokers "cursors" and map_brokers "scores" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
 			name: "controller of type redis",
@@ -512,6 +620,57 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 				cfg.Channel.Namespaces = cfg.Channel.Namespaces[1:]
 			},
 			wantErr: `namespace engines: namespace "broadcast" selecting broker_name "broadcast" and presence_manager_name "presence" was removed, a restart is needed`,
+		},
+		{
+			name: "map.broker_name of a namespace changed",
+			oldModify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaceWithMapBroker("cursors", "cursors"))
+			},
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaceWithMapBroker("cursors", ""))
+			},
+			wantErr: `namespace engines: map.broker_name of namespace "cursors" changed, a restart is needed`,
+		},
+		{
+			name: "removed namespace which selects a map broker",
+			oldModify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaceWithMapBroker("cursors", "cursors"))
+			},
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+				cfg.Channel.Namespaces = cfg.Channel.Namespaces[:2]
+			},
+			wantErr: `namespace engines: namespace "cursors" selecting map.broker_name "cursors" was removed, a restart is needed`,
+		},
+		{
+			name: "map broker added to the enabled entries",
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
+			},
+			wantErr: "namespace engines: enabled entries of map_brokers changed, a restart is needed",
+		},
+		{
+			name: "prefix of a named map broker changed",
+			oldModify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "a")}
+			},
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "b")}
+			},
+			wantErr: "namespace engines: enabled entries of map_brokers changed, a restart is needed",
+		},
+		{
+			name: "address of a named map broker changed",
+			oldModify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "a")}
+			},
+			modify: func(cfg *Config) {
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.6:6379", "a")}
+			},
+			wantErr: "",
 		},
 		{
 			name: "broker_name of a namespace changed",

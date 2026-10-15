@@ -52,6 +52,8 @@ type Config struct {
 	Brokers configtypes.NamedBrokers `mapstructure:"brokers" default:"[]" json:"brokers" envconfig:"brokers" toml:"brokers" yaml:"brokers" doc:"Extra brokers selected per namespace with <<broker_name>>. Each entry has its own name, type and connection, so heavy channels can use a separate Redis or Nats from the default broker."`
 	// PresenceManagers is a list of extra presence managers. A namespace selects one with presence_manager_name.
 	PresenceManagers configtypes.NamedPresenceManagers `mapstructure:"presence_managers" default:"[]" json:"presence_managers" envconfig:"presence_managers" toml:"presence_managers" yaml:"presence_managers" doc:"Extra presence managers selected per namespace with <<presence_manager_name>>. Each entry has its own name, type and connection."`
+	// MapBrokers is a list of extra map brokers. A namespace selects one with map.broker_name.
+	MapBrokers configtypes.NamedMapBrokers `mapstructure:"map_brokers" default:"[]" json:"map_brokers" envconfig:"map_brokers" toml:"map_brokers" yaml:"map_brokers" doc:"Extra map brokers selected per namespace with <<map.broker_name>>. Each entry has its own name, type and connection, so map channels of one namespace can use a separate Redis or PostgreSQL from the default <<map_broker>>."`
 
 	// SharedPoll contains configuration for shared poll subscriptions.
 	SharedPoll configtypes.SharedPoll `mapstructure:"shared_poll" json:"shared_poll" envconfig:"shared_poll" toml:"shared_poll" yaml:"shared_poll" doc:"Configures shared poll subscriptions."`

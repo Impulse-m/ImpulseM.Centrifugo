@@ -9,15 +9,16 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
+	"github.com/centrifugal/centrifugo/v6/internal/pgmapbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
 )
 
-// namespaceEngines holds the named brokers and presence managers which channels select with the
-// broker_name and presence_manager_name channel options. The maps are filled once, before the node
-// runs, and never change after that, so the routing functions read them without a lock. A nil
+// namespaceEngines holds the named brokers, presence managers and map brokers which channels select with the
+// broker_name, presence_manager_name and map.broker_name channel options. The maps are filled once, before the
+// node runs, and never change after that, so the routing functions read them without a lock. A nil
 // *namespaceEngines is valid: no namespace selects a named engine, and every method does nothing.
 type namespaceEngines struct {
 	cfgContainer *config.Container
@@ -25,21 +26,23 @@ type namespaceEngines struct {
 	record           *config.NamespaceEnginesRecord
 	brokers          map[string]centrifuge.Broker
 	presenceManagers map[string]centrifuge.PresenceManager
-	// redisShards are the Redis connections of the named Redis brokers and presence managers. Neither a Redis
-	// broker nor a Redis presence manager closes its shards, so the engines close them.
+	mapBrokers       map[string]centrifuge.MapBroker
+	// redisShards are the Redis connections of the named Redis brokers, presence managers and map brokers. None of
+	// them closes its shards, so the engines close them.
 	redisShards   []*centrifuge.RedisShard
 	closeTimeout  time.Duration
 	routeBrokers  bool
 	routePresence bool
+	routeMap      bool
 }
 
-// namespaceEnginesService closes the named brokers and presence managers when the service stops.
+// namespaceEnginesService closes the named engines when the service stops.
 type namespaceEnginesService struct {
 	engines *namespaceEngines
 }
 
-// newNamespaceEngines returns nil when no enabled entry of brokers or presence_managers exists and no channel
-// option selects one. Otherwise it returns the engines which create and route them.
+// newNamespaceEngines returns nil when no enabled entry of brokers, presence_managers or map_brokers exists.
+// Otherwise it returns the engines which create and route them.
 func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 	cfg := cfgContainer.Config()
 
@@ -58,8 +61,14 @@ func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 			routePresence = true
 		}
 	}
+	var routeMap bool
+	for _, entry := range cfg.MapBrokers {
+		if entry.Enabled {
+			routeMap = true
+		}
+	}
 
-	if !routeBrokers && !routePresence {
+	if !routeBrokers && !routePresence && !routeMap {
 		return nil
 	}
 	return &namespaceEngines{
@@ -67,9 +76,11 @@ func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 		record:           config.NewNamespaceEnginesRecord(cfg),
 		brokers:          make(map[string]centrifuge.Broker),
 		presenceManagers: make(map[string]centrifuge.PresenceManager),
+		mapBrokers:       make(map[string]centrifuge.MapBroker),
 		closeTimeout:     cfg.Shutdown.Timeout.ToDuration(),
 		routeBrokers:     routeBrokers,
 		routePresence:    routePresence,
+		routeMap:         routeMap,
 	}
 }
 
@@ -86,6 +97,9 @@ func (e *namespaceEngines) nodeConfig(cfg *centrifuge.Config) {
 	}
 	if e.routePresence {
 		cfg.GetPresenceManager = e.presenceManager
+	}
+	if e.routeMap {
+		cfg.Map.GetMapBroker = e.mapBroker
 	}
 }
 
@@ -147,11 +161,28 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 			Str("mode", mode).
 			Msg("namespace engine created")
 	}
+	for _, entry := range cfg.MapBrokers {
+		if !entry.Enabled {
+			continue
+		}
+		mapBroker, redisShards, mode, err := createNamedMapBroker(node, entry)
+		e.redisShards = append(e.redisShards, redisShards...)
+		if err != nil {
+			return fmt.Errorf("error creating map broker %s: %w", entry.Name, err)
+		}
+		e.mapBrokers[entry.Name] = mapBroker
+		log.Info().
+			Str("kind", "map_broker").
+			Str("name", entry.Name).
+			Str("type", entry.Type).
+			Str("mode", mode).
+			Msg("namespace engine created")
+	}
 	return nil
 }
 
-// run registers the event handler of every named broker. It must be called after the node runs: the
-// default broker is registered by the node itself.
+// run registers the event handler of every named broker and map broker. It must be called after the node runs:
+// the default broker and the default map broker are registered by the node itself.
 func (e *namespaceEngines) run(node *centrifuge.Node) error {
 	if e == nil {
 		return nil
@@ -159,6 +190,11 @@ func (e *namespaceEngines) run(node *centrifuge.Node) error {
 	for name, broker := range e.brokers {
 		if err := broker.RegisterBrokerEventHandler(node); err != nil {
 			return fmt.Errorf("error running broker %s: %w", name, err)
+		}
+	}
+	for name, mapBroker := range e.mapBrokers {
+		if err := mapBroker.RegisterEventHandler(node); err != nil {
+			return fmt.Errorf("error running map broker %s: %w", name, err)
 		}
 	}
 	return nil
@@ -198,6 +234,13 @@ func (e *namespaceEngines) close() {
 			}
 		}
 	}
+	for name, mapBroker := range e.mapBrokers {
+		if closer, ok := mapBroker.(centrifuge.Closer); ok {
+			if err := closer.Close(ctx); err != nil {
+				log.Error().Err(err).Str("kind", "map_broker").Str("name", name).Msg("error closing namespace engine")
+			}
+		}
+	}
 	for _, shard := range e.redisShards {
 		shard.Close()
 	}
@@ -231,6 +274,21 @@ func (e *namespaceEngines) presenceManager(ch string) (centrifuge.PresenceManage
 	}
 	presenceManager, ok := e.presenceManagers[chOpts.PresenceManagerName]
 	return presenceManager, ok
+}
+
+// mapBroker returns the named map broker which the channel selects with map.broker_name. It returns false for
+// channels whose namespace selects none, and it does not allocate.
+func (e *namespaceEngines) mapBroker(ch string) (centrifuge.MapBroker, bool) {
+	if e == nil {
+		return nil, false
+	}
+	// ChannelOptionsRef never fails, so the lookup has no error to handle.
+	chOpts, ok, _ := e.cfgContainer.ChannelOptionsRef(ch)
+	if !ok || chOpts.Map.BrokerName == "" {
+		return nil, false
+	}
+	mapBroker, ok := e.mapBrokers[chOpts.Map.BrokerName]
+	return mapBroker, ok
 }
 
 // createBroker creates a named broker by its type. It returns the connection mode for logging.
@@ -307,4 +365,77 @@ func createNamedPresenceManager(
 	default:
 		return nil, nil, "", fmt.Errorf("unknown presence manager type: %s", entry.Type)
 	}
+}
+
+// createNamedMapBroker creates a named map broker by its type. It returns the Redis shards it created, which the
+// caller closes at shutdown, and the connection mode for logging.
+func createNamedMapBroker(
+	node *centrifuge.Node,
+	entry configtypes.NamedMapBroker,
+) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
+	switch entry.Type {
+	case "memory":
+		mapBroker, err := centrifuge.NewMemoryMapBroker(node, centrifuge.MemoryMapBrokerConfig{})
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return mapBroker, nil, "", nil
+	case "redis":
+		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+		}
+		mapBroker, err := confighelpers.CentrifugeRedisMapBroker(
+			node, entry.Redis.Prefix, redisShards, entry.Redis.RedisMapBrokerCommon)
+		if err != nil {
+			return nil, redisShards, mode, fmt.Errorf("error creating Redis map broker: %w", err)
+		}
+		return mapBroker, redisShards, mode, nil
+	case "postgres":
+		mapBroker, err := createNamedPostgresMapBroker(node, entry.Postgres)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return mapBroker, nil, "postgres", nil
+	default:
+		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", entry.Type)
+	}
+}
+
+// createNamedPostgresMapBroker creates a Postgres map broker of a named entry with the settings of the map_broker
+// section. It initializes the schema unless skip_schema_init is set, as the default map broker does.
+func createNamedPostgresMapBroker(
+	node *centrifuge.Node,
+	pgCfg configtypes.PostgresMapBroker,
+) (*pgmapbroker.PostgresMapBroker, error) {
+	pgBrokerCfg := pgmapbroker.PostgresMapBrokerConfig{
+		DSN:                    pgCfg.DSN,
+		TLS:                    pgCfg.TLS,
+		PoolSize:               pgCfg.PoolSize,
+		NumShards:              pgCfg.NumShards,
+		TTLCheckInterval:       pgCfg.TTLCheckInterval.ToDuration(),
+		CleanupInterval:        pgCfg.CleanupInterval.ToDuration(),
+		IdempotentResultTTL:    pgCfg.IdempotentResultTTL.ToDuration(),
+		BinaryData:             pgCfg.BinaryData,
+		StreamRetention:        pgCfg.StreamRetention.ToDuration(),
+		UseNotify:              pgCfg.UseNotify,
+		NotifyDSN:              pgCfg.NotifyDSN,
+		TablePrefix:            pgCfg.TablePrefix,
+		PartitionLookaheadDays: pgCfg.PartitionLookaheadDays,
+		PartitionRetentionDays: pgCfg.PartitionRetentionDays,
+		Outbox: pgmapbroker.OutboxConfig{
+			PollInterval: pgCfg.Outbox.PollInterval.ToDuration(),
+			BatchSize:    pgCfg.Outbox.BatchSize,
+		},
+	}
+	mapBroker, err := pgmapbroker.NewPostgresMapBroker(node, pgBrokerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("error creating Postgres map broker: %w", err)
+	}
+	if !pgCfg.SkipSchemaInit {
+		if schemaErr := mapBroker.EnsureSchema(context.Background()); schemaErr != nil {
+			return nil, fmt.Errorf("error initializing Postgres map broker schema: %w", schemaErr)
+		}
+	}
+	return mapBroker, nil
 }

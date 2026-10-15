@@ -35,6 +35,27 @@ func (d *NamedPresenceManagers) Decode(value string) error {
 	return decodeToNamedSlice(value, d)
 }
 
+// NamedMapBroker is an extra map broker which map channels select with the map.broker_name option.
+type NamedMapBroker struct {
+	// Name is a unique name of the map broker, referenced by the map.broker_name option.
+	Name string `mapstructure:"name" json:"name" envconfig:"name" yaml:"name" toml:"name" expose:"full" doc:"Unique name of the map broker. Referenced by the <<map.broker_name>> option. Required."`
+
+	// Enabled enables the map broker. A disabled entry is ignored: it is not created, and a namespace which
+	// references it is a validation error.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the named map broker. A disabled entry is ignored."`
+
+	// MapBroker is the configuration of the map broker, the same as the map_broker section.
+	MapBroker `mapstructure:",squash" yaml:",inline"`
+}
+
+// NamedMapBrokers is a list of extra map brokers.
+type NamedMapBrokers []NamedMapBroker
+
+// Decode to implement the envconfig.Decoder interface
+func (d *NamedMapBrokers) Decode(value string) error {
+	return decodeToNamedSlice(value, d)
+}
+
 // RedisController is a configuration for the "redis" controller.
 type RedisController struct {
 	// RedisPrefixed holds the prefix and the Redis connection options of the controller.

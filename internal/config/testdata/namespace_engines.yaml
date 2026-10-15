@@ -10,3 +10,11 @@ presence_managers:
   - name: sample
     enabled: true
     type: memory
+map_brokers:
+  - name: sample
+    enabled: true
+    type: redis
+    redis:
+      address:
+        - redis://10.0.0.6:6379
+      prefix: sample

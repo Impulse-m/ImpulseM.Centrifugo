@@ -84,6 +84,7 @@ func TestCompileErrors(t *testing.T) {
 		{name: "empty claim path", source: Source{Filter: map[string]any{"key": "k", "cmp": "eq", "val": "{{claims.}}"}}},
 		{name: "claim path with space", source: Source{Filter: map[string]any{"key": "k", "cmp": "eq", "val": "{{claims.a b}}"}}},
 		{name: "vals entry unknown variable", source: Source{Filter: map[string]any{"key": "k", "cmp": "in", "vals": []any{"{{nope}}"}}}},
+		{name: "null node", source: Source{Filter: map[string]any{"op": "and", "nodes": []any{nil}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

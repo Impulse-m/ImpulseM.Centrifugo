@@ -3,11 +3,14 @@ package filtertemplate
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/centrifugal/protocol"
 )
 
 const (
@@ -60,16 +63,6 @@ type node struct {
 	val   field
 	vals  []field
 	nodes []*node
-}
-
-// spec is the filter tree as decoded from the configured JSON. Unknown fields are refused.
-type spec struct {
-	Op    string   `json:"op"`
-	Key   string   `json:"key"`
-	Cmp   string   `json:"cmp"`
-	Val   string   `json:"val"`
-	Vals  []string `json:"vals"`
-	Nodes []spec   `json:"nodes"`
 }
 
 // Set is the compiled templates of all namespaces of a config. It is immutable and safe for
@@ -140,13 +133,13 @@ func compileSource(name string, src Source) (*Template, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: filter: %w", label, err)
 	}
-	var sp spec
+	var sp protocol.FilterNode
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&sp); err != nil {
 		return nil, fmt.Errorf("%s: filter: %w", label, err)
 	}
-	root, err := compileNode(sp)
+	root, err := compileNode(&sp)
 	if err != nil {
 		return nil, fmt.Errorf("%s: filter: %w", label, err)
 	}
@@ -172,7 +165,8 @@ func parseOnMissing(value string) (OnMissing, error) {
 	return 0, fmt.Errorf("unknown on_missing_value %q", value)
 }
 
-func compileNode(sp spec) (*node, error) {
+// compileNode compiles a node of the filter tree as decoded from the configured JSON.
+func compileNode(sp *protocol.FilterNode) (*node, error) {
 	for _, literal := range []string{sp.Op, sp.Key, sp.Cmp} {
 		if strings.Contains(literal, variableOpen) {
 			return nil, fmt.Errorf("variables are allowed only in val and vals, got %q", literal)
@@ -197,6 +191,9 @@ func compileNode(sp spec) (*node, error) {
 	if len(sp.Nodes) > 0 {
 		n.nodes = make([]*node, len(sp.Nodes))
 		for i, child := range sp.Nodes {
+			if child == nil {
+				return nil, errors.New("null node in nodes")
+			}
 			c, err := compileNode(child)
 			if err != nil {
 				return nil, err

@@ -333,11 +333,37 @@ func TestValidateNamespaceEngines(t *testing.T) {
 	}
 }
 
+func redisControllerConfig(prefix string) configtypes.Controller {
+	var c configtypes.Controller
+	c.Enabled = true
+	c.Type = "redis"
+	c.Redis.Prefix = prefix
+	c.Redis.Redis.Address = []string{"redis://10.0.0.8:6379"}
+	return c
+}
+
+func natsControllerConfig(prefix string) configtypes.Controller {
+	var c configtypes.Controller
+	c.Enabled = true
+	c.Type = "nats"
+	c.Nats.Prefix = prefix
+	return c
+}
+
+func postgresControllerConfig(tablePrefix string) configtypes.Controller {
+	var c configtypes.Controller
+	c.Enabled = true
+	c.Type = "postgres"
+	c.Postgres.TablePrefix = tablePrefix
+	return c
+}
+
 func TestCheckNamespaceEnginesReload(t *testing.T) {
 	tests := []struct {
-		name    string
-		modify  func(cfg *Config)
-		wantErr string
+		name      string
+		oldModify func(cfg *Config)
+		modify    func(cfg *Config)
+		wantErr   string
 	}{
 		{
 			name:    "identical configuration",
@@ -454,13 +480,84 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 			},
 			wantErr: "namespace engines: controller changed, a restart is needed",
 		},
+		{
+			name: "redis controller prefix changed",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("a")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("b")
+			},
+			wantErr: "namespace engines: prefix of controller changed, a restart is needed",
+		},
+		{
+			name: "redis controller prefix set to the default one",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("centrifuge")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("")
+			},
+			wantErr: "",
+		},
+		{
+			name: "redis controller address changed",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("a")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = redisControllerConfig("a")
+				cfg.Controller.Redis.Redis.Address = []string{"redis://10.0.0.9:6379"}
+			},
+			wantErr: "",
+		},
+		{
+			name: "nats controller prefix changed",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = natsControllerConfig("a")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = natsControllerConfig("b")
+			},
+			wantErr: "namespace engines: prefix of controller changed, a restart is needed",
+		},
+		{
+			name: "postgres controller table prefix changed",
+			oldModify: func(cfg *Config) {
+				cfg.Controller = postgresControllerConfig("cf")
+			},
+			modify: func(cfg *Config) {
+				cfg.Controller = postgresControllerConfig("other")
+			},
+			wantErr: "namespace engines: prefix of controller changed, a restart is needed",
+		},
+		{
+			name: "prefix of a Redis presence manager changed",
+			modify: func(cfg *Config) {
+				cfg.PresenceManagers[0].Redis.Prefix = "centrifugo-other"
+			},
+			wantErr: "namespace engines: enabled entries of presence_managers changed, a restart is needed",
+		},
+		{
+			name: "removed namespace which selects no engine",
+			oldModify: func(cfg *Config) {
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{Name: "news"})
+			},
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces = cfg.Channel.Namespaces[:2]
+			},
+			wantErr: "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			oldCfg := namespaceEnginesConfig()
+			if tt.oldModify != nil {
+				tt.oldModify(&oldCfg)
+			}
 			newCfg := namespaceEnginesConfig()
 			tt.modify(&newCfg)
-			err := CheckNamespaceEnginesReload(oldCfg, newCfg)
+			err := CheckNamespaceEnginesReload(oldCfg, newCfg, NewNamespaceEnginesRecord(oldCfg))
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 			} else {
@@ -468,4 +565,35 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNamespaceEnginesRecordKeepsRemovedNamespace(t *testing.T) {
+	require.Nil(t, NewNamespaceEnginesRecord(DefaultConfig()))
+
+	startCfg := namespaceEnginesConfig()
+	startCfg.Channel.Namespaces = append(startCfg.Channel.Namespaces, configtypes.ChannelNamespace{Name: "news"})
+	record := NewNamespaceEnginesRecord(startCfg)
+	require.NotNil(t, record)
+
+	// The reload removes news, which selects no engine. Its subscriptions stay on the default broker.
+	removedCfg := namespaceEnginesConfig()
+	require.NoError(t, CheckNamespaceEnginesReload(startCfg, removedCfg, record))
+	record.Commit(removedCfg)
+
+	// A later reload may not route the removed name to a named broker: its subscriptions would not be released.
+	routedCfg := namespaceEnginesConfig()
+	routedCfg.Channel.Namespaces = append(routedCfg.Channel.Namespaces, configtypes.ChannelNamespace{
+		Name:           "news",
+		ChannelOptions: configtypes.ChannelOptions{BrokerName: "rates"},
+	})
+	require.ErrorContains(t, CheckNamespaceEnginesReload(removedCfg, routedCfg, record),
+		`namespace engines: broker_name of namespace "news" changed, a restart is needed`)
+
+	// Adding it back without an engine, and adding a new name which selects an engine, are both allowed.
+	unroutedCfg := namespaceEnginesConfig()
+	unroutedCfg.Channel.Namespaces = append(unroutedCfg.Channel.Namespaces,
+		configtypes.ChannelNamespace{Name: "news"},
+		configtypes.ChannelNamespace{Name: "fresh", ChannelOptions: configtypes.ChannelOptions{BrokerName: "rates"}},
+	)
+	require.NoError(t, CheckNamespaceEnginesReload(removedCfg, unroutedCfg, record))
 }

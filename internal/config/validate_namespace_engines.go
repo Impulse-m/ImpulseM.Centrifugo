@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -216,39 +217,97 @@ func redisPrefix(prefix string) string {
 	return prefix
 }
 
-// CheckNamespaceEnginesReload refuses a reload which changes what the named brokers and presence managers
-// route: the set of enabled entries with their types and Redis prefixes, the engine selection of a namespace,
-// and the controller. Such a change needs a restart. Connection details of the entries are applied on reload as
-// for the default engine.
-func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config) error {
+// NamespaceEnginesRecord holds the engine selection of every namespace name which the process has seen since
+// startup, including the names which a reload removed. The subscriptions of a channel stay on the engine which its
+// namespace selected when they were made, so a reload must keep the selection of every recorded name. A nil record
+// is the record of a startup configuration without enabled entries: no namespace selects an engine then, and the
+// enabled entries cannot change on reload, so no reload can select one.
+type NamespaceEnginesRecord struct {
+	routings map[string]namespaceRouting
+}
+
+// NewNamespaceEnginesRecord records the namespaces of the startup configuration. It returns nil when cfg has no
+// enabled entry of brokers or presence_managers.
+func NewNamespaceEnginesRecord(cfg Config) *NamespaceEnginesRecord {
+	if len(enabledBrokerKeys(cfg)) == 0 && len(enabledPresenceManagerKeys(cfg)) == 0 {
+		return nil
+	}
+	record := &NamespaceEnginesRecord{routings: map[string]namespaceRouting{}}
+	record.Commit(cfg)
+	return record
+}
+
+// Commit records the namespaces of a configuration which a reload has applied. A recorded name keeps its selection:
+// CheckNamespaceEnginesReload refuses a reload which changes it, so only the names which are new to the record are added.
+func (r *NamespaceEnginesRecord) Commit(cfg Config) {
+	if r == nil {
+		return
+	}
+	for name, routing := range namespaceRoutingsByName(cfg) {
+		if _, ok := r.routings[name]; !ok {
+			r.routings[name] = routing
+		}
+	}
+}
+
+// check refuses a reload which selects another engine for a recorded namespace. A namespace which the reload removes
+// has the empty selection, so removing a namespace which selects an engine is refused, and a namespace which was
+// removed while it selected none cannot be added back with an engine: its subscriptions were made on the default one.
+func (r *NamespaceEnginesRecord) check(newCfg Config) error {
+	if r == nil {
+		return nil
+	}
+	newRoutings := namespaceRoutingsByName(newCfg)
+	for _, name := range slices.Sorted(maps.Keys(r.routings)) {
+		recorded := r.routings[name]
+		newRouting := newRoutings[name]
+		if recorded.brokerName != newRouting.brokerName {
+			return namespaceEnginesChanged("broker_name of " + routingLabel(name))
+		}
+		if recorded.presenceManagerName != newRouting.presenceManagerName {
+			return namespaceEnginesChanged("presence_manager_name of " + routingLabel(name))
+		}
+	}
+	return nil
+}
+
+// CheckNamespaceEnginesReload refuses a reload which changes what the named brokers and presence managers route:
+// the set of enabled entries with their types and Redis prefixes, the engine selection of a namespace (recorded
+// since startup, see NamespaceEnginesRecord), and the controller with its type and prefix. Such a change needs a
+// restart. Connection details of the entries and of the controller are applied on reload as for the default engine.
+func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *NamespaceEnginesRecord) error {
 	if !slices.Equal(enabledBrokerKeys(oldCfg), enabledBrokerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of brokers")
 	}
 	if !slices.Equal(enabledPresenceManagerKeys(oldCfg), enabledPresenceManagerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of presence_managers")
 	}
-
-	// Every namespace of the old config is compared. A namespace removed by the reload has the empty routing
-	// in the new config, so removing a routed namespace is refused: its subscriptions would stay on the named
-	// engine. A namespace added by the reload has no channels yet, so it may select an engine.
-	newRoutings := map[string]namespaceRouting{}
-	for _, r := range namespaceRoutings(newCfg) {
-		newRoutings[r.name] = r
-	}
-	for _, oldRouting := range namespaceRoutings(oldCfg) {
-		newRouting := newRoutings[oldRouting.name]
-		if oldRouting.brokerName != newRouting.brokerName {
-			return namespaceEnginesChanged("broker_name of " + routingLabel(oldRouting.name))
-		}
-		if oldRouting.presenceManagerName != newRouting.presenceManagerName {
-			return namespaceEnginesChanged("presence_manager_name of " + routingLabel(oldRouting.name))
-		}
+	if err := record.check(newCfg); err != nil {
+		return err
 	}
 
 	if oldCfg.Controller.Enabled != newCfg.Controller.Enabled || oldCfg.Controller.Type != newCfg.Controller.Type {
 		return namespaceEnginesChanged("controller")
 	}
+	if newCfg.Controller.Enabled && controllerPrefix(oldCfg.Controller) != controllerPrefix(newCfg.Controller) {
+		return namespaceEnginesChanged("prefix of controller")
+	}
 	return nil
+}
+
+// controllerPrefix returns the prefix which the controller keeps from startup: the Redis and Nats channel prefix,
+// or the Postgres table prefix. An empty Redis prefix is the default one, as in Core.
+func controllerPrefix(controller configtypes.Controller) string {
+	switch controller.Type {
+	case "redis":
+		return redisPrefix(controller.Redis.Prefix)
+	case "nats":
+		return controller.Nats.Prefix
+	case "postgres":
+		return controller.Postgres.TablePrefix
+	default:
+		return ""
+	}
 }
 
 func namespaceEnginesChanged(what string) error {
@@ -268,12 +327,19 @@ func enabledBrokerKeys(cfg Config) []string {
 	return keys
 }
 
+// enabledPresenceManagerKeys identifies the enabled entries by name, type and, for Redis, the prefix which the
+// running presence manager keeps from startup.
 func enabledPresenceManagerKeys(cfg Config) []string {
 	var keys []string
 	for _, pm := range cfg.PresenceManagers {
-		if pm.Enabled {
-			keys = append(keys, pm.Name+"/"+pm.Type)
+		if !pm.Enabled {
+			continue
 		}
+		key := pm.Name + "/" + pm.Type
+		if pm.Type == "redis" {
+			key += "/" + redisPrefix(pm.Redis.Prefix)
+		}
+		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 	return keys
@@ -292,6 +358,18 @@ func namespaceRoutings(cfg Config) []namespaceRouting {
 			brokerName:          ns.BrokerName,
 			presenceManagerName: ns.PresenceManagerName,
 		})
+	}
+	return routings
+}
+
+// namespaceRoutingsByName returns the engine selection of each name. As in the container, the first namespace of a
+// name wins.
+func namespaceRoutingsByName(cfg Config) map[string]namespaceRouting {
+	routings := map[string]namespaceRouting{}
+	for _, routing := range namespaceRoutings(cfg) {
+		if _, ok := routings[routing.name]; !ok {
+			routings[routing.name] = routing
+		}
 	}
 	return routings
 }

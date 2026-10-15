@@ -110,7 +110,7 @@ func TestNamespaceEnginesRoutesNamespaceAddedByReload(t *testing.T) {
 	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{Name: "news", ChannelOptions: configtypes.ChannelOptions{BrokerName: "alpha"}},
 	}
-	require.NoError(t, config.CheckNamespaceEnginesReload(cfg, reloaded))
+	require.NoError(t, config.CheckNamespaceEnginesReload(cfg, reloaded, config.NewNamespaceEnginesRecord(cfg)))
 	require.NoError(t, cfgContainer.Reload(reloaded))
 
 	broker, ok = engines.broker("news:x")

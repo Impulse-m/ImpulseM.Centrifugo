@@ -143,6 +143,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	}
 
 	engines := newNamespaceEngines(cfgContainer)
+	enginesRecord := config.NewNamespaceEnginesRecord(cfgContainer.Config())
 
 	nodeCfg := centrifugeNodeConfig(build.Version, edition, cfgContainer, centrifugeLogHandler)
 	engines.nodeConfig(&nodeCfg)
@@ -346,7 +347,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	logStartWarnings(cfg, cfgMeta)
 
 	handleSignals(
-		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry,
+		cmd, configFile, node, cfgContainer, enginesRecord, tokenVerifier, subTokenVerifier, rpcRegistry,
 		httpServers, grpcAPIServer, grpcUniServer,
 		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
@@ -372,11 +373,11 @@ func runServices(ctx context.Context, manager *service.Manager) chan struct{} {
 // Everything which can fail is done before any verifier changes, so the new
 // config is applied either fully or not at all.
 func reloadConfig(
-	newCfg config.Config, cfgContainer *config.Container,
+	newCfg config.Config, cfgContainer *config.Container, enginesRecord *config.NamespaceEnginesRecord,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
 	rpcRegistry *rpcregistry.Registry,
 ) error {
-	if err := config.CheckNamespaceEnginesReload(cfgContainer.Config(), newCfg); err != nil {
+	if err := config.CheckNamespaceEnginesReload(cfgContainer.Config(), newCfg, enginesRecord); err != nil {
 		return err
 	}
 	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
@@ -408,6 +409,7 @@ func reloadConfig(
 		discardRPCRegistry()
 		return err
 	}
+	enginesRecord.Commit(newCfg)
 	applyTokenVerifier()
 	applySubTokenVerifier()
 	applyRPCRegistry()
@@ -416,6 +418,7 @@ func reloadConfig(
 
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
+	enginesRecord *config.NamespaceEnginesRecord,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, rpcRegistry *rpcregistry.Registry,
 	httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
@@ -442,7 +445,7 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
+			if err = reloadConfig(newCfg, cfgContainer, enginesRecord, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}

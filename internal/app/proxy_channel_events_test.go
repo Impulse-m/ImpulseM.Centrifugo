@@ -148,3 +148,74 @@ func TestEnableCacheEmptyProxies(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckCacheEmptyReload checks that a reload may use only the cache empty proxies created at startup.
+func TestCheckCacheEmptyReload(t *testing.T) {
+	proxyMap := newChannelEventsTestProxyMap()
+	proxyMap.CacheEmptyProxies["other"] = nil
+
+	testCases := []struct {
+		name    string
+		modify  func(cfg *config.Config)
+		wantErr bool
+	}{
+		{
+			name:   "nothing enabled",
+			modify: func(cfg *config.Config) {},
+		},
+		{
+			name: "enabled namespace with a proxy created at startup",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+						CacheEmptyProxyEnabled: true,
+						CacheEmptyProxyName:    "other",
+					}},
+				}
+			},
+		},
+		{
+			name: "disabled namespace with a missing proxy",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+						CacheEmptyProxyName: "missing",
+					}},
+				}
+			},
+		},
+		{
+			name: "enabled namespace with a proxy not created at startup",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+						CacheEmptyProxyEnabled: true,
+						CacheEmptyProxyName:    "missing",
+					}},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "enabled without namespace with the default proxy not created at startup",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.WithoutNamespace.CacheEmptyProxyEnabled = true
+				cfg.Channel.WithoutNamespace.CacheEmptyProxyName = config.DefaultProxyName
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			tc.modify(&cfg)
+			err := checkCacheEmptyReload(proxyMap, cfg)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

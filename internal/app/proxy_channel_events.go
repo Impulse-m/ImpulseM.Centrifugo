@@ -92,6 +92,28 @@ func enableCacheEmptyProxies(
 	return nil
 }
 
+// checkCacheEmptyReload rejects a reloaded config which enables a cache empty proxy that was not created at
+// startup. The cache empty proxies and their hook are created once, at startup, so a reload can use only the
+// proxies created then.
+func checkCacheEmptyReload(proxyMap *client.ProxyMap, cfg config.Config) error {
+	withoutNamespace := cfg.Channel.WithoutNamespace
+	if withoutNamespace.CacheEmptyProxyEnabled {
+		name := withoutNamespace.CacheEmptyProxyName
+		if _, ok := proxyMap.CacheEmptyProxies[name]; !ok {
+			return fmt.Errorf("cache empty proxy %s of channels without namespace was not created at startup, restart to use it", name)
+		}
+	}
+	for _, ns := range cfg.Channel.Namespaces {
+		if !ns.CacheEmptyProxyEnabled {
+			continue
+		}
+		if _, ok := proxyMap.CacheEmptyProxies[ns.CacheEmptyProxyName]; !ok {
+			return fmt.Errorf("cache empty proxy %s of namespace %s was not created at startup, restart to use it", ns.CacheEmptyProxyName, ns.Name)
+		}
+	}
+	return nil
+}
+
 // enableCacheEmptyProxy resolves the cache empty proxy named by name and logs it. An empty namespace
 // means channels without namespace.
 func enableCacheEmptyProxy(

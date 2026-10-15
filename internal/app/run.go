@@ -331,7 +331,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	logStartWarnings(cfg, cfgMeta)
 
 	handleSignals(
-		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry,
+		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry, proxyMap,
 		httpServers, grpcAPIServer, grpcUniServer,
 		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
@@ -357,10 +357,13 @@ func runServices(ctx context.Context, manager *service.Manager) chan struct{} {
 // Everything which can fail is done before any verifier changes, so the new
 // config is applied either fully or not at all.
 func reloadConfig(
-	newCfg config.Config, cfgContainer *config.Container,
+	newCfg config.Config, cfgContainer *config.Container, proxyMap *client.ProxyMap,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
 	rpcRegistry *rpcregistry.Registry,
 ) error {
+	if err := checkCacheEmptyReload(proxyMap, newCfg); err != nil {
+		return err
+	}
 	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
 	if err != nil {
 		return err
@@ -399,6 +402,7 @@ func reloadConfig(
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, rpcRegistry *rpcregistry.Registry,
+	proxyMap *client.ProxyMap,
 	httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
 	serviceCancel context.CancelFunc, ingestDone chan struct{}, ingestCancel context.CancelFunc,
@@ -424,7 +428,7 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
+			if err = reloadConfig(newCfg, cfgContainer, proxyMap, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}

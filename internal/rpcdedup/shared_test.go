@@ -553,6 +553,18 @@ func TestSharedRemoteKeyVanishingAbandonsFlight(t *testing.T) {
 	fx.backend.remove(sharedKey)
 	waitDone(t, owner)
 	require.True(t, owner.Record().Abandoned)
+	require.False(t, owner.Record().NotRun)
+}
+
+func TestSharedBeginFailureFailsClosedMarksNotRun(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.setFail(errors.New("redis is down"))
+	owner := NewFlightWithFingerprint(sharedFingerprintA)
+
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.Error(t, err)
+	require.True(t, owner.Record().Abandoned)
+	require.True(t, owner.Record().NotRun)
 }
 
 func TestSharedRemoteWatcherDeadlineAbandonsFlight(t *testing.T) {

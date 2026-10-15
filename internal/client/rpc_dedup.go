@@ -422,8 +422,12 @@ func (h *Handler) rpcJoin(c Client, m *rpcregistry.Method, cfg configtypes.RPCRe
 	h.rpcDedup.metrics.ObserveWait(time.Since(started).Seconds())
 	rec := flight.Record()
 	if rec.Abandoned {
-		// The owner left no answer and kept no record, so the call may have run: no retry signal is sent, and the app
+		// The owner left no answer and kept no record. A call which the shared tier failed to begin did not run, so its
+		// duplicates get the later signal. Any other abandoned call may have run: no retry signal is sent, and the app
 		// decides. The owner of a call does not leave such a record itself, see callRPCRecorded.
+		if rec.NotRun {
+			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryLaterError(cfg))
+		}
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryNoSignalDedupError(cfg))
 	}
 	return h.rpcRecordedReply(rec, cfg)

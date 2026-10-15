@@ -195,7 +195,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 			flight.localOnly = true
 			return Lookup{Outcome: OutcomeMiss}, nil
 		}
-		_ = s.local.Complete(key, flight, Record{Abandoned: true})
+		_ = s.local.Complete(key, flight, Record{Abandoned: true, NotRun: true})
 		return Lookup{}, err
 	}
 	switch res.State {

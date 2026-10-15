@@ -21,6 +21,9 @@ type Record struct {
 	Err       *centrifuge.Error
 	Uncached  bool
 	Abandoned bool
+	// NotRun marks an abandoned call which did not run: the shared tier failed to begin it under fail_closed, so no
+	// backend call was made. Its duplicates are answered with the later retry signal, not the no-signal error.
+	NotRun bool
 	// Fingerprint is the fingerprint of the call which the record answers. Zero for a cancelled record,
 	// which has no call, and answers any duplicate.
 	Fingerprint [32]byte

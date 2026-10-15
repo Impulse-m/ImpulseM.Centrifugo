@@ -19,7 +19,9 @@ import (
 // runs, and never change after that, so the routing functions read them without a lock. A nil
 // *namespaceEngines is valid: no namespace selects a named engine, and every method does nothing.
 type namespaceEngines struct {
-	cfgContainer     *config.Container
+	cfgContainer *config.Container
+	// record holds the engine selection of every namespace name seen since startup, see config.NamespaceEnginesRecord.
+	record           *config.NamespaceEnginesRecord
 	brokers          map[string]centrifuge.Broker
 	presenceManagers map[string]centrifuge.PresenceManager
 	// redisShards are the Redis connections of the named Redis brokers and presence managers. Neither a Redis
@@ -61,6 +63,7 @@ func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 	}
 	return &namespaceEngines{
 		cfgContainer:     cfgContainer,
+		record:           config.NewNamespaceEnginesRecord(cfg),
 		brokers:          make(map[string]centrifuge.Broker),
 		presenceManagers: make(map[string]centrifuge.PresenceManager),
 		closeTimeout:     cfg.Shutdown.Timeout.ToDuration(),
@@ -83,6 +86,24 @@ func (e *namespaceEngines) nodeConfig(cfg *centrifuge.Config) {
 	if e.routePresence {
 		cfg.GetPresenceManager = e.presenceManager
 	}
+}
+
+// checkReload refuses a reload which changes the routing of the named engines, see config.CheckNamespaceEnginesReload.
+// A nil *namespaceEngines has no record, so it still refuses a reload which enables an entry.
+func (e *namespaceEngines) checkReload(oldCfg config.Config, newCfg config.Config) error {
+	var record *config.NamespaceEnginesRecord
+	if e != nil {
+		record = e.record
+	}
+	return config.CheckNamespaceEnginesReload(oldCfg, newCfg, record)
+}
+
+// commitReload records the namespaces of a reload which has been applied.
+func (e *namespaceEngines) commitReload(newCfg config.Config) {
+	if e == nil {
+		return
+	}
+	e.record.Commit(newCfg)
 }
 
 // create creates every enabled entry of brokers and presence_managers. Entries are created even when no

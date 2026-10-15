@@ -70,7 +70,7 @@ func TestReloadConfigAllOrNothing(t *testing.T) {
 			newCfg := newConfig()
 			tc.modify(&newCfg)
 			require.NoError(t, newCfg.Validate())
-			err = reloadConfig(newCfg, cfgContainer, config.NewNamespaceEnginesRecord(cfg), tokenVerifier, subTokenVerifier, rpcregistry.New())
+			err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcregistry.New())
 			reloaded := err == nil
 			require.Equal(t, tc.name == "ok", reloaded)
 

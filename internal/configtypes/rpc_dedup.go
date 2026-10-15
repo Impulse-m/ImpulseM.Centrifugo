@@ -34,7 +34,7 @@ type RPCDedup struct {
 	// MaxSkew is how far in the future a msg_id may be, compared with the server time.
 	MaxSkew Duration `mapstructure:"max_skew" default:"30s" json:"max_skew" envconfig:"max_skew" yaml:"max_skew" toml:"max_skew" doc:"How far in the future a msg_id may be, compared with the server time. Default <<30s>>."`
 	// MaxReplySize is the size in bytes above which a reply is not kept.
-	MaxReplySize int `mapstructure:"max_reply_size" default:"2048" json:"max_reply_size" envconfig:"max_reply_size" yaml:"max_reply_size" toml:"max_reply_size" doc:"Size in bytes above which the reply of a call is not kept: a retransmit of it gets rpc.registry.errors.result_evicted. An answer is also kept only up to scope_reserve_bytes / scope_reserve bytes, which is 2048 bytes at the defaults, so the limit in effect is the smaller of the two. A reply over this limit is counted as reply_size in dedup_evictions_total, and a reply over the share as uncached. Default <<2048>>."`
+	MaxReplySize int `mapstructure:"max_reply_size" default:"2048" json:"max_reply_size" envconfig:"max_reply_size" yaml:"max_reply_size" toml:"max_reply_size" doc:"Size in bytes above which the reply of a call is not kept: a retransmit of it gets rpc.registry.errors.result_evicted. An answer is also kept only up to scope_reserve_bytes / scope_reserve bytes less the 256 bytes of a record's overhead, which is 1792 bytes at the defaults, so the limit in effect is the smaller of the two. A reply over this limit is counted as reply_size in dedup_evictions_total, and a reply over the share as uncached. Default <<2048>>."`
 	// LocalMaxEntries bounds the number of answers kept by the node, anonymous ones included.
 	LocalMaxEntries int `mapstructure:"local_max_entries" default:"200000" json:"local_max_entries" envconfig:"local_max_entries" yaml:"local_max_entries" toml:"local_max_entries" doc:"Maximum number of answers kept by the node, anonymous ones included. Every admitted scope is guaranteed scope_reserve of them. Each shard admits at most its share of local_max_entries / scope_reserve scopes, so the node admits fewer when the scopes hash unevenly over the shards. Above its reserve, a scope keeps answers while the node has room, and a full node evicts the oldest answer of a scope which is over its reserve, the one which has been over it the longest. An evicted answer is gone: a retransmit of its call runs the call again, and each eviction is counted by reason in dedup_evictions_total. Default <<200000>>."`
 	// LocalMaxBytes bounds the bytes of the answers kept by the node.
@@ -57,14 +57,20 @@ type RPCDedup struct {
 	Redis RPCDedupRedis `mapstructure:"redis" json:"redis" envconfig:"redis" yaml:"redis" toml:"redis" doc:"Redis of the shared tier, see rpc.registry.dedup.redis.enabled."`
 }
 
-// ScopeShare returns the bytes of an answer which a scope keeps in its reserve: scope_reserve_bytes divided by
+// RPCDedupRecordOverhead is the size counted for a record besides its answer, see rpcdedup.RecordOverhead. It is
+// counted within the ScopeShare of a record.
+const RPCDedupRecordOverhead = 256
+
+// ScopeShare returns the bytes of a record which a scope keeps in its reserve: scope_reserve_bytes divided by
 // scope_reserve. The configuration is validated before it is used.
 func (d RPCDedup) ScopeShare() int {
 	return d.ScopeReserveBytes / d.ScopeReserve
 }
 
-// ReplyLimit returns the largest answer which the stores keep, in both tiers: max_reply_size, and at most the ScopeShare.
-// The same limit applies to a reply and to an error.
+// ReplyLimit returns the largest answer which the stores keep, in both tiers: max_reply_size, and at most the ScopeShare
+// less RPCDedupRecordOverhead, so that a record with such an answer fits its share. The limit applies to a reply, and
+// to an error by the length of its encoded form. It is zero when the share is below the overhead, which the
+// configuration validation refuses.
 func (d RPCDedup) ReplyLimit() int {
-	return min(d.MaxReplySize, d.ScopeShare())
+	return max(min(d.MaxReplySize, d.ScopeShare()-RPCDedupRecordOverhead), 0)
 }

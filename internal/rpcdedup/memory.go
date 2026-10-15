@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
 // DefaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
@@ -14,8 +15,9 @@ const DefaultShards = 64
 
 // RecordOverhead is the size counted for a record besides its reply or the encoded form of its error, so that records
 // without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
-// done map of the shard which holds the record.
-const RecordOverhead = 256
+// done map of the shard which holds the record. It is the value of configtypes.RPCDedupRecordOverhead, which the reply
+// limit of the configuration subtracts from the share of a record.
+const RecordOverhead = configtypes.RPCDedupRecordOverhead
 
 // zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.
 var zeroFingerprint [32]byte

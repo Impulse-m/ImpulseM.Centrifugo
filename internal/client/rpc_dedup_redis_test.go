@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSharedReplyLimitMatchesMemoryBoundary checks the reply limit of the shared tier against the node-local store: a
-// reply is kept by one exactly when it is kept by the other, at the boundary and one byte over it.
-func TestSharedReplyLimitMatchesMemoryBoundary(t *testing.T) {
+// TestReplyLimitMatchesMemoryBoundary checks the reply limit, which both tiers take from the configuration, against the
+// node-local store: a reply is kept by it exactly when the limit holds, at the boundary and one byte over it.
+func TestReplyLimitMatchesMemoryBoundary(t *testing.T) {
 	tests := []struct {
 		name  string
 		dedup configtypes.RPCDedup
@@ -32,7 +32,7 @@ func TestSharedReplyLimitMatchesMemoryBoundary(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			limit := sharedReplyLimit(tc.dedup)
+			limit := tc.dedup.ReplyLimit()
 			for _, size := range []int{limit, limit + 1} {
 				store := rpcdedup.NewMemory(rpcdedup.MemoryOptions{
 					MaxEntries:         1024,

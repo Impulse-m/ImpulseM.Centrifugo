@@ -149,7 +149,7 @@ func TestRedisRateLimitAnonymousBypass(t *testing.T) {
 			},
 		}
 	})
-	client, transport := connectRateLimitClient(t, h.node)
+	client, transport, _ := connectTestClient(t, h.node, 0)
 	for id := uint32(2); id <= 6; id++ {
 		sendRateLimitCommand(client, &protocol.Command{Id: id, Unsubscribe: &protocol.UnsubscribeRequest{Channel: "test:1"}})
 		require.False(t, isRateLimited(transport.waitReply(t, id)), "anonymous command %d must not be limited", id)
@@ -178,7 +178,7 @@ func TestRedisRateLimitConnectOverLimit(t *testing.T) {
 	require.Equal(t, float64(1), after-before)
 
 	// Anonymous connections are not limited by user connect.
-	_, anonTransport := connectRateLimitClient(t, h.node)
+	_, anonTransport, _ := connectTestClient(t, h.node, 0)
 	require.Nil(t, anonTransport.waitReply(t, 1).Error)
 }
 

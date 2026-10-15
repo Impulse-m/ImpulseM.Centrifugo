@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -332,6 +333,47 @@ func TestMemoryCancelInFlightCancelsOwner(t *testing.T) {
 	checkInvariants(t, store)
 }
 
+// flightCancelled reports whether the flight was cancelled.
+func flightCancelled(flight *Flight) bool {
+	flight.mu.Lock()
+	defer flight.mu.Unlock()
+	return flight.cancelled
+}
+
+func TestMemoryCancelRacingBeginIsNeverLost(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	scope := testScope("u1", "a")
+	for i := uint64(1); i <= 2000; i++ {
+		key := Key{Scope: scope, MsgID: i}
+		owner := NewFlight()
+		var lookup Lookup
+		var beginErr, cancelErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			lookup, beginErr = store.Begin(key, owner)
+		}()
+		go func() {
+			defer wg.Done()
+			cancelErr = store.Cancel(key, testCancelled)
+		}()
+		wg.Wait()
+		require.NoError(t, beginErr)
+		require.NoError(t, cancelErr)
+		// The cancel either reached the registered flight, or it left the record which the begin answers. A miss
+		// which the cancel did not reach would run a call that was cancelled before it began.
+		if lookup.Outcome == OutcomeMiss {
+			require.True(t, flightCancelled(owner), "a cancel which was ordered before the call is lost, msg_id %d", i)
+			require.NoError(t, store.Complete(key, owner, Record{Err: testCancelled}))
+			continue
+		}
+		require.Equal(t, OutcomeDone, lookup.Outcome, "msg_id %d", i)
+		require.Same(t, testCancelled, lookup.Record.Err)
+	}
+	checkInvariants(t, store)
+}
+
 func TestMemoryCancelBeforeCallLeavesCancelledRecord(t *testing.T) {
 	store, _ := newTestMemory(1024)
 	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
@@ -351,6 +393,118 @@ func TestMemoryCancelLeavesDoneRecord(t *testing.T) {
 	require.NoError(t, store.Cancel(key, testCancelled))
 	lookup := testBegin(t, store, key, NewFlight())
 	require.Equal(t, []byte("ok"), lookup.Record.Reply)
+	checkInvariants(t, store)
+}
+
+func TestMemoryCancelFlight(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	owner := NewFlight()
+	testBegin(t, store, key, owner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner.Attach(cancel)
+
+	// A cancel of a flight cancels its call, and keeps nothing: the owner completes the key.
+	require.NoError(t, store.Cancel(key, testCancelled))
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Equal(t, 0, testEntries(store))
+
+	// A cancel of a key which has no flight keeps a tombstone.
+	other := Key{Scope: testScope("u1", "a"), MsgID: 8}
+	require.NoError(t, store.Cancel(other, testCancelled))
+	require.Equal(t, 1, testEntries(store))
+	lookup := testBegin(t, store, other, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	checkInvariants(t, store)
+}
+
+func TestMemoryTombstoneReplacesDoneRecord(t *testing.T) {
+	store, _ := newTestMemory(1024)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	testAnswer(t, store, key, "ok")
+
+	require.NoError(t, store.Tombstone(key, testCancelled))
+	lookup := testBegin(t, store, key, NewFlightWithFingerprint(Fingerprint("users.get", []byte("x"))))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	require.Equal(t, 1, testEntries(store))
+	checkInvariants(t, store)
+}
+
+func TestMemoryErrorOverReplyLimitIsUncached(t *testing.T) {
+	store, _ := newTestMemory(512)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 600)}
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	// The error is over the limit, as the shared tier measures it, so it is kept without its message.
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	checkInvariants(t, store)
+}
+
+// A reply over the limit is kept as uncached even when the call also has an error which is under it.
+func TestMemoryReplyOverLimitWithErrorIsUncached(t *testing.T) {
+	store, _ := newTestMemory(512)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	require.NoError(t, store.Complete(key, flight, Record{Reply: []byte(strings.Repeat("r", 600)), Err: &centrifuge.Error{Code: 107, Message: "small"}}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	require.Empty(t, lookup.Record.Reply)
+	checkInvariants(t, store)
+}
+
+// The node-local store counts an error by its message and metadata, not by its encoded form. A message of quote
+// characters is 1700 bytes, and its encoded form is over 2048, yet the error fits the reply limit and is kept.
+// An error whose encoded form is over the limit is kept as uncached, although its message is under it: its quote
+// characters are escaped in the encoded form, which is what the limit counts.
+func TestMemoryErrorWhenEncodedFormIsOverLimitIsUncached(t *testing.T) {
+	store, _ := newTestMemory(2048)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat(`"`, 1700)}
+	require.Less(t, len(failure.Message), 2048)
+	require.Greater(t, len(encodeError(failure)), 2048)
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
+	require.Nil(t, lookup.Record.Err)
+	checkInvariants(t, store)
+}
+
+// An error with escaped characters and short metadata entries whose encoded form is under the limit stays cached: a
+// retransmit gets the error, not result_evicted.
+func TestMemoryErrorWithMetadataUnderLimitStaysCached(t *testing.T) {
+	store, _ := newTestMemory(2048)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	metadata := make(map[string]string, 40)
+	for i := range 40 {
+		metadata[strconv.Itoa(i)] = "v"
+	}
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("<", 100), Metadata: metadata}
+	require.Less(t, len(encodeError(failure)), 2048)
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.False(t, lookup.Record.Uncached)
+	require.Equal(t, metadata, lookup.Record.Err.Metadata)
 	checkInvariants(t, store)
 }
 
@@ -940,6 +1094,38 @@ func TestMemoryCancelTombstoneRefusedWhenFull(t *testing.T) {
 	err = store.Cancel(Key{Scope: testScope("u", "2"), MsgID: 1}, testCancelled)
 	require.Equal(t, RefusalUser, testRefused(t, err))
 	require.Equal(t, 1, testEntries(store))
+	checkInvariants(t, store)
+}
+
+// CheckAdmit refuses a scope the store would refuse, and records nothing for any scope.
+func TestMemoryCheckAdmitRecordsNothing(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	options := testMemoryOptions(clock, 1024)
+	options.MaxScopesPerUser = 1
+	store := NewMemory(options)
+	testAnswer(t, store, Key{Scope: testScope("u", "1"), MsgID: 1}, "ok")
+
+	require.Equal(t, RefusalUser, testRefused(t, store.CheckAdmit(testScope("u", "2"))))
+	require.NoError(t, store.CheckAdmit(testScope("u", "1")))
+	require.NoError(t, store.CheckAdmit(testScope("other", "1")))
+	require.Equal(t, 1, testEntries(store))
+	require.True(t, testIsMiss(t, store, Key{Scope: testScope("other", "1"), MsgID: 1}))
+	checkInvariants(t, store)
+}
+
+// The metadata of an error counts toward the share of a record, as its message does, so an error with large metadata
+// is kept as uncached.
+func TestMemoryErrorMetadataCountsTowardShare(t *testing.T) {
+	store, _ := newTestMemory(1 << 20)
+	key := Key{Scope: testScope("u1", "a"), MsgID: 7}
+	owner := NewFlight()
+	testBegin(t, store, key, owner)
+	failure := &centrifuge.Error{Code: 107, Message: "small", Metadata: map[string]string{"k": strings.Repeat("v", 4096)}}
+	require.NoError(t, store.Complete(key, owner, Record{Err: failure}))
+
+	lookup := testBegin(t, store, key, NewFlight())
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.True(t, lookup.Record.Uncached)
 	checkInvariants(t, store)
 }
 

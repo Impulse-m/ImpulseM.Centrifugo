@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.3
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.3
 	github.com/aws/smithy-go v1.28.4
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/centrifugal/centrifuge v0.39.4-0.20261010083301-35f9f3f3c0d0
 	github.com/centrifugal/protocol v0.23.1
 	github.com/cristalhq/jwt/v5 v5.4.0
@@ -81,7 +82,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.10.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.3 // indirect
-	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/centrifugal/fdelta v0.0.3 // indirect
 	github.com/dunglas/httpsfv v1.1.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect

@@ -7,8 +7,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func RegisterHandlers(node *centrifuge.Node, statsSender *usage.Sender, revoker *accessrevoke.Revoker) {
-	handlers := notificationHandlers(node, statsSender, revoker)
+func RegisterHandlers(
+	node *centrifuge.Node,
+	statsSender *usage.Sender,
+	revoker *accessrevoke.Revoker,
+	extra map[string]centrifuge.NotificationHandler,
+) {
+	handlers := mergeHandlers(notificationHandlers(node, statsSender, revoker), extra)
 	node.OnNotification(func(event centrifuge.NotificationEvent) {
 		h, ok := handlers[event.Op]
 		if !ok {

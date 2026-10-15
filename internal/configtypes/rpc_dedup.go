@@ -13,6 +13,17 @@ var RPCDedupStoreErrors = []string{
 	RPCDedupFailOpen,
 }
 
+// RPCDedupRedis configures the shared tier of exactly-once RPC. It has the shape of the Redis config of
+// client.rate_limit.redis_user_command: reuse_from_engine, or a prefix and a Redis config.
+type RPCDedupRedis struct {
+	// Enabled keeps the records in Redis, shared by all nodes.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Keeps the records of exactly-once RPC in Redis, shared by all nodes, with the node-local store as a cache. Off by default: records are then node-local. Read at start: a change takes effect after a restart."`
+	// ReuseFromEngine uses the Redis of the engine.
+	ReuseFromEngine bool `mapstructure:"reuse_from_engine" json:"reuse_from_engine" envconfig:"reuse_from_engine" yaml:"reuse_from_engine" toml:"reuse_from_engine" doc:"Use the Redis and the prefix of the Redis engine. Requires engine.type redis."`
+	// RedisPrefixed is a Redis configuration. Ignored when ReuseFromEngine is set.
+	RedisPrefixed `mapstructure:",squash" yaml:",inline"`
+}
+
 // RPCDedup configures exactly-once RPC. A non-idempotent registry call with a msg_id is recorded, and a
 // retransmit of it is answered from the record instead of running the call again. Off by default.
 type RPCDedup struct {
@@ -23,11 +34,11 @@ type RPCDedup struct {
 	// MaxSkew is how far in the future a msg_id may be, compared with the server time.
 	MaxSkew Duration `mapstructure:"max_skew" default:"30s" json:"max_skew" envconfig:"max_skew" yaml:"max_skew" toml:"max_skew" doc:"How far in the future a msg_id may be, compared with the server time. Default <<30s>>."`
 	// MaxReplySize is the size in bytes above which a reply is not kept.
-	MaxReplySize int `mapstructure:"max_reply_size" default:"2048" json:"max_reply_size" envconfig:"max_reply_size" yaml:"max_reply_size" toml:"max_reply_size" doc:"Size in bytes above which the reply of a call is not kept: a retransmit of it gets rpc.registry.errors.result_evicted. An answer is also kept only up to scope_reserve_bytes / scope_reserve bytes, which is 2048 bytes at the defaults, so the limit in effect is the smaller of the two. A reply over this limit is counted as reply_size in dedup_evictions_total, and a reply over the share as uncached. Default <<2048>>."`
+	MaxReplySize int `mapstructure:"max_reply_size" default:"2048" json:"max_reply_size" envconfig:"max_reply_size" yaml:"max_reply_size" toml:"max_reply_size" doc:"Size in bytes above which the reply of a call is not kept: a retransmit of it gets rpc.registry.errors.result_evicted. An answer is also kept only up to scope_reserve_bytes / scope_reserve bytes less the 256 bytes of a record's overhead, which is 1792 bytes at the defaults, so the limit in effect is the smaller of the two. A reply over this limit is counted as reply_size in dedup_evictions_total, and a reply over the share as uncached. Default <<2048>>."`
 	// LocalMaxEntries bounds the number of answers kept by the node, anonymous ones included.
 	LocalMaxEntries int `mapstructure:"local_max_entries" default:"200000" json:"local_max_entries" envconfig:"local_max_entries" yaml:"local_max_entries" toml:"local_max_entries" doc:"Maximum number of answers kept by the node, anonymous ones included. Every admitted scope is guaranteed scope_reserve of them. Each shard admits at most its share of local_max_entries / scope_reserve scopes, so the node admits fewer when the scopes hash unevenly over the shards. Above its reserve, a scope keeps answers while the node has room, and a full node evicts the oldest answer of a scope which is over its reserve, the one which has been over it the longest. An evicted answer is gone: a retransmit of its call runs the call again, and each eviction is counted by reason in dedup_evictions_total. Default <<200000>>."`
 	// LocalMaxBytes bounds the bytes of the answers kept by the node.
-	LocalMaxBytes int `mapstructure:"local_max_bytes" default:"268435456" json:"local_max_bytes" envconfig:"local_max_bytes" yaml:"local_max_bytes" toml:"local_max_bytes" doc:"Maximum bytes of the answers kept by the node, counting 256 bytes per answer plus its reply or error message. Every admitted scope is guaranteed scope_reserve_bytes of them, and each answer is kept up to scope_reserve_bytes / scope_reserve bytes, an answer over that is kept as uncached. Each shard admits at most its share of local_max_bytes / scope_reserve_bytes scopes. A full node evicts only from a scope which is over its answer reserve, so no answer within its reserve is evicted. Default <<268435456>> (256 MiB)."`
+	LocalMaxBytes int `mapstructure:"local_max_bytes" default:"268435456" json:"local_max_bytes" envconfig:"local_max_bytes" yaml:"local_max_bytes" toml:"local_max_bytes" doc:"Maximum bytes of the answers kept by the node, counting 256 bytes per answer plus its reply or the encoded form of its error. Every admitted scope is guaranteed scope_reserve_bytes of them, and each answer is kept up to scope_reserve_bytes / scope_reserve bytes, an answer over that is kept as uncached. Each shard admits at most its share of local_max_bytes / scope_reserve_bytes scopes. A full node evicts only from a scope which is over its answer reserve, so no answer within its reserve is evicted. Default <<268435456>> (256 MiB)."`
 	// LocalAnonymousMaxEntries is the part of LocalMaxEntries kept for anonymous connections.
 	LocalAnonymousMaxEntries int `mapstructure:"local_anonymous_max_entries" default:"20000" json:"local_anonymous_max_entries" envconfig:"local_anonymous_max_entries" yaml:"local_anonymous_max_entries" toml:"local_anonymous_max_entries" doc:"Part of local_max_entries kept for anonymous connections, which are scoped by their install instance only. A flood of anonymous instances fills this part only. 0 turns the dedup off for anonymous connections, whose calls are then not deduplicated. Default <<20000>>."`
 	// LocalAnonymousMaxBytes is the part of LocalMaxBytes kept for anonymous connections.
@@ -41,5 +52,25 @@ type RPCDedup struct {
 	// MaxRecordsPerScope bounds the answers kept for one scope.
 	MaxRecordsPerScope int `mapstructure:"max_records_per_scope" default:"1024" json:"max_records_per_scope" envconfig:"max_records_per_scope" yaml:"max_records_per_scope" toml:"max_records_per_scope" doc:"Maximum number of answers kept for one scope, which is a user session or install. Over it, the oldest answer of the scope is dropped, and a retransmit of its call runs the call again. At least scope_reserve. Default <<1024>>."`
 	// OnStoreError is what a tracked call does when the dedup store fails.
-	OnStoreError string `mapstructure:"on_store_error" default:"fail_closed" json:"on_store_error" envconfig:"on_store_error" yaml:"on_store_error" toml:"on_store_error" expose:"full" doc:"What a tracked call does when the dedup store fails: fail_closed answers it with rpc.registry.errors.dedup_unavailable, fail_open runs it without dedup. It also applies to a call of a new scope which the node cannot admit within its budgets. A call which runs under fail_open is not recorded, so a retransmit of it on another connection, while it runs, can run it again. On the same connection the retransmit is answered with dedup_unavailable. Default <<fail_closed>>."`
+	OnStoreError string `mapstructure:"on_store_error" default:"fail_closed" json:"on_store_error" envconfig:"on_store_error" yaml:"on_store_error" toml:"on_store_error" expose:"full" doc:"What a tracked call does when the dedup store fails: fail_closed answers it with rpc.registry.errors.dedup_unavailable, fail_open runs it without dedup. It also applies to a call of a new scope which the node cannot admit within its budgets. A call which runs under fail_open is not recorded, so a retransmit of it on another connection, while it runs, can run it again. On the same connection the retransmit is answered with dedup_unavailable. With rpc.registry.dedup.redis.enabled, fail_open runs the call with node-local dedup when Redis fails. Default <<fail_closed>>."`
+	// Redis is the shared tier of the records, see rpc.registry.dedup.redis.enabled.
+	Redis RPCDedupRedis `mapstructure:"redis" json:"redis" envconfig:"redis" yaml:"redis" toml:"redis" doc:"Redis of the shared tier, see rpc.registry.dedup.redis.enabled."`
+}
+
+// RPCDedupRecordOverhead is the size counted for a record besides its answer, see rpcdedup.RecordOverhead. It is
+// counted within the ScopeShare of a record.
+const RPCDedupRecordOverhead = 256
+
+// ScopeShare returns the bytes of a record which a scope keeps in its reserve: scope_reserve_bytes divided by
+// scope_reserve. The configuration is validated before it is used.
+func (d RPCDedup) ScopeShare() int {
+	return d.ScopeReserveBytes / d.ScopeReserve
+}
+
+// ReplyLimit returns the largest answer which the stores keep, in both tiers: max_reply_size, and at most the ScopeShare
+// less RPCDedupRecordOverhead, so that a record with such an answer fits its share. The limit applies to a reply, and
+// to an error by the length of its encoded form. It is zero when the share is below the overhead, which the
+// configuration validation refuses.
+func (d RPCDedup) ReplyLimit() int {
+	return max(min(d.MaxReplySize, d.ScopeShare()-RPCDedupRecordOverhead), 0)
 }

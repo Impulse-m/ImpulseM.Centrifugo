@@ -39,6 +39,9 @@ const (
 	// OutcomeMismatch means a call with the same key and another fingerprint exists. The caller gets
 	// neither its answer nor its flight.
 	OutcomeMismatch
+	// OutcomeInFlightRemote means the call runs on another node, and Lookup.Flight is the local flight which
+	// is completed when the call is done. Only a Store with a shared tier returns it.
+	OutcomeInFlightRemote
 )
 
 // Lookup is the result of Store.Begin.

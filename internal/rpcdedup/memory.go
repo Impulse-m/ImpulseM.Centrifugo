@@ -7,15 +7,17 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
 // DefaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
 const DefaultShards = 64
 
-// RecordOverhead is the size counted for a record besides its reply or error message, so that records without a
-// reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
-// done map of the shard which holds the record.
-const RecordOverhead = 256
+// RecordOverhead is the size counted for a record besides its reply or the encoded form of its error, so that records
+// without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
+// done map of the shard which holds the record. It is the value of configtypes.RPCDedupRecordOverhead, which the reply
+// limit of the configuration subtracts from the share of a record.
+const RecordOverhead = configtypes.RPCDedupRecordOverhead
 
 // zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.
 var zeroFingerprint [32]byte
@@ -301,11 +303,25 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 // with the record as it is kept, so a reply which is kept as uncached is evicted for them too. Only the owner of the
 // flight keeps a record.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
+	m.complete(key, flight, rec, encodeError(rec.Err))
+	return nil
+}
+
+// complete is Complete with the encoded form errJSON of rec.Err, which the caller encodes outside the lock, once per
+// completion.
+func (m *Memory) complete(key Key, flight *Flight, rec Record, errJSON string) {
 	rec.Fingerprint = flight.fingerprint
-	oversize := rec.Err == nil && len(rec.Reply) > m.maxReplyBytes
+	m.finish(key, flight, rec, errJSON)
+}
+
+// finish is complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
+// has no fingerprint, and keeps none, so it answers any duplicate.
+func (m *Memory) finish(key Key, flight *Flight, rec Record, errJSON string) {
+	oversize := overReplyLimit(rec, errJSON, m.maxReplyBytes)
 	kept := rec
 	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		errJSON = ""
 	}
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
@@ -317,7 +333,7 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 			if oversize {
 				s.observe(EvictionReplySize)
 			}
-			kept = s.insert(sc, key, kept, s.now())
+			kept = s.insert(sc, key, kept, errJSON, s.now())
 		}
 	}
 	if sc != nil {
@@ -325,12 +341,44 @@ func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
 	}
 	s.mu.Unlock()
 	flight.finish(kept)
-	return nil
 }
 
-// Cancel implements Store. A flight is cancelled outside the lock. Otherwise the key is kept as cancelled, which
-// counts toward the budgets like any record, and its scope is admitted like the scope of any call.
+// flightOf returns the flight of key which is registered on this store, or nil.
+func (m *Memory) flightOf(key Key) *Flight {
+	s := m.shardOf(key.Scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flights[key]
+}
+
+// CheckAdmit returns a *RefusedError when the store would not admit scope, and nil when it would. It records nothing,
+// so a caller refuses a scope before it writes anywhere else.
+func (m *Memory) CheckAdmit(scope string) error {
+	s := m.shardOf(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checkAdmit(scope, s.now())
+}
+
+// Cancel implements Store. A call which runs on this store is cancelled outside the lock. Otherwise the key is kept as
+// cancelled, which counts toward the budgets like any record, and its scope is admitted like the scope of any call. The
+// flight and the record are looked up under one lock, so a call which begins meanwhile is either found by Cancel, or it
+// finds the cancelled record.
 func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
+	return m.cancel(key, failure, false)
+}
+
+// Tombstone keeps key as cancelled, as the shared tier does when it holds nothing for key. Unlike Cancel, it replaces a
+// done record which key holds: the shared tier has no answer for key, so the answer of this store must not outlive it.
+func (m *Memory) Tombstone(key Key, failure *centrifuge.Error) error {
+	return m.cancel(key, failure, true)
+}
+
+// cancel is Cancel, and with replace it keeps the cancelled record in place of a done record of key.
+func (m *Memory) cancel(key Key, failure *centrifuge.Error, replace bool) error {
+	// The error is encoded outside the lock. A tombstone is within the share of a record, see configtypes.RPCDedup.ReplyLimit,
+	// so the insert below keeps it.
+	errJSON := encodeError(failure)
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
 	if running, found := s.flights[key]; found {
@@ -340,7 +388,7 @@ func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
 	}
 	now := s.now()
 	s.sweepSome(now)
-	if s.liveRecord(key, now) != nil {
+	if !replace && s.liveRecord(key, now) != nil {
 		s.mu.Unlock()
 		return nil
 	}
@@ -349,7 +397,7 @@ func (m *Memory) Cancel(key Key, failure *centrifuge.Error) error {
 		s.mu.Unlock()
 		return err
 	}
-	s.insert(sc, key, Record{Err: failure}, now)
+	s.insert(sc, key, Record{Err: failure}, errJSON, now)
 	s.mu.Unlock()
 	return nil
 }
@@ -402,16 +450,11 @@ func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 	if sc := s.scopes[scope]; sc != nil {
 		return sc, nil
 	}
+	if err := s.checkAdmit(scope, now); err != nil {
+		return nil, err
+	}
 	p := s.poolFor(scope)
 	user := scopeUser(scope)
-	refusal, refused := s.refusalOf(p, user)
-	for i := 0; refused && i < admitSweeps; i++ {
-		s.sweepSome(now)
-		refusal, refused = s.refusalOf(p, user)
-	}
-	if refused {
-		return nil, &RefusedError{Refusal: refusal}
-	}
 	sc := &scopeState{
 		scope:   scope,
 		user:    user,
@@ -425,6 +468,25 @@ func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 		s.users[user]++
 	}
 	return sc, nil
+}
+
+// checkAdmit returns a *RefusedError when a new scope would meet a limit, after the sweeps of admit, and nil when it
+// would be admitted. A scope which is admitted already is not refused. Caller holds mu.
+func (s *shard) checkAdmit(scope string, now time.Time) error {
+	if s.scopes[scope] != nil {
+		return nil
+	}
+	p := s.poolFor(scope)
+	user := scopeUser(scope)
+	refusal, refused := s.refusalOf(p, user)
+	for i := 0; refused && i < admitSweeps; i++ {
+		s.sweepSome(now)
+		refusal, refused = s.refusalOf(p, user)
+	}
+	if refused {
+		return &RefusedError{Refusal: refusal}
+	}
+	return nil
 }
 
 // refusalOf returns the refusal which a new scope of pool p and user would meet, and whether it meets one. Caller
@@ -483,12 +545,13 @@ func (s *shard) sweepSome(now time.Time) {
 
 // insert keeps rec for key in scope sc, which is admitted, making room within the budgets of its pool, and returns
 // the record as it is kept. A reply over the share of a record is kept as uncached, and so is one which fits no room:
-// it never fails. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
+// it never fails. errJSON is the encoded form of the error of rec, computed by the caller outside mu, and counted in the
+// size of the record. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
 // No record of key exists under its flight: Begin removes an expired record and answers a live one without a flight,
 // and only the owner of the flight inserts. The removal above keeps the counts right if that ever changes.
-func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Record {
+func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now time.Time) Record {
 	p := sc.pool
-	size := recordSize(rec)
+	size := recordSize(rec, errJSON)
 	if !rec.Uncached && size > p.recordBytes {
 		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
 		size = RecordOverhead
@@ -613,12 +676,16 @@ func (s *shard) unlink(r *storedRecord) {
 	p.stats.bytes.Add(-r.size)
 }
 
-// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, or of its error
-// message when it has an error.
-func recordSize(rec Record) int64 {
-	size := int64(RecordOverhead + len(rec.Reply))
-	if rec.Err != nil {
-		size += int64(len(rec.Err.Message))
-	}
-	return size
+// overReplyLimit reports whether a record is kept as uncached at limit: its reply is over it, or its error is over it
+// by the length of the encoded form errJSON, which is the form the shared tier stores. The node-local store and the
+// shared tier both apply this rule, so that they keep the same records, see completeShared.
+func overReplyLimit(rec Record, errJSON string, limit int) bool {
+	return len(rec.Reply) > limit || len(errJSON) > limit
+}
+
+// recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, plus the length of
+// the encoded form errJSON of its error, which is "" for no error. The encoded form is counted, not the message, so
+// that the budgets bound the bytes the shared tier stores.
+func recordSize(rec Record, errJSON string) int64 {
+	return int64(RecordOverhead + len(rec.Reply) + len(errJSON))
 }

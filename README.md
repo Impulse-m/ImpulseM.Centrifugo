@@ -133,6 +133,7 @@ A namespace can set `server_tags_filter_template`: a server tags filter applied 
 * A connection refresh whose token has other values of the template claims disconnects with insufficient state, and the client reconnects with the new values. Equal values change nothing.
 * A rebind to a token with other values, or to another user, unsubscribes the channels with a template with code 2500 (insufficient state), and the client resubscribes them with fresh filters. The user is one of the values: a connection without a user which takes one renders its templates with that user, so the rebind changes them even when the claims are equal. A refused template of a rebind refuses the refresh, and the connection keeps its identity.
 * The server API subscribe is refused on a channel with a template, with error 108 (not available), since no connection values exist to render it with. Subscriptions made by a connection are not affected.
+* Presence, join/leave, `force_push_join_leave` and the map presence prefixes are config errors on a namespace with a template. Their messages and presence lists are not filtered by the template, so they would show the other subscribers of the channel.
 * A connect proxy connection has no token claims: `{{user}}` and `{{client}}` work, and `{{claims.*}}` is missing.
 * A config reload which adds a template does not change live subscriptions. A connection verified before the reload has no claims, so its claim variables are missing under the policy until it reconnects.
 

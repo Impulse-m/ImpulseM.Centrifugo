@@ -1,3 +1,10 @@
+Unreleased
+==========
+
+### Improvements
+
+* Exactly-once RPC: a protocol error of a call which was not executed carries the metadata key `x-centrifugo-retry`, set by the server. Its value is `new_msg_id` for a `msg_id` outside the window of a first transmission, and `later` when the call may be sent again with the same `msg_id` after a delay. Clients which do not know the key ignore it. No config or protocol change. See [Exactly-once calls](internal/rpcregistry/README.md#exactly-once-calls).
+
 v5.1.2 and higher
 =================
 

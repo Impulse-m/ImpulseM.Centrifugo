@@ -603,6 +603,20 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 			wantErr: "namespace engines: prefix of controller changed, a restart is needed",
 		},
 		{
+			name: "namespace boundary changed",
+			modify: func(cfg *Config) {
+				cfg.Channel.NamespaceBoundary = "/"
+			},
+			wantErr: "namespace engines: channel.namespace_boundary changed, a restart is needed",
+		},
+		{
+			name: "private prefix changed",
+			modify: func(cfg *Config) {
+				cfg.Channel.PrivatePrefix = "!"
+			},
+			wantErr: "namespace engines: channel.private_prefix changed, a restart is needed",
+		},
+		{
 			name: "prefix of a named Nats broker changed",
 			modify: func(cfg *Config) {
 				cfg.Brokers[1].Nats.Prefix = "centrifugo-v2"
@@ -729,4 +743,12 @@ func TestNamespaceEnginesRecordKeepsRemovedNamespace(t *testing.T) {
 		configtypes.ChannelNamespace{Name: "fresh", ChannelOptions: configtypes.ChannelOptions{BrokerName: "rates"}},
 	)
 	require.NoError(t, CheckNamespaceEnginesReload(removedCfg, unroutedCfg, record))
+}
+
+func TestCheckNamespaceEnginesReloadWithoutEnginesAllowsBoundaryChange(t *testing.T) {
+	oldCfg := DefaultConfig()
+	newCfg := DefaultConfig()
+	newCfg.Channel.NamespaceBoundary = "/"
+	newCfg.Channel.PrivatePrefix = "!"
+	require.NoError(t, CheckNamespaceEnginesReload(oldCfg, newCfg, NewNamespaceEnginesRecord(oldCfg)))
 }

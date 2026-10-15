@@ -343,6 +343,16 @@ func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *Namespace
 	if err := record.check(newCfg); err != nil {
 		return err
 	}
+	if record != nil {
+		// The boundary and the private prefix decide which namespace a channel name belongs to, so a change
+		// would route the channels which have subscriptions to another engine.
+		if oldCfg.Channel.NamespaceBoundary != newCfg.Channel.NamespaceBoundary {
+			return namespaceEnginesChanged("channel.namespace_boundary")
+		}
+		if oldCfg.Channel.PrivatePrefix != newCfg.Channel.PrivatePrefix {
+			return namespaceEnginesChanged("channel.private_prefix")
+		}
+	}
 
 	if oldCfg.Controller.Enabled != newCfg.Controller.Enabled || oldCfg.Controller.Type != newCfg.Controller.Type {
 		return namespaceEnginesChanged("controller")

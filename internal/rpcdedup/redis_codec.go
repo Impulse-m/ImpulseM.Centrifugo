@@ -112,7 +112,7 @@ func parseBegin(parts []string) (BeginResult, error) {
 	case "mismatch":
 		return BeginResult{State: BeginMismatch}, nil
 	case "cancelled":
-		if len(parts) != 2 {
+		if len(parts) != 2 || parts[1] == "" {
 			return BeginResult{}, errMalformedReply
 		}
 		rec, err := parseRecord("", parts[1], "")
@@ -138,7 +138,8 @@ func parseBegin(parts []string) (BeginResult, error) {
 	return BeginResult{}, errMalformedReply
 }
 
-// parsePoll returns the result of a poll from the fields s, r, e and u of a record. A missing record has no fields.
+// parsePoll returns the result of a poll from the fields s, r, e and u of a record. A missing record has no fields. A
+// cancelled record without its error is malformed: it would be answered as a success.
 func parsePoll(state string, reply string, errJSON string, uncached string) (PollResult, error) {
 	switch state {
 	case "":
@@ -146,6 +147,9 @@ func parsePoll(state string, reply string, errJSON string, uncached string) (Pol
 	case redisStateInFlight:
 		return PollResult{State: PollInFlight}, nil
 	case redisStateDone, redisStateCancelled:
+		if state == redisStateCancelled && errJSON == "" {
+			return PollResult{}, errMalformedReply
+		}
 		rec, err := parseRecord(reply, errJSON, uncached)
 		if err != nil {
 			return PollResult{}, err

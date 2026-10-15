@@ -55,17 +55,8 @@ func validateNamespaceEngines(c Config) error {
 	var brokerNames []string
 	var enabledBrokers []string
 	for _, b := range c.Brokers {
-		if !nameRe.MatchString(b.Name) {
-			return fmt.Errorf("invalid broker name: %s, must match %s regular expression", b.Name, namePattern)
-		}
-		if b.Name == reservedEngineName {
-			return fmt.Errorf("invalid broker name: %s is reserved", b.Name)
-		}
-		if slices.Contains(brokerNames, b.Name) {
-			return fmt.Errorf("invalid broker name: %s, must be unique", b.Name)
-		}
-		if !slices.Contains(knownNamedBrokerTypes, b.Type) {
-			return fmt.Errorf("broker %s: unknown broker type: %s", b.Name, b.Type)
+		if err := validateEntry("broker", b.Name, b.Type, brokerNames, knownNamedBrokerTypes); err != nil {
+			return err
 		}
 		brokerNames = append(brokerNames, b.Name)
 		if b.Enabled {
@@ -76,17 +67,10 @@ func validateNamespaceEngines(c Config) error {
 	var presenceManagerNames []string
 	var enabledPresenceManagers []string
 	for _, pm := range c.PresenceManagers {
-		if !nameRe.MatchString(pm.Name) {
-			return fmt.Errorf("invalid presence manager name: %s, must match %s regular expression", pm.Name, namePattern)
-		}
-		if pm.Name == reservedEngineName {
-			return fmt.Errorf("invalid presence manager name: %s is reserved", pm.Name)
-		}
-		if slices.Contains(presenceManagerNames, pm.Name) {
-			return fmt.Errorf("invalid presence manager name: %s, must be unique", pm.Name)
-		}
-		if !slices.Contains(knownNamedPresenceManagerTypes, pm.Type) {
-			return fmt.Errorf("presence manager %s: unknown presence manager type: %s", pm.Name, pm.Type)
+		if err := validateEntry(
+			"presence manager", pm.Name, pm.Type, presenceManagerNames, knownNamedPresenceManagerTypes,
+		); err != nil {
+			return err
 		}
 		presenceManagerNames = append(presenceManagerNames, pm.Name)
 		if pm.Enabled {
@@ -116,6 +100,25 @@ func validateNamespaceEngines(c Config) error {
 
 	if c.Controller.Enabled && !slices.Contains(knownControllerTypes, c.Controller.Type) {
 		return fmt.Errorf("unknown controller type: %s", c.Controller.Type)
+	}
+	return nil
+}
+
+// validateEntry checks the name and the type of a named broker or presence manager. The name must match the name
+// pattern, must not be the reserved name, and must be unique among names. The type must be a known type. kind
+// is the entry kind, which the errors name.
+func validateEntry(kind string, name string, entryType string, names []string, knownTypes []string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid %s name: %s, must match %s regular expression", kind, name, namePattern)
+	}
+	if name == reservedEngineName {
+		return fmt.Errorf("invalid %s name: %s is reserved", kind, name)
+	}
+	if slices.Contains(names, name) {
+		return fmt.Errorf("invalid %s name: %s, must be unique", kind, name)
+	}
+	if !slices.Contains(knownTypes, entryType) {
+		return fmt.Errorf("%s %s: unknown %s type: %s", kind, name, kind, entryType)
 	}
 	return nil
 }

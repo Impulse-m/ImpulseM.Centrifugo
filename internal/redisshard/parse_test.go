@@ -39,6 +39,16 @@ func TestParseRedisShardConfigsConfigurationErrors(t *testing.T) {
 	require.ErrorContains(t, err, "master name must be set when using Redis Sentinel")
 }
 
+func TestConfigsOfNamesTheSettingInErrors(t *testing.T) {
+	configs, err := ConfigsOf(configtypes.Redis{Address: []string{"127.0.0.1:6390"}}, "setting.redis")
+	require.NoError(t, err)
+	require.Len(t, configs, 1)
+
+	_, err = ConfigsOf(configtypes.Redis{}, "setting.redis")
+	require.ErrorContains(t, err, "setting.redis: ")
+	require.ErrorContains(t, err, "no Redis address configured")
+}
+
 func TestNewRedisShardsFailsWhenRedisIsUnreachable(t *testing.T) {
 	configs, err := ParseRedisShardConfigs(configtypes.Redis{Address: []string{closedAddress(t)}})
 	require.NoError(t, err)

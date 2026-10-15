@@ -37,6 +37,11 @@ type RegistryCall struct {
 	Headers map[string]string
 	// MsgID is the client request id, sent as x-centrifugo-msg-id when not zero.
 	MsgID uint64
+	// Retransmit is set for a resend after a transport loss, sent as x-centrifugo-retransmit.
+	Retransmit bool
+	// WithoutUpdates is set when the client asks for the call without its updates, sent as
+	// x-centrifugo-without-updates.
+	WithoutUpdates bool
 }
 
 // DialRegistryTarget makes the gRPC connection of a registry target. It is the dial hook of the
@@ -125,6 +130,12 @@ func registryRequestMetadata(ctx context.Context, m *rpcregistry.Method, call Re
 	md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"client", call.ClientID)
 	if call.MsgID != 0 {
 		md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"msg-id", strconv.FormatUint(call.MsgID, 10))
+	}
+	if call.Retransmit {
+		md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"retransmit", "1")
+	}
+	if call.WithoutUpdates {
+		md.Set(configtypes.RPCRegistryReservedHeaderPrefix+"without-updates", "1")
 	}
 	// Written last and omitted when unknown, even if a source carried one: a backend which reads
 	// this header would otherwise take the balancer for the client. An absent header is detectable,

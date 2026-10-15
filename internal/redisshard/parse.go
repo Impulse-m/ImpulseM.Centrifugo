@@ -30,6 +30,16 @@ func ParseRedisShardConfigs(redisConf configtypes.Redis) ([]RedisShardConfig, er
 	return configs, nil
 }
 
+// ConfigsOf is ParseRedisShardConfigs for the Redis configuration of a setting. Its error is prefixed with the name of
+// the setting, so that the setting is named in the error.
+func ConfigsOf(redisConf configtypes.Redis, setting string) ([]RedisShardConfig, error) {
+	configs, err := ParseRedisShardConfigs(redisConf)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", setting, err)
+	}
+	return configs, nil
+}
+
 // validateRedisShardConfig checks the same configuration errors NewRedisShard reports before it connects.
 // It does not connect. The replica client check is left to NewRedisShard, because cluster mode may be
 // detected only after connecting.

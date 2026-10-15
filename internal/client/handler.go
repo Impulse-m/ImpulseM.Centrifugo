@@ -58,6 +58,7 @@ type Handler struct {
 	proxyMap         *ProxyMap
 	rpcExtension     map[string]RPCExtensionFunc
 	rpcRegistry      *rpcregistry.Registry
+	rpcDedup         *rpcDedupState
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
 	clientLimiter    *ratelimit.ClientLimiter
@@ -86,6 +87,7 @@ func NewHandler(
 		subTokenVerifier: subTokenVerifier,
 		proxyMap:         proxyMap,
 		rpcExtension:     make(map[string]RPCExtensionFunc),
+		rpcDedup:         newRPCDedupState(cfgContainer),
 	}
 }
 
@@ -212,6 +214,9 @@ func (h *Handler) Setup() error {
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err
 	}
+	if err := h.setupRPCDedupRedis(); err != nil {
+		return err
+	}
 
 	h.node.OnConnect(func(client *centrifuge.Client) {
 		if disconnect, revoked := h.trackConnect(client); revoked {
@@ -247,7 +252,7 @@ func (h *Handler) Setup() error {
 
 		if rpcProxyHandler != nil || len(h.rpcExtension) > 0 || h.rpcRegistry != nil {
 			client.OnRPC(func(event centrifuge.RPCEvent, cb centrifuge.RPCCallback) {
-				h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
+				h.runConcurrentlyIfNeeded(client.Context(), h.rpcLimit(event, concurrency), semaphore, func() {
 					reply, err := h.OnRPC(client, event, rpcProxyHandler)
 					cb(reply, err)
 				})
@@ -599,6 +604,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
+	h.storeRPCConnection(storage, e.Instance, credentials)
 	h.connectRecord(cfg, storage, origin, e.Token, verified, credentials)
 
 	finalReply := centrifuge.ConnectReply{
@@ -658,6 +664,9 @@ func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refre
 		r, extra, err := refreshProxyHandler(c, e, getPerCallData(c))
 		if err == nil && extra.Meta != nil {
 			setStorageMeta(c, extra.Meta)
+		}
+		if err == nil && r.TokenIdentity != nil {
+			h.refreshRPCScope(c, *r.TokenIdentity)
 		}
 		return r, RefreshExtra{}, err
 	}

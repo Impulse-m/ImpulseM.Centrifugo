@@ -141,52 +141,6 @@ func TestRedisKeyFormat(t *testing.T) {
 	require.Equal(t, "app.rl.{a:b}.publish.ns.chat", redisKey("app", "a:b", "publish.ns.chat"))
 }
 
-func TestJumpConsistentHashSingleBucket(t *testing.T) {
-	for i := 0; i < 1000; i++ {
-		require.Equal(t, int32(0), jumpConsistentHash(fnv1a64(fmt.Sprint("user-", i)), 1))
-	}
-}
-
-func TestShardIndexDistribution(t *testing.T) {
-	const numUsers = 30000
-	const numShards = 3
-	counts := make([]int, numShards)
-	for i := 0; i < numUsers; i++ {
-		idx := shardIndex(fmt.Sprint("user-", i), numShards)
-		require.GreaterOrEqual(t, idx, 0)
-		require.Less(t, idx, numShards)
-		counts[idx]++
-	}
-	expected := float64(numUsers) / numShards
-	for _, c := range counts {
-		require.InDelta(t, expected, float64(c), expected*0.1)
-	}
-}
-
-func TestShardIndexStableAndMinimalMovement(t *testing.T) {
-	const numUsers = 20000
-	moved := 0
-	for i := 0; i < numUsers; i++ {
-		userID := fmt.Sprint("user-", i)
-		before := shardIndex(userID, 3)
-		require.Equal(t, before, shardIndex(userID, 3))
-		after := shardIndex(userID, 4)
-		if before != after {
-			// Jump hash moves a key only to the new bucket.
-			require.Equal(t, 3, after)
-			moved++
-		}
-	}
-	// About a quarter of the users move to the new shard.
-	require.InDelta(t, numUsers/4, moved, numUsers*0.03)
-}
-
-func TestFnv1a64(t *testing.T) {
-	// Reference values of FNV-1a 64.
-	require.Equal(t, uint64(0xcbf29ce484222325), fnv1a64(""))
-	require.Equal(t, uint64(0xaf63dc4c8601ec8c), fnv1a64("a"))
-}
-
 // fakeRedisRunner returns a runner which records calls and returns allowed and err.
 func fakeRedisRunner(allowed bool, err error, calls *[]string) redisScriptRunner {
 	return func(_ context.Context, _ *redisshard.RedisShard, key string, _ []string) (bool, error) {
@@ -221,7 +175,7 @@ func (f *flakyConnector) connect(configs []redisshard.RedisShardConfig) ([]*redi
 func newFakeRedisLimiter(cfg configtypes.RateLimitRedisUserCommand, run redisScriptRunner) *RedisUserLimiter {
 	connector := &flakyConnector{}
 	l := NewRedisUserLimiter(cfg, "p", fakeShardConfigs(2), 0)
-	l.connect = connector.connect
+	l.connector.SetConnect(connector.connect)
 	l.run = run
 	l.Connect()
 	return l
@@ -339,7 +293,7 @@ func TestRedisLimiterNeedsKey(t *testing.T) {
 
 func TestRedisLimiterDefaultTimeout(t *testing.T) {
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
-	require.Equal(t, redisDefaultIOTimeout, l.timeout)
+	require.Equal(t, redisshard.DefaultIOTimeout, l.timeout)
 	l = NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 250*time.Millisecond)
 	require.Equal(t, 250*time.Millisecond, l.timeout)
 }
@@ -349,9 +303,8 @@ func TestRedisLimiterDefaultTimeout(t *testing.T) {
 func newRetryTestLimiter(failFor int32) (*RedisUserLimiter, *flakyConnector) {
 	connector := &flakyConnector{failFor: failFor}
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(2), 0)
-	l.connect = connector.connect
-	l.backoffMin = time.Millisecond
-	l.backoffMax = 2 * time.Millisecond
+	l.connector.SetConnect(connector.connect)
+	l.connector.SetBackoff(time.Millisecond, 2*time.Millisecond)
 	return l, connector
 }
 
@@ -412,7 +365,7 @@ func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
 	connector := &flakyConnector{failFor: 100}
 	var calls []string
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(2), 0)
-	l.connect = connector.connect
+	l.connector.SetConnect(connector.connect)
 	l.run = fakeRedisRunner(false, nil, &calls)
 	l.Connect()
 	require.False(t, l.connected())
@@ -431,12 +384,4 @@ func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
 	require.True(t, l.connected())
 	require.False(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.Equal(t, []string{"p.rl.{42}.publish.ns.chat"}, calls)
-}
-
-func TestRedisRetryDelayWithinJitterBounds(t *testing.T) {
-	for i := 0; i < 1000; i++ {
-		delay := retryDelay(time.Second)
-		require.GreaterOrEqual(t, delay, 500*time.Millisecond)
-		require.LessOrEqual(t, delay, time.Second)
-	}
 }

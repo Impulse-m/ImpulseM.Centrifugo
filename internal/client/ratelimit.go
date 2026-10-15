@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -65,15 +64,10 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 // are not: the limiter connects later.
 func newRedisUserLimiter(cfg config.Config) (*ratelimit.RedisUserLimiter, error) {
 	rc := cfg.Client.RateLimit.RedisUserCommand
-	redisConf := rc.Redis.Redis
-	prefix := rc.Redis.Prefix
-	if rc.Redis.ReuseFromEngine {
-		redisConf = cfg.Engine.Redis.Redis
-		prefix = cfg.Engine.Redis.Prefix
-	}
-	configs, err := redisshard.ParseRedisShardConfigs(redisConf)
+	redisConf, prefix := redisConfigOf(rc.Redis.ReuseFromEngine, rc.Redis.RedisPrefixed, cfg.Engine.Redis.RedisPrefixed)
+	configs, err := redisshard.ConfigsOf(redisConf, "redis_user_command: Redis configuration")
 	if err != nil {
-		return nil, fmt.Errorf("redis_user_command: Redis configuration: %w", err)
+		return nil, err
 	}
 	return ratelimit.NewRedisUserLimiter(rc, prefix, configs, redisConf.IOTimeout.ToDuration()), nil
 }
@@ -132,6 +126,9 @@ func (h *Handler) Services() []service.Service {
 	}
 	if h.redisLimiter != nil {
 		services = append(services, h.redisLimiter)
+	}
+	if h.rpcDedup != nil && h.rpcDedup.shared != nil {
+		services = append(services, newRPCDedupRedisService(h.rpcDedup.connector, h.rpcDedup.shared))
 	}
 	return services
 }

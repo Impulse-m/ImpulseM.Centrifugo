@@ -14,6 +14,7 @@ type Client interface {
 	Context() context.Context
 	Transport() centrifuge.TransportInfo
 	AcquireStorage() (map[string]any, func(map[string]any))
+	TokenIdentity() centrifuge.TokenIdentity
 	Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe)
 	WritePublication(channel string, publication *centrifuge.Publication, sp centrifuge.StreamPosition) error
 }

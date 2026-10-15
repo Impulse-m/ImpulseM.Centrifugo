@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -34,8 +36,13 @@ const (
 // RPCRegistryMethodMetrics holds the calls_total children of one registry method, one per result.
 // They are resolved once, when the method is built, so a call does no label lookup. A nil value does nothing.
 type RPCRegistryMethodMetrics struct {
-	calls [len(rpcRegistryResults)]prometheus.Counter
+	calls       [len(rpcRegistryResults)]prometheus.Counter
+	retransmits prometheus.Counter
 }
+
+// RPCRegistryRetransmitsTotal counts the calls of a registry method which the client retransmitted after a
+// transport loss. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryRetransmitsTotal *prometheus.CounterVec
 
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
@@ -47,7 +54,18 @@ func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
 	for i, result := range rpcRegistryResults {
 		m.calls[i] = RPCRegistryCallsTotal.WithLabelValues(rpcMethod, result)
 	}
+	if RPCRegistryRetransmitsTotal != nil {
+		m.retransmits = RPCRegistryRetransmitsTotal.WithLabelValues(rpcMethod)
+	}
 	return m
+}
+
+// IncRetransmit counts one retransmitted call of the method.
+func (m *RPCRegistryMethodMetrics) IncRetransmit() {
+	if m == nil || m.retransmits == nil {
+		return
+	}
+	m.retransmits.Inc()
 }
 
 // IncCall counts one call with its result. Results other than the RPCRegistryResult values are
@@ -200,4 +218,237 @@ func (s *rpcRegistryAppTypeSet) label(value string) string {
 	}
 	s.values[value] = struct{}{}
 	return value
+}
+
+// RPCRegistryDedupTotal counts the calls of exactly-once RPC by outcome. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupTotal *prometheus.CounterVec
+
+// RPCRegistryDedupWaitSeconds is the time duplicates wait for the call they joined. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupWaitSeconds prometheus.Histogram
+
+// RPCRegistryDedupEntries is the number of answers the dedup store keeps, of both pools. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupEntries prometheus.Gauge
+
+// RPCRegistryDedupEvictions counts the answers which the dedup store evicts to make room, by reason. It is set by
+// the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupEvictions *prometheus.CounterVec
+
+// RPCRegistryDedupScopes is the number of scopes the dedup store admits, per pool. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupScopes *prometheus.GaugeVec
+
+// RPCRegistryDedupBytes is the number of bytes the dedup store keeps, per pool. It is set by the fork metrics
+// setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupBytes *prometheus.GaugeVec
+
+// RPCRegistryDedupRedisErrorsTotal counts the failed Redis operations of the shared tier of exactly-once RPC. It is
+// set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisErrorsTotal prometheus.Counter
+
+// RPCRegistryDedupRedisDuration is the duration of the Redis operations of the shared tier. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisDuration prometheus.Histogram
+
+// RPCRegistryDedupRedisAckDropsTotal counts the acks which the shared tier dropped because its ack queue was full.
+// It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
+
+// RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
+type RPCRegistryDedupOutcome int
+
+// Outcomes of exactly-once RPC calls. Each is counted once per tracked call, or once per cancel command.
+const (
+	RPCRegistryDedupMiss RPCRegistryDedupOutcome = iota
+	RPCRegistryDedupHitDone
+	RPCRegistryDedupHitInFlightLocal
+	RPCRegistryDedupEvicted
+	RPCRegistryDedupCancelled
+	RPCRegistryDedupStoreError
+	RPCRegistryDedupMsgIDInvalid
+	RPCRegistryDedupMsgIDReused
+	RPCRegistryDedupNoScope
+	RPCRegistryDedupRefusedPool
+	RPCRegistryDedupRefusedUser
+	RPCRegistryDedupHitInFlightRemote
+)
+
+// rpcRegistryDedupOutcomeLabels holds the outcome label of each RPCRegistryDedupOutcome, in the same order.
+var rpcRegistryDedupOutcomeLabels = [...]string{
+	"miss",
+	"hit_done",
+	"hit_inflight_local",
+	"evicted",
+	"cancelled",
+	"store_error",
+	"msg_id_invalid",
+	"msg_id_reused",
+	"no_scope",
+	"refused_pool",
+	"refused_user",
+	"hit_inflight_remote",
+}
+
+// rpcRegistryDedupPoolLabels are the pool labels of the dedup gauges, the index of each is the pool index of the store.
+var rpcRegistryDedupPoolLabels = [...]string{
+	"authenticated",
+	"anonymous",
+}
+
+// rpcRegistryDedupEvictionReasons are the reasons of the eviction counter, which has a series for each of them from
+// the start.
+var rpcRegistryDedupEvictionReasons = [...]string{
+	rpcdedup.EvictionScopeCap,
+	rpcdedup.EvictionOverReserve,
+	rpcdedup.EvictionSurplus,
+	rpcdedup.EvictionUncached,
+	rpcdedup.EvictionReplySize,
+}
+
+// RPCRegistryDedupMetrics holds the outcome counters of exactly-once RPC, resolved once. A nil value does
+// nothing.
+type RPCRegistryDedupMetrics struct {
+	outcomes         [len(rpcRegistryDedupOutcomeLabels)]prometheus.Counter
+	evictScopeCap    prometheus.Counter
+	evictOverReserve prometheus.Counter
+	evictSurplus     prometheus.Counter
+	evictUncached    prometheus.Counter
+	evictReplySize   prometheus.Counter
+	waitSeconds      prometheus.Histogram
+	entries          prometheus.Gauge
+	scopes           [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
+	bytes            [len(rpcRegistryDedupPoolLabels)]prometheus.Gauge
+	redisErrors      prometheus.Counter
+	redisDuration    prometheus.Histogram
+	ackDrops         prometheus.Counter
+}
+
+// NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
+// initialised.
+func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
+	if RPCRegistryDedupTotal == nil {
+		return nil
+	}
+	m := &RPCRegistryDedupMetrics{
+		waitSeconds:   RPCRegistryDedupWaitSeconds,
+		entries:       RPCRegistryDedupEntries,
+		redisErrors:   RPCRegistryDedupRedisErrorsTotal,
+		redisDuration: RPCRegistryDedupRedisDuration,
+		ackDrops:      RPCRegistryDedupRedisAckDropsTotal,
+	}
+	for i, label := range rpcRegistryDedupOutcomeLabels {
+		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
+	}
+	if RPCRegistryDedupEvictions != nil {
+		m.evictScopeCap = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionScopeCap)
+		m.evictOverReserve = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionOverReserve)
+		m.evictSurplus = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionSurplus)
+		m.evictUncached = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionUncached)
+		m.evictReplySize = RPCRegistryDedupEvictions.WithLabelValues(rpcdedup.EvictionReplySize)
+	}
+	if RPCRegistryDedupScopes != nil && RPCRegistryDedupBytes != nil {
+		for i, label := range rpcRegistryDedupPoolLabels {
+			m.scopes[i] = RPCRegistryDedupScopes.WithLabelValues(label)
+			m.bytes[i] = RPCRegistryDedupBytes.WithLabelValues(label)
+		}
+	}
+	return m
+}
+
+// Evicted counts an answer which the dedup store evicted for reason. It implements rpcdedup.EvictionObserver.
+func (m *RPCRegistryDedupMetrics) Evicted(reason string) {
+	if m == nil {
+		return
+	}
+	switch reason {
+	case rpcdedup.EvictionScopeCap:
+		incCounter(m.evictScopeCap)
+	case rpcdedup.EvictionOverReserve:
+		incCounter(m.evictOverReserve)
+	case rpcdedup.EvictionSurplus:
+		incCounter(m.evictSurplus)
+	case rpcdedup.EvictionUncached:
+		incCounter(m.evictUncached)
+	case rpcdedup.EvictionReplySize:
+		incCounter(m.evictReplySize)
+	}
+}
+
+// incCounter increments c when it is set.
+func incCounter(c prometheus.Counter) {
+	if c != nil {
+		c.Inc()
+	}
+}
+
+// Inc counts one outcome.
+func (m *RPCRegistryDedupMetrics) Inc(outcome RPCRegistryDedupOutcome) {
+	if m == nil {
+		return
+	}
+	m.outcomes[outcome].Inc()
+}
+
+// RedisCall observes the duration of one Redis operation of the shared tier. It implements rpcdedup.BackendObserver.
+func (m *RPCRegistryDedupMetrics) RedisCall(seconds float64) {
+	if m == nil || m.redisDuration == nil {
+		return
+	}
+	m.redisDuration.Observe(seconds)
+}
+
+// RedisError counts one failed Redis operation of the shared tier. It implements rpcdedup.BackendObserver.
+func (m *RPCRegistryDedupMetrics) RedisError() {
+	if m == nil {
+		return
+	}
+	incCounter(m.redisErrors)
+}
+
+// AckDropped counts one ack which the shared tier dropped because its queue was full. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) AckDropped() {
+	if m == nil {
+		return
+	}
+	incCounter(m.ackDrops)
+}
+
+// LostOwnership counts one call whose answer the shared tier does not hold for this node. It is counted as a Redis
+// error, and implements rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) LostOwnership() {
+	if m == nil {
+		return
+	}
+	incCounter(m.redisErrors)
+}
+
+// ObserveWait records the time a duplicate waited for the call it joined.
+func (m *RPCRegistryDedupMetrics) ObserveWait(seconds float64) {
+	if m == nil || m.waitSeconds == nil {
+		return
+	}
+	m.waitSeconds.Observe(seconds)
+}
+
+// SetStore sets the gauges of the store: its answers, and per pool its admitted scopes and its bytes. The gauges are
+// read from the store without its locks, so this does not wait for the calls.
+func (m *RPCRegistryDedupMetrics) SetStore(stats rpcdedup.Stats) {
+	if m == nil {
+		return
+	}
+	if m.entries != nil {
+		m.entries.Set(float64(stats.Entries))
+	}
+	pools := [len(rpcRegistryDedupPoolLabels)]rpcdedup.PoolStats{stats.Authenticated, stats.Anonymous}
+	for i, pool := range pools {
+		if m.scopes[i] != nil {
+			m.scopes[i].Set(float64(pool.Scopes))
+		}
+		if m.bytes[i] != nil {
+			m.bytes[i].Set(float64(pool.Bytes))
+		}
+	}
 }

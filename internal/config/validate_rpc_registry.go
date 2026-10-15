@@ -1,13 +1,18 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"google.golang.org/grpc/codes"
 )
@@ -27,6 +32,10 @@ func validateRPCRegistry(c Config) error {
 	if err != nil {
 		return fmt.Errorf("in rpc.registry: %w", err)
 	}
+	err = validateRPCDedup(c)
+	if err != nil {
+		return fmt.Errorf("in rpc.registry: %w", err)
+	}
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}
@@ -35,6 +44,131 @@ func validateRPCRegistry(c Config) error {
 	}
 	_, err = ResolveRPCRegistry(c.RPC.Registry)
 	return err
+}
+
+// validateRPCDedup checks the exactly-once RPC config. A disabled dedup is not checked. Dedup needs the
+// enabled registry, and the server time in replies, which the SDK uses to correct its msg_id clock.
+func validateRPCDedup(c Config) error {
+	dedup := c.RPC.Registry.Dedup
+	if !dedup.Enabled {
+		return nil
+	}
+	if !c.RPC.Registry.Enabled {
+		return errors.New("rpc.registry.dedup.enabled: requires rpc.registry.enabled")
+	}
+	if !c.Client.ReplyIncludeServerTime {
+		return errors.New("rpc.registry.dedup.enabled: requires client.reply_include_server_time")
+	}
+	if dedup.Window.ToDuration() < time.Second {
+		return fmt.Errorf("rpc.registry.dedup.window: must be at least 1s, got %s", dedup.Window.ToDuration())
+	}
+	if dedup.MaxSkew.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_skew: must not be negative, got %s", dedup.MaxSkew.ToDuration())
+	}
+	if dedup.Window.ToDuration() <= dedup.MaxSkew.ToDuration() {
+		return fmt.Errorf("rpc.registry.dedup.window: must be greater than max_skew, got window %s and max_skew %s", dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration())
+	}
+	if dedup.MaxReplySize <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_reply_size: must be positive, got %d", dedup.MaxReplySize)
+	}
+	if err := validateRPCDedupBudgets(dedup); err != nil {
+		return err
+	}
+	// A cancel stores the cancelled error as an answer in both tiers, which count an error by its encoded size and keep
+	// an answer up to the reply limit. The encoded error must fit that limit, so a tombstone always fits both tiers.
+	cancelled := c.RPC.Registry.Errors.Cancelled
+	cancelledError := &centrifuge.Error{
+		Code:    cancelled.Code,
+		Message: cancelled.Message,
+		AppCode: cancelled.AppCode,
+		AppType: cancelled.AppType,
+	}
+	if limit, size := dedup.ReplyLimit(), rpcdedup.ErrorSize(cancelledError); size > limit {
+		return fmt.Errorf("rpc.registry.errors.cancelled.message: the encoded cancelled error must fit the reply limit of %d bytes, got %d bytes", limit, size)
+	}
+	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
+		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)
+	}
+	if dedup.Redis.Enabled {
+		return validateRPCDedupRedis(c, dedup.Redis)
+	}
+	return nil
+}
+
+// validateRPCDedupRedis checks the shared tier of exactly-once RPC: either it reuses the Redis of the engine, or its own
+// Redis configuration is valid and has a prefix.
+func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
+	if redis.ReuseFromEngine {
+		if c.Engine.Type != "redis" {
+			return errors.New("rpc.registry.dedup.redis.reuse_from_engine requires engine.type to be redis")
+		}
+		return nil
+	}
+	if _, err := redisshard.ConfigsOf(redis.Redis, "rpc.registry.dedup.redis"); err != nil {
+		return err
+	}
+	if redis.Prefix == "" {
+		return errors.New("rpc.registry.dedup.redis.prefix: must not be empty")
+	}
+	return nil
+}
+
+// validateRPCDedupBudgets checks the budgets of the dedup store and the reserves of its scopes. The authenticated
+// and the anonymous pools each need one scope per shard, so that a shard can admit a scope at all, and the reserve
+// bytes must fit the byte budget of the pool, so that the store keeps its reserves. Each record of a scope is kept up
+// to its share of the reserve bytes, so the share must hold a record which is kept as uncached.
+func validateRPCDedupBudgets(dedup configtypes.RPCDedup) error {
+	if dedup.LocalMaxEntries <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.local_max_entries: must be positive, got %d", dedup.LocalMaxEntries)
+	}
+	if dedup.LocalMaxBytes <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.local_max_bytes: must be positive, got %d", dedup.LocalMaxBytes)
+	}
+	if dedup.MaxRecordsPerScope <= 0 {
+		return fmt.Errorf("rpc.registry.dedup.max_records_per_scope: must be positive, got %d", dedup.MaxRecordsPerScope)
+	}
+	if dedup.ScopeReserve < 1 {
+		return fmt.Errorf("rpc.registry.dedup.scope_reserve: must be at least 1, got %d", dedup.ScopeReserve)
+	}
+	if dedup.ScopeReserveBytes < 1024 {
+		return fmt.Errorf("rpc.registry.dedup.scope_reserve_bytes: must be at least 1024, got %d", dedup.ScopeReserveBytes)
+	}
+	if dedup.ScopeReserveBytes < dedup.ScopeReserve*rpcdedup.RecordOverhead {
+		return fmt.Errorf("rpc.registry.dedup.scope_reserve_bytes: must be at least scope_reserve %d times %d bytes per record, got %d", dedup.ScopeReserve, rpcdedup.RecordOverhead, dedup.ScopeReserveBytes)
+	}
+	if dedup.MaxScopesPerUser < 1 {
+		return fmt.Errorf("rpc.registry.dedup.max_scopes_per_user: must be at least 1, got %d", dedup.MaxScopesPerUser)
+	}
+	if dedup.MaxRecordsPerScope < dedup.ScopeReserve {
+		return fmt.Errorf("rpc.registry.dedup.max_records_per_scope: must be at least scope_reserve %d, got %d", dedup.ScopeReserve, dedup.MaxRecordsPerScope)
+	}
+	if dedup.LocalAnonymousMaxEntries < 0 || dedup.LocalAnonymousMaxEntries >= dedup.LocalMaxEntries {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be at least 0 and less than local_max_entries %d, got %d", dedup.LocalMaxEntries, dedup.LocalAnonymousMaxEntries)
+	}
+	if dedup.LocalAnonymousMaxBytes < 0 || dedup.LocalAnonymousMaxBytes >= dedup.LocalMaxBytes {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be at least 0 and less than local_max_bytes %d, got %d", dedup.LocalMaxBytes, dedup.LocalAnonymousMaxBytes)
+	}
+	authEntries := dedup.LocalMaxEntries - dedup.LocalAnonymousMaxEntries
+	if authEntries < rpcdedup.DefaultShards*dedup.ScopeReserve {
+		return fmt.Errorf("rpc.registry.dedup.local_max_entries: local_max_entries minus local_anonymous_max_entries must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserve, authEntries)
+	}
+	authBytes := dedup.LocalMaxBytes - dedup.LocalAnonymousMaxBytes
+	if authBytes < rpcdedup.DefaultShards*dedup.ScopeReserveBytes {
+		return fmt.Errorf("rpc.registry.dedup.local_max_bytes: local_max_bytes minus local_anonymous_max_bytes must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserveBytes, authBytes)
+	}
+	if dedup.LocalAnonymousMaxEntries == 0 {
+		if dedup.LocalAnonymousMaxBytes != 0 {
+			return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be 0 when local_anonymous_max_entries is 0, got %d", dedup.LocalAnonymousMaxBytes)
+		}
+		return nil
+	}
+	if dedup.LocalAnonymousMaxEntries < rpcdedup.DefaultShards*dedup.ScopeReserve {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_entries: must be 0, or at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserve, dedup.LocalAnonymousMaxEntries)
+	}
+	if dedup.LocalAnonymousMaxBytes < rpcdedup.DefaultShards*dedup.ScopeReserveBytes {
+		return fmt.Errorf("rpc.registry.dedup.local_anonymous_max_bytes: must be at least %d, one scope per shard, got %d", rpcdedup.DefaultShards*dedup.ScopeReserveBytes, dedup.LocalAnonymousMaxBytes)
+	}
+	return nil
 }
 
 // validateRPCAuthClassClaim checks auth_class_claim against the entries of the registry. Methods of class

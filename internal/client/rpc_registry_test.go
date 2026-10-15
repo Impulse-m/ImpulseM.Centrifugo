@@ -16,14 +16,13 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
-	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
 const registryTestBackendMethod = "/example.v1.UserService/GetUser"
 
 // newRegistryTestBackend starts a shared bytes backend which is closed when the test ends.
-func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
+func newRegistryTestBackend(t testing.TB) *tools.GRPCBytesBackend {
 	t.Helper()
 	backend := tools.NewGRPCBytesBackend()
 	t.Cleanup(backend.Close)
@@ -112,14 +111,14 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 }
 
 // newRegistryTestHandler returns a handler with cfg, which uses registry for RPC calls.
-func newRegistryTestHandler(t *testing.T, cfg config.Config, registry *rpcregistry.Registry) (*Handler, *config.Container) {
+func newRegistryTestHandler(t testing.TB, cfg config.Config, registry *rpcregistry.Registry) (*Handler, *config.Container) {
 	t.Helper()
 	return newRegistryTestHandlerWithClaim(t, cfg, registry, "")
 }
 
 // newRegistryTestHandlerWithClaim is newRegistryTestHandler whose connection token verifier reads the
 // auth class from authClassClaim.
-func newRegistryTestHandlerWithClaim(t *testing.T, cfg config.Config, registry *rpcregistry.Registry, authClassClaim string) (*Handler, *config.Container) {
+func newRegistryTestHandlerWithClaim(t testing.TB, cfg config.Config, registry *rpcregistry.Registry, authClassClaim string) (*Handler, *config.Container) {
 	t.Helper()
 	node := tools.NodeWithMemoryEngine()
 	t.Cleanup(func() {
@@ -138,7 +137,7 @@ func newRegistryTestHandlerWithClaim(t *testing.T, cfg config.Config, registry *
 }
 
 // startRegistryTestRegistry returns a registry with cfg applied, whose targets use the backend.
-func startRegistryTestRegistry(t *testing.T, cfg configtypes.RPCRegistry, backend *tools.GRPCBytesBackend) *rpcregistry.Registry {
+func startRegistryTestRegistry(t testing.TB, cfg configtypes.RPCRegistry, backend *tools.GRPCBytesBackend) *rpcregistry.Registry {
 	t.Helper()
 	conn, err := backend.Conn()
 	require.NoError(t, err)
@@ -315,9 +314,8 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 	require.NotContains(t, reply.Storage, storageKeyConnState)
 }
 
-// connectRegistryFlagClient connects a client through a real Core node which uses registry, and returns
-// the connect result. The client advertises clientFlag in its connect request, as an SDK does.
-func connectRegistryFlagClient(t *testing.T, registry *rpcregistry.Registry, clientFlag int64) *protocol.ConnectResult {
+// newRegistryFlagNode returns a real Core node which uses registry, for the connect flag tests.
+func newRegistryFlagNode(t *testing.T, registry *rpcregistry.Registry) *centrifuge.Node {
 	t.Helper()
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
@@ -330,34 +328,35 @@ func connectRegistryFlagClient(t *testing.T, registry *rpcregistry.Registry, cli
 	h.SetRPCRegistry(registry)
 	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 	require.NoError(t, h.Setup())
-
-	transport := newRecordingTransport()
-	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = closeFn() })
-	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{Flag: clientFlag}})
-	reply := transport.waitReply(t, 1)
-	require.Nil(t, reply.Error)
-	require.NotNil(t, reply.Connect)
-	return reply.Connect
+	return node
 }
 
 func TestRPCRegistryConnectAdvertisesRPCOptionsWhenClientAsksForIt(t *testing.T) {
 	registry := startRegistryTestRegistry(t, registryTestRegistryConfig(), newRegistryTestBackend(t))
 
-	result := connectRegistryFlagClient(t, registry, centrifuge.ConnectionFlagRPCOptions)
+	_, _, result := connectTestClient(t, newRegistryFlagNode(t, registry), centrifuge.ConnectionFlagRPCOptions)
 	require.NotZero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
 }
 
 func TestRPCRegistryConnectNoRPCOptionsWhenClientDoesNotAskForIt(t *testing.T) {
 	registry := startRegistryTestRegistry(t, registryTestRegistryConfig(), newRegistryTestBackend(t))
 
-	result := connectRegistryFlagClient(t, registry, 0)
+	_, _, result := connectTestClient(t, newRegistryFlagNode(t, registry), 0)
 	require.Zero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
 }
 
 func TestRPCRegistryConnectNoRPCOptionsWhenRegistryDisabled(t *testing.T) {
-	result := connectRegistryFlagClient(t, nil, centrifuge.ConnectionFlagRPCOptions)
+	_, _, result := connectTestClient(t, newRegistryFlagNode(t, nil), centrifuge.ConnectionFlagRPCOptions)
+	require.Zero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
+}
+
+func TestRPCRegistryConnectNoRPCOptionsWhenRegistryConfiguredButDisabled(t *testing.T) {
+	reg := registryTestRegistryConfig()
+	reg.Enabled = false
+	registry := startRegistryTestRegistry(t, reg, newRegistryTestBackend(t))
+	require.False(t, registry.Enabled())
+
+	_, _, result := connectTestClient(t, newRegistryFlagNode(t, registry), centrifuge.ConnectionFlagRPCOptions)
 	require.Zero(t, result.Flag&centrifuge.ConnectionFlagRPCOptions)
 }
 

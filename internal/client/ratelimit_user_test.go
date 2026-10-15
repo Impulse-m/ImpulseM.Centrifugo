@@ -98,7 +98,7 @@ func TestUserRateLimitAnonymousBypass(t *testing.T) {
 			},
 		},
 	})
-	client, transport := connectRateLimitClient(t, h.node)
+	client, transport, _ := connectTestClient(t, h.node, 0)
 	for id := uint32(2); id <= 6; id++ {
 		sendRateLimitCommand(client, &protocol.Command{Id: id, Unsubscribe: &protocol.UnsubscribeRequest{Channel: "test:1"}})
 		require.False(t, isRateLimited(transport.waitReply(t, id)), "anonymous command %d must not be limited", id)
@@ -128,7 +128,7 @@ func TestUserRateLimitConnectOverLimit(t *testing.T) {
 	// Another user and anonymous connections are not limited by user connect.
 	_, otherTransport := connectUserRateLimitClient(t, h.node, "43")
 	require.Nil(t, otherTransport.waitReply(t, 1).Error)
-	_, anonTransport := connectRateLimitClient(t, h.node)
+	_, anonTransport, _ := connectTestClient(t, h.node, 0)
 	require.Nil(t, anonTransport.waitReply(t, 1).Error)
 }
 

@@ -31,9 +31,19 @@ type forkRegistry struct {
 	rateLimitRedisDuration         prometheus.Histogram
 
 	// RPC method registry metrics
-	rpcRegistryCallsTotal   *prometheus.CounterVec
-	rpcRegistryErrorsTotal  *prometheus.CounterVec
-	rpcRegistryReloadsTotal *prometheus.CounterVec
+	rpcRegistryCallsTotal         *prometheus.CounterVec
+	rpcRegistryErrorsTotal        *prometheus.CounterVec
+	rpcRegistryReloadsTotal       *prometheus.CounterVec
+	rpcRegistryDedupTotal         *prometheus.CounterVec
+	rpcRegistryRetransmits        *prometheus.CounterVec
+	rpcRegistryDedupWait          prometheus.Histogram
+	rpcRegistryDedupEntries       prometheus.Gauge
+	rpcRegistryDedupEvictions     *prometheus.CounterVec
+	rpcRegistryDedupScopes        *prometheus.GaugeVec
+	rpcRegistryDedupBytes         *prometheus.GaugeVec
+	rpcRegistryDedupRedisErrors   prometheus.Counter
+	rpcRegistryDedupRedisDuration prometheus.Histogram
+	rpcRegistryDedupRedisAckDrops prometheus.Counter
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -168,13 +178,11 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 	})
 
 	m.rateLimitRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Namespace: metricsNamespace,
-		Subsystem: "rate_limit",
-		Name:      "redis_duration_seconds",
-		Help:      "Duration of redis_user_command rate limit script calls.",
-		Buckets: []float64{
-			0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
-		},
+		Namespace:   metricsNamespace,
+		Subsystem:   "rate_limit",
+		Name:        "redis_duration_seconds",
+		Help:        "Duration of redis_user_command rate limit script calls.",
+		Buckets:     redisDurationBuckets,
 		ConstLabels: constLabels,
 	})
 
@@ -202,6 +210,94 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"trigger", "result"})
 
+	m.rpcRegistryDedupTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_total",
+		Help:        "Number of exactly-once RPC calls by outcome.",
+		ConstLabels: constLabels,
+	}, []string{"outcome"})
+
+	m.rpcRegistryDedupWait = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_wait_seconds",
+		Help:        "Time duplicate RPC calls waited for the call they joined.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryRetransmits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "retransmit_total",
+		Help:        "Number of RPC method registry calls which the client retransmitted, by method.",
+		ConstLabels: constLabels,
+	}, []string{"rpc_method"})
+
+	m.rpcRegistryDedupEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_entries",
+		Help:        "Number of exactly-once RPC answers kept by the node, of both pools.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_evictions_total",
+		Help:        "Number of exactly-once RPC answers the node evicted to make room, by reason.",
+		ConstLabels: constLabels,
+	}, []string{"reason"})
+	for _, reason := range rpcRegistryDedupEvictionReasons {
+		m.rpcRegistryDedupEvictions.WithLabelValues(reason)
+	}
+
+	m.rpcRegistryDedupScopes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_scopes",
+		Help:        "Number of exactly-once RPC scopes the node admits, by pool. Per shard, a pool admits the smaller of its entries / scope_reserve and bytes / scope_reserve_bytes: authenticated takes local_max_entries and local_max_bytes less their anonymous parts, anonymous takes the anonymous parts.",
+		ConstLabels: constLabels,
+	}, []string{"pool"})
+
+	m.rpcRegistryDedupBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_bytes",
+		Help:        "Bytes of the exactly-once RPC answers the node keeps, by pool.",
+		ConstLabels: constLabels,
+	}, []string{"pool"})
+	for _, pool := range rpcRegistryDedupPoolLabels {
+		m.rpcRegistryDedupScopes.WithLabelValues(pool)
+		m.rpcRegistryDedupBytes.WithLabelValues(pool)
+	}
+
+	m.rpcRegistryDedupRedisErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_errors_total",
+		Help:        "Number of failed Redis operations of the shared exactly-once RPC tier, including calls made while Redis is not connected.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupRedisDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_duration_seconds",
+		Help:        "Duration of the Redis operations of the shared exactly-once RPC tier.",
+		Buckets:     redisDurationBuckets,
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupRedisAckDrops = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_redis_ack_drops_total",
+		Help:        "Number of acks the shared exactly-once RPC tier did not send because its ack queue was full or the node shut down first. The records of such acks expire at their TTL.",
+		ConstLabels: constLabels,
+	})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -223,6 +319,16 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryCallsTotal,
 		m.rpcRegistryErrorsTotal,
 		m.rpcRegistryReloadsTotal,
+		m.rpcRegistryDedupTotal,
+		m.rpcRegistryDedupWait,
+		m.rpcRegistryDedupEntries,
+		m.rpcRegistryDedupEvictions,
+		m.rpcRegistryDedupScopes,
+		m.rpcRegistryDedupBytes,
+		m.rpcRegistryRetransmits,
+		m.rpcRegistryDedupRedisErrors,
+		m.rpcRegistryDedupRedisDuration,
+		m.rpcRegistryDedupRedisAckDrops,
 	}
 }
 
@@ -275,4 +381,19 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryCallsTotal = m.rpcRegistryCallsTotal
 	RPCRegistryErrorsTotal = m.rpcRegistryErrorsTotal
 	RPCRegistryReloadsTotal = m.rpcRegistryReloadsTotal
+	RPCRegistryDedupTotal = m.rpcRegistryDedupTotal
+	RPCRegistryDedupWaitSeconds = m.rpcRegistryDedupWait
+	RPCRegistryDedupEntries = m.rpcRegistryDedupEntries
+	RPCRegistryDedupEvictions = m.rpcRegistryDedupEvictions
+	RPCRegistryDedupScopes = m.rpcRegistryDedupScopes
+	RPCRegistryDedupBytes = m.rpcRegistryDedupBytes
+	RPCRegistryRetransmitsTotal = m.rpcRegistryRetransmits
+	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
+	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
+	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+}
+
+// redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.
+var redisDurationBuckets = []float64{
+	0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
 }

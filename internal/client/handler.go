@@ -414,7 +414,6 @@ func (h *Handler) OnClientConnecting(
 	var processClientChannels bool
 
 	storage := map[string]any{}
-	origin := originAnonymous
 	var verified jwtverify.ConnectToken
 
 	if e.Token != "" {
@@ -465,7 +464,6 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
 		setCoreCredentials(credentials, class, token.UserID)
-		origin = originToken
 		verified = token
 
 		processClientChannels = true
@@ -482,7 +480,6 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, accessrevoke.DisconnectUserBlocked
 		}
 		credentials = connectReply.Credentials
-		origin = originProxy
 		if connectReply.Subscriptions != nil {
 			subscriptions = connectReply.Subscriptions
 		}
@@ -604,7 +601,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
-	h.connectRecord(cfg, storage, origin, e.Token, verified, credentials)
+	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)
 	h.storeRPCConnection(storage, e.Instance, credentials)
 
 	finalReply := centrifuge.ConnectReply{
@@ -615,7 +612,7 @@ func (h *Handler) OnClientConnecting(
 		ClientSideRefresh: !refreshProxyEnabled,
 		Flags:             h.registryConnectFlags(),
 	}
-	h.setReplyIdentity(cfg, &finalReply, origin, verified, credentials)
+	h.setReplyIdentity(cfg, &finalReply, rec)
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.

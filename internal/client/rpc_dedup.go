@@ -144,10 +144,8 @@ func (h *Handler) storeRPCConnection(storage map[string]any, instance string, cr
 // holds them when the connection has one, since Core sees no user for a pending connection, which holds its token
 // user in the record. Without a record they are the ones Core holds.
 func connScope(c Client) (string, centrifuge.TokenIdentity) {
-	if rc, ok := c.(rebindableClient); ok {
-		if rec := connStateOf(rc); rec != nil {
-			return rec.AccessIdentity()
-		}
+	if userID, identity, ok := recordIdentityOf(c); ok {
+		return userID, identity
 	}
 	return c.UserID(), c.TokenIdentity()
 }

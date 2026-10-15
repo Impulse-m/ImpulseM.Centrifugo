@@ -149,23 +149,44 @@ func setCoreCredentials(credentials *centrifuge.Credentials, class rpcregistry.A
 	}
 }
 
-// tokenUserOf returns the user the token of a connection was issued for. Core sees no user for a pending connection, so
-// the record is read first. Without a record it is the user Core holds.
-func tokenUserOf(c Client) string {
-	rc, ok := c.(rebindableClient)
-	if !ok {
-		return c.UserID()
+// recordIdentityOf returns the user and the token identity of a connection held in its record. ok is false when the
+// connection has no record.
+func recordIdentityOf(c Client) (userID string, identity centrifuge.TokenIdentity, ok bool) {
+	rc, isRebindable := c.(rebindableClient)
+	if !isRebindable {
+		return "", centrifuge.TokenIdentity{}, false
 	}
 	rec := connStateOf(rc)
 	if rec == nil {
-		return c.UserID()
+		return "", centrifuge.TokenIdentity{}, false
 	}
-	userID, _ := rec.AccessIdentity()
-	return userID
+	userID, identity = rec.AccessIdentity()
+	return userID, identity, true
 }
 
-// connectRecord puts the record of a connecting client into storage, when needsConnState asks for one. The origin token
-// takes its identity from verified, the connect token. The origin proxy takes its user from credentials and has no token.
+// tokenUserOf returns the user the token of a connection was issued for. Core sees no user for a pending connection, so
+// the record is read first. Without a record it is the user Core holds.
+func tokenUserOf(c Client) string {
+	if userID, _, ok := recordIdentityOf(c); ok {
+		return userID
+	}
+	return c.UserID()
+}
+
+// connectOriginOf returns how a connection is made: with a connect token, through the connect proxy, or anonymously.
+func connectOriginOf(token string, proxied bool) connOrigin {
+	if token != "" {
+		return originToken
+	}
+	if proxied {
+		return originProxy
+	}
+	return originAnonymous
+}
+
+// connectRecord puts the record of a connecting client into storage, when needsConnState asks for one, and returns it.
+// The origin token takes its identity from verified, the connect token. The origin proxy takes its user from credentials
+// and has no token.
 func (h *Handler) connectRecord(
 	cfg *config.Config,
 	storage map[string]any,
@@ -173,7 +194,7 @@ func (h *Handler) connectRecord(
 	token string,
 	verified jwtverify.ConnectToken,
 	credentials *centrifuge.Credentials,
-) {
+) *connState {
 	var userID string
 	var identity centrifuge.TokenIdentity
 	if credentials != nil {
@@ -181,7 +202,7 @@ func (h *Handler) connectRecord(
 		identity = credentials.TokenIdentity
 	}
 	if !h.needsConnState(cfg, userID, identity) {
-		return
+		return nil
 	}
 	rec := &connState{}
 	if h.clientLimiter != nil {
@@ -200,6 +221,7 @@ func (h *Handler) connectRecord(
 	}
 	rec.identity.Store(nextIdentity(nil, origin, class, claim, h.keptToken(token), verified))
 	storage[storageKeyConnState] = rec
+	return rec
 }
 
 // adoptConnState moves the record of a connecting client from its storage into its ext state. Core applied the storage
@@ -278,28 +300,18 @@ func coreUserID(class rpcregistry.AuthClass, userID string) string {
 	return userID
 }
 
-// setReplyIdentity sets the user and the auth class which a connect reply reports, when replyIdentityOn. The user is the
-// one of the token or of the connect proxy, which Core may not see for a pending connection.
-func (h *Handler) setReplyIdentity(
-	cfg *config.Config,
-	reply *centrifuge.ConnectReply,
-	origin connOrigin,
-	verified jwtverify.ConnectToken,
-	credentials *centrifuge.Credentials,
-) {
-	if !h.replyIdentityOn(cfg) {
+// setReplyIdentity sets the user and the auth class which a connect reply reports, when replyIdentityOn, from the record
+// of the connection. The user is the one of the token or of the connect proxy, which Core may not see for a pending
+// connection. Each feature which turns the identity on has a record, see needsConnState.
+func (h *Handler) setReplyIdentity(cfg *config.Config, reply *centrifuge.ConnectReply, rec *connState) {
+	if rec == nil || !h.replyIdentityOn(cfg) {
 		return
 	}
-	userID := verified.UserID
-	if origin == originProxy && credentials != nil {
-		userID = credentials.UserID
+	id := rec.identity.Load()
+	class := id.class
+	if id.origin != originToken {
+		class = effectiveClass(id, h.registryConfig().AuthClassClaim, id.tokenUser)
 	}
-	var class rpcregistry.AuthClass
-	if origin == originToken {
-		class, _ = rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
-	} else {
-		class = effectiveClass(&connIdentity{}, h.registryConfig().AuthClassClaim, userID)
-	}
-	reply.User = userID
+	reply.User = id.tokenUser
 	reply.AuthClass = h.authClassName(class)
 }

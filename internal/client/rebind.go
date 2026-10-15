@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -12,20 +13,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// onRefreshToken answers a refresh which the refresh proxy does not answer. A connection without a record refreshes as
-// upstream does. A token which keeps the identity of the connection refreshes it in place, and a token which changes it
-// rebinds the connection.
+// onRefreshToken answers a refresh which the refresh proxy does not answer. The token is checked the same way for a
+// connection with and without a record. A connection without a record refreshes as upstream does. A token which keeps
+// the identity of the connection refreshes it in place, and a token which changes it rebinds the connection.
 func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) (centrifuge.RefreshReply, RefreshExtra, error) {
-	rec := connStateOf(c)
-	if rec == nil {
-		return h.refreshWithoutRecord(c, e)
-	}
-	// A refresh which finds another one in progress is rejected, not queued, so a refresh never waits for another one.
-	if !rec.refreshing.CompareAndSwap(false, true) {
-		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
-	}
-	defer rec.refreshing.Store(false)
-	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
+	cfg := h.cfgContainer.ConfigRef()
+	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, cfg.Client.InsecureSkipTokenSignatureVerify)
 	if err != nil {
 		return refreshVerifyError(c, err)
 	}
@@ -34,6 +27,20 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	// An anonymous token is refused as it is on connect, whatever identity the connection holds.
+	if token.UserID == "" && cfg.Client.DisallowAnonymousConnectionTokens {
+		log.Info().Str("client", c.ID()).Msg("anonymous connection tokens disallowed")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectPermissionDenied
+	}
+	rec := connStateOf(c)
+	if rec == nil {
+		return h.refreshWithoutRecord(c, token, class)
+	}
+	// A refresh which finds another one in progress is rejected, not queued, so a refresh never waits for another one.
+	if !rec.refreshing.CompareAndSwap(false, true) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
+	}
+	defer rec.refreshing.Store(false)
 	if changesIdentity(rec, c, token.UserID, class) {
 		return h.onRefreshRebind(c, rec, e.Token, token, class)
 	}
@@ -41,12 +48,12 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 }
 
 // refreshWithoutRecord answers a refresh of a connection which has no record. Such a connection has no rebind: a token of
-// its user refreshes it, and a token of another user disconnects it. The token is checked as upstream checks it.
-func (h *Handler) refreshWithoutRecord(c rebindableClient, e centrifuge.RefreshEvent) (centrifuge.RefreshReply, RefreshExtra, error) {
-	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
-	if err != nil {
-		return refreshVerifyError(c, err)
-	}
+// its user refreshes it, and a token of another user disconnects it.
+func (h *Handler) refreshWithoutRecord(
+	c rebindableClient,
+	token jwtverify.ConnectToken,
+	class rpcregistry.AuthClass,
+) (centrifuge.RefreshReply, RefreshExtra, error) {
 	if token.UserID != c.UserID() {
 		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
@@ -59,14 +66,33 @@ func (h *Handler) refreshWithoutRecord(c rebindableClient, e centrifuge.RefreshE
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
-	class, _ := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
-	return centrifuge.RefreshReply{
+	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+}
+
+// refreshReply returns the reply of a refresh which keeps or moves the identity of a connection. The user and the auth
+// class are set only when setIdentity is set, see replyIdentityOn.
+func (h *Handler) refreshReply(
+	token jwtverify.ConnectToken,
+	identity centrifuge.TokenIdentity,
+	class rpcregistry.AuthClass,
+	setIdentity bool,
+) centrifuge.RefreshReply {
+	reply := centrifuge.RefreshReply{
 		ExpireAt:      token.ExpireAt,
 		Info:          token.Info,
 		TokenIdentity: &identity,
-		User:          token.UserID,
-		AuthClass:     h.authClassName(class),
-	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+	}
+	if setIdentity {
+		reply.User = token.UserID
+		reply.AuthClass = h.authClassName(class)
+	}
+	return reply
+}
+
+// rebindExpired reports whether Core refuses a rebind to expireAt: an expiration is zero, which disarms it, or in the
+// future.
+func rebindExpired(expireAt int64) bool {
+	return expireAt < 0 || (expireAt > 0 && expireAt <= time.Now().Unix())
 }
 
 // refreshVerifyError maps the error of verifying a refresh token to the refresh reply and error.
@@ -137,6 +163,11 @@ func (h *Handler) onRefreshRebind(
 	if result.Verdict != accessrevoke.Allowed {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.ErrorTokenExpired)
 	}
+	// Core refuses a rebind to an expiration which is not in the future. The refusal is found here, before the channels
+	// of the user go, so a token which is about to expire leaves the connection with its channels.
+	if rebindExpired(verified.ExpireAt) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTokenExpired
+	}
 
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
@@ -151,7 +182,8 @@ func (h *Handler) onRefreshRebind(
 	// token. A failed rebind stores the previous identity back.
 	rec.identity.Store(nextIdentity(prev, originToken, nextClass, claim, h.keptToken(token), verified))
 	// The channels of the user go before the identity moves, so the anonymous identity never receives them. A rebind
-	// which is refused after this leaves the connection without them, until its next refresh subscribes them again.
+	// which Core refuses after this leaves the connection without them: its personal channel comes back on the next refresh
+	// with the same user, and the channels which the client subscribed itself do not, see the known gaps of the README.
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
 	}
@@ -189,13 +221,7 @@ func (h *Handler) onRefreshRebind(
 	if verified.Meta != nil {
 		setStorageMeta(c, verified.Meta)
 	}
-	return centrifuge.RefreshReply{
-		ExpireAt:      verified.ExpireAt,
-		Info:          verified.Info,
-		TokenIdentity: &identity,
-		User:          verified.UserID,
-		AuthClass:     h.authClassName(nextClass),
-	}, RefreshExtra{}, nil
+	return h.refreshReply(verified, identity, nextClass, h.replyIdentityOn(cfg)), RefreshExtra{}, nil
 }
 
 // refreshSameIdentity answers a refresh whose token keeps the identity of the connection. The session is tracked before
@@ -226,16 +252,13 @@ func (h *Handler) refreshSameIdentity(
 		h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
+	if err := h.restorePersonalChannel(c); err != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, err
+	}
 	if verified.Meta != nil {
 		setStorageMeta(c, verified.Meta)
 	}
-	return centrifuge.RefreshReply{
-		ExpireAt:      verified.ExpireAt,
-		Info:          verified.Info,
-		TokenIdentity: &identity,
-		User:          verified.UserID,
-		AuthClass:     h.authClassName(class),
-	}, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+	return h.refreshReply(verified, identity, class, h.replyIdentityOn(h.cfgContainer.ConfigRef())), RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
 }
 
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an
@@ -335,6 +358,26 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 			toSubscribe[channel] = opts
 		}
 	}
+	return subscribeChannels(c, toSubscribe)
+}
+
+// restorePersonalChannel subscribes a connection with a user to its personal channel when it is not subscribed to it. A
+// downgrade removes the channel, and a rebind which Core refuses after the downgrade leaves it removed. The single
+// connection of the user is not enforced again: the connection already holds its user.
+func (h *Handler) restorePersonalChannel(c rebindableClient) error {
+	cfg := h.cfgContainer.ConfigRef()
+	if c.UserID() == "" || !cfg.Client.SubscribeToUserPersonalChannel.Enabled {
+		return nil
+	}
+	personalChannel, personalOptions, err := h.personalChannelSubscription(c.UserID())
+	if err != nil {
+		return centrifuge.DisconnectServerError
+	}
+	return subscribeChannels(c, map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions})
+}
+
+// subscribeChannels subscribes c to the channels of toSubscribe which it is not subscribed to yet.
+func subscribeChannels(c rebindableClient, toSubscribe map[string]centrifuge.SubscribeOptions) error {
 	for channel, opts := range toSubscribe {
 		if c.IsSubscribed(channel) {
 			continue
@@ -348,8 +391,8 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 	return nil
 }
 
-// subscribeOptionsOf returns a subscribe option which sets all the options of opts at once, as the connect
-// path does with the subscriptions of its reply.
+// subscribeOptionsOf returns a subscribe option which sets all the options of opts at once. Core's Subscribe takes
+// options of this form.
 func subscribeOptionsOf(opts centrifuge.SubscribeOptions) centrifuge.SubscribeOption {
 	return func(target *centrifuge.SubscribeOptions) {
 		*target = opts

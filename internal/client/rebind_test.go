@@ -31,7 +31,7 @@ type rebindTestState struct {
 	record       *connState
 }
 
-// newRebindTestClient returns a fake connection of user with class in its storage, whose token user is user. Its
+// newRebindTestClient returns a fake connection of user with class in its record, whose token user is user. Its
 // rebinds, subscribes and unsubscribes are recorded in the state.
 func newRebindTestClient(user string, class string) (*rebindClientMock, *rebindTestState) {
 	return newRebindTestClientWithToken(user, user, class)

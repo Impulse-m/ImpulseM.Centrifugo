@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -30,23 +29,6 @@ type rebindTestState struct {
 	subscribed   map[string]centrifuge.SubscribeOptions
 	unsubscribed map[string]centrifuge.Unsubscribe
 	record       *connState
-}
-
-// newRebindRegistryClient returns a fake connection with the storage given, as newRegistryTestClient does, with the
-// rebind stubs.
-func newRebindRegistryClient(id string, userID string, storage map[string]any) *rebindClientMock {
-	client := &rebindClientMock{}
-	client.IDFunc = func() string { return id }
-	client.UserIDFunc = func() string { return userID }
-	client.ContextFunc = func() context.Context { return context.Background() }
-	if len(storage) > 0 {
-		copied, release := client.AcquireStorage()
-		for key, value := range storage {
-			copied[key] = value
-		}
-		release(copied)
-	}
-	return client
 }
 
 // newRebindTestClient returns a fake connection of user with class in its storage, whose token user is user. Its
@@ -79,7 +61,7 @@ func newRebindTestClientWithToken(user string, tokenUser string, class string) (
 		unsubscribed: map[string]centrifuge.Unsubscribe{},
 		record:       newRebindTestRecord(tokenUser, class),
 	}
-	client := newRebindRegistryClient("c1", user, nil)
+	client := newRegistryTestClient("c1", user, nil, nil)
 	client.UserIDFunc = func() string { return state.user }
 	client.ExtStateFunc = func() any { return state.record }
 	client.RebindFunc = func(opts centrifuge.RebindOptions) error {

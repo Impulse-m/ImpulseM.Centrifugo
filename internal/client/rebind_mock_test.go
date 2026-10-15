@@ -7,16 +7,15 @@ import (
 )
 
 // rebindClientMock is a tools.TestClientMock with the methods of the rebind path: the extension state, the rebind,
-// the subscriptions and the disconnect and unsubscribe of a connection. Each method calls the function of the same
-// name set in the mock. Disconnect, Unsubscribe and the methods without a function panic when it is not set, so
-// that an unexpected call fails the test.
+// the subscriptions and the unsubscribe of a connection. Each method calls the function of the same name set in the
+// mock. Unsubscribe and Disconnect panic, so that an unexpected call fails the test, and the methods without a function
+// behave as a connection with nothing to change.
 type rebindClientMock struct {
 	tools.TestClientMock
 	ExtStateFunc    func() any
 	RebindFunc      func(opts centrifuge.RebindOptions) error
 	SubscribeFunc   func(channel string, opts ...centrifuge.SubscribeOption) error
 	ChannelsFunc    func() map[string]centrifuge.ChannelContext
-	DisconnectFunc  func(disconnect ...centrifuge.Disconnect)
 	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
 }
 
@@ -49,10 +48,7 @@ func (m *rebindClientMock) ChannelsWithContext() map[string]centrifuge.ChannelCo
 }
 
 func (m *rebindClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
-	if m.DisconnectFunc == nil {
-		panic("rebindClientMock: DisconnectFunc not set")
-	}
-	m.DisconnectFunc(disconnect...)
+	panic("rebindClientMock: Disconnect is not expected, a test closes a real connection")
 }
 
 func (m *rebindClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {

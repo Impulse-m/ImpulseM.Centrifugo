@@ -15,9 +15,13 @@ import (
 // connection is rechecked. Tests use it to apply a revocation at that point.
 var testHookConnectTracked atomic.Pointer[func(c rebindableClient)]
 
-// testHookRefreshTracked, if set, runs in OnRefresh after the session of a refreshed connection is tracked and before
-// the check. Tests use it to apply a revocation at that point.
+// testHookRefreshTracked, if set, runs in refreshSameIdentity after the session of a refreshed connection is tracked and
+// before the check. Tests use it to apply a revocation at that point.
 var testHookRefreshTracked atomic.Pointer[func(c rebindableClient)]
+
+// testHookRebound, if set, runs in onRefreshRebind after the connection is rebound and before its session is tracked.
+// Tests use it to close the connection at that point.
+var testHookRebound atomic.Pointer[func(c rebindableClient)]
 
 // runTestHook runs the test hook set in p, if any, with c.
 func runTestHook(p *atomic.Pointer[func(c rebindableClient)], c rebindableClient) {
@@ -97,23 +101,23 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 }
 
 // trackConnect sets up a connection which has just connected, and returns the disconnect of a connection which must
-// be closed. With the access store or the user limiter, the disconnect handler is set first, so a close from here on
-// releases what the connection holds; without them a connection holds nothing to release. A connection without a user
-// is indexed by the session of its token before the recheck, so a revocation applied from then on reaches it through
-// the index. Core runs the disconnect handler of a connection closed while it connects after the connect completes, so
-// the connection closed here is released then.
+// be closed. A connection with a record gets its disconnect handler first, when the access store or the user limiter
+// needs to release it, so a close from here on releases what the connection holds. A connection without a user is
+// indexed by the session of its token before the recheck, so a revocation applied from then on reaches it through the
+// index. Core runs the disconnect handler of a connection closed while it connects after the connect completes, so the
+// connection closed here is released then. Without a record nothing is adopted, and the connect path allocates nothing.
 func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
-	if h.accessStore != nil || h.userLimiter != nil {
-		if connStateOf(client) == nil {
-			client.SetExtState(&connState{})
-		}
+	var rec *connState
+	if h.needsConnState(h.cfgContainer.ConfigRef()) {
+		rec = adoptConnState(client)
+	}
+	if rec != nil && (h.accessStore != nil || h.userLimiter != nil) {
 		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
-			h.onClientDisconnect(client)
+			h.onClientDisconnect(client, rec)
 		})
 	}
-	identity := client.TokenIdentity()
-	if h.accessStore != nil && client.UserID() == "" && identity.Session != ([16]byte{}) {
-		h.trackSession(client, identity.Session)
+	if rec != nil && h.accessStore != nil && client.UserID() == "" {
+		h.trackSession(client, rec, rec.identity.Load().identity.Session)
 	}
 	runTestHook(&testHookConnectTracked, client)
 	return h.recheckConnection(client)
@@ -122,42 +126,34 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 // syncSessionConnection keeps the session index of access revocation up to date for a refreshed or rebound
 // connection. A connection with a user is not indexed, a connection without a user is indexed by the session of its
 // token.
-func (h *Handler) syncSessionConnection(c rebindableClient, userID string, identity centrifuge.TokenIdentity) {
+func (h *Handler) syncSessionConnection(
+	c rebindableClient,
+	rec *connState,
+	userID string,
+	identity centrifuge.TokenIdentity,
+) {
 	if h.accessStore == nil {
 		return
 	}
 	if userID != "" {
-		h.accessStore.SessionConnections().Untrack(c.ID())
+		h.accessStore.SessionConnections().Untrack(c, &rec.track)
 		return
 	}
-	h.trackSession(c, identity.Session)
+	h.trackSession(c, rec, identity.Session)
 }
 
-// trackSession sets the session of a connection in the index. A closed connection is not tracked: its disconnect
-// released it, and a session set after that would stay in the index for good. The close marks the connection under the
-// same lock, so a track either happens before the close, which then removes it, or sees the mark.
-func (h *Handler) trackSession(c rebindableClient, session [16]byte) {
-	if st := connStateOf(c); st != nil {
-		st.mu.Lock()
-		defer st.mu.Unlock()
-		if st.closed {
-			return
-		}
-	}
-	h.accessStore.SessionConnections().Track(c.ID(), c, session)
+// trackSession moves the connection into session in the index. The index does nothing for a connection which is
+// closed: its disconnect released it, and a session set after that would stay in the index for good.
+func (h *Handler) trackSession(c rebindableClient, rec *connState, session [16]byte) {
+	h.accessStore.SessionConnections().Track(c, &rec.track, session)
 }
 
 // onClientDisconnect releases what the handler holds for the connection: its user rate limit state and its
-// session index entry. The connection is marked closed first, so no session is tracked for it after the release.
-func (h *Handler) onClientDisconnect(c rebindableClient) {
+// session index entry. The index marks the connection closed, so no session is tracked for it after the release.
+func (h *Handler) onClientDisconnect(c rebindableClient, rec *connState) {
 	h.detachRateLimit(c)
-	if st := connStateOf(c); st != nil {
-		st.mu.Lock()
-		st.closed = true
-		st.mu.Unlock()
-	}
 	if h.accessStore != nil {
-		h.accessStore.SessionConnections().Untrack(c.ID())
+		h.accessStore.SessionConnections().Close(c, &rec.track)
 	}
 }
 

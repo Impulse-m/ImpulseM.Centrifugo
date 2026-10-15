@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
@@ -29,7 +29,7 @@ type rebindTestState struct {
 	channels     map[string]centrifuge.ChannelContext
 	subscribed   map[string]centrifuge.SubscribeOptions
 	unsubscribed map[string]centrifuge.Unsubscribe
-	state        *ratelimit.ConnState
+	record       *connState
 }
 
 // newRebindRegistryClient returns a fake connection with the storage given, as newRegistryTestClient does, with the
@@ -55,30 +55,33 @@ func newRebindTestClient(user string, class string) (*rebindClientMock, *rebindT
 	return newRebindTestClientWithToken(user, user, class)
 }
 
-// newRebindTestClientWithToken returns a fake connection of Core user, with the token user and the class stored as
-// a connection established by a token keeps them. A connection with no class stores no token user either, as a
-// connection made through a connect proxy.
+// newRebindTestRecord returns the record of a connection which holds tokenUser and class, as the connect of a token of
+// class leaves it. A connection with no class is one made through a connect proxy, which has no token.
+func newRebindTestRecord(tokenUser string, class string) *connState {
+	rec := &connState{}
+	origin := originProxy
+	var authClass rpcregistry.AuthClass
+	if class != "" {
+		origin = originToken
+		authClass = registryTestClass(class)
+	}
+	rec.identity.Store(nextIdentity(nil, origin, authClass, rebindTestClaim, "", jwtverify.ConnectToken{UserID: tokenUser}))
+	return rec
+}
+
+// newRebindTestClientWithToken returns a fake connection of Core user, with the record of a connection whose token user
+// and class are the ones given.
 func newRebindTestClientWithToken(user string, tokenUser string, class string) (*rebindClientMock, *rebindTestState) {
 	state := &rebindTestState{
 		user:         user,
 		channels:     map[string]centrifuge.ChannelContext{},
 		subscribed:   map[string]centrifuge.SubscribeOptions{},
 		unsubscribed: map[string]centrifuge.Unsubscribe{},
+		record:       newRebindTestRecord(tokenUser, class),
 	}
-	storage := map[string]any{}
-	if class != "" {
-		storage[clientstorage.KeyAuthClass] = registryAuthClass{class: registryTestClass(class), claim: rebindTestClaim}
-		storage[storageKeyTokenUser] = tokenUser
-		storage[storageKeyAccountUser] = tokenUser
-	}
-	client := newRebindRegistryClient("c1", user, storage)
+	client := newRebindRegistryClient("c1", user, nil)
 	client.UserIDFunc = func() string { return state.user }
-	client.ExtStateFunc = func() any {
-		if state.state == nil {
-			return nil
-		}
-		return &connState{limits: state.state}
-	}
+	client.ExtStateFunc = func() any { return state.record }
 	client.RebindFunc = func(opts centrifuge.RebindOptions) error {
 		state.rebinds = append(state.rebinds, opts)
 		if state.rebindErr != nil {
@@ -253,16 +256,13 @@ func runRebindCase(t *testing.T, tt rebindCase) {
 	}
 	if tt.wantErr != nil {
 		// A refused transition keeps the class of the connection.
-		storage, release := client.AcquireStorage()
-		stored := storage[clientstorage.KeyAuthClass]
-		release(storage)
-		require.Equal(t, registryAuthClass{class: registryTestClass(tt.fromClass), claim: rebindTestClaim}, stored)
+		require.Equal(t, registryTestClass(tt.fromClass), state.record.identity.Load().class)
 		require.Equal(t, tt.fromUser, state.user)
 	}
 }
 
-// TestRebindConnectProxyUserMayNotRebind checks a connection made through a connect proxy: it has a user but no
-// class stored under the claim, so a change of its identity is refused, and its renewal of the same user is not.
+// TestRebindConnectProxyUserMayNotRebind checks a connection made through a connect proxy: it has a user but no token
+// class, so any change of its identity is refused with a permission error, and its renewal of the same user is not.
 func TestRebindConnectProxyUserMayNotRebind(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -273,7 +273,7 @@ func TestRebindConnectProxyUserMayNotRebind(t *testing.T) {
 	}{
 		{name: "to another user", toUser: "43", toClass: "authenticated", wantErr: centrifuge.ErrorPermissionDenied},
 		{name: "to anonymous", toUser: "", toClass: "anonymous", allowDowngrade: true, wantErr: centrifuge.ErrorPermissionDenied},
-		{name: "to anonymous without allow_downgrade", toUser: "", toClass: "anonymous", wantErr: centrifuge.DisconnectInvalidToken},
+		{name: "to anonymous without allow_downgrade", toUser: "", toClass: "anonymous", wantErr: centrifuge.ErrorPermissionDenied},
 		{name: "renewal of the same user", toUser: "42", toClass: "authenticated"},
 	}
 	for _, tt := range tests {
@@ -443,7 +443,7 @@ func TestRebindRateLimitStateFollowsUser(t *testing.T) {
 	h, _ := newRebindTestHandlerWithUserCommand(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, rebindBudgetUserCommand())
 	client, state := newRebindTestClient("", "anonymous")
 	st := &ratelimit.ConnState{}
-	state.state = st
+	state.record.limits = st
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
@@ -467,7 +467,7 @@ func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
 	h, _ := newRebindTestHandlerWithUserCommand(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, rebindBudgetUserCommand())
 	client, state := newRebindTestClient("42", "authenticated")
 	st := &ratelimit.ConnState{}
-	state.state = st
+	state.record.limits = st
 	h.userLimiter.Attach(st, "42")
 	state.rebindErr = centrifuge.ErrRebindUserLimit
 
@@ -477,13 +477,10 @@ func TestRebindFailureKeepsRateLimitStateOfOldUser(t *testing.T) {
 	// A refusal by the user limit is an error reply, so the connection stays with the identity it had.
 	require.Equal(t, centrifuge.ErrorTooManyRequests, err)
 	require.Equal(t, "42", state.user)
-	// The class and the token user stored before the rebind are restored with the user.
-	storage, release := client.AcquireStorage()
-	stored, _ := storage[clientstorage.KeyAuthClass].(registryAuthClass)
-	tokenUser, _ := storage[storageKeyTokenUser].(string)
-	release(storage)
-	require.Equal(t, registryTestClass("authenticated"), stored.class)
-	require.Equal(t, "42", tokenUser)
+	// The identity stored before the rebind is restored with the user.
+	id := state.record.identity.Load()
+	require.Equal(t, registryTestClass("authenticated"), id.class)
+	require.Equal(t, "42", id.tokenUser)
 	require.True(t, budgetAllowed(h, st))
 	probe := &ratelimit.ConnState{}
 	h.userLimiter.Attach(probe, "42")

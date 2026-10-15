@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -13,61 +12,81 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// testHookRebound, if set, runs in onRefreshRebind after the connection is rebound and before its session is
-// tracked. Tests use it to close the connection at that point.
-var testHookRebound atomic.Pointer[func(c rebindableClient)]
-
-// storageKeyRefreshing marks a connection whose refresh is in progress. See beginRefresh.
-const storageKeyRefreshing = "refreshing"
-
-// beginRefresh marks the connection as refreshing, and returns false when another refresh of it is in progress. The
-// refreshes of a connection run one at a time, as a rebind changes its identity in several steps which must not
-// overlap. A refresh which finds the mark is rejected, not queued, so a refresh never waits for another one.
-func beginRefresh(c Client) bool {
-	storage, release := c.AcquireStorage()
-	defer release(storage)
-	if _, busy := storage[storageKeyRefreshing]; busy {
-		return false
-	}
-	storage[storageKeyRefreshing] = true
-	return true
-}
-
-// endRefresh clears the mark which beginRefresh set.
-func endRefresh(c Client) {
-	storage, release := c.AcquireStorage()
-	defer release(storage)
-	delete(storage, storageKeyRefreshing)
-}
-
-// onRefreshToken answers a refresh which the refresh proxy does not answer. A token which keeps the identity of the
-// connection refreshes it in place, and a token which changes it rebinds the connection.
+// onRefreshToken answers a refresh which the refresh proxy does not answer. A connection without a record refreshes as
+// upstream does. A token which keeps the identity of the connection refreshes it in place, and a token which changes it
+// rebinds the connection.
 func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) (centrifuge.RefreshReply, RefreshExtra, error) {
-	if !beginRefresh(c) {
+	rec := connStateOf(c)
+	if rec == nil {
+		return h.refreshWithoutRecord(c, e)
+	}
+	// A refresh which finds another one in progress is rejected, not queued, so a refresh never waits for another one.
+	if !rec.refreshing.CompareAndSwap(false, true) {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
 	}
-	defer endRefresh(c)
+	defer rec.refreshing.Store(false)
 	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
 	if err != nil {
-		if errors.Is(err, jwtverify.ErrTokenExpired) {
-			return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
-		}
-		if errors.Is(err, jwtverify.ErrInvalidToken) {
-			log.Info().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token")
-			return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
-		}
-		log.Error().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("error verifying refresh token")
-		return centrifuge.RefreshReply{}, RefreshExtra{}, err
+		return refreshVerifyError(c, err)
 	}
 	class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
 	if !ok {
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	if changesIdentity(c, token.UserID, class) {
-		return h.onRefreshRebind(c, e.Token, token, class)
+	if changesIdentity(rec, c, token.UserID, class) {
+		return h.onRefreshRebind(c, rec, e.Token, token, class)
 	}
-	return h.refreshSameIdentity(c, e.Token, token, class)
+	return h.refreshSameIdentity(c, rec, e.Token, token, class)
+}
+
+// refreshWithoutRecord answers a refresh of a connection which has no record. Such a connection has no rebind: a token of
+// its user refreshes it, and a token of another user disconnects it. The token is checked as upstream checks it.
+func (h *Handler) refreshWithoutRecord(c rebindableClient, e centrifuge.RefreshEvent) (centrifuge.RefreshReply, RefreshExtra, error) {
+	token, err := h.tokenVerifier.VerifyConnectToken(e.Token, h.cfgContainer.ConfigRef().Client.InsecureSkipTokenSignatureVerify)
+	if err != nil {
+		return refreshVerifyError(c, err)
+	}
+	if token.UserID != c.UserID() {
+		log.Info().Str("token_user", token.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
+	identity := accessrevoke.Identity(token.Session, token.Generation, token.IssuedAt)
+	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
+	if result.Verdict != accessrevoke.Allowed {
+		return refreshRevokeReply(c.ID(), c.UserID(), result)
+	}
+	if token.Meta != nil {
+		setStorageMeta(c, token.Meta)
+	}
+	class, _ := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
+	return centrifuge.RefreshReply{
+		ExpireAt:      token.ExpireAt,
+		Info:          token.Info,
+		TokenIdentity: &identity,
+		User:          token.UserID,
+		AuthClass:     h.authClassName(class),
+	}, RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+}
+
+// refreshVerifyError maps the error of verifying a refresh token to the refresh reply and error.
+func refreshVerifyError(c rebindableClient, err error) (centrifuge.RefreshReply, RefreshExtra, error) {
+	if errors.Is(err, jwtverify.ErrTokenExpired) {
+		return centrifuge.RefreshReply{Expired: true}, RefreshExtra{}, nil
+	}
+	if errors.Is(err, jwtverify.ErrInvalidToken) {
+		log.Info().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
+	log.Error().Err(err).Str("client", c.ID()).Str("user", c.UserID()).Msg("error verifying refresh token")
+	return centrifuge.RefreshReply{}, RefreshExtra{}, err
+}
+
+// changesIdentity reports whether a refresh with a token of tokenUser and class changes the identity of the connection:
+// the user of the token, or the user Core sees. Core sees no user for a pending connection, so the token user is
+// compared as well.
+func changesIdentity(rec *connState, c Client, tokenUser string, class rpcregistry.AuthClass) bool {
+	return rec.identity.Load().tokenUser != tokenUser || coreUserID(class, tokenUser) != c.UserID()
 }
 
 // onRefreshRebind answers a refresh whose token changes the identity of the connection. With rebind disabled the
@@ -75,6 +94,7 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 // user, token, expiration and channels follow the transition between auth classes.
 func (h *Handler) onRefreshRebind(
 	c rebindableClient,
+	rec *connState,
 	token string,
 	verified jwtverify.ConnectToken,
 	nextClass rpcregistry.AuthClass,
@@ -84,25 +104,29 @@ func (h *Handler) onRefreshRebind(
 		log.Info().Str("token_user", verified.UserID).Str("user", c.UserID()).Str("client", c.ID()).Msg("refresh token user mismatch")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
+	prev := rec.identity.Load()
+	// A connection made through a connect proxy never changes its identity: the channels the proxy granted were granted
+	// under the proxy's terms, and no token proves a transition from them.
+	if prev.origin == originProxy {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
+	}
 	// A logout of a connection with a user disconnects it unless allow_downgrade is set. The check comes before the
-	// class check, so a connection made through a connect proxy, which has no class, is disconnected the same way.
+	// class check, so the logout of a connection is disconnected the same way whatever its class.
 	if verified.UserID == "" && c.UserID() != "" && !cfg.Client.Rebind.AllowDowngrade {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	claim := h.registryConfig().AuthClassClaim
-	// A connection with a user and no class under the claim came through a connect proxy: its user is not
-	// proven by a token, so it may not move to another identity.
-	if c.UserID() != "" && !hasStoredAuthClass(c, claim) {
+	// A connection with a user whose class was derived under another claim is not proven by the claim configured now.
+	if c.UserID() != "" && prev.claim != claim {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
-	// A connection keeps the account it has held, which is the user of its last token with a user, so a logout does
-	// not free it to take another user. An anonymous token has no user, so it is only checked by the transition. A
-	// connection with no account may take any user.
-	if held := storedAccountUser(c); held != "" && verified.UserID != "" && held != verified.UserID {
+	// A connection keeps the account it has held, which is the user of its last token with a user, so a logout does not
+	// free it to take another user. An anonymous token has no user, so it is only checked by the transition. A connection
+	// with no account may take any user.
+	if held := prev.account; held != "" && verified.UserID != "" && held != verified.UserID {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
-	_, currentClass := registryConnection(c, claim)
-	if err := rebindTransitionError(currentClass, nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
+	if err := rebindTransitionError(effectiveClass(prev, claim, c.UserID()), nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 
@@ -116,23 +140,16 @@ func (h *Handler) onRefreshRebind(
 
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
-	oldToken, oldClass := registryConnection(c, claim)
-	oldTokenUser := storedTokenUser(c)
-	oldAccountUser := storedAccountUser(c)
-	// The registry reads the class and the token of a connection, and the rate limit state reads its user. The new
-	// class, token and user are stored before the Core user changes, so a call which overlaps the rebind sees the new
-	// class. The rate limit state of the new user is attached before the rebind, and detached again when it fails.
+	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
 	if newUser == "" {
 		h.detachRateLimit(c)
 	} else {
 		h.attachRateLimit(c, newUser)
 	}
-	h.replaceRegistryToken(c, token, nextClass)
-	storeTokenUser(c, verified.UserID)
-	if verified.UserID != "" {
-		storeAccountUser(c, verified.UserID)
-	}
+	// The new identity is stored before the Core user changes, so a call which overlaps the rebind sees the new class and
+	// token. A failed rebind stores the previous identity back.
+	rec.identity.Store(nextIdentity(prev, originToken, nextClass, claim, h.keptToken(token), verified))
 	// The channels of the user go before the identity moves, so the anonymous identity never receives them. A rebind
 	// which is refused after this leaves the connection without them, until its next refresh subscribes them again.
 	if newUser == "" {
@@ -144,21 +161,20 @@ func (h *Handler) onRefreshRebind(
 		TokenIdentity: identity,
 	})
 	if err != nil {
+		rec.identity.Store(prev)
 		h.detachRateLimit(c)
 		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again.
 		if !errors.Is(err, centrifuge.ErrRebindClosed) {
 			h.attachRateLimit(c, oldUser)
 		}
-		h.replaceRegistryToken(c, oldToken, oldClass)
-		storeTokenUser(c, oldTokenUser)
-		if verified.UserID != "" {
-			storeAccountUser(c, oldAccountUser)
-		}
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
-	setStoredIdentity(c, identity)
 	runTestHook(&testHookRebound, c)
-	h.syncSessionConnection(c, newUser, identity)
+	h.syncSessionConnection(c, rec, newUser, identity)
+	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
+	if newUser == "" {
+		h.unsubscribeNotAnonymous(c)
+	}
 
 	// A revocation applied between the check above and the rebind is caught here, as a connection is
 	// checked after it is registered.
@@ -184,25 +200,32 @@ func (h *Handler) onRefreshRebind(
 
 // refreshSameIdentity answers a refresh whose token keeps the identity of the connection. The session is tracked before
 // the check. A revocation applied after the check then finds the connection in the index, and one applied before it is
-// seen by the check. The identity the server keeps is set before the check too, so a connection with a user, which is
-// not in the index, is found by a revocation of the new session. A rejected refresh keeps the previous identity.
+// seen by the check. The identity is stored before the check too, so a connection with a user, which is not in the
+// index, is found by a revocation of the new session. A rejected refresh stores the previous identity back.
 func (h *Handler) refreshSameIdentity(
 	c rebindableClient,
+	rec *connState,
 	refreshToken string,
 	verified jwtverify.ConnectToken,
 	class rpcregistry.AuthClass,
 ) (centrifuge.RefreshReply, RefreshExtra, error) {
+	prev := rec.identity.Load()
+	// The class of a token changes only through the transition table, and a same-user change between authenticated and
+	// bot is none of its transitions. A connection which has no token-derived class yet, as a connect proxy one, takes
+	// the class of its first token.
+	if prev.class != 0 && prev.class != class {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
+	}
 	identity := accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt)
-	previous := storedIdentity(c)
-	setStoredIdentity(c, identity)
-	h.syncSessionConnection(c, c.UserID(), identity)
+	rec.identity.Store(nextIdentity(prev, originToken, class, h.registryConfig().AuthClassClaim, h.keptToken(refreshToken), verified))
+	h.syncSessionConnection(c, rec, c.UserID(), identity)
 	runTestHook(&testHookRefreshTracked, c)
 	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
-		setStoredIdentity(c, previous)
+		rec.identity.Store(prev)
+		h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
-	h.replaceRegistryToken(c, refreshToken, class)
 	if verified.Meta != nil {
 		setStorageMeta(c, verified.Meta)
 	}

@@ -8,7 +8,6 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/clientcontext"
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -31,7 +30,8 @@ func newRegistryTestBackend(t *testing.T) *tools.GRPCBytesBackend {
 	return backend
 }
 
-// newRegistryTestClient returns a client for the registry tests. Its storage starts with a copy of storage.
+// newRegistryTestClient returns a client for the registry tests. Its storage starts with a copy of the storage of a
+// connect reply, and the record in it is adopted as the ext state of the client, as Core does after a connect.
 func newRegistryTestClient(id string, userID string, ctx context.Context, storage map[string]any) *rebindClientMock {
 	client := &rebindClientMock{}
 	client.IDFunc = func() string { return id }
@@ -46,19 +46,24 @@ func newRegistryTestClient(id string, userID string, ctx context.Context, storag
 	if len(storage) > 0 {
 		copied, release := client.AcquireStorage()
 		for key, value := range storage {
-			copied[key] = value
+			if key != storageKeyConnState {
+				copied[key] = value
+			}
 		}
 		release(copied)
+	}
+	if rec, ok := storage[storageKeyConnState].(*connState); ok {
+		client.ExtStateFunc = func() any { return rec }
 	}
 	return client
 }
 
-// registryTestStored returns the client storage value under key.
-func registryTestStored(client *rebindClientMock, key string) (any, bool) {
-	storage, release := client.AcquireStorage()
-	defer release(storage)
-	value, ok := storage[key]
-	return value, ok
+// connectReplyIdentity returns the identity which the record of a connect reply holds.
+func connectReplyIdentity(t *testing.T, reply centrifuge.ConnectReply) *connIdentity {
+	t.Helper()
+	rec, ok := reply.Storage[storageKeyConnState].(*connState)
+	require.True(t, ok, "the connect reply carries no record")
+	return rec.identity.Load()
 }
 
 // registryTestRegistryConfig returns the registry config which the handler and the registry share.
@@ -266,7 +271,7 @@ func TestRPCRegistryAuthorizationFollowsConnectionToken(t *testing.T) {
 		Headers:  map[string]string{"x-example-init": "init"},
 	}, nil, false)
 	require.NoError(t, err)
-	require.Equal(t, connectToken, reply.Storage[clientstorage.KeyToken])
+	require.Equal(t, connectToken, connectReplyIdentity(t, reply).token)
 	require.Equal(t, "init", connectionEmulatedHeader(t, reply.Context, "x-example-init"))
 
 	// The connection context carries the connect-time headers, as it does for a real client.
@@ -286,9 +291,7 @@ func TestRPCRegistryAuthorizationFollowsConnectionToken(t *testing.T) {
 	refreshToken := getConnTokenHS("42", time.Now().Add(time.Hour).Unix())
 	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{Token: refreshToken}, nil)
 	require.NoError(t, err)
-	stored, ok := registryTestStored(client, clientstorage.KeyToken)
-	require.True(t, ok)
-	require.Equal(t, refreshToken, stored)
+	require.Equal(t, refreshToken, connStateOf(client).identity.Load().token)
 }
 
 // connectionEmulatedHeader returns a connect-time header kept in the connection context.
@@ -308,8 +311,8 @@ func TestRPCRegistryTokenNotStoredWhenDisabled(t *testing.T) {
 		Token: getConnTokenHS("42", 0),
 	}, nil, false)
 	require.NoError(t, err)
-	_, ok := reply.Storage[clientstorage.KeyToken]
-	require.False(t, ok)
+	// Nothing needs a record, so the token is not kept anywhere.
+	require.NotContains(t, reply.Storage, storageKeyConnState)
 }
 
 // connectRegistryFlagClient connects a client through a real Core node which uses registry, and returns
@@ -399,9 +402,9 @@ func TestRPCRegistryPending2FAConnectionCallsOnlyItsClass(t *testing.T) {
 		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "pending_2fa"}),
 	}, nil, false)
 	require.NoError(t, err)
-	stored, ok := reply.Storage[clientstorage.KeyAuthClass]
-	require.True(t, ok)
-	require.Equal(t, registryAuthClass{class: rpcregistry.AuthClassPending2FA, claim: "auth_class"}, stored)
+	id := connectReplyIdentity(t, reply)
+	require.Equal(t, rpcregistry.AuthClassPending2FA, id.class)
+	require.Equal(t, "auth_class", id.claim)
 
 	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
@@ -478,7 +481,7 @@ func TestRPCRegistryConfiguredClaimAbsentGivesUserClass(t *testing.T) {
 		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42"}),
 	}, nil, false)
 	require.NoError(t, err)
-	require.Equal(t, registryAuthClass{class: rpcregistry.AuthClassAuthenticated, claim: "auth_class"}, withUser.Storage[clientstorage.KeyAuthClass])
+	require.Equal(t, rpcregistry.AuthClassAuthenticated, connectReplyIdentity(t, withUser).class)
 	client := newRegistryTestClient("c1", "42", withUser.Context, withUser.Storage)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.NoError(t, err)
@@ -489,7 +492,7 @@ func TestRPCRegistryConfiguredClaimAbsentGivesUserClass(t *testing.T) {
 		Token: getConnTokenWithClaims(t, map[string]any{}),
 	}, nil, false)
 	require.NoError(t, err)
-	require.Equal(t, registryAuthClass{class: rpcregistry.AuthClassAnonymous, claim: "auth_class"}, withoutUser.Storage[clientstorage.KeyAuthClass])
+	require.Equal(t, rpcregistry.AuthClassAnonymous, connectReplyIdentity(t, withoutUser).class)
 	anonymous := newRegistryTestClient("c2", "", withoutUser.Context, withoutUser.Storage)
 	_, err = h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
@@ -538,13 +541,14 @@ func TestRPCRegistryClaimSetByReloadMakesOldConnectionsAnonymous(t *testing.T) {
 }
 
 func TestRPCRegistryRefreshFromPendingUpgradesGate(t *testing.T) {
-	h, _ := newRegistryAuthClassHandler(t)
+	h := newRegistryRebindHandler(t)
 
 	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "pending_2fa"}),
 	}, nil, false)
 	require.NoError(t, err)
-	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
+	// Core sees a pending connection as anonymous, so its upgrade is a rebind.
+	client := newRegistryTestClient("c1", "", reply.Context, reply.Storage)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
 
@@ -553,8 +557,9 @@ func TestRPCRegistryRefreshFromPendingUpgradesGate(t *testing.T) {
 		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "auth_class": "anonymous"}),
 	}, nil)
 	require.Equal(t, centrifuge.DisconnectInvalidToken, err)
-	stored, _ := registryTestStored(client, clientstorage.KeyAuthClass)
-	require.Equal(t, registryAuthClass{class: rpcregistry.AuthClassPending2FA, claim: "auth_class"}, stored)
+	id := connStateOf(client).identity.Load()
+	require.Equal(t, rpcregistry.AuthClassPending2FA, id.class)
+	require.Equal(t, "auth_class", id.claim)
 
 	// A refresh with a full token upgrades the connection.
 	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{

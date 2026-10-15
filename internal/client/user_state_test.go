@@ -168,15 +168,10 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	h, store, _ := newPendingTestHandler(t)
 	now := time.Now().Unix()
-	client := &rebindClientMock{}
-	client.IDFunc = func() string { return "c1" }
-	client.UserIDFunc = func() string { return "" }
-	// A pending connection established by a token has its token user stored.
-	storage, release := client.AcquireStorage()
-	storage[storageKeyTokenUser] = "42"
-	release(storage)
+	// A pending connection established by a token has its token user in its record.
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
 	sessions := store.SessionConnections()
-	sessions.Track("c1", client, [16]byte{1})
+	sessions.Track(client, &state.record.track, [16]byte{1})
 
 	nextSessionID := "0a9b8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d"
 	reply, extra, err := h.OnRefresh(client, centrifuge.RefreshEvent{
@@ -196,19 +191,17 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 	require.Empty(t, sessions.Connections([16]byte{1}))
 }
 
-// TestConnectStoresTokenUserOnlyForPending checks that a connect stores the token user only for a pending connection,
-// which Core sees with no user. A connection of any other class reads its token user from its Core user. A pending
-// renewal of a connection with rebind off keeps the unchanged path.
-func TestConnectStoresTokenUserOnlyForPending(t *testing.T) {
+// TestConnectRecordHoldsTokenUser checks that a connect keeps the user of its token in the record of the connection,
+// whatever its class. A pending connection is anonymous to Core, so the record is what keeps its token user.
+func TestConnectRecordHoldsTokenUser(t *testing.T) {
 	tests := []struct {
-		name       string
-		sub        string
-		class      string
-		wantStored bool
+		name  string
+		sub   string
+		class string
 	}{
 		{name: "anonymous", class: "anonymous"},
 		{name: "authenticated", sub: "42", class: "authenticated"},
-		{name: "pending", sub: "42", class: "pending_2fa", wantStored: true},
+		{name: "pending", sub: "42", class: "pending_2fa"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,11 +219,9 @@ func TestConnectStoresTokenUserOnlyForPending(t *testing.T) {
 				Token:    getConnTokenWithClaims(t, claims),
 			}, nil, false)
 			require.NoError(t, err)
-			tokenUser, stored := reply.Storage[storageKeyTokenUser]
-			require.Equal(t, tt.wantStored, stored)
-			if tt.wantStored {
-				require.Equal(t, tt.sub, tokenUser)
-			}
+			rec, ok := reply.Storage[storageKeyConnState].(*connState)
+			require.True(t, ok)
+			require.Equal(t, tt.sub, rec.identity.Load().tokenUser)
 		})
 	}
 }
@@ -249,7 +240,7 @@ func TestPendingRenewalWithRebindOffKeepsUnchangedPath(t *testing.T) {
 	}, nil, false)
 	require.NoError(t, err)
 
-	client := newRebindRegistryClient("c1", "", reply.Storage)
+	client := newRegistryTestClient("c1", "", nil, reply.Storage)
 	client.RebindFunc = func(centrifuge.RebindOptions) error {
 		t.Fatal("a pending renewal must not rebind")
 		return nil

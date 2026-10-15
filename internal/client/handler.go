@@ -60,6 +60,7 @@ type Handler struct {
 	rpcRegistry      *rpcregistry.Registry
 	accessStore      *accessrevoke.Store
 	accessSource     accessrevoke.Source
+	clientLimiter    *ratelimit.ClientLimiter
 	userLimiter      *ratelimit.UserLimiter
 	redisLimiter     *ratelimit.RedisUserLimiter
 
@@ -408,12 +409,8 @@ func (h *Handler) OnClientConnecting(
 	var processClientChannels bool
 
 	storage := map[string]any{}
-	// replyUser is the user of the token or of the connect proxy, which the reply reports. Core may see no
-	// user for the connection, see coreUserID.
-	var replyUser string
-	// replyClass is the auth class of the token, as storeConnectClass returns it. A connection without a token gets its
-	// class when the reply is built.
-	var replyClass rpcregistry.AuthClass
+	origin := originAnonymous
+	var verified jwtverify.ConnectToken
 
 	if e.Token != "" {
 		token, err := h.tokenVerifier.VerifyConnectToken(e.Token, cfg.Client.InsecureSkipTokenSignatureVerify)
@@ -457,15 +454,18 @@ func (h *Handler) OnClientConnecting(
 		if token.Meta != nil {
 			storage[clientstorage.KeyMeta] = token.Meta
 		}
-		replyUser = token.UserID
-		storage[accessrevoke.StorageKeyIdentity] = identity
-		authClass, ok := h.storeConnectClass(storage, e.Token, token)
+		class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
 		if !ok {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
-		replyClass = authClass
-		credentials.UserID = coreUserID(authClass, token.UserID)
+		credentials.UserID = coreUserID(class, token.UserID)
+		if class == rpcregistry.AuthClassPending2FA {
+			// A pending connection carries no info: Core shows it to other clients, and the token of an upgrade sets it.
+			credentials.Info = nil
+		}
+		origin = originToken
+		verified = token
 
 		processClientChannels = true
 	} else if connectProxyHandler != nil {
@@ -481,9 +481,7 @@ func (h *Handler) OnClientConnecting(
 			return centrifuge.ConnectReply{}, accessrevoke.DisconnectUserBlocked
 		}
 		credentials = connectReply.Credentials
-		if credentials != nil {
-			replyUser = credentials.UserID
-		}
+		origin = originProxy
 		if connectReply.Subscriptions != nil {
 			subscriptions = connectReply.Subscriptions
 		}
@@ -605,6 +603,9 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
+	if rec := h.connectRecord(cfg, origin, e.Token, verified, credentials); rec != nil {
+		storage[storageKeyConnState] = rec
+	}
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,
@@ -614,10 +615,7 @@ func (h *Handler) OnClientConnecting(
 		ClientSideRefresh: !refreshProxyEnabled,
 		Flags:             h.registryConnectFlags(),
 	}
-	if replyClass == 0 {
-		replyClass = authClassOf(storage, h.registryConfig().AuthClassClaim, replyUser)
-	}
-	h.setReplyIdentity(&finalReply, replyUser, replyClass)
+	h.setReplyIdentity(&finalReply, origin, verified, credentials)
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
@@ -673,7 +671,7 @@ func (h *Handler) OnRefresh(c rebindableClient, e centrifuge.RefreshEvent, refre
 }
 
 // OnRPC ...
-func (h *Handler) OnRPC(c Client, e centrifuge.RPCEvent, rpcProxyHandler proxy.RPCHandlerFunc) (centrifuge.RPCReply, error) {
+func (h *Handler) OnRPC(c rebindableClient, e centrifuge.RPCEvent, rpcProxyHandler proxy.RPCHandlerFunc) (centrifuge.RPCReply, error) {
 	if handler, ok := h.rpcExtension[e.Method]; ok {
 		return handler(c, e)
 	}

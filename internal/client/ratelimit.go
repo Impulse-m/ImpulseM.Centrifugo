@@ -44,13 +44,14 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 		h.redisLimiter = redisLimiter
 	}
 	limiter := ratelimit.NewClientLimiter(rl)
+	h.clientLimiter = limiter
 	var userLimiter *ratelimit.UserLimiter
 	if rl.UserCommand.Enabled {
 		userLimiter = ratelimit.NewUserLimiter(rl.UserCommand)
 		h.userLimiter = userLimiter
 	}
-	// Connection state is allocated on connect, so the read hook is needed for client_error and
-	// user limits too.
+	// Connection state is allocated on connect with the connection record, so the read hook is needed for client_error
+	// and user limits too.
 	h.node.OnCommandRead(h.rateLimitCommandRead(limiter, rl.ClientCommand.Enabled, userLimiter, redisLimiter))
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
@@ -77,8 +78,8 @@ func newRedisUserLimiter(cfg config.Config) (*ratelimit.RedisUserLimiter, error)
 	return ratelimit.NewRedisUserLimiter(rc, prefix, configs, redisConf.IOTimeout.ToDuration()), nil
 }
 
-// rateLimitCommandRead allocates connection rate limit state on connect. For other commands it checks
-// client command limits when checkCommands is set, then user command limits when userLimiter is not nil,
+// rateLimitCommandRead checks commands against the rate limit state of the connection, which its record holds from
+// connect. It checks client command limits when checkCommands is set, then user command limits when userLimiter is not nil,
 // then Redis user command limits when redisLimiter is not nil. It stops at the first rejection.
 // Anonymous connections have no user state, and anonymous users are not limited by user limits.
 func (h *Handler) rateLimitCommandRead(
@@ -88,13 +89,6 @@ func (h *Handler) rateLimitCommandRead(
 	redisLimiter *ratelimit.RedisUserLimiter,
 ) centrifuge.CommandReadHandler {
 	return func(c *centrifuge.Client, e centrifuge.CommandReadEvent) error {
-		if e.Command.Connect != nil {
-			// Keep existing state: a repeated connect must not reset the buckets of the connection.
-			if c.ExtState() == nil {
-				c.SetExtState(&connState{limits: limiter.NewConnState()})
-			}
-			return nil
-		}
 		if !checkCommands && userLimiter == nil && redisLimiter == nil {
 			return nil
 		}

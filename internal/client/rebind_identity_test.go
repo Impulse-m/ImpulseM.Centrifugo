@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -56,11 +55,9 @@ func TestRebindStoresNewIdentityBeforeCoreUser(t *testing.T) {
 	var storedClass rpcregistry.AuthClass
 	var storedTokenUser string
 	state.beforeApply = func(centrifuge.RebindOptions) {
-		storage, release := client.AcquireStorage()
-		defer release(storage)
-		stored, _ := storage[clientstorage.KeyAuthClass].(registryAuthClass)
-		storedClass = stored.class
-		storedTokenUser, _ = storage[storageKeyTokenUser].(string)
+		id := state.record.identity.Load()
+		storedClass = id.class
+		storedTokenUser = id.tokenUser
 	}
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
@@ -72,12 +69,9 @@ func TestRebindStoresNewIdentityBeforeCoreUser(t *testing.T) {
 	require.Empty(t, state.user)
 }
 
-// connIsClosed reports whether the handler state of the connection is marked closed.
+// connIsClosed reports whether the session index has closed the connection.
 func connIsClosed(c rebindableClient) bool {
-	st := connStateOf(c)
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.closed
+	return connStateOf(c).track.Closed()
 }
 
 // closeInRebindHook closes the connection from the rebind hook, and returns once its disconnect has released it.

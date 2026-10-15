@@ -1,21 +1,66 @@
 package client
 
 import (
-	"sync"
+	"sync/atomic"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
+
+	"github.com/centrifugal/centrifuge"
 )
 
-// connState is the state the handler keeps for a connection in its ext state. It holds the rate limit state of the
-// connection, and whether the connection is closed. The session index tracks a connection only while it is open, so a
-// refresh which overlaps a close does not leave an index entry behind.
-type connState struct {
-	mu     sync.Mutex
-	closed bool
-	limits *ratelimit.ConnState
+// storageKeyConnState carries the record of a connection from OnClientConnecting to OnConnect. OnConnect removes it.
+const storageKeyConnState = "conn_state"
+
+// rebindableClient is a Client whose connection state and channels the handler changes: the rebind of a refresh and
+// the session index and rate limit state of a connection. Core's client satisfies it. A Client without these methods
+// is only used by requests which do not change the connection.
+type rebindableClient interface {
+	Client
+	Disconnect(disconnect ...centrifuge.Disconnect)
+	ExtState() any
+	Rebind(opts centrifuge.RebindOptions) error
+	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsWithContext() map[string]centrifuge.ChannelContext
 }
 
-// connStateOf returns the state of the connection, nil when the connection has none.
+// connState is the record the handler keeps for a connection, in its ext state. It exists only when a feature needs
+// it, see Handler.needsConnState. Its fields are set once at connect; only the identity changes, through its pointer.
+type connState struct {
+	track      accessrevoke.Tracked
+	limits     *ratelimit.ConnState
+	identity   atomic.Pointer[connIdentity]
+	refreshing atomic.Bool
+}
+
+// connIdentity is the identity of a connection: what its token proves and the user it is bound to. It is immutable
+// once stored. Every path which gives a connection an identity builds one with nextIdentity.
+type connIdentity struct {
+	origin    connOrigin
+	class     rpcregistry.AuthClass
+	claim     string
+	token     string
+	tokenUser string
+	account   string
+	identity  centrifuge.TokenIdentity
+}
+
+// connOrigin tells how a connection was made. It never changes.
+type connOrigin uint8
+
+const (
+	// originAnonymous is a connection with no token and no connect proxy.
+	originAnonymous connOrigin = iota
+	// originToken is a connection made with a connect token.
+	originToken
+	// originProxy is a connection made through a connect proxy.
+	originProxy
+)
+
+// connStateOf returns the record of the connection, nil when the connection has none.
 func connStateOf(c rebindableClient) *connState {
 	st, _ := c.ExtState().(*connState)
 	return st
@@ -28,4 +73,162 @@ func rateLimitStateOf(c rebindableClient) *ratelimit.ConnState {
 		return nil
 	}
 	return st.limits
+}
+
+// AccessIdentity implements accessrevoke.Identified. It returns the user and the token identity of the connection, which
+// the revoker, the recheck and the sweep check it against.
+func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
+	id := s.identity.Load()
+	if id == nil {
+		return "", centrifuge.TokenIdentity{}
+	}
+	return id.tokenUser, id.identity
+}
+
+// needsConnState reports whether connections get a record. Each condition is a feature which reads it.
+func (h *Handler) needsConnState(cfg *config.Config) bool {
+	return h.accessStore != nil ||
+		h.userLimiter != nil ||
+		h.clientLimiter != nil ||
+		h.rpcRegistry.Enabled() ||
+		cfg.Client.Rebind.Enabled ||
+		cfg.RPC.Registry.AuthClassClaim != ""
+}
+
+// keptToken returns the token a connection keeps for the RPC method registry. The token is kept only when the registry
+// is enabled, as nothing else reads it.
+func (h *Handler) keptToken(token string) string {
+	if h.rpcRegistry.Enabled() {
+		return token
+	}
+	return ""
+}
+
+// connectRecord returns the record of a connecting client, nil when no feature needs one. The origin token takes its
+// identity from verified, the connect token. The origin proxy takes its user from credentials and has no token.
+func (h *Handler) connectRecord(
+	cfg *config.Config,
+	origin connOrigin,
+	token string,
+	verified jwtverify.ConnectToken,
+	credentials *centrifuge.Credentials,
+) *connState {
+	if !h.needsConnState(cfg) {
+		return nil
+	}
+	rec := &connState{}
+	if h.clientLimiter != nil {
+		rec.limits = h.clientLimiter.NewConnState()
+	}
+	var class rpcregistry.AuthClass
+	var claim string
+	switch origin {
+	case originToken:
+		class, _ = rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
+		claim = cfg.RPC.Registry.AuthClassClaim
+	case originProxy:
+		if credentials != nil {
+			verified.UserID = credentials.UserID
+		}
+	}
+	rec.identity.Store(nextIdentity(nil, origin, class, claim, h.keptToken(token), verified))
+	return rec
+}
+
+// adoptConnState moves the record of a connecting client from its storage into its ext state. Core applied the storage
+// of the connect reply before OnConnect. Without a record nothing is touched.
+func adoptConnState(client *centrifuge.Client) *connState {
+	storage, release := client.AcquireStorage()
+	rec, _ := storage[storageKeyConnState].(*connState)
+	if rec == nil {
+		release(storage)
+		return nil
+	}
+	delete(storage, storageKeyConnState)
+	if len(storage) == 0 {
+		release(nil) // the map was made for the hop only; Core recreates one on demand
+	} else {
+		release(storage)
+	}
+	client.SetExtState(rec)
+	return rec
+}
+
+// nextIdentity builds the identity of a connection from the token it holds now. prev is nil at connect. The account is
+// the user of the token when it has one, else the account held before, so a logout keeps the account and a later token
+// of another user is refused by the account check. The origin never changes.
+func nextIdentity(
+	prev *connIdentity,
+	origin connOrigin,
+	class rpcregistry.AuthClass,
+	claim string,
+	token string,
+	verified jwtverify.ConnectToken,
+) *connIdentity {
+	next := &connIdentity{
+		origin:    origin,
+		class:     class,
+		claim:     claim,
+		token:     token,
+		tokenUser: verified.UserID,
+		account:   verified.UserID,
+		identity:  accessrevoke.Identity(verified.Session, verified.Generation, verified.IssuedAt),
+	}
+	if prev != nil {
+		next.origin = prev.origin
+		if next.account == "" {
+			next.account = prev.account
+		}
+	}
+	return next
+}
+
+// effectiveClass returns the auth class of a connection for the registry under claim, the claim configured now. A class
+// derived from a token holds only under the claim it was derived under, and is anonymous under another one. Without a
+// token-derived class the class is anonymous when a claim is configured, else the class of the Core user. A connection
+// which an anonymous origin rebound to a token has the class of that token, so the class decides, not the origin.
+func effectiveClass(id *connIdentity, claim string, coreUser string) rpcregistry.AuthClass {
+	if id.class != 0 {
+		if id.claim == claim {
+			return id.class
+		}
+		return rpcregistry.AuthClassAnonymous
+	}
+	if claim != "" {
+		return rpcregistry.AuthClassAnonymous
+	}
+	class, _ := rpcregistry.ConnectionAuthClass("", coreUser)
+	return class
+}
+
+// coreUserID returns the user Core sees for a connection of class with userID. A pending_2fa connection keeps
+// its user for the registry, but is anonymous to Core: it gets no personal channel, no user channels and no
+// entry in the user index of the hub. Any other class gives its user.
+func coreUserID(class rpcregistry.AuthClass, userID string) string {
+	if class == rpcregistry.AuthClassPending2FA {
+		return ""
+	}
+	return userID
+}
+
+// setReplyIdentity sets the user and the auth class which a connect reply reports. The user is the one of the token or of
+// the connect proxy, which Core may not see for a pending connection.
+func (h *Handler) setReplyIdentity(
+	reply *centrifuge.ConnectReply,
+	origin connOrigin,
+	verified jwtverify.ConnectToken,
+	credentials *centrifuge.Credentials,
+) {
+	userID := verified.UserID
+	if origin == originProxy && credentials != nil {
+		userID = credentials.UserID
+	}
+	var class rpcregistry.AuthClass
+	if origin == originToken {
+		class, _ = rpcregistry.ConnectionAuthClass(verified.AuthClass, verified.UserID)
+	} else {
+		class = effectiveClass(&connIdentity{}, h.registryConfig().AuthClassClaim, userID)
+	}
+	reply.User = userID
+	reply.AuthClass = h.authClassName(class)
 }

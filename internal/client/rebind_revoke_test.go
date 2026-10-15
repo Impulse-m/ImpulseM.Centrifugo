@@ -45,7 +45,9 @@ func TestRefreshWithoutExpiryIsRevocableBySession(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20))
 	require.Len(t, node.Hub().Connections(), 1)
-	require.Equal(t, accessrevoke.Identity(revokeTestOtherUUID, 0, now), accessrevoke.IdentityOf(client))
+	userID, identity := accessrevoke.IdentityOf(client)
+	require.Equal(t, "42", userID)
+	require.Equal(t, accessrevoke.Identity(revokeTestOtherUUID, 0, now), identity)
 
 	require.NoError(t, revoker.RevokeSession("42", revokeTestOtherUUID, now, 0))
 	require.Eventually(t, func() bool {

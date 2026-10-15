@@ -134,7 +134,7 @@ type ChannelOptions struct {
 
 	// ServerTagsFilterTemplate is a server tags filter applied to every subscription in the namespace,
 	// with values of the connection token claims, user and client rendered in.
-	ServerTagsFilterTemplate ServerTagsFilterTemplate `mapstructure:"server_tags_filter_template" json:"server_tags_filter_template" envconfig:"server_tags_filter_template" yaml:"server_tags_filter_template" toml:"server_tags_filter_template" doc:"Server tags filter applied to every subscription in the namespace, with values of the connection token claims, the user and the client rendered in. Combined with an explicit server tags filter by and."`
+	ServerTagsFilterTemplate ServerTagsFilterTemplate `mapstructure:"server_tags_filter_template" json:"server_tags_filter_template" envconfig:"server_tags_filter_template" yaml:"server_tags_filter_template" toml:"server_tags_filter_template" doc:"Server tags filter applied to every subscription in the namespace, with values of the connection token claims, the user and the client rendered in. Combined with an explicit server tags filter by and. The server API subscribe is refused on such channels."`
 
 	// DeltaPublish enables delta publish mechanism for all messages published in namespace channels
 	// without explicit flag usage in publish API request. Setting this option does not guarantee that

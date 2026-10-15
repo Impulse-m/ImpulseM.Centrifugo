@@ -95,7 +95,7 @@ Off by default, and then the auth throttle and the request log keep their previo
 
 ### Server tags filter template
 
-A namespace can set `server_tags_filter_template`: a server tags filter applied to every subscription in the namespace, including server-side subscriptions of the connection token and of the connect proxy, the personal channel and uni-connect channels. Its `val` and `vals` strings may refer to values of the connection. Each subscription gets the template rendered with those values, combined with its explicit server tags filter by `and`. Off by default, and nothing is read from the token unless a template refers to a claim.
+A namespace can set `server_tags_filter_template`: a server tags filter applied to every subscription in the namespace made on a connection, including server-side subscriptions of the connection token and of the connect proxy, the personal channel and uni-connect channels. Its `val` and `vals` strings may refer to values of the connection. Each subscription gets the template rendered with those values, combined with its explicit server tags filter by `and`. Off by default, and nothing is read from the token unless a template refers to a claim.
 
 ```json
 "channel": {
@@ -131,7 +131,8 @@ A namespace can set `server_tags_filter_template`: a server tags filter applied 
 * `on_missing_value`: `reject` (default) refuses a subscription whose template has a missing value: error 103 on subscribe and subscription refresh, disconnect 3503 at connect for a server-side subscription. `skip` applies no template to that subscription, and the explicit filter still applies. Setting `on_missing_value` without `filter` is a config error. The log names the variable.
 * Values are bound once per connection, at connect, from the verified token. Subscription refreshes render with the same values, so a refresh without a filter keeps the current filter, and a refresh with a new explicit filter keeps the template.
 * A connection refresh whose token has other values of the template claims disconnects with insufficient state, and the client reconnects with the new values. Equal values change nothing.
-* A rebind to a token with other values unsubscribes the channels with a template with code 2500 (insufficient state), and the client resubscribes them with fresh filters.
+* A rebind to a token with other values, or to another user, unsubscribes the channels with a template with code 2500 (insufficient state), and the client resubscribes them with fresh filters. The user is one of the values: a connection without a user which takes one renders its templates with that user, so the rebind changes them even when the claims are equal. A refused template of a rebind refuses the refresh, and the connection keeps its identity.
+* The server API subscribe is refused on a channel with a template, with error 108 (not available), since no connection values exist to render it with. Subscriptions made by a connection are not affected.
 * A connect proxy connection has no token claims: `{{user}}` and `{{client}}` work, and `{{claims.*}}` is missing.
 * A config reload which adds a template does not change live subscriptions. A connection verified before the reload has no claims, so its claim variables are missing under the policy until it reconnects.
 

@@ -22,11 +22,14 @@ func (verifier *VerifierJWT) filterTemplateClaims(claims []byte) filtertemplate.
 	return filtertemplate.Claims{Paths: paths, Values: values}
 }
 
-// scalarClaimValue returns the text of a scalar claim. Absent, null, object and array claims, and an empty
-// string, have no value, which is "".
+// scalarClaimValue returns the text of a scalar claim. A number is its text as written in the token, as String
+// rebuilds the text of a fraction or an exponent. Absent, null, object and array claims, and an empty string,
+// have no value, which is "".
 func scalarClaimValue(value gjson.Result) string {
 	switch value.Type {
-	case gjson.String, gjson.Number, gjson.True, gjson.False:
+	case gjson.Number:
+		return value.Raw
+	case gjson.String, gjson.True, gjson.False:
 		return value.String()
 	}
 	return ""

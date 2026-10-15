@@ -10,6 +10,7 @@ import (
 
 	"github.com/cristalhq/jwt/v5"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 const filterTemplateTestSecret = "secret"
@@ -126,5 +127,23 @@ func BenchmarkFilterTemplateClaims(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = verifier.filterTemplateClaims(raw)
+	}
+}
+
+func TestScalarClaimValueKeepsNumberText(t *testing.T) {
+	// A number keeps the text it has in the token, so 1.50 is not 1.5 and 1e3 is not 1000.
+	cases := map[string]string{
+		`1.50`:             "1.50",
+		`1e3`:              "1e3",
+		`9007199254740993`: "9007199254740993",
+		`-0.25`:            "-0.25",
+		`true`:             "true",
+		`"text"`:           "text",
+		`null`:             "",
+		`{"a":1}`:          "",
+		`[1,2]`:            "",
+	}
+	for raw, want := range cases {
+		require.Equal(t, want, scalarClaimValue(gjson.Parse(raw)), raw)
 	}
 }

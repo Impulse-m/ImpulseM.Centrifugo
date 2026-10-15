@@ -50,14 +50,10 @@ type sessionShard struct {
 	more map[[16]byte]map[string]Connection
 }
 
-// newSessionConnections creates an empty index.
+// newSessionConnections creates an empty index. The maps of the shards are made on the first connection of a shard,
+// so an index which holds nothing allocates nothing.
 func newSessionConnections() *SessionConnections {
-	s := &SessionConnections{seed: maphash.MakeSeed()}
-	for i := range s.shards {
-		s.shards[i].one = make(map[[16]byte]Connection)
-		s.shards[i].more = make(map[[16]byte]map[string]Connection)
-	}
-	return s
+	return &SessionConnections{seed: maphash.MakeSeed()}
 }
 
 // Track moves the connection into session. A zero session removes it. Track does nothing once the connection is
@@ -93,23 +89,22 @@ func (s *SessionConnections) Close(conn Connection, t *Tracked) {
 }
 
 // Connections returns the indexed connections of session. It is one lookup in one shard, and a second lookup only
-// for a session with several connections.
+// for a session with one connection.
 func (s *SessionConnections) Connections(session [16]byte) []Connection {
 	shard := s.shardOf(session)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
+	if members, ok := shard.more[session]; ok {
+		out := make([]Connection, 0, len(members))
+		for _, conn := range members {
+			out = append(out, conn)
+		}
+		return out
+	}
 	if conn, ok := shard.one[session]; ok {
 		return []Connection{conn}
 	}
-	members, ok := shard.more[session]
-	if !ok {
-		return nil
-	}
-	out := make([]Connection, 0, len(members))
-	for _, conn := range members {
-		out = append(out, conn)
-	}
-	return out
+	return nil
 }
 
 // shardOf returns the shard of session. The hash is taken over all bytes, because session IDs of different versions
@@ -137,8 +132,14 @@ func (shard *sessionShard) add(session [16]byte, conn Connection) {
 	}
 	first, ok := shard.one[session]
 	if !ok {
+		if shard.one == nil {
+			shard.one = make(map[[16]byte]Connection)
+		}
 		shard.one[session] = conn
 		return
+	}
+	if shard.more == nil {
+		shard.more = make(map[[16]byte]map[string]Connection)
 	}
 	shard.more[session] = map[string]Connection{first.ID(): first, conn.ID(): conn}
 	delete(shard.one, session)
@@ -152,6 +153,9 @@ func (shard *sessionShard) remove(session [16]byte, conn Connection) {
 	if members, ok := shard.more[session]; ok {
 		delete(members, conn.ID())
 		if len(members) == 1 {
+			if shard.one == nil {
+				shard.one = make(map[[16]byte]Connection)
+			}
 			for _, last := range members {
 				shard.one[session] = last
 			}

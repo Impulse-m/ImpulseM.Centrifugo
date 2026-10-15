@@ -85,14 +85,19 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 	return id.tokenUser, id.identity
 }
 
-// needsConnState reports whether connections get a record. Each condition is a feature which reads it.
-func (h *Handler) needsConnState(cfg *config.Config) bool {
-	return h.accessStore != nil ||
-		h.userLimiter != nil ||
-		h.clientLimiter != nil ||
+// needsConnState reports whether a connection with userID and identity gets a record. A feature which reads the record
+// needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one only for
+// a connection with no user and a token session, the connections its session index holds. OnClientConnecting and OnConnect
+// both decide with it, from the same user and identity, so a record made at connect is the one OnConnect adopts.
+func (h *Handler) needsConnState(cfg *config.Config, userID string, identity centrifuge.TokenIdentity) bool {
+	if cfg.Client.Rebind.Enabled ||
+		cfg.RPC.Registry.AuthClassClaim != "" ||
 		h.rpcRegistry.Enabled() ||
-		cfg.Client.Rebind.Enabled ||
-		cfg.RPC.Registry.AuthClassClaim != ""
+		h.userLimiter != nil ||
+		h.clientLimiter != nil {
+		return true
+	}
+	return h.accessStore != nil && userID == "" && identity.Session != [16]byte{}
 }
 
 // keptToken returns the token a connection keeps for the RPC method registry. The token is kept only when the registry
@@ -135,8 +140,8 @@ func tokenUserOf(c Client) string {
 	return userID
 }
 
-// connectRecord puts the record of a connecting client into storage, when a feature needs one. The origin token takes its
-// identity from verified, the connect token. The origin proxy takes its user from credentials and has no token.
+// connectRecord puts the record of a connecting client into storage, when needsConnState asks for one. The origin token
+// takes its identity from verified, the connect token. The origin proxy takes its user from credentials and has no token.
 func (h *Handler) connectRecord(
 	cfg *config.Config,
 	storage map[string]any,
@@ -145,7 +150,13 @@ func (h *Handler) connectRecord(
 	verified jwtverify.ConnectToken,
 	credentials *centrifuge.Credentials,
 ) {
-	if !h.needsConnState(cfg) {
+	var userID string
+	var identity centrifuge.TokenIdentity
+	if credentials != nil {
+		userID = credentials.UserID
+		identity = credentials.TokenIdentity
+	}
+	if !h.needsConnState(cfg, userID, identity) {
 		return
 	}
 	rec := &connState{}

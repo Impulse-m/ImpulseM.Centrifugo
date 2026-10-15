@@ -195,13 +195,14 @@ func TestPendingRenewalKeepsUnchangedPathAndTracksSession(t *testing.T) {
 // whatever its class. A pending connection is anonymous to Core, so the record is what keeps its token user.
 func TestConnectRecordHoldsTokenUser(t *testing.T) {
 	tests := []struct {
-		name  string
-		sub   string
-		class string
+		name    string
+		sub     string
+		class   string
+		wantRec bool
 	}{
-		{name: "anonymous", class: "anonymous"},
-		{name: "authenticated", sub: "42", class: "authenticated"},
-		{name: "pending", sub: "42", class: "pending_2fa"},
+		{name: "anonymous", class: "anonymous", wantRec: true},
+		{name: "authenticated", sub: "42", class: "authenticated", wantRec: false},
+		{name: "pending", sub: "42", class: "pending_2fa", wantRec: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,7 +221,10 @@ func TestConnectRecordHoldsTokenUser(t *testing.T) {
 			}, nil, false)
 			require.NoError(t, err)
 			rec, ok := reply.Storage[storageKeyConnState].(*connState)
-			require.True(t, ok)
+			require.Equal(t, tt.wantRec, ok)
+			if !ok {
+				return
+			}
 			require.Equal(t, tt.sub, rec.identity.Load().tokenUser)
 		})
 	}

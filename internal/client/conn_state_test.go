@@ -78,15 +78,17 @@ func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 }
 
 // TestConnStateOnlyWithFeatures checks that each condition of needsConnState creates a record on its own, and that
-// no feature creates none.
+// no feature creates none. The access store alone creates one only for a connection with no user and a session.
 func TestConnStateOnlyWithFeatures(t *testing.T) {
 	tests := []struct {
-		name    string
-		feature string
-		wantRec bool
+		name      string
+		feature   string
+		anonymous bool
+		wantRec   bool
 	}{
 		{name: "no feature", feature: "", wantRec: false},
-		{name: "access revocation", feature: "revoke", wantRec: true},
+		{name: "access revocation, user token", feature: "revoke", wantRec: false},
+		{name: "access revocation, anonymous token with session", feature: "revoke", anonymous: true, wantRec: true},
 		{name: "client command limit", feature: "client_command", wantRec: true},
 		{name: "user command limit", feature: "user_command", wantRec: true},
 		{name: "registry", feature: "registry", wantRec: true},
@@ -96,10 +98,38 @@ func TestConnStateOnlyWithFeatures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newFeatureTestHandler(t, tt.feature)
-			rec := connectRecordOf(t, h, getConnTokenWithClaims(t, map[string]any{"sub": "42", "jti": revokeTestUUID}))
+			claims := map[string]any{"sub": "42", "jti": revokeTestUUID}
+			if tt.anonymous {
+				delete(claims, "sub")
+			}
+			rec := connectRecordOf(t, h, getConnTokenWithClaims(t, claims))
 			require.Equal(t, tt.wantRec, rec != nil)
 		})
 	}
+}
+
+// TestDefaultConnectWithUserHoldsNothing checks that a connection with a user has no record and no storage key with the
+// production access store on, as the defaults turn it on. Such a connection is checked through its Core user and token
+// identity, and its connect and its OnConnect take no storage.
+func TestDefaultConnectWithUserHoldsNothing(t *testing.T) {
+	cfg := config.DefaultConfig()
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{HMACSecretKey: "secret"}, cfgContainer)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	claims := map[string]any{"sub": "42", "jti": revokeTestUUID}
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		ClientID: "c1",
+		Token:    getConnTokenWithClaims(t, claims),
+	}, nil, false)
+	require.NoError(t, err)
+	require.NotContains(t, reply.Storage, storageKeyConnState)
+	require.False(t, h.needsConnState(cfgContainer.ConfigRef(), reply.Credentials.UserID, reply.Credentials.TokenIdentity))
 }
 
 // newFeatureTestHandler returns a handler with the one feature of TestConnStateOnlyWithFeatures switched on.
@@ -197,6 +227,18 @@ func TestPendingConnectHasNoInfo(t *testing.T) {
 // BenchmarkOnClientConnectingDefault measures a token connect with every feature off, the path every connection takes
 // without the features. It is run on master and on the branch, and the numbers are the same.
 func BenchmarkOnClientConnectingDefault(b *testing.B) {
+	benchmarkOnClientConnectingDefault(b, false)
+}
+
+// BenchmarkOnClientConnectingDefaultStore is the connect of BenchmarkOnClientConnectingDefault with the access store set,
+// as the defaults set it. A connection with a user gets no record, so the numbers must match the ones without the store.
+func BenchmarkOnClientConnectingDefaultStore(b *testing.B) {
+	benchmarkOnClientConnectingDefault(b, true)
+}
+
+// benchmarkOnClientConnectingDefault runs the token connect of a user with every feature off, and with the access store
+// when withStore is set.
+func benchmarkOnClientConnectingDefault(b *testing.B, withStore bool) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	b.Cleanup(func() { _ = node.Shutdown(context.Background()) })
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
@@ -204,6 +246,9 @@ func BenchmarkOnClientConnectingDefault(b *testing.B) {
 	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{HMACSecretKey: "secret"}, cfgContainer)
 	require.NoError(b, err)
 	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
+	if withStore {
+		h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+	}
 	event := centrifuge.ConnectEvent{ClientID: "c1", Token: getConnTokenHS("42", 0)}
 	ctx := context.Background()
 	b.ReportAllocs()

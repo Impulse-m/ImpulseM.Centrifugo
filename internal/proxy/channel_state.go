@@ -12,3 +12,12 @@ type ChannelStateProxy interface {
 	// Protocol for metrics and logging.
 	Protocol() string
 }
+
+// GetChannelStateProxy creates the channel state proxy for the endpoint of p, HTTP or gRPC.
+func GetChannelStateProxy(name string, p Config) (ChannelStateProxy, error) {
+	normalizeProxyHeaderNames(&p)
+	if isHttpEndpoint(p.Endpoint) {
+		return NewHTTPChannelStateProxy(p)
+	}
+	return NewGRPCChannelStateProxy(name, p)
+}

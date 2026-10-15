@@ -17,12 +17,10 @@ import (
 // TestRefreshWithoutExpiryIsRevocableBySession refreshes a connection with a token which has no expiry to a new session,
 // through the protocol of Core. Core keeps the identity of a connection only for a token with an expiry, so the
 // revocation of the new session disconnects the connection through the identity the server keeps for it. The
-// connection has a record, as client.rebind gives every connection one. A connection without a record is checked
-// through the identity Core keeps, see the known gaps of the rpcregistry README.
+// connection has no record, as no feature needs one on the default config, so it is checked through the identity Core
+// keeps for it, which a refresh to a token without an expiry replaces too.
 func TestRefreshWithoutExpiryIsRevocableBySession(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Client.Rebind.Enabled = true
-	_, store, node := newAuthClassTestHandler(t, cfg)
+	_, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
 	now := time.Now().Unix()
 	queue := accessrevoke.NewDisconnectQueue(10000, 100)
 	ctx, cancel := context.WithCancel(context.Background())

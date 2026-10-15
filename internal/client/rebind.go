@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -274,7 +275,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	h.rebindFilterTemplates(c, verified)
+	h.rebindFilterTemplates(c, filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: c.UserID(), Client: c.ID()})
 	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

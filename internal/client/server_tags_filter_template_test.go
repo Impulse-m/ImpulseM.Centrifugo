@@ -342,7 +342,7 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	client, _ := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1", "subs": map[string]any{"room": map[string]any{}}}))
 	require.True(t, client.IsSubscribed("room"))
 	storage, release := client.AcquireStorage()
-	_, ok := storage[serverTagsFilterClaimsKey]
+	_, ok := storage[serverTagsFilterValuesKey]
 	release(storage)
 	require.False(t, ok)
 
@@ -353,7 +353,7 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 		_ = env.h.connectFilterTemplates(cfg, "c1", nil, jwtverify.ConnectToken{}, subs, storageMap)
 	})
 	require.Zero(t, connectAllocs)
-	require.NotContains(t, storageMap, serverTagsFilterClaimsKey)
+	require.NotContains(t, storageMap, serverTagsFilterValuesKey)
 
 	mock := newRegistryTestClient("c1", "12", nil, nil)
 	opts := centrifuge.SubscribeOptions{}

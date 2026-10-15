@@ -14,13 +14,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// serverTagsFilterClaimsKey is a client storage key with the values of the connection token claims which
-// the server tags filter templates refer to. They are stored as the connection was verified with them, and
-// every template of the connection is rendered with them.
-const serverTagsFilterClaimsKey = "server_tags_filter_template_claims"
+// serverTagsFilterValuesKey is a client storage key with the values the server tags filter templates of a connection
+// are rendered with: the claims of its token and its user, as they were when the connection was verified or rebound.
+const serverTagsFilterValuesKey = "server_tags_filter_template_values"
 
 // connectFilterTemplates applies the server tags filter templates to the subscriptions of a connection. The
-// values of the connection are stored, so that later subscriptions and refreshes render the same filters.
+// values of the connection are stored, so that later subscriptions and refreshes render the same filters. They are
+// stored even when all of them are missing, so a refresh compares them with the values of its token.
 // A missing value of a template under reject refuses the connection.
 func (h *Handler) connectFilterTemplates(
 	cfg *config.Config,
@@ -37,9 +37,7 @@ func (h *Handler) connectFilterTemplates(
 	if credentials != nil {
 		values.User = credentials.UserID
 	}
-	if values.Claims.Values != nil {
-		storage[serverTagsFilterClaimsKey] = values.Claims
-	}
+	storage[serverTagsFilterValuesKey] = values
 	if err := h.applyFilterTemplates(subscriptions, values); err != nil {
 		return centrifuge.DisconnectPermissionDenied
 	}
@@ -76,12 +74,13 @@ func (h *Handler) refreshFilterTemplate(client Client, channel string, explicit 
 // tokenSubscriptionsChanged reports whether the server-side subscriptions of a connection changed on refresh.
 // A connection whose template claims changed is changed: its filters are fixed for its life, so it is
 // disconnected. Otherwise the templates are applied to the subscriptions of the token before they are compared.
+// The claim check is the primary rule, and the comparison of the filters in tokenChannelsChanged is the second.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
 	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		storage, release := client.AcquireStorage()
-		stored, _ := storage[serverTagsFilterClaimsKey].(filtertemplate.Claims)
+		stored := storedFilterValues(storage)
 		release(storage)
-		if !slices.Equal(extra.FilterTemplateClaims.Values, stored.Values) {
+		if !sameClaimValues(stored.Claims, extra.FilterTemplateClaims) {
 			return true
 		}
 		if err := h.templateSubscriptions(client, extra.Subs); err != nil {
@@ -91,20 +90,21 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 	return tokenChannelsChanged(client, extra.Subs)
 }
 
-// rebindFilterTemplates stores the template claims of a connection which was rebound to a token. When the claims
-// changed, the channels with a template are unsubscribed, so the client resubscribes them and they get filters
-// rendered with the new values.
-func (h *Handler) rebindFilterTemplates(c rebindableClient, verified jwtverify.ConnectToken) {
+// rebindFilterTemplates stores the values of a connection which was rebound. When they render a template differently,
+// the channels with a template are unsubscribed, so the client resubscribes them with filters rendered with the new
+// values. The user is one of the values: a connection without a user which takes one renders its templates differently
+// even when the claims are the same.
+func (h *Handler) rebindFilterTemplates(c rebindableClient, values filtertemplate.Values) {
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return
 	}
 	storage, release := c.AcquireStorage()
-	stored, _ := storage[serverTagsFilterClaimsKey].(filtertemplate.Claims)
-	if slices.Equal(stored.Values, verified.FilterTemplateClaims.Values) {
+	stored := storedFilterValues(storage)
+	if sameFilterValues(stored, values) {
 		release(storage)
 		return
 	}
-	storage[serverTagsFilterClaimsKey] = verified.FilterTemplateClaims
+	storage[serverTagsFilterValuesKey] = values
 	release(storage)
 	for channel := range c.ChannelsWithContext() {
 		if h.channelHasFilterTemplate(channel) {
@@ -195,10 +195,49 @@ func subscriptionFilter(
 }
 
 // connectionFilterValues returns the values which the templates of a connection are rendered with: the claims
-// stored on connect, and the user and client of the connection.
+// stored on connect or rebind, and the user and client of the connection.
 func connectionFilterValues(c Client) filtertemplate.Values {
 	storage, release := c.AcquireStorage()
-	claims, _ := storage[serverTagsFilterClaimsKey].(filtertemplate.Claims)
+	stored := storedFilterValues(storage)
 	release(storage)
-	return filtertemplate.Values{Claims: claims, User: c.UserID(), Client: c.ID()}
+	return filtertemplate.Values{Claims: stored.Claims, User: c.UserID(), Client: c.ID()}
+}
+
+// storedFilterValues returns the values a connection stored for its server tags filter templates, or the zero value
+// when it stored none.
+func storedFilterValues(storage map[string]any) filtertemplate.Values {
+	stored, _ := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
+	return stored
+}
+
+// sameFilterValues reports whether two sets of values render every template the same: the same user, and the same
+// value for every claim of either set.
+func sameFilterValues(a filtertemplate.Values, b filtertemplate.Values) bool {
+	return a.User == b.User && sameClaimValues(a.Claims, b.Claims)
+}
+
+// sameClaimValues reports whether two sets of claims have the same value for every claim path of either set. A
+// missing claim has the value "", so a claim which is missing and one which is empty are the same. The paths of
+// the sets may differ, for example after a config reload, so the claims are compared by name and not by position.
+func sameClaimValues(a filtertemplate.Claims, b filtertemplate.Claims) bool {
+	for _, path := range a.Paths {
+		if claimValue(a, path) != claimValue(b, path) {
+			return false
+		}
+	}
+	for _, path := range b.Paths {
+		if claimValue(a, path) != claimValue(b, path) {
+			return false
+		}
+	}
+	return true
+}
+
+// claimValue returns the value of the claim at path, or "" when the claims have none.
+func claimValue(claims filtertemplate.Claims, path string) string {
+	i := slices.Index(claims.Paths, path)
+	if i < 0 || i >= len(claims.Values) {
+		return ""
+	}
+	return claims.Values[i]
 }

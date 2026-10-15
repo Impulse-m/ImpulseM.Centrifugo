@@ -150,14 +150,14 @@ type RateLimitOperations struct {
 	SubRefresh RateLimitChannelBuckets `mapstructure:"sub_refresh" json:"sub_refresh" envconfig:"sub_refresh" yaml:"sub_refresh" toml:"sub_refresh" doc:"SubRefresh operation buckets."`
 	// RPC operation buckets.
 	RPC RateLimitRPCBuckets `mapstructure:"rpc" json:"rpc" envconfig:"rpc" yaml:"rpc" toml:"rpc" doc:"RPC operation buckets."`
-	// MapPublish operation buckets. Not supported in this build.
-	MapPublish RateLimitChannelBuckets `mapstructure:"map_publish" json:"map_publish" envconfig:"map_publish" yaml:"map_publish" toml:"map_publish" doc:"MapPublish operation buckets. Not supported in this build."`
-	// MapRemove operation buckets. Not supported in this build.
-	MapRemove RateLimitChannelBuckets `mapstructure:"map_remove" json:"map_remove" envconfig:"map_remove" yaml:"map_remove" toml:"map_remove" doc:"MapRemove operation buckets. Not supported in this build."`
-	// Track operation buckets. Not supported in this build.
-	Track RateLimitChannelBuckets `mapstructure:"track" json:"track" envconfig:"track" yaml:"track" toml:"track" doc:"Track operation buckets. Not supported in this build."`
-	// Untrack operation buckets. Not supported in this build.
-	Untrack RateLimitChannelBuckets `mapstructure:"untrack" json:"untrack" envconfig:"untrack" yaml:"untrack" toml:"untrack" doc:"Untrack operation buckets. Not supported in this build."`
+	// MapPublish operation buckets.
+	MapPublish RateLimitChannelBuckets `mapstructure:"map_publish" json:"map_publish" envconfig:"map_publish" yaml:"map_publish" toml:"map_publish" doc:"MapPublish operation buckets."`
+	// MapRemove operation buckets.
+	MapRemove RateLimitChannelBuckets `mapstructure:"map_remove" json:"map_remove" envconfig:"map_remove" yaml:"map_remove" toml:"map_remove" doc:"MapRemove operation buckets."`
+	// Track operation buckets.
+	Track RateLimitChannelBuckets `mapstructure:"track" json:"track" envconfig:"track" yaml:"track" toml:"track" doc:"Track operation buckets."`
+	// Untrack operation buckets.
+	Untrack RateLimitChannelBuckets `mapstructure:"untrack" json:"untrack" envconfig:"untrack" yaml:"untrack" toml:"untrack" doc:"Untrack operation buckets."`
 }
 
 // RateLimitClientCommand configures per-connection rate limits of client commands.

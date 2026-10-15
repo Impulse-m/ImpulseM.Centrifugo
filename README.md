@@ -92,6 +92,57 @@ With PROXY protocol, the address the PROXY header reports is the previous hop, a
 
 Off by default, and then the auth throttle and the request log keep their previous rules. When on, the resolved address is used by the auth throttle and the request log, and sent to RPC registry targets as `x-forwarded-for`, or omitted when it is unknown. Not yet exposed to the connect proxy or the connections API. PROXY protocol does not apply to HTTP/3 or WebTransport, which are UDP; the header walk still does. Internal HTTP and gRPC API ports do not read PROXY headers unless they share the external port.
 
+### Channel state events and cache empty events
+
+Two backend hooks, both off by default and both as in the Centrifugo PRO docs (`event_hooks`, `channel_events`, `channel_cache_empty`):
+
+* Channel state events: an `occupied` event when a channel gets its first subscriber in the cluster and a `vacated` event when it loses its last one. Events are sent in batches to `channel.proxy.state`, over HTTP or gRPC, with `state_proxy_enabled` on the namespace. They need `presence: true` and the Redis presence manager.
+* Cache empty events: a synchronous call to `channel.proxy.cache_empty` when a subscriber in cache recovery mode finds no latest publication. The proxy answers with `populated`. Enabled with `cache_empty_proxy_enabled` and `cache_empty_proxy_name` on the namespace.
+
+```json
+"engine": {
+  "type": "redis",
+  "redis": {
+    "channel_state": {"vacated_event_delay": "5s", "num_partitions": 128}
+  }
+},
+"channel": {
+  "proxy": {
+    "state": {"endpoint": "http://backend:8000/channel_state", "timeout": "1s"},
+    "cache_empty": {"endpoint": "http://backend:8000/cache_empty", "timeout": "1s"}
+  },
+  "namespaces": [
+    {
+      "name": "chat",
+      "presence": true,
+      "state_proxy_enabled": true,
+      "history_size": 1,
+      "history_ttl": "300s",
+      "force_recovery": true,
+      "force_recovery_mode": "cache",
+      "cache_empty_proxy_enabled": true
+    }
+  ]
+}
+```
+
+The payloads are the JSON of `NotifyChannelStateRequest` and `NotifyCacheEmptyRequest` in `internal/proxyproto/proxy.proto`:
+
+```json
+{"events": [{"time_ms": 1697206286533, "channel": "chat:index", "type": "occupied"}]}
+```
+
+Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch be sent again. Cache empty request: `{"channel": "chat:index"}`; answer `{"result": {"populated": true}}`. An unreachable cache empty proxy rejects the subscription with an internal error.
+
+* Delivery is at-least-once, in partition order: a batch whose answer is lost is sent again, so the backend must treat a repeated event as a no-op. Events of one channel reach the backend in the order they happened.
+* Retries back off from 100 ms to 20 s. Events are kept in Redis while the backend is down; the stream holds at most 8192 events per partition, and new events are dropped when it is full.
+* Redis must not evict these keys: set `maxmemory-policy noeviction`. Eviction loses events.
+* Use a separate Redis presence manager (`presence_manager.redis.channel_state`) when the engine is shared with other data, as PRO recommends.
+* Do not change `num_partitions`, or the number of Redis shards, while channels are occupied: their state is orphaned and a `vacated` event can be missed.
+* Startup rules: `state_proxy_enabled` requires `presence` and a Redis presence manager (`engine.type: redis`, or `presence_manager.type: redis`); `cache_empty_proxy_enabled` requires `force_recovery_mode: cache`. Other options are checked on startup too.
+* Differences from PRO: there is no `state_proxy_name`, a single `channel.proxy.state` endpoint serves all namespaces; the stream cap of 8192 events per partition is fixed.
+* The Redis wiring of channel state events to the Core presence manager follows in the next release; until then the state proxy is configured but no events are sent.
+
 ### Not implemented (yet)
 
 * Redis and PostgreSQL persistence for revocation.

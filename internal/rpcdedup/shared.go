@@ -388,8 +388,7 @@ func (s *Shared) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			batch = s.drainAcks(batch)
-			s.flushAcks(batch)
+			s.drainAcks(batch)
 			return ctx.Err()
 		case key := <-s.acks:
 			batch = append(batch, key)
@@ -404,14 +403,20 @@ func (s *Shared) Run(ctx context.Context) error {
 	}
 }
 
-// drainAcks appends the acks which are queued at the moment to batch, without waiting.
-func (s *Shared) drainAcks(batch []Key) []Key {
+// drainAcks flushes the acks which are queued at the moment, and the batch, without waiting. It flushes in batches of
+// ackBatch keys, as the live path does, so a long queue is not sent in one write which the IO timeout may cut.
+func (s *Shared) drainAcks(batch []Key) {
 	for {
 		select {
 		case key := <-s.acks:
 			batch = append(batch, key)
+			if len(batch) >= s.ackBatch {
+				s.flushAcks(batch)
+				batch = batch[:0]
+			}
 		default:
-			return batch
+			s.flushAcks(batch)
+			return
 		}
 	}
 }

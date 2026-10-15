@@ -943,6 +943,35 @@ func TestSharedRunFlushesOnShutdown(t *testing.T) {
 	require.Equal(t, 500, flushed, "the acks queued before shutdown reach the shared tier")
 }
 
+func TestSharedRunFlushesQueueInBatchesOnShutdown(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ackBatch = 10
+	scope := testScope("u1", "a")
+	msgIDs := make([]uint64, 0, 23)
+	for msgID := uint64(1); msgID <= 23; msgID++ {
+		testAnswer(t, fx.local, Key{Scope: scope, MsgID: msgID}, "ok")
+		msgIDs = append(msgIDs, msgID)
+	}
+	require.NoError(t, fx.shared.Ack(scope, msgIDs))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fx.shared.Run(ctx) }()
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	var flushed int
+	for _, batch := range fx.backend.ackBatches() {
+		var keys int
+		for _, acks := range batch {
+			keys += len(acks.MsgIDs)
+		}
+		require.LessOrEqual(t, keys, 10, "a shutdown flush is cut in batches of AckBatch")
+		flushed += keys
+	}
+	require.Equal(t, 23, flushed, "every queued ack reaches the shared tier")
+}
+
 func TestSharedAckFlushesOnTicker(t *testing.T) {
 	fx := newSharedFixture(t, false)
 	fx.shared.ackFlushEvery = time.Millisecond

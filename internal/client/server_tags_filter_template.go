@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
@@ -80,7 +79,7 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 		storage, release := client.AcquireStorage()
 		stored := storedFilterValues(storage)
 		release(storage)
-		if !sameClaimValues(stored.Claims, extra.FilterTemplateClaims) {
+		if !stored.Claims.Equal(extra.FilterTemplateClaims) {
 			return true
 		}
 		if err := h.templateSubscriptions(client, extra.Subs); err != nil {
@@ -213,31 +212,6 @@ func storedFilterValues(storage map[string]any) filtertemplate.Values {
 // sameFilterValues reports whether two sets of values render every template the same: the same user, and the same
 // value for every claim of either set.
 func sameFilterValues(a filtertemplate.Values, b filtertemplate.Values) bool {
-	return a.User == b.User && sameClaimValues(a.Claims, b.Claims)
+	return a.User == b.User && a.Claims.Equal(b.Claims)
 }
 
-// sameClaimValues reports whether two sets of claims have the same value for every claim path of either set. A
-// missing claim has the value "", so a claim which is missing and one which is empty are the same. The paths of
-// the sets may differ, for example after a config reload, so the claims are compared by name and not by position.
-func sameClaimValues(a filtertemplate.Claims, b filtertemplate.Claims) bool {
-	for _, path := range a.Paths {
-		if claimValue(a, path) != claimValue(b, path) {
-			return false
-		}
-	}
-	for _, path := range b.Paths {
-		if claimValue(a, path) != claimValue(b, path) {
-			return false
-		}
-	}
-	return true
-}
-
-// claimValue returns the value of the claim at path, or "" when the claims have none.
-func claimValue(claims filtertemplate.Claims, path string) string {
-	i := slices.Index(claims.Paths, path)
-	if i < 0 || i >= len(claims.Values) {
-		return ""
-	}
-	return claims.Values[i]
-}

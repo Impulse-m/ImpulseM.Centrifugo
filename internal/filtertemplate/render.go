@@ -1,7 +1,6 @@
 package filtertemplate
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/centrifugal/protocol"
@@ -114,11 +113,7 @@ func (r *renderer) claim(v *variable) string {
 		}
 		return ""
 	}
-	i := slices.Index(paths, v.path)
-	if i < 0 || i >= len(values) {
-		return ""
-	}
-	return values[i]
+	return r.v.Claims.Value(v.path)
 }
 
 // sameSlice reports whether a and b are the same non-empty slice.

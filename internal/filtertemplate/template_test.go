@@ -278,3 +278,18 @@ func BenchmarkTemplateRender(b *testing.B) {
 		}
 	}
 }
+
+func TestClaimsEqualByName(t *testing.T) {
+	t.Parallel()
+	shared := Claims{Paths: []string{"sid", "org.tenant"}, Values: []string{"s1", "t1"}}
+	// A reload reorders the paths: the same values by name are equal.
+	reordered := Claims{Paths: []string{"org.tenant", "sid"}, Values: []string{"t1", "s1"}}
+	require.True(t, shared.Equal(reordered))
+	require.True(t, reordered.Equal(shared))
+	require.Equal(t, "t1", reordered.Value("org.tenant"))
+	require.Equal(t, "", reordered.Value("missing"))
+	// A missing claim and an empty one are the same value.
+	require.True(t, Claims{Paths: []string{"sid"}, Values: []string{""}}.Equal(Claims{}))
+	require.False(t, shared.Equal(Claims{Paths: []string{"sid"}, Values: []string{"s2"}}))
+	require.False(t, Claims{}.Equal(shared))
+}

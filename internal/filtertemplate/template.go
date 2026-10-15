@@ -6,6 +6,7 @@ package filtertemplate
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/centrifugal/protocol"
 )
@@ -34,6 +35,32 @@ type Source struct {
 type Claims struct {
 	Paths  []string
 	Values []string
+}
+
+// Value returns the value of the claim at path, or "" when the claims have none. The paths may differ from the
+// paths of the config, for example after a reload, so the claim is found by name.
+func (c Claims) Value(path string) string {
+	i := slices.Index(c.Paths, path)
+	if i < 0 || i >= len(c.Values) {
+		return ""
+	}
+	return c.Values[i]
+}
+
+// Equal reports whether c and d have the same value for every path of either set. A missing claim has the value "",
+// so a claim which is missing and one which is empty are the same.
+func (c Claims) Equal(d Claims) bool {
+	for _, path := range c.Paths {
+		if c.Value(path) != d.Value(path) {
+			return false
+		}
+	}
+	for _, path := range d.Paths {
+		if c.Value(path) != d.Value(path) {
+			return false
+		}
+	}
+	return true
 }
 
 // Values are the values a template is rendered with.

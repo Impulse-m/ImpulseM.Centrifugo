@@ -115,8 +115,9 @@ func (h *Handler) rpcConnectionScope(userID string, identity centrifuge.TokenIde
 }
 
 // storeRPCConnection stores the install instance of a connection, when the dedup is on and the instance is valid,
-// and the dedup scope of the connection, computed from its credentials. An invalid instance is dropped with a debug
-// log, which never shows the value.
+// and the dedup scope of the connection. The scope is computed from the record of the connection when it has one,
+// and from its credentials otherwise, see connScope. It is called after connectRecord. An invalid instance is dropped
+// with a debug log, which never shows the value.
 func (h *Handler) storeRPCConnection(storage map[string]any, instance string, credentials *centrifuge.Credentials) {
 	if h.rpcDedup == nil {
 		return
@@ -130,20 +131,35 @@ func (h *Handler) storeRPCConnection(storage map[string]any, instance string, cr
 	}
 	var userID string
 	var identity centrifuge.TokenIdentity
-	if credentials != nil {
+	if rec, ok := storage[storageKeyConnState].(*connState); ok {
+		userID, identity = rec.AccessIdentity()
+	} else if credentials != nil {
 		userID = credentials.UserID
 		identity = credentials.TokenIdentity
 	}
 	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
 }
 
-// refreshRPCScope computes the dedup scope of a connection again after its token is refreshed, since the session
-// of the identity may change. The user is the same, since a refresh of another user is refused.
+// connScope returns the user and the identity which the dedup scope of a connection is computed from. The record
+// holds them when the connection has one, since Core sees no user for a pending connection, which holds its token
+// user in the record. Without a record they are the ones Core holds.
+func connScope(c Client) (string, centrifuge.TokenIdentity) {
+	if rc, ok := c.(rebindableClient); ok {
+		if rec := connStateOf(rc); rec != nil {
+			return rec.AccessIdentity()
+		}
+	}
+	return c.UserID(), c.TokenIdentity()
+}
+
+// refreshRPCScope computes the dedup scope of a connection again after its token is refreshed or rebound, since the
+// session of the identity and the user may change. The user is the token user of the connection, see tokenUserOf, and
+// identity is the token identity it holds now.
 func (h *Handler) refreshRPCScope(c Client, identity centrifuge.TokenIdentity) {
 	if h.rpcDedup == nil {
 		return
 	}
-	userID := c.UserID()
+	userID := tokenUserOf(c)
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
@@ -194,8 +210,7 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 // the identity are read before the storage is acquired, which the client accessors may lock. A scope stored
 // meanwhile, by a refresh, is kept.
 func (h *Handler) storeMissingRPCScope(c Client) string {
-	userID := c.UserID()
-	identity := c.TokenIdentity()
+	userID, identity := connScope(c)
 	storage, release := c.AcquireStorage()
 	defer release(storage)
 	stored, found := storage[rpcScopeKey].(string)

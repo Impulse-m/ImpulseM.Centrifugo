@@ -604,8 +604,8 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	storeConnectionTokenFilters(storage, subscriptions)
-	h.storeRPCConnection(storage, e.Instance, credentials)
 	h.connectRecord(cfg, storage, origin, e.Token, verified, credentials)
+	h.storeRPCConnection(storage, e.Instance, credentials)
 
 	finalReply := centrifuge.ConnectReply{
 		Storage:           storage,

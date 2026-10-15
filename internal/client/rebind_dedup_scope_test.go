@@ -68,6 +68,18 @@ func TestRebindDowngradeScopesTrackedCallToInstance(t *testing.T) {
 	require.Equal(t, rpcdedup.ScopeOf("a", "", []byte(testInstance)), trackedScope(t, h, client))
 }
 
+// TestPendingConnectScopesTrackedCallToTokenUser checks that a pending connection, which Core sees as anonymous, is
+// scoped to the user of its token, as its record holds it.
+func TestPendingConnectScopesTrackedCallToTokenUser(t *testing.T) {
+	h, _, node := newAuthClassTestHandler(t, rebindScopeConfig())
+	client := connectRevokeTestClient(t, node, rebindTestToken(t, "42", "pending_2fa", revokeTestUUID, nil))
+	require.Empty(t, client.UserID())
+
+	_, identity := connStateOf(client).AccessIdentity()
+	require.NotEqual(t, [16]byte{}, identity.Session)
+	require.Equal(t, rpcdedup.ScopeOf("s", "42", identity.Session[:]), trackedScope(t, h, client))
+}
+
 func TestRefreshSameIdentityScopesTrackedCallToSession(t *testing.T) {
 	h, _, node := newAuthClassTestHandler(t, rebindScopeConfig())
 	client := connectRevokeTestClient(t, node, rebindTestToken(t, "42", "authenticated", revokeTestUUID, nil))

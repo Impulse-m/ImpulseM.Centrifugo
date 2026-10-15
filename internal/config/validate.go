@@ -88,7 +88,10 @@ func (c Config) Validate() error {
 	}
 	proxyNames = append(proxyNames, DefaultProxyName) // channel options can use default proxy name.
 
-	if err := validateChannelOptions("", c.Channel.WithoutNamespace, c.Channel.HistoryMetaTTL, proxyNames, c); err != nil {
+	if err := validateChannelOptions(c.Channel.WithoutNamespace, c.Channel.HistoryMetaTTL, proxyNames, c); err != nil {
+		return fmt.Errorf("in channel.without_namespace: %v", err)
+	}
+	if err := validateServerTagsFilterTemplate("", c.Channel.WithoutNamespace); err != nil {
 		return fmt.Errorf("in channel.without_namespace: %v", err)
 	}
 
@@ -225,7 +228,10 @@ func validateNamespace(ns configtypes.ChannelNamespace, globalHistoryMetaTTL con
 	if !match {
 		return fmt.Errorf("invalid namespace name – %s (must match %s regular expression)", name, namePattern)
 	}
-	if err := validateChannelOptions(name, ns.ChannelOptions, globalHistoryMetaTTL, proxyNames, cfg); err != nil {
+	if err := validateChannelOptions(ns.ChannelOptions, globalHistoryMetaTTL, proxyNames, cfg); err != nil {
+		return err
+	}
+	if err := validateServerTagsFilterTemplate(name, ns.ChannelOptions); err != nil {
 		return err
 	}
 	return nil
@@ -243,7 +249,7 @@ func validateRpcNamespace(ns configtypes.RpcNamespace, rpcProxyNames []string) e
 	return nil
 }
 
-func validateChannelOptions(name string, c configtypes.ChannelOptions, globalHistoryMetaTTL configtypes.Duration, proxyNames []string, cfg Config) error {
+func validateChannelOptions(c configtypes.ChannelOptions, globalHistoryMetaTTL configtypes.Duration, proxyNames []string, cfg Config) error {
 	if err := validateSecondPrecisionDuration(c.HistoryTTL); err != nil {
 		return fmt.Errorf("in history_ttl: %v", err)
 	}
@@ -286,9 +292,6 @@ func validateChannelOptions(name string, c configtypes.ChannelOptions, globalHis
 	}
 	if !slices.Contains([]string{"", "stream", "cache"}, c.ForceRecoveryMode) {
 		return fmt.Errorf("unknown recovery mode: \"%s\"", c.ForceRecoveryMode)
-	}
-	if err := validateServerTagsFilterTemplate(name, c); err != nil {
-		return err
 	}
 
 	if !slices.Contains([]string{"", configtypes.PublicationDataFormatJSON, configtypes.PublicationDataFormatJSONObject, configtypes.PublicationDataFormatBinary}, c.PublicationDataFormat) {

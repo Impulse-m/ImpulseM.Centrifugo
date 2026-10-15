@@ -48,10 +48,9 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 	return h.refreshSameIdentity(c, rec, e.Token, token, class)
 }
 
-// onRefreshProxy answers a refresh which the refresh proxy answers. A refresh which finds another one in progress is
-// rejected, as in onRefreshToken, and the flag is held until the identity of the proxy is moved, so the identity of the
-// record is written by one refresh at a time. A connection without a record has no identity to move, and refreshes as
-// upstream does.
+// onRefreshProxy answers a refresh which the refresh proxy answers. The refresh is not rejected for another one in
+// progress: the expiry of a connection calls it too, and a rejection would close the connection. The identity of the
+// record is moved with a compare and swap, see moveProxyIdentity. A connection without a record has no identity to move.
 func (h *Handler) onRefreshProxy(
 	c rebindableClient,
 	e centrifuge.RefreshEvent,
@@ -60,35 +59,35 @@ func (h *Handler) onRefreshProxy(
 	if h.isUserBlocked(c.UserID(), "refresh") {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, accessrevoke.DisconnectUserBlocked
 	}
-	rec := connStateOf(c)
-	if rec != nil {
-		if !rec.refreshing.CompareAndSwap(false, true) {
-			return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
-		}
-		defer rec.refreshing.Store(false)
-	}
 	r, extra, err := refreshProxyHandler(c, e, getPerCallData(c))
 	if err == nil && extra.Meta != nil {
 		setStorageMeta(c, extra.Meta)
 	}
 	if err == nil && r.TokenIdentity != nil {
-		h.moveProxyIdentity(c, rec, *r.TokenIdentity)
+		h.moveProxyIdentity(c, connStateOf(c), *r.TokenIdentity)
 	}
 	return r, RefreshExtra{}, err
 }
 
 // moveProxyIdentity moves the identity of a connection to the token identity a refresh proxy returned. The user, the
-// account, the class and the token of the record stay as they are: the proxy has no token of this server. The record
-// holds the new identity, so the revoker and the sweep check the new session, and the session index and the dedup
-// scope follow it. When rec is not nil, the caller holds rec.refreshing.
+// account, the origin, the class and the token of the record stay as they are: the proxy has no token of this server.
+// The identity is replaced with a compare and swap, so a move which runs concurrently with another one is not lost, and
+// the identity of the record is the one of one of them. The record holds the new identity, so the revoker and the sweep
+// check the new session, and the session index follows it. The dedup scope follows it too, since each call computes its
+// scope from the identity of the record.
 func (h *Handler) moveProxyIdentity(c rebindableClient, rec *connState, identity centrifuge.TokenIdentity) {
-	if rec != nil {
-		next := *rec.identity.Load()
-		next.identity = identity
-		rec.identity.Store(&next)
-		h.syncSessionConnection(c, rec, c.UserID(), identity)
+	if rec == nil {
+		return
 	}
-	h.refreshRPCScope(c, identity)
+	for {
+		prev := rec.identity.Load()
+		next := *prev
+		next.identity = identity
+		if rec.identity.CompareAndSwap(prev, &next) {
+			break
+		}
+	}
+	h.syncSessionConnection(c, rec, c.UserID(), rec.identity.Load().identity)
 }
 
 // refreshWithoutRecord answers a refresh of a connection which has no record. Such a connection has no rebind: a token of
@@ -107,7 +106,6 @@ func (h *Handler) refreshWithoutRecord(
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
-	h.refreshRPCScope(c, identity)
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
@@ -259,11 +257,12 @@ func (h *Handler) onRefreshRebind(
 				h.detachRateLimit(c)
 			}
 		}
+		if revoked := h.recheckIdentity(c, rec, prev); revoked != nil {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, revoked
+		}
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
 	runTestHook(&testHookRebound, c)
-	// The dedup scope follows the user and the identity the connection holds now, see rpcDedupScope.
-	h.refreshRPCScope(c, rec.identity.Load().identity)
 	h.syncSessionConnection(c, rec, newUser, identity)
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
@@ -300,9 +299,15 @@ func (h *Handler) refreshSameIdentity(
 	cfg := h.cfgContainer.ConfigRef()
 	prev := rec.identity.Load()
 	// The class of a token changes only through the transition table, and a same-user change between authenticated and
-	// bot is none of its transitions. A connection which has no token-derived class yet, as a connect proxy one, takes
-	// the class of its first token.
-	if prev.class != 0 && prev.class != class {
+	// bot is none of its transitions. A connection made through a connect proxy holds no class of its own, so only a token
+	// which gives its user the class the user has is a renewal; the auth class claim does not apply to it. A token
+	// connection keeps its class: a class which was derived under another claim is derived again by the refresh.
+	if prev.origin == originProxy {
+		userClass, _ := rpcregistry.ConnectionAuthClass("", c.UserID())
+		if class != userClass {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
+		}
+	} else if prev.class != 0 && prev.class != class {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
 	identity := tokenIdentityOf(verified)
@@ -312,11 +317,16 @@ func (h *Handler) refreshSameIdentity(
 	result := h.checkAccess(verified.UserID, identity, accessrevoke.OptionsFromConfig(cfg), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		rec.identity.Store(prev)
-		h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
+		if revoked := h.recheckIdentity(c, rec, prev); revoked != nil {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, revoked
+		}
 		return refreshRevokeReply(c.ID(), c.UserID(), result)
 	}
-	h.refreshRPCScope(c, rec.identity.Load().identity)
 	if err := h.restorePersonalChannel(c); err != nil {
+		rec.identity.Store(prev)
+		if revoked := h.recheckIdentity(c, rec, prev); revoked != nil {
+			return centrifuge.RefreshReply{}, RefreshExtra{}, revoked
+		}
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if verified.Meta != nil {
@@ -369,6 +379,19 @@ func rebindError(clientID string, err error) error {
 	}
 	log.Error().Err(err).Str("client", clientID).Msg("error rebinding connection")
 	return centrifuge.DisconnectServerError
+}
+
+// recheckIdentity checks prev, the identity a connection holds again after a refresh which failed or was rejected once
+// its new identity was stored. A revocation applied while the new identity was stored found the record holding that
+// identity, so the session of prev is tracked again and checked here. It returns the disconnect of a connection whose
+// prev is revoked, or nil when prev is allowed.
+func (h *Handler) recheckIdentity(c rebindableClient, rec *connState, prev *connIdentity) error {
+	h.syncSessionConnection(c, rec, c.UserID(), prev.identity)
+	result := h.checkAccess(prev.tokenUser, prev.identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "recheck")
+	if result.Verdict == accessrevoke.Allowed {
+		return nil
+	}
+	return revokeError(c.ID(), prev.tokenUser, result, centrifuge.DisconnectExpired)
 }
 
 // unsubscribeNotAnonymous unsubscribes the channels which a connection without a user may not keep: the

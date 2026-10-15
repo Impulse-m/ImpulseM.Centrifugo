@@ -23,6 +23,10 @@ var testHookRefreshTracked atomic.Pointer[func(c rebindableClient)]
 // Tests use it to close the connection at that point.
 var testHookRebound atomic.Pointer[func(c rebindableClient)]
 
+// testHookRPCTracked, if set, runs in onRPCRegistry after the dedup state of a call is made, from the identity the call
+// reads, and before the call runs. Tests use it to change the identity of the connection at that point.
+var testHookRPCTracked atomic.Pointer[func(c rebindableClient)]
+
 // runTestHook runs the test hook set in p, if any, with c.
 func runTestHook(p *atomic.Pointer[func(c rebindableClient)], c rebindableClient) {
 	if f := p.Load(); f != nil {

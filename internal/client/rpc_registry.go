@@ -37,8 +37,10 @@ func (h *Handler) onRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, rpcPr
 		return centrifuge.RPCReply{}, false, nil
 	}
 	var track *rpcTrack
+	// The identity of the call is read once here, so its dedup scope, its token and its class come from the same identity.
+	caller := registryConnection(c, h.registryConfig().AuthClassClaim)
 	if h.rpcDedup != nil {
-		track = h.rpcTrackCall(c, e.Call)
+		track = h.rpcTrackCall(c, caller, e.Call)
 		h.rpcAck(track, e.Call.Ack)
 		if e.Call.Cancel != 0 {
 			// A cancel command names no method, and is answered before the lookup. With the dedup off it is an
@@ -46,6 +48,7 @@ func (h *Handler) onRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, rpcPr
 			reply, err := h.cancelRPCRegistry(track, e.Call.Cancel)
 			return reply, true, err
 		}
+		runTestHook(&testHookRPCTracked, c)
 	}
 	m := h.rpcRegistry.Lookup(e.Method)
 	if m == nil {
@@ -56,7 +59,7 @@ func (h *Handler) onRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, rpcPr
 		metrics.IncRPCRegistryCall(registryUnknownMethod, metrics.RPCRegistryResultUnknown)
 		return centrifuge.RPCReply{}, true, registryFailure(registryUnknownMethod, metrics.RPCRegistryResultUnknown, unknownErr)
 	}
-	reply, err := h.callRPCRegistry(c, e, m, track)
+	reply, err := h.callRPCRegistry(c, e, m, caller, track)
 	return reply, true, err
 }
 
@@ -90,13 +93,19 @@ func (h *Handler) registryConnectFlags() int64 {
 	return centrifuge.ConnectionFlagRPCOptions
 }
 
-// callRPCRegistry checks the connection against the method, and calls its gRPC target. A call with a msg_id is
-// tracked when the dedup is on, see callRPCTracked. track is nil when the dedup is off.
-func (h *Handler) callRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, m *rpcregistry.Method, track *rpcTrack) (centrifuge.RPCReply, error) {
+// callRPCRegistry checks the connection against the method, and calls its gRPC target. caller is the identity the call
+// runs with, which track was made under too. A call with a msg_id is tracked when the dedup is on, see callRPCTracked.
+// track is nil when the dedup is off.
+func (h *Handler) callRPCRegistry(
+	c rebindableClient,
+	e centrifuge.RPCEvent,
+	m *rpcregistry.Method,
+	caller registryCaller,
+	track *rpcTrack,
+) (centrifuge.RPCReply, error) {
 	cfg := h.registryConfig()
-	connToken, connClass := registryConnection(c, cfg.AuthClassClaim)
 	// The class of the connection decides whether it may call the method, see AuthClass.Admits.
-	if !m.AuthClass.Admits(connClass) {
+	if !m.AuthClass.Admits(caller.class) {
 		authErr := registryError(cfg.Errors.AuthClass)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultDenied, authErr)
 	}
@@ -108,9 +117,9 @@ func (h *Handler) callRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, m *
 		m.Metrics.IncRetransmit()
 	}
 	if track != nil && e.Call.MsgID != 0 {
-		return h.callRPCTracked(c, e, m, cfg, connToken, track)
+		return h.callRPCTracked(c, e, m, cfg, caller.token, track)
 	}
-	return h.invokeRPCRegistry(c.Context(), c, e, m, cfg, connToken)
+	return h.invokeRPCRegistry(c.Context(), c, e, m, cfg, caller.token)
 }
 
 // invokeRPCRegistry calls the gRPC target of m for the client, on ctx, and maps a failure to the error the client
@@ -213,15 +222,36 @@ func registryErrorValue(e configtypes.RPCRegistryError) *centrifuge.Error {
 	}
 }
 
-// registryConnection returns the token of a connection for the registry, and its effective auth class under claim, the
-// claim configured now. A connection without a record has no token, and its class is derived as effectiveClass does.
-func registryConnection(c rebindableClient, claim string) (string, rpcregistry.AuthClass) {
+// registryCaller is the identity a connection calls the registry with. It is read once for a call, from the record of the
+// connection, so the token, the class and the dedup scope of the call are those of one identity.
+type registryCaller struct {
+	token    string
+	class    rpcregistry.AuthClass
+	userID   string
+	identity centrifuge.TokenIdentity
+	// recorded is false for a connection without a record, whose token identity is the one Core holds. Core's identity is
+	// read only when the dedup scope needs it, see rpcTrackCall.
+	recorded bool
+}
+
+// registryConnection reads the identity a connection calls the registry with, and its effective auth class under claim,
+// the claim configured now. A connection without a record has no token, and its class is derived as effectiveClass does.
+func registryConnection(c rebindableClient, claim string) registryCaller {
 	rec := connStateOf(c)
 	if rec == nil {
-		return "", effectiveClass(&connIdentity{}, claim, c.UserID())
+		return registryCaller{
+			class:  effectiveClass(&connIdentity{}, claim, c.UserID()),
+			userID: c.UserID(),
+		}
 	}
 	id := rec.identity.Load()
-	return id.token, effectiveClass(id, claim, c.UserID())
+	return registryCaller{
+		token:    id.token,
+		class:    effectiveClass(id, claim, c.UserID()),
+		userID:   id.tokenUser,
+		identity: id.identity,
+		recorded: true,
+	}
 }
 
 // authClassName returns the name of the auth class reported to the client. It is empty when the registry is

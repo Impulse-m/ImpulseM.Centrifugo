@@ -1,6 +1,9 @@
 package client
 
 import (
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,39 +145,89 @@ func TestProxyRefreshMovesTheRecordIdentity(t *testing.T) {
 	require.Equal(t, accessrevoke.Revoked, result.Verdict)
 }
 
-// TestProxyRefreshWhileAnotherIsInProgressIsRejected runs a refresh with the refresh proxy from the rebind of a token
-// refresh of the same connection. The proxy is not called and the refresh is rejected, and the connection keeps the
-// identity of the token refresh. A refresh with the proxy after both is answered, which shows the flag is released.
-func TestProxyRefreshWhileAnotherIsInProgressIsRejected(t *testing.T) {
+// TestProxyRefreshesConcurrentBothSucceed runs two refreshes with the refresh proxy of one connection at the same time.
+// The proxy answers each of them with a new token identity, and both refreshes are answered. The identity of the
+// connection is one of the two identities, the one the last move stored.
+func TestProxyRefreshesConcurrentBothSucceed(t *testing.T) {
 	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
-	client, state := newRebindTestClient("", "anonymous")
-	moved := accessrevoke.Identity(revokeTestOtherUUID, 0, time.Now().Unix()-10)
-	proxyCalls := 0
+	client, _ := newRebindTestClient("42", "authenticated")
+	now := time.Now().Unix()
+	identities := []centrifuge.TokenIdentity{
+		accessrevoke.Identity(revokeTestUUID, 0, now-10),
+		accessrevoke.Identity(revokeTestOtherUUID, 0, now-10),
+	}
+	var calls atomic.Int32
+	allInProxy := make(chan struct{})
 	refreshProxy := func(proxy.Client, centrifuge.RefreshEvent, proxy.PerCallData) (centrifuge.RefreshReply, proxy.RefreshExtra, error) {
-		proxyCalls++
+		n := calls.Add(1)
+		if n == int32(len(identities)) {
+			close(allInProxy)
+		}
+		// Both refreshes are inside the proxy before either returns, so they run at the same time. The wait is bounded, so a
+		// refresh which is not admitted to the proxy fails the test instead of blocking it.
+		select {
+		case <-allInProxy:
+		case <-time.After(5 * time.Second):
+		}
+		moved := identities[n-1]
 		return centrifuge.RefreshReply{TokenIdentity: &moved}, proxy.RefreshExtra{}, nil
 	}
-	var proxyErr error
-	hook := func(c rebindableClient) {
-		_, _, proxyErr = h.OnRefresh(c, centrifuge.RefreshEvent{}, refreshProxy)
+
+	var group sync.WaitGroup
+	errs := make([]error, len(identities))
+	for i := range identities {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			_, _, errs[i] = h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
+		}(i)
 	}
-	testHookRebound.Store(&hook)
-	t.Cleanup(func() { testHookRebound.Store(nil) })
+	group.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, int32(len(identities)), calls.Load())
+	require.Contains(t, identities, connStateOf(client).identity.Load().identity)
+}
+
+// TestSameUserClassChangeOfProxyConnectionIsDenied refreshes a connection made through a connect proxy with a token of its
+// own user and another class. The class of such a connection is its effective class, so the token is refused and the
+// connection keeps its record as it was.
+func TestSameUserClassChangeOfProxyConnectionIsDenied(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClient("42", "authenticated")
+	next := *state.record.identity.Load()
+	next.origin = originProxy
+	next.class = 0
+	next.claim = ""
+	next.token = ""
+	state.record.identity.Store(&next)
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "bot", revokeTestOtherUUID, nil),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+	id := state.record.identity.Load()
+	require.Equal(t, originProxy, id.origin)
+	require.Zero(t, id.class)
+	require.Equal(t, "42", state.user)
+}
+
+// TestRefreshRestoresIdentityWhenPersonalChannelFails checks that a same-user refresh whose personal channel cannot be
+// subscribed keeps the identity the connection had: the new identity is stored back before the disconnect.
+func TestRefreshRestoresIdentityWhenPersonalChannelFails(t *testing.T) {
+	h, _ := newRebindTestHandler(t, configtypes.Rebind{Enabled: true}, false)
+	client, state := newRebindTestClient("42", "authenticated")
+	prev := state.record.identity.Load().identity
+	client.SubscribeFunc = func(string, ...centrifuge.SubscribeOption) error {
+		return errors.New("subscribe failed")
+	}
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
 	}, nil)
-	require.NoError(t, err)
-	require.Equal(t, centrifuge.ErrorTooManyRequests, proxyErr)
-	require.Equal(t, 0, proxyCalls)
-	require.Equal(t, "42", state.user)
-	require.Len(t, state.rebinds, 1)
-
-	testHookRebound.Store(nil)
-	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{}, refreshProxy)
-	require.NoError(t, err)
-	require.Equal(t, 1, proxyCalls)
-	require.Equal(t, moved, connStateOf(client).identity.Load().identity)
+	require.Equal(t, centrifuge.DisconnectServerError, err)
+	require.Equal(t, prev, state.record.identity.Load().identity)
 }
 
 // TestTokenUserOfPendingConnection checks that the user of the token of a pending connection is the user of the record,

@@ -129,7 +129,33 @@ func TestRebindCloseBeforeSyncReleasesUserState(t *testing.T) {
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
 	}, nil)
 	require.NoError(t, err)
-	require.True(t, budgetAllowed(h, st), "the closed connection no longer draws on the budget of 42")
+	// The disconnect marks the connection closed before it detaches its rate limit state, and the hook waits only for the
+	// mark. The detach then runs asynchronously, so the budget is checked until the detach has released it.
+	require.Eventually(t, func() bool {
+		return budgetAllowed(h, st)
+	}, 5*time.Second, time.Millisecond, "the closed connection no longer draws on the budget of 42")
+}
+
+// TestRebindFailureRevokedOldSessionDisconnects revokes the old session of a connection in the window where its new
+// identity is stored and the rebind fails. The rollback restores the old identity, whose session is revoked, so the
+// connection is disconnected with the revoked verdict and keeps no revoked session.
+func TestRebindFailureRevokedOldSessionDisconnects(t *testing.T) {
+	h, store := newRebindTestHandler(t, configtypes.Rebind{Enabled: true, AllowDowngrade: true}, false)
+	client, state := newRebindTestClient("", "anonymous")
+	now := time.Now().Unix()
+	next := *state.record.identity.Load()
+	next.identity = accessrevoke.Identity(revokeTestUUID, 0, now-10)
+	state.record.identity.Store(&next)
+	client.RebindFunc = func(centrifuge.RebindOptions) error {
+		require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+		return centrifuge.ErrRebindUserLimit
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"iat": now - 10}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectExpired, err)
+	require.Equal(t, accessrevoke.Identity(revokeTestUUID, 0, now-10), state.record.identity.Load().identity)
 }
 
 // TestRefreshRevokedAfterTrackExpiresConnection revokes the session of a refresh after the session is tracked. The

@@ -29,6 +29,9 @@ type rebindableClient interface {
 
 // connState is the record the handler keeps for a connection, in its ext state. It exists only when a feature needs
 // it, see Handler.needsConnState. Its fields are set once at connect; only the identity changes, through its pointer.
+// The identity is written by connect, by a same-identity refresh, by a rebind, and by a refresh proxy. A refresh proxy
+// writes a copy of the identity which keeps the origin, the account, the class and the token of the connection, and
+// moves only its token identity, see moveProxyIdentity.
 type connState struct {
 	track      accessrevoke.Tracked
 	limits     *ratelimit.ConnState

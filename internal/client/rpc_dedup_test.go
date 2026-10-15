@@ -137,8 +137,8 @@ func TestRPCDedupOffStoresNoInstance(t *testing.T) {
 	require.Nil(t, h.rpcDedup)
 }
 
-// The scope of a connection follows the session of its identity when the token is refreshed, so the calls after a
-// refresh are scoped to the new session.
+// The scope of a call follows the session of the identity the connection holds when the call starts, so the calls after
+// a refresh are scoped to the new session.
 func TestRPCDedupScopeFollowsRefreshedSession(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
@@ -146,21 +146,15 @@ func TestRPCDedupScopeFollowsRefreshedSession(t *testing.T) {
 	first := [16]byte{1}
 	second := [16]byte{2}
 	storage, release := client.AcquireStorage()
-	h.storeRPCConnection(storage, testInstance, &centrifuge.Credentials{
-		UserID:        "42",
-		TokenIdentity: centrifuge.TokenIdentity{Session: first},
-	})
+	h.storeRPCConnection(storage, testInstance)
 	release(storage)
-	require.Equal(t, rpcdedup.ScopeOf("s", "42", first[:]), testStoredScope(client))
+	client.IdentityFunc = func() centrifuge.TokenIdentity {
+		return centrifuge.TokenIdentity{Session: first}
+	}
+	require.Equal(t, rpcdedup.ScopeOf("s", "42", first[:]), trackedScope(t, h, client))
 
-	h.refreshRPCScope(client, centrifuge.TokenIdentity{Session: second})
-	require.Equal(t, rpcdedup.ScopeOf("s", "42", second[:]), testStoredScope(client))
-}
-
-// testStoredScope returns the dedup scope stored in the connection storage of client.
-func testStoredScope(client *rebindClientMock) string {
-	storage, release := client.AcquireStorage()
-	defer release(storage)
-	scope, _ := storage[rpcScopeKey].(string)
-	return scope
+	client.IdentityFunc = func() centrifuge.TokenIdentity {
+		return centrifuge.TokenIdentity{Session: second}
+	}
+	require.Equal(t, rpcdedup.ScopeOf("s", "42", second[:]), trackedScope(t, h, client))
 }

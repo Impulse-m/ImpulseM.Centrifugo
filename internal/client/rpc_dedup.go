@@ -20,10 +20,6 @@ import (
 // rpcInflightKey is the connection storage key of the in-flight map of exactly-once RPC.
 const rpcInflightKey = "rpc_inflight"
 
-// rpcScopeKey is the connection storage key of the dedup scope of the connection. It is computed at connect, and
-// again at refresh, from the user and the identity of the connection, and each call reads it.
-const rpcScopeKey = "rpc_scope"
-
 // rpcInstanceKey is the connection storage key of the install instance of the connection, which its dedup scope is made
 // of. It is set at connect when the dedup is on and the instance is valid.
 const rpcInstanceKey = "instance"
@@ -117,53 +113,21 @@ func (h *Handler) rpcConnectionScope(userID string, identity centrifuge.TokenIde
 	return rpcDedupScope(userID, identity, storage)
 }
 
-// storeRPCConnection stores the install instance of a connection, when the dedup is on and the instance is valid,
-// and the dedup scope of the connection. The scope is computed from the record of the connection when it has one,
-// and from its credentials otherwise, see connScope. It is called after connectRecord. An invalid instance is dropped
-// with a debug log, which never shows the value.
-func (h *Handler) storeRPCConnection(storage map[string]any, instance string, credentials *centrifuge.Credentials) {
+// storeRPCConnection stores the install instance of a connection, when the dedup is on and the instance is valid. The
+// dedup scope is not stored: each call computes it from the identity it runs with, see rpcTrackCall. An invalid instance
+// is dropped with a debug log, which never shows the value.
+func (h *Handler) storeRPCConnection(storage map[string]any, instance string) {
 	if h.rpcDedup == nil {
 		return
 	}
-	if instance != "" {
-		if rpcdedup.ValidInstance(instance) {
-			storage[rpcInstanceKey] = instance
-		} else {
-			log.Debug().Msg("dropped invalid connect instance, the connection has no dedup scope from it")
-		}
-	}
-	var userID string
-	var identity centrifuge.TokenIdentity
-	if rec, ok := storage[storageKeyConnState].(*connState); ok {
-		userID, identity = rec.AccessIdentity()
-	} else if credentials != nil {
-		userID = credentials.UserID
-		identity = credentials.TokenIdentity
-	}
-	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
-}
-
-// connScope returns the user and the identity which the dedup scope of a connection is computed from. The record
-// holds them when the connection has one, since Core sees no user for a pending connection, which holds its token
-// user in the record. Without a record they are the ones Core holds.
-func connScope(c Client) (string, centrifuge.TokenIdentity) {
-	if userID, identity, ok := recordIdentityOf(c); ok {
-		return userID, identity
-	}
-	return c.UserID(), c.TokenIdentity()
-}
-
-// refreshRPCScope computes the dedup scope of a connection again after its token is refreshed or rebound, since the
-// session of the identity and the user may change. The user is the token user of the connection, see tokenUserOf, and
-// identity is the token identity it holds now.
-func (h *Handler) refreshRPCScope(c Client, identity centrifuge.TokenIdentity) {
-	if h.rpcDedup == nil {
+	if instance == "" {
 		return
 	}
-	userID := tokenUserOf(c)
-	storage, release := c.AcquireStorage()
-	defer release(storage)
-	storage[rpcScopeKey] = h.rpcConnectionScope(userID, identity, storage)
+	if rpcdedup.ValidInstance(instance) {
+		storage[rpcInstanceKey] = instance
+		return
+	}
+	log.Debug().Msg("dropped invalid connect instance, the connection has no dedup scope from it")
 }
 
 // rpcLimit returns the concurrency limit of an OnRPC call. With the dedup on, a cancel command does not wait for
@@ -183,14 +147,18 @@ type rpcTrack struct {
 }
 
 // rpcTrackCall returns the dedup state of a call. It is nil when the dedup is off, or the call carries nothing to
-// track. The connection storage is acquired once, to create the in-flight map and to read the scope. The user and
-// the identity are read only when a connection has no scope stored yet.
-func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTrack {
+// track. The scope is computed from caller, the identity the call runs with, so the scope and the token of the call
+// agree. The connection storage is acquired once, to create the in-flight map and to read the install instance.
+func (h *Handler) rpcTrackCall(c Client, caller registryCaller, call centrifuge.RPCCallOptions) *rpcTrack {
 	if h.rpcDedup == nil {
 		return nil
 	}
 	if call.MsgID == 0 && call.Cancel == 0 && len(call.Ack) == 0 {
 		return nil
+	}
+	identity := caller.identity
+	if !caller.recorded {
+		identity = c.TokenIdentity()
 	}
 	storage, release := c.AcquireStorage()
 	var inflight *rpcdedup.InFlight
@@ -199,28 +167,9 @@ func (h *Handler) rpcTrackCall(c Client, call centrifuge.RPCCallOptions) *rpcTra
 		inflight = rpcdedup.NewInFlight()
 		storage[rpcInflightKey] = inflight
 	}
-	scope, found := storage[rpcScopeKey].(string)
+	scope := h.rpcConnectionScope(caller.userID, identity, storage)
 	release(storage)
-	if !found {
-		scope = h.storeMissingRPCScope(c)
-	}
 	return &rpcTrack{scope: scope, inflight: inflight}
-}
-
-// storeMissingRPCScope computes the dedup scope of a connection which has none stored, and stores it. The user and
-// the identity are read before the storage is acquired, which the client accessors may lock. A scope stored
-// meanwhile, by a refresh, is kept.
-func (h *Handler) storeMissingRPCScope(c Client) string {
-	userID, identity := connScope(c)
-	storage, release := c.AcquireStorage()
-	defer release(storage)
-	stored, found := storage[rpcScopeKey].(string)
-	if found {
-		return stored
-	}
-	scope := h.rpcConnectionScope(userID, identity, storage)
-	storage[rpcScopeKey] = scope
-	return scope
 }
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies.

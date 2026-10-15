@@ -23,11 +23,10 @@ func rebindScopeConfig() config.Config {
 	return cfg
 }
 
-// trackedScope returns the dedup scope which a tracked call of client gets. The scope is read from the connection
-// storage, where a refresh leaves it.
-func trackedScope(t *testing.T, h *Handler, client *centrifuge.Client) string {
+// trackedScope returns the dedup scope which a tracked call of client gets, from the identity the client holds now.
+func trackedScope(t *testing.T, h *Handler, client rebindableClient) string {
 	t.Helper()
-	track := h.rpcTrackCall(client, centrifuge.RPCCallOptions{MsgID: rebindScopeMsgID})
+	track := h.rpcTrackCall(client, registryConnection(client, ""), centrifuge.RPCCallOptions{MsgID: rebindScopeMsgID})
 	require.NotNil(t, track)
 	return track.scope
 }
@@ -77,6 +76,51 @@ func TestPendingConnectScopesTrackedCallToTokenUser(t *testing.T) {
 	_, identity := connStateOf(client).AccessIdentity()
 	require.NotEqual(t, [16]byte{}, identity.Session)
 	require.Equal(t, rpcdedup.ScopeOf("s", "42", identity.Session[:]), trackedScope(t, h, client))
+}
+
+// TestRPCCallRunsWithTheIdentityOfItsScope changes the identity of a connection between the dedup state of a call and its
+// registry call. The call runs with the token of the identity it read first, and its answer is recorded under the scope
+// of that identity, so a retransmit under that identity is answered from the record.
+func TestRPCCallRunsWithTheIdentityOfItsScope(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	first := &connIdentity{
+		origin:    originToken,
+		class:     registryTestClass("authenticated"),
+		token:     "token-first",
+		tokenUser: "42",
+		account:   "42",
+		identity:  centrifuge.TokenIdentity{Session: [16]byte{1}},
+	}
+	second := &connIdentity{
+		origin:    originToken,
+		class:     registryTestClass("authenticated"),
+		token:     "token-second",
+		tokenUser: "43",
+		account:   "43",
+		identity:  centrifuge.TokenIdentity{Session: [16]byte{2}},
+	}
+	rec := &connState{}
+	rec.identity.Store(first)
+	client := newRegistryTestClient("c1", "42", nil, map[string]any{storageKeyConnState: rec})
+	hook := func(rebindableClient) {
+		rec.identity.Store(second)
+	}
+	testHookRPCTracked.Store(&hook)
+	t.Cleanup(func() { testHookRPCTracked.Store(nil) })
+
+	msgID := dedupMsgID(1)
+	_, err := dedupCall(h, client, "users.put", msgID, "put")
+	require.NoError(t, err)
+	calls := backend.Calls()
+	require.Len(t, calls, 1)
+	require.Equal(t, []string{"Bearer token-first"}, calls[0].Metadata.Get("authorization"))
+
+	testHookRPCTracked.Store(nil)
+	rec.identity.Store(first)
+	_, err = dedupCall(h, client, "users.put", msgID, "put")
+	require.NoError(t, err)
+	require.Len(t, backend.Calls(), 1, "the retransmit under the first identity is answered from the record of the call")
 }
 
 func TestRefreshSameIdentityScopesTrackedCallToSession(t *testing.T) {

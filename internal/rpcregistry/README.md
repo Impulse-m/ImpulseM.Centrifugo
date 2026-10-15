@@ -115,9 +115,10 @@ A connection whose class is `pending_2fa` has a user in its token, which the reg
 
 * it gets no personal channel, no user-limited channels and no entry in the user index of the node, so calls which address a user do not reach it;
 * the user is still reported in the connect and refresh results, and the token is still forwarded to `pending_2fa` methods;
-* it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of connections without a user which carry a token session, and a connection leaves it when it gets a user or disconnects. The index also holds anonymous connections with a session, so a revocation of their session disconnects them at once and not only in the sweep of all connections;
-* a user block, a user-level token invalidation and the disconnect API by user do not reach it: it stays connected until its token expires, and only a session revocation or a refresh disconnects it;
-* connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them.
+* it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of the connections which have a token session and no user, anonymous ones included, so a revocation of their session disconnects them at once and not only in the sweep of all connections. A connection leaves the index when it gets a user, loses its session or disconnects;
+* a user block, a user-level token invalidation and the disconnect API by user do not fan out to it, as they reach connections through the user index of the node and a pending connection is not in it. Every check of the connection (connect, refresh, recheck and the sweep) uses the token user the connection holds, so a blocked user's pending connection falls at its next refresh or sweep. The lifetime of the pending token bounds that window, and the issuer sets it;
+* connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them;
+* it carries no connection info: the info of its token is not sent to the core, and an upgrade sets the info of its new token. The `subs` of a pending token are applied as the issuer wrote them, as for any token: the issuer trusted them, and a user channel in them is a plain server-side subscription with no user to bind to.
 
 ### Rebind on refresh
 
@@ -143,8 +144,13 @@ The transitions of the auth class of a connection on refresh, when the user of t
 | `authenticated`, `bot` | `anonymous` | with `allow_downgrade`: rebind to anonymous; otherwise disconnect |
 | any other | | refresh error `permission denied`, the class is kept |
 
-A connection with a user but no class stored under the current `auth_class_claim`, such as one made through a connect proxy, may not rebind: a refresh which would change its identity gets the same permission error.
+A connection made through a connect proxy never rebinds, with or without a user: any change of its identity gets the permission error. Transitions and the account of a connection are proven by tokens, and the channels a proxy granted were granted under the proxy's terms. The origin of a connection does not change: a refresh with a token of the same user does not make a proxy connection a token connection. A connection made without a token and without a proxy, which is anonymous, may rebind to a user.
+
 A refresh whose token user is the user the connection already has, and which keeps the user Core sees, takes the refresh path as before. Any other change of the token user takes the rebind path: with rebind off it disconnects, as it did before, and with rebind on the table decides. So `anonymous` to `pending_2fa` of a user, and `pending_2fa` of one user to `pending_2fa` of another, are routed by the table even though Core sees no user change.
+
+On the refresh path a change between `authenticated` and `bot` for the same user gets the permission error, as it is none of the transitions above: the class of a connection changes only through the table.
+
+The account of a connection is the user of its last token with a user. A logout keeps it, so a connection which logged out may log in again only to its account, and a refresh to a token of another user gets the permission error.
 
 On a rebind to a user the connection gets its personal channel and the channels of its token, and the single connection of the user is enforced when the personal channel is configured so. On a rebind to `pending_2fa` or `anonymous` the connection gets the channels of its token, and no personal channel. Its user rate limit state moves to the new user. A refresh which rebinds does not disconnect the connection for changed token channels.
 
@@ -163,10 +169,9 @@ The connect result and the refresh result carry two fields:
 
 ### Known gaps
 
-* A refresh with the same user whose class changes, such as `authenticated` to `bot`, takes the refresh path without the transition table. The token is still verified, and the class is taken from it.
-* An account switch between two users is denied, also after a logout: the account of a connection is the user of its last token with a user, and an anonymous token keeps it. A refresh to a token of another user gets a permission error. The client must connect again.
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
 * The connection info is not replaced by a rebind. A downgrade, or a rebind to a token without info, keeps the info of the previous identity on presence, join and publication client info.
+* A subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left.
 * A token which expires within about a second after a rebind can get the refresh error `token expired` after the identity has moved. The client recovers on its next refresh, which subscribes its channels again.
 * A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
 

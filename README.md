@@ -68,10 +68,6 @@ Topic guidance:
 
 Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [internal/rpcregistry/README.md](internal/rpcregistry/README.md).
 
-### Connection identity
-
-A `pending_2fa` connection is anonymous to the core: it gets no personal or user channels and no user index entry, and it is revocable by session. `client.rebind` lets a refresh move a live connection to another user without a reconnect. It is off by default. The transitions, the downgrade rules and the known gaps are in the [registry README](internal/rpcregistry/README.md#connection-identity).
-
 ### Client address behind trusted proxies
 
 Behind a load balancer or a reverse proxy the server sees the proxy as the peer. `client_address` resolves the real client address from two sources, and both are believed only from the proxies listed in `trusted_proxies`:

@@ -114,7 +114,8 @@ A connection keeps its user and its auth class across refreshes. Two parts decid
 A connection whose class is `pending_2fa` has a user in its token, which the registry uses, but the core sees no user for it:
 
 * it gets no personal channel, no user-limited channels and no entry in the user index of the node, so calls which address a user do not reach it;
-* the user is still reported in the connect and refresh results, and the token is still forwarded to `pending_2fa` methods;
+* the user is still reported in the connect and refresh results (see reply fields), and the token is still forwarded to `pending_2fa` methods;
+* a subscription to a private channel, and a subscription refresh, check the token user the connection holds, so a pending connection subscribes with a token of its own user. A token of another user is refused;
 * it is revocable by session: revoking its session disconnects it at once, with or without the user argument. The node keeps an index of the connections which have a token session and no user, anonymous ones included, so a revocation of their session disconnects them at once and not only in the sweep of all connections. A connection leaves the index when it gets a user, loses its session or disconnects;
 * a user block, a user-level token invalidation and the disconnect API by user do not fan out to it, as they reach connections through the user index of the node and a pending connection is not in it. Every check of the connection (connect, refresh, recheck and the sweep) uses the token user the connection holds, so a blocked user's pending connection falls at its next refresh or sweep. The lifetime of the pending token bounds that window, and the issuer sets it;
 * connection limits and the per-user connect limit do not count pending connections, and logs and the connections API show no user for them;
@@ -162,7 +163,7 @@ Access checks run before the rebind: a blocked user disconnects the connection, 
 
 ### Reply fields
 
-The connect result and the refresh result carry two fields:
+When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the connect result and the refresh result carry two fields. Without these features neither field is sent, as before:
 
 * `user`: the user of the token, which is also the user of a pending connection. Empty for an anonymous token;
 * `auth_class`: the class name (`anonymous`, `pending_2fa`, `authenticated` or `bot`). Empty when the registry is disabled.
@@ -172,7 +173,7 @@ The connect result and the refresh result carry two fields:
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
 * The connection info is not replaced by a rebind. A downgrade, or a rebind to a token without info, keeps the info of the previous identity on presence, join and publication client info.
 * A subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left.
-* A token which expires within about a second after a rebind can get the refresh error `token expired` after the identity has moved. The client recovers on its next refresh, which subscribes its channels again.
+* A token whose expiration passes in the milliseconds between the check of the refresh and the rebind of the core gets the refresh error `token expired` after the user channels have gone. The refresh checks the expiration before the channels move, so this needs the token to expire in that window. Its personal channel comes back on the next refresh with the same user. The channels the client subscribed itself stay unsubscribed until the client subscribes them again or reconnects.
 * A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
 
 ## Error mapping

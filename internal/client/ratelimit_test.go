@@ -116,8 +116,25 @@ func sendRateLimitCommand(client *centrifuge.Client, cmd *protocol.Command) {
 	centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20)
 }
 
-// newRateLimitHandler creates a handler with a real Core node and the given rate limit config.
+// newRateLimitHandler creates a handler with a real Core node and the given rate limit config. Each
+// namespace is a stream namespace.
 func newRateLimitHandler(t *testing.T, rl configtypes.RateLimit, namespaces ...string) *centrifuge.Node {
+	t.Helper()
+	channelNamespaces := make([]configtypes.ChannelNamespace, 0, len(namespaces))
+	for _, name := range namespaces {
+		channelNamespaces = append(channelNamespaces, configtypes.ChannelNamespace{Name: name})
+	}
+	_, node := newRateLimitHandlerWithNamespaces(t, rl, channelNamespaces)
+	return node
+}
+
+// newRateLimitHandlerWithNamespaces is newRateLimitHandler with namespaces of any subscription type. It
+// returns the handler too.
+func newRateLimitHandlerWithNamespaces(
+	t *testing.T,
+	rl configtypes.RateLimit,
+	namespaces []configtypes.ChannelNamespace,
+) (*Handler, *centrifuge.Node) {
 	t.Helper()
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
@@ -125,15 +142,16 @@ func newRateLimitHandler(t *testing.T, rl configtypes.RateLimit, namespaces ...s
 	cfg := config.DefaultConfig()
 	cfg.Client.Insecure = true
 	cfg.Client.RateLimit = rl
-	for _, name := range namespaces {
-		cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{Name: name})
-	}
+	// A shared poll namespace needs the HMAC key and the default shared poll proxy.
+	cfg.SharedPoll.HMACSecretKey = "test-secret"
+	cfg.Channel.Proxy.SharedPollRefresh.Endpoint = "http://localhost:9999"
+	cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, namespaces...)
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 	h := NewHandler(node, cfgContainer, emptyJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
 	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 	require.NoError(t, h.Setup())
-	return node
+	return h, node
 }
 
 // connectTestClient connects an anonymous client to node, which advertises flag in its connect request as an SDK
@@ -410,6 +428,10 @@ func TestRateLimitRepeatedConnectKeepsState(t *testing.T) {
 }
 
 func TestRateLimitOperationMapping(t *testing.T) {
+	h, _ := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{}, []configtypes.ChannelNamespace{
+		{Name: "aa", ChannelOptions: configtypes.ChannelOptions{SubscriptionType: "shared_poll"}},
+		{Name: "bb"},
+	})
 	tests := []struct {
 		name    string
 		cmd     *protocol.Command
@@ -417,82 +439,109 @@ func TestRateLimitOperationMapping(t *testing.T) {
 		wantKey string
 		wantOK  bool
 	}{
-		{name: "subscribe", cmd: &protocol.Command{Subscribe: &protocol.SubscribeRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationSubscribe, wantKey: "a:b", wantOK: true},
-		{name: "unsubscribe", cmd: &protocol.Command{Unsubscribe: &protocol.UnsubscribeRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationUnsubscribe, wantKey: "a:b", wantOK: true},
-		{name: "publish", cmd: &protocol.Command{Publish: &protocol.PublishRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationPublish, wantKey: "a:b", wantOK: true},
-		{name: "history", cmd: &protocol.Command{History: &protocol.HistoryRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationHistory, wantKey: "a:b", wantOK: true},
-		{name: "presence", cmd: &protocol.Command{Presence: &protocol.PresenceRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationPresence, wantKey: "a:b", wantOK: true},
-		{name: "presence_stats", cmd: &protocol.Command{PresenceStats: &protocol.PresenceStatsRequest{Channel: "a:b"}}, wantOp: ratelimit.OperationPresenceStats, wantKey: "a:b", wantOK: true},
+		{name: "subscribe", cmd: &protocol.Command{Subscribe: &protocol.SubscribeRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationSubscribe, wantKey: "aa:b", wantOK: true},
+		{name: "unsubscribe", cmd: &protocol.Command{Unsubscribe: &protocol.UnsubscribeRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationUnsubscribe, wantKey: "aa:b", wantOK: true},
+		{name: "publish", cmd: &protocol.Command{Publish: &protocol.PublishRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationPublish, wantKey: "aa:b", wantOK: true},
+		{name: "history", cmd: &protocol.Command{History: &protocol.HistoryRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationHistory, wantKey: "aa:b", wantOK: true},
+		{name: "presence", cmd: &protocol.Command{Presence: &protocol.PresenceRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationPresence, wantKey: "aa:b", wantOK: true},
+		{name: "presence_stats", cmd: &protocol.Command{PresenceStats: &protocol.PresenceStatsRequest{Channel: "aa:b"}}, wantOp: ratelimit.OperationPresenceStats, wantKey: "aa:b", wantOK: true},
 		{
 			name: "sub_refresh",
 			cmd: &protocol.Command{
-				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b"},
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "aa:b"},
 			},
 			wantOp:  ratelimit.OperationSubRefresh,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "sub_refresh token type is not track",
 			cmd: &protocol.Command{
-				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 0},
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "aa:b", Type: 0},
 			},
 			wantOp:  ratelimit.OperationSubRefresh,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "track",
 			cmd: &protocol.Command{
-				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 1},
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "aa:b", Type: 1},
 			},
 			wantOp:  ratelimit.OperationTrack,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "untrack",
 			cmd: &protocol.Command{
-				SubRefresh: &protocol.SubRefreshRequest{Channel: "a:b", Type: 2},
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "aa:b", Type: 2},
 			},
 			wantOp:  ratelimit.OperationUntrack,
-			wantKey: "a:b",
+			wantKey: "aa:b",
+			wantOK:  true,
+		},
+		{
+			name: "track on a regular channel is sub_refresh",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "bb:c", Type: 1},
+			},
+			wantOp:  ratelimit.OperationSubRefresh,
+			wantKey: "bb:c",
+			wantOK:  true,
+		},
+		{
+			name: "token refresh with a track type on a regular channel is sub_refresh",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "bb:c", Type: 2, Token: "token"},
+			},
+			wantOp:  ratelimit.OperationSubRefresh,
+			wantKey: "bb:c",
+			wantOK:  true,
+		},
+		{
+			name: "track with a token on a shared poll channel is track",
+			cmd: &protocol.Command{
+				SubRefresh: &protocol.SubRefreshRequest{Channel: "aa:b", Type: 1, Token: "token"},
+			},
+			wantOp:  ratelimit.OperationTrack,
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "map publish",
 			cmd: &protocol.Command{
-				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 1},
+				Publish: &protocol.PublishRequest{Channel: "aa:b", Type: 1},
 			},
 			wantOp:  ratelimit.OperationMapPublish,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "map remove",
 			cmd: &protocol.Command{
-				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 1, Removed: true},
+				Publish: &protocol.PublishRequest{Channel: "aa:b", Type: 1, Removed: true},
 			},
 			wantOp:  ratelimit.OperationMapRemove,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "regular publish with removed flag stays publish",
 			cmd: &protocol.Command{
-				Publish: &protocol.PublishRequest{Channel: "a:b", Type: 0, Removed: true},
+				Publish: &protocol.PublishRequest{Channel: "aa:b", Type: 0, Removed: true},
 			},
 			wantOp:  ratelimit.OperationPublish,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{
 			name: "map subscribe is subscribe",
 			cmd: &protocol.Command{
-				Subscribe: &protocol.SubscribeRequest{Channel: "a:b", Type: 1},
+				Subscribe: &protocol.SubscribeRequest{Channel: "aa:b", Type: 1},
 			},
 			wantOp:  ratelimit.OperationSubscribe,
-			wantKey: "a:b",
+			wantKey: "aa:b",
 			wantOK:  true,
 		},
 		{name: "refresh", cmd: &protocol.Command{Refresh: &protocol.RefreshRequest{}}, wantOp: ratelimit.OperationRefresh, wantOK: true},
@@ -503,7 +552,7 @@ func TestRateLimitOperationMapping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			op, key, ok := rateLimitOperation(tt.cmd)
+			op, key, ok := h.rateLimitOperation(tt.cmd)
 			require.Equal(t, tt.wantOK, ok)
 			if !tt.wantOK {
 				return
@@ -515,7 +564,7 @@ func TestRateLimitOperationMapping(t *testing.T) {
 }
 
 func TestRateLimitMapOperationsOverLimit(t *testing.T) {
-	node := newRateLimitHandler(t, configtypes.RateLimit{
+	_, node := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
 			RateLimitOperations: configtypes.RateLimitOperations{
@@ -525,6 +574,9 @@ func TestRateLimitMapOperationsOverLimit(t *testing.T) {
 				Untrack:    rateLimitChannelOf(time.Minute, 1),
 			},
 		},
+	}, []configtypes.ChannelNamespace{
+		{Name: "test"},
+		{Name: "shared", ChannelOptions: configtypes.ChannelOptions{SubscriptionType: "shared_poll"}},
 	})
 	client, transport, _ := connectTestClient(t, node, 0)
 
@@ -551,14 +603,14 @@ func TestRateLimitMapOperationsOverLimit(t *testing.T) {
 			name: "track",
 			op:   "track",
 			newCmd: func(id uint32) *protocol.Command {
-				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1}}
+				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "shared:1", Type: 1}}
 			},
 		},
 		{
 			name: "untrack",
 			op:   "untrack",
 			newCmd: func(id uint32) *protocol.Command {
-				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 2}}
+				return &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "shared:1", Type: 2}}
 			},
 		},
 	}
@@ -600,7 +652,7 @@ func TestRateLimitMapOperationsShareDefault(t *testing.T) {
 }
 
 func TestRateLimitSubRefreshTokenIsNotTrack(t *testing.T) {
-	node := newRateLimitHandler(t, configtypes.RateLimit{
+	_, node := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
 			RateLimitOperations: configtypes.RateLimitOperations{
@@ -608,14 +660,60 @@ func TestRateLimitSubRefreshTokenIsNotTrack(t *testing.T) {
 				Untrack: rateLimitChannelOf(time.Minute, 1),
 			},
 		},
+	}, []configtypes.ChannelNamespace{
+		{Name: "test"},
+		{Name: "shared", ChannelOptions: configtypes.ChannelOptions{SubscriptionType: "shared_poll"}},
 	})
 	client, transport, _ := connectTestClient(t, node, 0)
 
-	// Token refresh of a subscription is sub_refresh, it does not consume track or untrack buckets.
+	// A token refresh of a channel which is not shared poll is sub_refresh whatever its type, so it does not
+	// consume the track or untrack buckets.
 	for id := uint32(2); id <= 4; id++ {
-		sendRateLimitCommand(client, &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1"}})
+		sendRateLimitCommand(client, &protocol.Command{Id: id, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1, Token: "token"}})
 		require.False(t, isRateLimited(transport.waitReply(t, id)), "command %d must be allowed", id)
 	}
+}
+
+// TestRateLimitTokenRefreshIsLimitedAsSubRefresh checks that a token refresh of a channel which is not shared poll is
+// limited by sub_refresh when track and untrack are not set. Core runs the token refresh path for such a request.
+func TestRateLimitTokenRefreshIsLimitedAsSubRefresh(t *testing.T) {
+	_, node := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				SubRefresh: rateLimitChannelOf(time.Minute, 1),
+			},
+		},
+	}, []configtypes.ChannelNamespace{
+		{Name: "test"},
+	})
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1, Token: "token"}})
+	require.False(t, isRateLimited(transport.waitReply(t, 2)), "first token refresh must be allowed")
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, SubRefresh: &protocol.SubRefreshRequest{Channel: "test:1", Type: 1, Token: "token"}})
+	require.True(t, isRateLimited(transport.waitReply(t, 3)), "second token refresh must be rejected")
+}
+
+// TestRateLimitSharedPollTrackWithTokenIsTrack checks that a track on a shared poll channel is charged to track even when
+// the request carries a token. Core routes such a request to track and ignores the token.
+func TestRateLimitSharedPollTrackWithTokenIsTrack(t *testing.T) {
+	_, node := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{
+		ClientCommand: configtypes.RateLimitClientCommand{
+			Enabled: true,
+			RateLimitOperations: configtypes.RateLimitOperations{
+				Track: rateLimitChannelOf(time.Minute, 1),
+			},
+		},
+	}, []configtypes.ChannelNamespace{
+		{Name: "shared", ChannelOptions: configtypes.ChannelOptions{SubscriptionType: "shared_poll"}},
+	})
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, SubRefresh: &protocol.SubRefreshRequest{Channel: "shared:1", Type: 1, Token: "token"}})
+	require.False(t, isRateLimited(transport.waitReply(t, 2)), "first track must be allowed")
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, SubRefresh: &protocol.SubRefreshRequest{Channel: "shared:1", Type: 1, Token: "token"}})
+	require.True(t, isRateLimited(transport.waitReply(t, 3)), "second track must be rejected")
 }
 
 func TestRateLimitMapPublishNamespaceOverride(t *testing.T) {

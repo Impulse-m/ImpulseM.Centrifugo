@@ -100,7 +100,7 @@ func (h *Handler) rateLimitCommandRead(
 		if !checkCommands && userLimiter == nil && redisLimiter == nil {
 			return nil
 		}
-		op, name, ok := rateLimitOperation(e.Command)
+		op, name, ok := h.rateLimitOperation(e.Command)
 		if !ok {
 			return nil
 		}
@@ -235,7 +235,7 @@ func (h *Handler) rateLimitNamespace(channel string) string {
 // rateLimitOperation returns the rate limited operation of a command and the name which selects
 // its buckets: a channel for channel operations, a method for RPC. Commands which are not
 // rate limited (connect, ping, send) return false. The order of checks follows Core dispatch.
-func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, bool) {
+func (h *Handler) rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, bool) {
 	switch {
 	case cmd.Ping != nil:
 		return 0, "", false
@@ -256,7 +256,7 @@ func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, boo
 	case cmd.Refresh != nil:
 		return ratelimit.OperationRefresh, "", true
 	case cmd.SubRefresh != nil:
-		return subRefreshOperation(cmd.SubRefresh), cmd.SubRefresh.Channel, true
+		return h.subRefreshOperation(cmd.SubRefresh), cmd.SubRefresh.Channel, true
 	}
 	return 0, "", false
 }
@@ -274,8 +274,12 @@ func publishOperation(req *protocol.PublishRequest) ratelimit.Operation {
 }
 
 // subRefreshOperation returns the operation of a sub refresh command: track or untrack keys of a
-// shared poll subscription, a subscription token refresh otherwise.
-func subRefreshOperation(req *protocol.SubRefreshRequest) ratelimit.Operation {
+// shared poll subscription, a subscription token refresh otherwise. Core reads the type only on a
+// shared poll channel. On any other channel the request refreshes the token whatever its type is.
+func (h *Handler) subRefreshOperation(req *protocol.SubRefreshRequest) ratelimit.Operation {
+	if req.Type == 0 || !h.isSharedPollChannel(req.Channel) {
+		return ratelimit.OperationSubRefresh
+	}
 	switch req.Type {
 	case subRefreshTypeTrack:
 		return ratelimit.OperationTrack
@@ -283,4 +287,14 @@ func subRefreshOperation(req *protocol.SubRefreshRequest) ratelimit.Operation {
 		return ratelimit.OperationUntrack
 	}
 	return ratelimit.OperationSubRefresh
+}
+
+// isSharedPollChannel reports whether the channel belongs to a shared poll namespace. Core takes the
+// keyed flag of a subscription from the same namespace options. The lookup does not allocate.
+func (h *Handler) isSharedPollChannel(channel string) bool {
+	chOpts, ok, err := h.cfgContainer.ChannelOptionsRef(channel)
+	if err != nil || !ok {
+		return false
+	}
+	return chOpts.SubscriptionType == "shared_poll"
 }

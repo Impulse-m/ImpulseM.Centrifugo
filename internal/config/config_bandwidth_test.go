@@ -44,10 +44,7 @@ func TestConfigBandwidthOptionsJSON(t *testing.T) {
 }
 
 func TestConfigBandwidthOptionsEnvVars(t *testing.T) {
-	_ = os.Setenv("CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_CLIENT_PUBLISH_DEBOUNCE_INTERVAL", `50ms`)
-	defer func() {
-		_ = os.Unsetenv("CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_CLIENT_PUBLISH_DEBOUNCE_INTERVAL")
-	}()
+	t.Setenv("CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_CLIENT_PUBLISH_DEBOUNCE_INTERVAL", "50ms")
 	conf, meta := getConfig(t, "testdata/config.json")
 	require.Equal(t, configtypes.Duration(50*time.Millisecond), conf.Channel.WithoutNamespace.ClientPublishDebounceInterval)
 	require.Len(t, meta.UnknownEnvs, 0)

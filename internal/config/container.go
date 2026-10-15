@@ -33,6 +33,10 @@ func getPreparedConfig(config Config) (*Config, error) {
 	if err != nil {
 		return &config, err
 	}
+	config, err = buildCompiledFilterTemplates(config)
+	if err != nil {
+		return &config, err
+	}
 	config.namespaceOptions = buildNamespaceOptions(&config)
 	return &config, nil
 }

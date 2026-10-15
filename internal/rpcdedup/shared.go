@@ -315,7 +315,11 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to cancel a call", err)
 		if s.failOpen {
-			return s.local.Cancel(key, failure)
+			// No call of key runs on this node (CancelFlight above), so the call runs on another node or has not
+			// started. A local tombstone would answer a later retransmit with the cancelled error even when the call
+			// ran to its end on the other node, and the client could then run it again under a new msg_id. The
+			// cancel is not delivered instead, as the README says for fail_open.
+			return nil
 		}
 		return err
 	}
@@ -324,7 +328,8 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 		// The shared tier holds the cancelled error for key, so a done record which this node still caches for it is
 		// replaced: the other nodes answer the tombstone, and so must this one. The tombstone fits both tiers: config
 		// validation checks the encoded cancelled error against ReplyLimit, the limit of both tiers, so the cancel script
-		// stores it with no check of its own (cancelScript), and a tombstone is never kept as uncached.
+		// stores it with no check of its own (cancelScript). Like any record, the local copy can still be kept as
+		// uncached under budget pressure, and a duplicate then reads the tombstone from the shared tier.
 		return s.local.Tombstone(key, failure)
 	case CancelInFlight:
 		// A call which began on this node after the first check above has its flight now, and is cancelled here.

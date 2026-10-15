@@ -678,12 +678,15 @@ func TestSharedCancelOfRefusedScopeMakesNoBackendCall(t *testing.T) {
 	require.Equal(t, 1, testEntries(local))
 }
 
+// Under fail_open a cancel which the shared tier fails is not delivered, and nothing is recorded locally: the call may
+// run to its end on another node, and a local tombstone would answer its retransmit with the cancelled error.
 func TestSharedCancelFailureFollowsOnStoreError(t *testing.T) {
 	fx := newSharedFixture(t, true)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 	fx.backend.setFail(errors.New("redis is down"))
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
-	lookup := testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintA))
-	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Empty(t, fx.notified)
+	require.True(t, testIsMiss(t, fx.local, sharedKey), "nothing is recorded locally")
 
 	closed := newSharedFixture(t, false)
 	closed.backend.setFail(errors.New("redis is down"))

@@ -96,7 +96,7 @@ Off by default, and then the auth throttle and the request log keep their previo
 
 Two backend hooks, both off by default and both as in the Centrifugo PRO docs (`event_hooks`, `channel_events`, `channel_cache_empty`):
 
-* Channel state events: an `occupied` event when a channel gets its first subscriber in the cluster and a `vacated` event when it loses its last one. Events are sent in batches to `channel.proxy.state`, over HTTP or gRPC, with `state_proxy_enabled` on the namespace. They need `presence: true` and the Redis presence manager.
+* Channel state events: an `occupied` event when a channel gets its first subscriber in the cluster and a `vacated` event when it loses its last one. Events are sent in batches to `channel.proxy.state`, over HTTP or gRPC, with `state_proxy_enabled` on the namespace. They need `presence: true` and the Redis presence manager. Not yet delivered by this build: the Redis wiring follows in the next release, and until then the state proxy is configured but no events are sent.
 * Cache empty events: a synchronous call to `channel.proxy.cache_empty` when a subscriber in cache recovery mode finds no latest publication. The proxy answers with `populated`. Enabled with `cache_empty_proxy_enabled` and `cache_empty_proxy_name` on the namespace.
 
 ```json
@@ -136,12 +136,12 @@ Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch b
 
 * Delivery is at-least-once, in partition order: a batch whose answer is lost is sent again, so the backend must treat a repeated event as a no-op. Events of one channel reach the backend in the order they happened.
 * Retries back off from 100 ms to 20 s. Events are kept in Redis while the backend is down; the stream holds at most 8192 events per partition, and new events are dropped when it is full.
+* A batch the backend keeps rejecting (an `error` answer or a non-200 status) is retried at the 20 s cap until the backend accepts it. The events of the other channels in the same partition wait behind it, and the stream fills up as above. The backend must answer every batch it can decode; there is no skip of a batch.
 * Redis must not evict these keys: set `maxmemory-policy noeviction`. Eviction loses events.
 * Use a separate Redis presence manager (`presence_manager.redis.channel_state`) when the engine is shared with other data, as PRO recommends.
 * Do not change `num_partitions`, or the number of Redis shards, while channels are occupied: their state is orphaned and a `vacated` event can be missed.
 * Startup rules: `state_proxy_enabled` requires `presence` and a Redis presence manager (`engine.type: redis`, or `presence_manager.type: redis`); `cache_empty_proxy_enabled` requires `force_recovery_mode: cache`. Other options are checked on startup too.
 * Differences from PRO: there is no `state_proxy_name`, a single `channel.proxy.state` endpoint serves all namespaces; the stream cap of 8192 events per partition is fixed.
-* The Redis wiring of channel state events to the Core presence manager follows in the next release; until then the state proxy is configured but no events are sent.
 
 ### Not implemented (yet)
 

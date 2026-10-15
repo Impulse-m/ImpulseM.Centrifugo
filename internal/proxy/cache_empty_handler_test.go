@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -170,4 +173,85 @@ func TestCacheEmptyHandlerNamedProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, reply.Populated)
 	require.Empty(t, defaultCalls)
+}
+
+// blockingCacheEmptyProxy counts its calls and holds each one until release is closed.
+type blockingCacheEmptyProxy struct {
+	calls   atomic.Int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingCacheEmptyProxy) ProxyNotifyCacheEmpty(ctx context.Context, req *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+	p.calls.Add(1)
+	select {
+	case p.entered <- struct{}{}:
+	default:
+	}
+	<-p.release
+	return &proxyproto.NotifyCacheEmptyResponse{
+		Result: &proxyproto.NotifyCacheEmptyResult{Populated: true},
+	}, nil
+}
+
+func (p *blockingCacheEmptyProxy) Protocol() string {
+	return "test"
+}
+
+func (p *blockingCacheEmptyProxy) Timeout() time.Duration {
+	return time.Second
+}
+
+// TestCacheEmptyHandlerSharesInflightCall checks that subscribers which find a channel empty while a call
+// is in flight get the result of that call, and that a call made after the result is not served from a cache.
+func TestCacheEmptyHandlerSharesInflightCall(t *testing.T) {
+	const subscribers = 16
+
+	proxy := &blockingCacheEmptyProxy{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": proxy})
+	opts := configtypes.ChannelOptions{
+		CacheEmptyProxyEnabled: true,
+		CacheEmptyProxyName:    "default",
+		ForceRecoveryMode:      "cache",
+	}
+	cfgContainer := newCacheEmptyTestContainer(t, opts, false)
+	cacheEmpty := handler.Handle(cfgContainer)
+
+	start := make(chan struct{})
+	replies := make(chan centrifuge.CacheEmptyReply, subscribers)
+	errs := make(chan error, subscribers)
+	var wg sync.WaitGroup
+	for i := 0; i < subscribers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
+			replies <- reply
+			errs <- err
+		}()
+	}
+	close(start)
+	<-proxy.entered
+	close(proxy.release)
+	wg.Wait()
+	close(replies)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	for reply := range replies {
+		require.True(t, reply.Populated)
+	}
+	require.LessOrEqual(t, proxy.calls.Load(), int64(subscribers))
+
+	before := proxy.calls.Load()
+	reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
+	require.NoError(t, err)
+	require.True(t, reply.Populated)
+	require.Equal(t, before+1, proxy.calls.Load())
 }

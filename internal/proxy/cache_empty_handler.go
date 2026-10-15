@@ -10,12 +10,14 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/singleflight"
 )
 
 // CacheEmptyHandler answers cache empty events with the cache empty proxy named in the channel options.
 type CacheEmptyHandler struct {
 	proxies map[string]CacheEmptyProxy
 	calls   map[string]*metrics.ProxyCallChildren
+	group   singleflight.Group
 }
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
@@ -49,25 +51,39 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 			log.Error().Str("proxy", name).Str("channel", e.Channel).Msg("cache empty proxy not found")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
-		calls := h.calls[name]
-		if calls != nil {
-			calls.Inflight.Inc()
-			defer calls.Inflight.Dec()
-		}
-
-		started := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), p.Timeout())
-		defer cancel()
-
-		resp, err := p.ProxyNotifyCacheEmpty(ctx, &proxyproto.NotifyCacheEmptyRequest{Channel: e.Channel})
-		duration := time.Since(started).Seconds()
-		calls.Observe(duration, err != nil)
+		// Subscribers that find the same channel empty while a call is in flight share its result.
+		key := name + "\x00" + e.Channel
+		populated, err, _ := h.group.Do(key, func() (any, error) {
+			return h.call(name, p, e.Channel)
+		})
 		if err != nil {
 			log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
 		return centrifuge.CacheEmptyReply{
-			Populated: resp.Result != nil && resp.Result.Populated,
+			Populated: populated.(bool),
 		}, nil
 	}
+}
+
+// call makes one cache empty call to the proxy p for the channel and returns whether the backend
+// reports the channel as populated.
+func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string) (any, error) {
+	// calls has the same keys as proxies, so the lookup by a name found in proxies always succeeds.
+	calls := h.calls[name]
+	if calls != nil {
+		calls.Inflight.Inc()
+		defer calls.Inflight.Dec()
+	}
+
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), p.Timeout())
+	defer cancel()
+
+	resp, err := p.ProxyNotifyCacheEmpty(ctx, &proxyproto.NotifyCacheEmptyRequest{Channel: channel})
+	calls.Observe(time.Since(started).Seconds(), err != nil)
+	if err != nil {
+		return false, err
+	}
+	return resp.Result != nil && resp.Result.Populated, nil
 }

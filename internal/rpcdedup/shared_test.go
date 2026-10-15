@@ -40,10 +40,11 @@ type fakeBackend struct {
 	// blockAck makes every ack call wait until its context is done, as an unanswered Redis does. It gives up after a
 	// second, so that a flush which ignores its context fails the test instead of hanging it.
 	blockAck bool
-	// onBegin, onComplete and onCancel run when the call is made, before it takes effect and outside the lock.
+	// onBegin, onComplete, onCancel and onAck run when the call is made, before it takes effect and outside the lock.
 	onBegin    func()
 	onComplete func()
 	onCancel   func()
+	onAck      func()
 }
 
 // newFakeBackend returns a connected backend without records.
@@ -230,6 +231,9 @@ func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
 	if e.state == 'i' {
 		return PollResult{State: PollInFlight}, nil
 	}
+	if e.state == 'c' {
+		return PollResult{State: PollCancelled, Record: e.rec}, nil
+	}
 	return PollResult{State: PollDone, Record: e.rec}, nil
 }
 
@@ -237,6 +241,9 @@ func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
 func (f *fakeBackend) Ack(ctx context.Context, acks []ScopeAcks) error {
 	if err := f.enter("ack"); err != nil {
 		return err
+	}
+	if f.onAck != nil {
+		f.onAck()
 	}
 	if f.blockAck {
 		select {
@@ -506,6 +513,28 @@ func TestSharedRestoredTombstoneAnswersAnyFingerprint(t *testing.T) {
 
 	// The tombstone is cached on this node without the fingerprint of the first caller, so a duplicate with another
 	// fingerprint is answered with it too, and not refused as a reuse of the msg_id.
+	lookup = testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintB))
+	require.Equal(t, OutcomeDone, lookup.Outcome)
+	require.Same(t, testCancelled, lookup.Record.Err)
+	checkInvariants(t, fx.local)
+}
+
+// A tombstone which the watcher of a remote flight polls is kept without the fingerprint of the flight, so a duplicate
+// on the watching node with another fingerprint gets the cancelled error, and not msg_id_reused.
+func TestSharedRemoteTombstoneAnswersAnyFingerprint(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+
+	// The owner's record is replaced by a tombstone, as a cancel on a node without the call writes it.
+	fx.backend.put(sharedKey, 'c', [32]byte{}, "", Record{Err: testCancelled})
+	waitDone(t, owner)
+	require.Same(t, testCancelled, owner.Record().Err)
+	require.Equal(t, [32]byte{}, owner.Record().Fingerprint)
+
 	lookup = testBegin(t, fx.local, sharedKey, NewFlightWithFingerprint(sharedFingerprintB))
 	require.Equal(t, OutcomeDone, lookup.Outcome)
 	require.Same(t, testCancelled, lookup.Record.Err)
@@ -1057,8 +1086,47 @@ func TestSharedDrainCountsQueueLeftWhenBudgetIsSpent(t *testing.T) {
 	require.Equal(t, 6, fx.dropped, "the batch and the queue are counted as dropped")
 }
 
+// A drain whose flushes fail counts the keys of each failed flush as dropped, since a shutdown does not retry them.
+func TestSharedDrainCountsKeysOfFailedFlush(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ackBatch = 2
+	scope := testScope("u1", "a")
+	require.NoError(t, fx.shared.Ack(scope, []uint64{1, 2, 3}))
+	fx.backend.setFail(errors.New("redis is down"))
+
+	fx.shared.drainAcks(nil)
+	require.Equal(t, 3, fx.dropped, "the keys of the failed flushes are counted, the batch of two and the one left")
+}
+
+// The acks which Ack enqueues while a drain flushes are taken by the drain while its budget lasts, so they reach the
+// shared tier too, and none is dropped.
+func TestSharedDrainTakesAcksEnqueuedDuringDrain(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ackBatch = 2
+	scope := testScope("u1", "a")
+	require.NoError(t, fx.shared.Ack(scope, []uint64{1, 2}))
+	var enqueued bool
+	fx.backend.onAck = func() {
+		if !enqueued {
+			enqueued = true
+			require.NoError(t, fx.shared.Ack(scope, []uint64{3, 4}))
+		}
+	}
+
+	fx.shared.drainAcks(nil)
+	var flushed int
+	for _, batch := range fx.backend.ackBatches() {
+		for _, acks := range batch {
+			flushed += len(acks.MsgIDs)
+		}
+	}
+	require.Equal(t, 4, flushed, "the acks enqueued during the drain reach the shared tier")
+	require.Equal(t, 0, fx.dropped)
+}
+
 // A shutdown whose Redis does not answer the acks is held for one IO timeout in all, not one per batch: the first batch
-// is cut by the budget, and the acks which are left are counted as dropped.
+// is cut by the budget, and the acks which are left are counted as dropped. The keys of the cut batch are counted too,
+// since its flush failed, so none of the 50 acks reaches the shared tier and all 50 are dropped.
 func TestSharedDrainSharesOneIOTimeout(t *testing.T) {
 	fx := newSharedFixture(t, false)
 	fx.shared.ackBatch = 10
@@ -1075,7 +1143,7 @@ func TestSharedDrainSharesOneIOTimeout(t *testing.T) {
 	fx.shared.drainAcks(nil)
 	require.Less(t, time.Since(start), 500*time.Millisecond, "the drain shares one IO timeout of 100ms")
 	require.Equal(t, 1, countCalls(fx.backend.callLog(), "ack"), "the first batch is cut, the rest is not sent")
-	require.Equal(t, 40, fx.dropped, "the acks which the budget leaves unsent are counted as dropped")
+	require.Equal(t, 50, fx.dropped, "the keys of the cut batch and the acks which the budget leaves unsent are counted as dropped")
 }
 
 func TestSharedAckFlushesOnTicker(t *testing.T) {

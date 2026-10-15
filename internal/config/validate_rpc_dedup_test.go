@@ -1,9 +1,11 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -30,6 +32,31 @@ func dedupConfig() Config {
 		OnStoreError:             configtypes.RPCDedupFailClosed,
 	}
 	return cfg
+}
+
+// TestValidateRPCDedupCancelledErrorBoundary checks that the cancelled error is accepted up to the reply limit of its
+// encoded form, and refused one byte over it. The limit is the one both tiers keep, see configtypes.RPCDedup.ReplyLimit.
+func TestValidateRPCDedupCancelledErrorBoundary(t *testing.T) {
+	cfg := dedupConfig()
+	limit := cfg.RPC.Registry.Dedup.ReplyLimit()
+	cancelled := cfg.RPC.Registry.Errors.Cancelled
+	encodedSize := func(n int) int {
+		return rpcdedup.ErrorSize(&centrifuge.Error{
+			Code:    cancelled.Code,
+			Message: strings.Repeat("e", n),
+			AppCode: cancelled.AppCode,
+			AppType: cancelled.AppType,
+		})
+	}
+	n := 0
+	for encodedSize(n+1) <= limit {
+		n++
+	}
+	cfg.RPC.Registry.Errors.Cancelled.Message = strings.Repeat("e", n)
+	require.NoError(t, cfg.Validate())
+
+	cfg.RPC.Registry.Errors.Cancelled.Message = strings.Repeat("e", n+1)
+	require.ErrorContains(t, cfg.Validate(), "rpc.registry.errors.cancelled.message: the encoded cancelled error must fit the reply limit")
 }
 
 func TestValidateRPCDedupDisabledIsNotChecked(t *testing.T) {
@@ -151,11 +178,11 @@ func TestValidateRPCDedupRules(t *testing.T) {
 			wantErr: "rpc.registry.dedup.max_records_per_scope: must be at least scope_reserve 8",
 		},
 		{
-			name: "cancelled message must fit a record share",
+			name: "cancelled error must fit the reply limit",
 			modify: func(cfg *Config) {
-				cfg.RPC.Registry.Errors.Cancelled.Message = string(make([]byte, 2048-rpcdedup.RecordOverhead+1))
+				cfg.RPC.Registry.Errors.Cancelled.Message = strings.Repeat("e", cfg.RPC.Registry.Dedup.ReplyLimit())
 			},
-			wantErr: "rpc.registry.errors.cancelled.message: must fit a record share",
+			wantErr: "rpc.registry.errors.cancelled.message: the encoded cancelled error must fit the reply limit",
 		},
 		{
 			name: "anonymous entries must be below the total",

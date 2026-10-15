@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
@@ -73,11 +74,17 @@ func validateRPCDedup(c Config) error {
 	if err := validateRPCDedupBudgets(dedup); err != nil {
 		return err
 	}
-	// A cancel records its message as an answer, which is kept only up to a share of a record, so the message must fit it.
-	share := dedup.ScopeShare()
-	messageLen := len(c.RPC.Registry.Errors.Cancelled.Message)
-	if rpcdedup.RecordOverhead+messageLen > share {
-		return fmt.Errorf("rpc.registry.errors.cancelled.message: must fit a record share of scope_reserve_bytes / scope_reserve, %d bytes with the %d bytes of overhead, got %d bytes", share, rpcdedup.RecordOverhead, messageLen)
+	// A cancel stores the cancelled error as an answer in both tiers, which count an error by its encoded size and keep
+	// an answer up to the reply limit. The encoded error must fit that limit, so a tombstone always fits both tiers.
+	cancelled := c.RPC.Registry.Errors.Cancelled
+	cancelledError := &centrifuge.Error{
+		Code:    cancelled.Code,
+		Message: cancelled.Message,
+		AppCode: cancelled.AppCode,
+		AppType: cancelled.AppType,
+	}
+	if limit, size := dedup.ReplyLimit(), rpcdedup.ErrorSize(cancelledError); size > limit {
+		return fmt.Errorf("rpc.registry.errors.cancelled.message: the encoded cancelled error must fit the reply limit of %d bytes, got %d bytes", limit, size)
 	}
 	if !slices.Contains(configtypes.RPCDedupStoreErrors, dedup.OnStoreError) {
 		return fmt.Errorf("rpc.registry.dedup.on_store_error: must be one of %s, got %q", strings.Join(configtypes.RPCDedupStoreErrors, ", "), dedup.OnStoreError)

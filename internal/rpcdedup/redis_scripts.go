@@ -52,7 +52,9 @@ return 1
 `)
 
 // cancelScript cancels a call of KEYS[1]. ARGV[1] is the error JSON of the cancelled error and ARGV[2] the record TTL
-// in milliseconds. A key which holds nothing becomes a tombstone, {'tombstone'}. A call which runs returns its owner,
+// in milliseconds. The script stores the error with no size check: config validation checks the encoded cancelled error
+// against configtypes.RPCDedup.ReplyLimit, so a tombstone fits the reply limit of both tiers. A key which holds nothing
+// becomes a tombstone, {'tombstone'}. A call which runs returns its owner,
 // {'inflight', owner}: the owner is told by a notification, and completes the record itself. A done key is left as
 // it is, {'done'}.
 var cancelScript = rueidis.NewLuaScript(`

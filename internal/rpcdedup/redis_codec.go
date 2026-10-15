@@ -30,38 +30,11 @@ const (
 // under the same prefix, and is counted as a Redis error.
 var errMalformedReply = errors.New("malformed reply of the shared tier")
 
-// redisError is the JSON form of a centrifuge.Error in the field e of a record. Empty fields are omitted.
-type redisError struct {
-	Code      uint32            `json:"c,omitempty"`
-	Message   string            `json:"m,omitempty"`
-	Temporary bool              `json:"t,omitempty"`
-	AppCode   int32             `json:"ac,omitempty"`
-	AppType   string            `json:"at,omitempty"`
-	Metadata  map[string]string `json:"md,omitempty"`
-}
-
 // RedisKey returns the key of a call in Redis: {prefix}.rpc.{scope}.{msg_id}. Braces around the scope make it the
 // Redis Cluster hash tag, so all records of a scope live in one slot. The scope is a hash, so it identifies the
 // connection's scope only, and no user id or session reaches Redis.
 func RedisKey(prefix string, key Key) string {
 	return prefix + ".rpc.{" + key.Scope + "}." + strconv.FormatUint(key.MsgID, 10)
-}
-
-// encodeError returns the JSON form of err for field e, or "" for no error.
-func encodeError(err *centrifuge.Error) string {
-	if err == nil {
-		return ""
-	}
-	// Marshalling a struct of strings, numbers and a string map does not fail.
-	data, _ := json.Marshal(redisError{
-		Code:      err.Code,
-		Message:   err.Message,
-		Temporary: err.Temporary,
-		AppCode:   err.AppCode,
-		AppType:   err.AppType,
-		Metadata:  err.Metadata,
-	})
-	return string(data)
 }
 
 // decodeError returns the error of the JSON form s of field e. "" is no error.
@@ -140,22 +113,29 @@ func parseBegin(parts []string) (BeginResult, error) {
 }
 
 // parsePoll returns the result of a poll from the fields s, r, e and u of a record. A missing record has no fields. A
-// cancelled record without its error is malformed: it would be answered as a success.
+// tombstone is PollCancelled, and it is returned without a fingerprint: the watcher keeps it so, as BeginCancelled does.
+// A cancelled record without its error is malformed: it would be answered as a success.
 func parsePoll(state string, reply string, errJSON string, uncached string) (PollResult, error) {
 	switch state {
 	case "":
 		return PollResult{State: PollMissing}, nil
 	case redisStateInFlight:
 		return PollResult{State: PollInFlight}, nil
-	case redisStateDone, redisStateCancelled:
-		if state == redisStateCancelled && errJSON == "" {
-			return PollResult{}, errMalformedReply
-		}
+	case redisStateDone:
 		rec, err := parseRecord(reply, errJSON, uncached)
 		if err != nil {
 			return PollResult{}, err
 		}
 		return PollResult{State: PollDone, Record: rec}, nil
+	case redisStateCancelled:
+		if errJSON == "" {
+			return PollResult{}, errMalformedReply
+		}
+		rec, err := parseRecord("", errJSON, "")
+		if err != nil {
+			return PollResult{}, err
+		}
+		return PollResult{State: PollCancelled, Record: rec}, nil
 	}
 	return PollResult{}, errMalformedReply
 }

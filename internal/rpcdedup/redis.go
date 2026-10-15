@@ -64,6 +64,9 @@ const (
 	PollInFlight PollState = iota
 	// PollDone means the call is done, and PollResult.Record is its answer.
 	PollDone
+	// PollCancelled means the key holds a tombstone, which answers any fingerprint. PollResult.Record carries the
+	// cancelled error, and no fingerprint.
+	PollCancelled
 	// PollMissing means the key is gone: the owner abandoned the call, or died, and its record expired.
 	PollMissing
 )

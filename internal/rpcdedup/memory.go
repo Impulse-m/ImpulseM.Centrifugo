@@ -303,18 +303,25 @@ func (m *Memory) Begin(key Key, flight *Flight) (Lookup, error) {
 // with the record as it is kept, so a reply which is kept as uncached is evicted for them too. Only the owner of the
 // flight keeps a record.
 func (m *Memory) Complete(key Key, flight *Flight, rec Record) error {
-	rec.Fingerprint = flight.fingerprint
-	m.finish(key, flight, rec)
+	m.complete(key, flight, rec, encodeError(rec.Err))
 	return nil
 }
 
-// finish is Complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
+// complete is Complete with the encoded form errJSON of rec.Err, which the caller encodes outside the lock, once per
+// completion.
+func (m *Memory) complete(key Key, flight *Flight, rec Record, errJSON string) {
+	rec.Fingerprint = flight.fingerprint
+	m.finish(key, flight, rec, errJSON)
+}
+
+// finish is complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
 // has no fingerprint, and keeps none, so it answers any duplicate.
-func (m *Memory) finish(key Key, flight *Flight, rec Record) {
-	oversize := overReplyLimit(rec, encodeError(rec.Err), m.maxReplyBytes)
+func (m *Memory) finish(key Key, flight *Flight, rec Record, errJSON string) {
+	oversize := overReplyLimit(rec, errJSON, m.maxReplyBytes)
 	kept := rec
 	if oversize {
 		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		errJSON = ""
 	}
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
@@ -326,7 +333,7 @@ func (m *Memory) finish(key Key, flight *Flight, rec Record) {
 			if oversize {
 				s.observe(EvictionReplySize)
 			}
-			kept = s.insert(sc, key, kept, s.now())
+			kept = s.insert(sc, key, kept, errJSON, s.now())
 		}
 	}
 	if sc != nil {
@@ -369,6 +376,9 @@ func (m *Memory) Tombstone(key Key, failure *centrifuge.Error) error {
 
 // cancel is Cancel, and with replace it keeps the cancelled record in place of a done record of key.
 func (m *Memory) cancel(key Key, failure *centrifuge.Error, replace bool) error {
+	// The error is encoded outside the lock. A tombstone is within the share of a record, see configtypes.RPCDedup.ReplyLimit,
+	// so the insert below keeps it.
+	errJSON := encodeError(failure)
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
 	if running, found := s.flights[key]; found {
@@ -387,7 +397,7 @@ func (m *Memory) cancel(key Key, failure *centrifuge.Error, replace bool) error 
 		s.mu.Unlock()
 		return err
 	}
-	s.insert(sc, key, Record{Err: failure}, now)
+	s.insert(sc, key, Record{Err: failure}, errJSON, now)
 	s.mu.Unlock()
 	return nil
 }
@@ -538,11 +548,12 @@ func (s *shard) sweepSome(now time.Time) {
 // it never fails. A record which key still holds is removed first, so the key holds one record. Caller holds mu.
 // No record of key exists under its flight: Begin removes an expired record and answers a live one without a flight,
 // and only the owner of the flight inserts. The removal above keeps the counts right if that ever changes.
-func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Record {
+func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now time.Time) Record {
 	p := sc.pool
-	size := recordSize(rec)
+	size := recordSize(rec, errJSON)
 	if !rec.Uncached && size > p.recordBytes {
 		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		errJSON = ""
 		size = RecordOverhead
 		s.observe(EvictionUncached)
 	}
@@ -569,6 +580,7 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, now time.Time) Recor
 		}
 		if !rec.Uncached {
 			rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+			errJSON = ""
 			size = RecordOverhead
 			s.observe(EvictionUncached)
 			continue
@@ -673,8 +685,8 @@ func overReplyLimit(rec Record, errJSON string, limit int) bool {
 }
 
 // recordSize returns the size counted for a record: RecordOverhead, plus the length of its reply, plus the length of
-// the encoded form of its error when it has one. The encoded form is counted, not the message, so that the budgets
-// bound the bytes the shared tier stores.
-func recordSize(rec Record) int64 {
-	return int64(RecordOverhead + len(rec.Reply) + len(encodeError(rec.Err)))
+// the encoded form errJSON of its error, which is "" for no error. The encoded form is counted, not the message, so
+// that the budgets bound the bytes the shared tier stores.
+func recordSize(rec Record, errJSON string) int64 {
+	return int64(RecordOverhead + len(rec.Reply) + len(errJSON))
 }

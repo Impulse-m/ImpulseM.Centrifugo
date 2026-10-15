@@ -177,7 +177,7 @@ func (s *Shared) Begin(key Key, flight *Flight) (Lookup, error) {
 // reply is not cached locally: the local record stands for every other case.
 func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 	res, err := s.backend.Poll(context.Background(), key)
-	if err != nil || res.State != PollDone || res.Record.Uncached {
+	if err != nil || (res.State != PollDone && res.State != PollCancelled) || res.Record.Uncached {
 		return local
 	}
 	return Lookup{Outcome: OutcomeDone, Record: res.Record}
@@ -204,7 +204,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginCancelled:
 		// The tombstone keeps no fingerprint, so this node answers any duplicate with it, as the shared tier does.
-		s.local.finish(key, flight, res.Record)
+		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginMismatch:
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
@@ -223,49 +223,54 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 
 // watch polls the shared tier until the call of key, which runs on another node, is done, and completes the local
 // flight with its answer. A call whose record vanishes, or which does not finish within the in-flight TTL, is
-// abandoned: its duplicates retry.
+// abandoned: its duplicates retry. A tombstone completes the flight without a fingerprint, as BeginCancelled does, so
+// this node answers any duplicate with it, as the shared tier does.
 func (s *Shared) watch(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	rec, err := backoff.Retry(ctx, func() (Record, error) {
+	res, err := backoff.Retry(ctx, func() (PollResult, error) {
 		res, err := s.backend.Poll(ctx, key)
 		if err != nil {
-			return Record{}, err
+			return PollResult{}, err
 		}
 		switch res.State {
-		case PollDone:
-			return res.Record, nil
-		case PollMissing:
-			return Record{Abandoned: true}, nil
+		case PollDone, PollCancelled, PollMissing:
+			return res, nil
 		}
-		return Record{}, errStillInFlight
+		return PollResult{}, errStillInFlight
 	}, backoff.WithBackOff(newRetryBackOff(s.pollInitial, s.pollMax)), backoff.WithMaxElapsedTime(deadline))
-	if err != nil {
-		rec = Record{Abandoned: true}
+	switch {
+	case err != nil || res.State == PollMissing:
+		_ = s.local.Complete(key, flight, Record{Abandoned: true})
+	case res.State == PollCancelled:
+		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
+	default:
+		_ = s.local.Complete(key, flight, res.Record)
 	}
-	_ = s.local.Complete(key, flight, rec)
 }
 
 // Complete implements Store. The shared tier is written first, so a client which got the answer and reconnected to
 // another node finds it there; then the node-local store keeps the record and wakes the local duplicates. A flight
 // which runs without the shared tier skips it.
 func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
+	// The error is encoded once, and the encoded form is passed on to both tiers.
+	errJSON := encodeError(rec.Err)
 	if !flight.localOnly {
-		s.completeShared(key, flight, rec)
+		s.completeShared(key, flight, rec, errJSON)
 	}
-	return s.local.Complete(key, flight, rec)
+	s.local.complete(key, flight, rec, errJSON)
+	return nil
 }
 
-// completeShared writes the record of a call which this node owns to the shared tier. A record over the limit is
-// written as uncached. A failed write is retried once, with backoff: the owner check makes a retry idempotent. All the
-// writes of the call stay within one IO timeout, and within the in-flight TTL of the call, which is counted from its
-// begin, so the reply of the call is not held longer than that. When the writes fail, the record is still kept locally,
-// and a retransmit on another node runs the call again once the in-flight record expires. A write which reports that
-// this node does not own the in-flight record is not retried.
-func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
+// completeShared writes the record of a call which this node owns to the shared tier, with errJSON, the encoded form of
+// its error. A record over the limit is written as uncached. A failed write is retried once, with backoff: the owner
+// check makes a retry idempotent. All the writes of the call stay within one IO timeout, and within the in-flight TTL
+// of the call, which is counted from its begin, so the reply of the call is not held longer than that. When the writes
+// fail, the record is still kept locally, and a retransmit on another node runs the call again once the in-flight
+// record expires. A write which reports that this node does not own the in-flight record is not retried.
+func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON string) {
 	stored := rec
-	errJSON := encodeError(rec.Err)
 	if overReplyLimit(rec, errJSON, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
 		errJSON = ""
@@ -317,7 +322,9 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 	switch res.State {
 	case CancelTombstone:
 		// The shared tier holds the cancelled error for key, so a done record which this node still caches for it is
-		// replaced: the other nodes answer the tombstone, and so must this one.
+		// replaced: the other nodes answer the tombstone, and so must this one. The tombstone fits both tiers: config
+		// validation checks the encoded cancelled error against ReplyLimit, the limit of both tiers, so the cancel script
+		// stores it with no check of its own (cancelScript), and a tombstone is never kept as uncached.
 		return s.local.Tombstone(key, failure)
 	case CancelInFlight:
 		// A call which began on this node after the first check above has its flight now, and is cancelled here.
@@ -351,9 +358,7 @@ func (s *Shared) Ack(scope string, msgIDs []uint64) error {
 		select {
 		case s.acks <- Key{Scope: scope, MsgID: msgID}:
 		default:
-			if s.observer != nil {
-				s.observer.AckDropped()
-			}
+			s.ackDropped()
 		}
 	}
 	return nil
@@ -388,29 +393,29 @@ func (s *Shared) Run(ctx context.Context) error {
 	}
 }
 
-// drainAcks flushes the acks which are queued at the moment, and the batch, without waiting. It flushes in batches of
-// ackBatch keys, as the live path does, so a long queue is not sent in one write which the IO timeout may cut. The
-// whole drain has one budget of IOTimeout, so a Redis which does not answer holds shutdown for one IO timeout, not one
-// per batch. The acks which the budget leaves unsent are counted as dropped: the batch, and whatever is left in the
-// queue when the budget ends.
+// drainAcks flushes the acks which are queued, and the batch, without waiting, and then the acks which Ack enqueues
+// while the drain runs, for as long as the budget lasts. It flushes in batches of ackBatch keys, as the live path does,
+// so a long queue is not sent in one write which the IO timeout may cut. The whole drain has one budget of IOTimeout,
+// so a Redis which does not answer holds shutdown for one IO timeout, not one per batch. The keys of a flush which
+// fails are counted as dropped, as are the acks which the budget leaves unsent: the batch, and whatever is left in the
+// queue when the budget ends. The drain ends when the queue is empty, so an ack which Ack enqueues after it is not
+// counted.
 func (s *Shared) drainAcks(batch []Key) {
 	budget, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
 	defer cancel()
-	// Only this goroutine receives from the queue, so the keys counted here are still there to take.
-	queued := len(s.acks)
-	taken := 0
-	for taken < queued && budget.Err() == nil {
-		batch = append(batch, <-s.acks)
-		taken++
-		if len(batch) >= s.ackBatch {
-			s.flushAcks(budget, batch)
-			batch = batch[:0]
+	for budget.Err() == nil {
+		select {
+		case key := <-s.acks:
+			batch = append(batch, key)
+			if len(batch) >= s.ackBatch {
+				batch = s.flushDrained(budget, batch)
+			}
+		default:
+			s.flushDrained(budget, batch)
+			return
 		}
 	}
-	if budget.Err() == nil {
-		s.flushAcks(budget, batch)
-		return
-	}
+	// The budget ended before the queue was empty: the batch and the queue are not sent.
 	for range len(batch) {
 		s.ackDropped()
 	}
@@ -424,6 +429,17 @@ func (s *Shared) drainAcks(batch []Key) {
 	}
 }
 
+// flushDrained flushes batch within budget during a drain, and returns it emptied. The keys of a flush which fails are
+// counted as dropped, because a drain does not retry.
+func (s *Shared) flushDrained(budget context.Context, batch []Key) []Key {
+	if !s.flushAcks(budget, batch) {
+		for range len(batch) {
+			s.ackDropped()
+		}
+	}
+	return batch[:0]
+}
+
 // ackDropped counts an ack which is dropped, when there is an observer.
 func (s *Shared) ackDropped() {
 	if s.observer != nil {
@@ -431,11 +447,11 @@ func (s *Shared) ackDropped() {
 	}
 }
 
-// flushAcks sends the acks of keys to the shared tier, grouped by scope, as one batch, within ctx. Errors are counted
-// by the backend, and the records of the failed acks expire at their TTL.
-func (s *Shared) flushAcks(ctx context.Context, keys []Key) {
+// flushAcks sends the acks of keys to the shared tier, grouped by scope, as one batch, within ctx. It reports whether the
+// batch was sent. A failed flush is logged and counted by the backend, and the records of its acks expire at their TTL.
+func (s *Shared) flushAcks(ctx context.Context, keys []Key) bool {
 	if len(keys) == 0 {
-		return
+		return true
 	}
 	index := make(map[string]int)
 	var acks []ScopeAcks
@@ -450,7 +466,9 @@ func (s *Shared) flushAcks(ctx context.Context, keys []Key) {
 	}
 	if err := s.backend.Ack(ctx, acks); err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to forget acked calls", err)
+		return false
 	}
+	return true
 }
 
 // newRetryBackOff returns the policy of the retries of the shared tier: the delay starts at initial, doubles up to

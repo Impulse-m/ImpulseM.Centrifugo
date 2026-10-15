@@ -144,7 +144,7 @@ func TestParsePollReplies(t *testing.T) {
 
 	res, err = parsePoll("c", "", `{"c":107}`, "")
 	require.NoError(t, err)
-	require.Equal(t, PollDone, res.State)
+	require.Equal(t, PollCancelled, res.State)
 	require.Equal(t, &centrifuge.Error{Code: 107}, res.Record.Err)
 
 	_, err = parsePoll("x", "", "", "")

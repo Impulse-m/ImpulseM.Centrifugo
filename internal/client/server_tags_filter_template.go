@@ -43,18 +43,38 @@ func (h *Handler) connectFilterTemplates(
 	return nil
 }
 
-// subscribeFilterTemplate applies the server tags filter template of the channel to the options of a client
-// subscription. A missing value under reject refuses the subscription.
-func (h *Handler) subscribeFilterTemplate(client Client, channel string, opts *centrifuge.SubscribeOptions) error {
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
-		return nil
+// answerSubscribe answers a client subscription with reply, the result of OnSubscribe, after the server tags filter
+// template of its channel is combined with the explicit filter. A missing value under reject refuses the subscription.
+// The values are read once for the render. cb commits the subscription, and the values are compared again after it:
+// a rebind which stored other values in the meantime either finds the channel in the channel map, or the comparison
+// here does, so the channel never keeps a filter of values the connection no longer has.
+func (h *Handler) answerSubscribe(
+	client Client,
+	channel string,
+	reply centrifuge.SubscribeReply,
+	err error,
+	cb centrifuge.SubscribeCallback,
+) {
+	if err != nil || !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+		cb(reply, err)
+		return
 	}
-	filter, err := h.channelFilter(client, channel, opts.ServerTagsFilter)
+	tmpl := h.templateOf(channel)
+	if tmpl == nil {
+		cb(reply, nil)
+		return
+	}
+	values := connectionFilterValues(client)
+	filter, err := subscriptionFilter(tmpl, values, channel, reply.Options.ServerTagsFilter)
 	if err != nil {
-		return centrifuge.ErrorPermissionDenied
+		cb(reply, centrifuge.ErrorPermissionDenied)
+		return
 	}
-	opts.ServerTagsFilter = filter
-	return nil
+	reply.Options.ServerTagsFilter = filter
+	cb(reply, nil)
+	if !sameFilterValues(values, connectionFilterValues(client)) {
+		client.Unsubscribe(channel, centrifuge.Unsubscribe{Code: centrifuge.UnsubscribeCodeInsufficient, Reason: "insufficient state"})
+	}
 }
 
 // refreshFilterTemplate returns the server tags filter of a subscription refresh which sets explicit. It is the
@@ -74,10 +94,13 @@ func (h *Handler) refreshFilterTemplate(client Client, channel string, explicit 
 // A connection whose template claims changed is changed: its filters are fixed for its life, so it is
 // disconnected. Otherwise the templates are applied to the subscriptions of the token before they are compared.
 // The claim check is the primary rule, and the comparison of the filters in tokenChannelsChanged is the second.
+// A template which refuses a token subscription is not an error of the refresh: the connection is disconnected with
+// insufficient state, the client reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a
+// refused server-side subscription.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
 	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		storage, release := client.AcquireStorage()
-		stored := storedFilterValues(storage)
+		stored, _ := storedFilterValues(storage)
 		release(storage)
 		if !stored.Claims.Equal(extra.FilterTemplateClaims) {
 			return true
@@ -89,24 +112,29 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 	return tokenChannelsChanged(client, extra.Subs)
 }
 
-// rebindFilterTemplates stores the values of a connection which was rebound. When they render a template differently,
-// the channels with a template are unsubscribed, so the client resubscribes them with filters rendered with the new
-// values. The user is one of the values: a connection without a user which takes one renders its templates differently
-// even when the claims are the same.
-func (h *Handler) rebindFilterTemplates(c rebindableClient, values filtertemplate.Values) {
+// storeFilterValues stores values as the values the templates of a connection are rendered with, before its user
+// moves, and returns the values it had. A connection which stored none, one verified before the templates were
+// configured, had its user and no claims. It stores nothing, and returns false, when no config has templates.
+func (h *Handler) storeFilterValues(c rebindableClient, values filtertemplate.Values) (filtertemplate.Values, bool) {
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
-		return
+		return filtertemplate.Values{}, false
 	}
+	previous := connectionFilterValues(c)
 	storage, release := c.AcquireStorage()
-	stored := storedFilterValues(storage)
-	if sameFilterValues(stored, values) {
-		release(storage)
-		return
-	}
 	storage[serverTagsFilterValuesKey] = values
 	release(storage)
+	return previous, true
+}
+
+// rebindFilterTemplates unsubscribes the channels with a template when the values of a connection changed from previous
+// to values. The client resubscribes them with filters rendered with the new values. The user is one of the values: a
+// connection without a user which takes one renders its templates differently even when the claims are the same.
+func (h *Handler) rebindFilterTemplates(c rebindableClient, previous filtertemplate.Values, values filtertemplate.Values) {
+	if sameFilterValues(previous, values) {
+		return
+	}
 	for channel := range c.ChannelsWithContext() {
-		if h.channelHasFilterTemplate(channel) {
+		if h.templateOf(channel) != nil {
 			c.Unsubscribe(channel, centrifuge.Unsubscribe{Code: centrifuge.UnsubscribeCodeInsufficient, Reason: "insufficient state"})
 		}
 	}
@@ -153,11 +181,6 @@ func (h *Handler) channelFilter(client Client, channel string, explicit *protoco
 	return subscriptionFilter(tmpl, connectionFilterValues(client), channel, explicit)
 }
 
-// channelHasFilterTemplate reports whether the namespace of channel has a server tags filter template.
-func (h *Handler) channelHasFilterTemplate(channel string) bool {
-	return h.templateOf(channel) != nil
-}
-
 // templateOf returns the server tags filter template of the namespace of channel, or nil when it has none. A channel of
 // an unknown namespace has zero options, so it has no template. The lookup returns no error.
 func (h *Handler) templateOf(channel string) *filtertemplate.Template {
@@ -166,8 +189,8 @@ func (h *Handler) templateOf(channel string) *filtertemplate.Template {
 }
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an
-// error, which the caller turns into a refusal of the subscription. Under skip the explicit filter stands alone.
-// The decision is logged with the name of the variable.
+// error, which the caller turns into a refusal of the subscription. Under skip the explicit filter stands alone,
+// but only for a missing value: any other error is a refusal. The decision is logged with the name of the variable.
 func subscriptionFilter(
 	tmpl *filtertemplate.Template,
 	values filtertemplate.Values,
@@ -179,34 +202,35 @@ func subscriptionFilter(
 		return filtertemplate.And(rendered, explicit), nil
 	}
 	var missing filtertemplate.MissingValueError
-	if !errors.As(err, &missing) {
-		log.Error().Err(err).Str("channel", channel).Msg("server tags filter template failed to render")
-		return nil, err
-	}
-	if tmpl.OnMissing() == filtertemplate.OnMissingSkip {
+	if errors.As(err, &missing) && tmpl.OnMissing() == filtertemplate.OnMissingSkip {
 		if logging.Enabled(logging.DebugLevel) {
 			log.Debug().Str("channel", channel).Str("client", values.Client).Str("user", values.User).Str("variable", missing.Variable).Msg("server tags filter template skipped, missing value")
 		}
 		return explicit, nil
 	}
-	log.Info().Str("channel", channel).Str("client", values.Client).Str("user", values.User).Str("variable", missing.Variable).Msg("server tags filter template refused subscription, missing value")
+	log.Info().Err(err).Str("channel", channel).Str("client", values.Client).Str("user", values.User).Str("variable", missing.Variable).Msg("server tags filter template refused subscription")
 	return nil, err
 }
 
-// connectionFilterValues returns the values which the templates of a connection are rendered with: the claims
-// stored on connect or rebind, and the user and client of the connection.
+// connectionFilterValues returns the values which the templates of a connection are rendered with: the claims stored on
+// connect or rebind, the user stored with them, and the client of the connection. The user is read from the storage, so
+// a render which overlaps a rebind sees the values of one identity, and not the user of the rebind with the claims of the
+// previous one. A connection which stored no values renders with its user and no claims.
 func connectionFilterValues(c Client) filtertemplate.Values {
 	storage, release := c.AcquireStorage()
-	stored := storedFilterValues(storage)
+	stored, ok := storedFilterValues(storage)
 	release(storage)
-	return filtertemplate.Values{Claims: stored.Claims, User: c.UserID(), Client: c.ID()}
+	if !ok {
+		stored.User = c.UserID()
+	}
+	return filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}
 }
 
-// storedFilterValues returns the values a connection stored for its server tags filter templates, or the zero value
-// when it stored none.
-func storedFilterValues(storage map[string]any) filtertemplate.Values {
-	stored, _ := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
-	return stored
+// storedFilterValues returns the values a connection stored for its server tags filter templates, and whether it
+// stored any.
+func storedFilterValues(storage map[string]any) (filtertemplate.Values, bool) {
+	stored, ok := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
+	return stored, ok
 }
 
 // sameFilterValues reports whether two sets of values render every template the same: the same user, and the same
@@ -214,4 +238,3 @@ func storedFilterValues(storage map[string]any) filtertemplate.Values {
 func sameFilterValues(a filtertemplate.Values, b filtertemplate.Values) bool {
 	return a.User == b.User && a.Claims.Equal(b.Claims)
 }
-

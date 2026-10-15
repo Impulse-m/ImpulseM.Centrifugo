@@ -165,8 +165,15 @@ func TestServerTagsFilterTemplateSubscribeProxyFilter(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
 	client, _ := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
 
-	opts := centrifuge.SubscribeOptions{ServerTagsFilter: testServerTagsFilter()}
-	require.NoError(t, env.h.subscribeFilterTemplate(client, "chat:room", &opts))
+	reply := centrifuge.SubscribeReply{Options: centrifuge.SubscribeOptions{ServerTagsFilter: testServerTagsFilter()}}
+	var answered centrifuge.SubscribeReply
+	var answeredErr error
+	env.h.answerSubscribe(client, "chat:room", reply, nil, func(r centrifuge.SubscribeReply, err error) {
+		answered = r
+		answeredErr = err
+	})
+	require.NoError(t, answeredErr)
+	opts := answered.Options
 	want := &protocol.FilterNode{
 		Op: "and",
 		Nodes: []*protocol.FilterNode{
@@ -356,12 +363,11 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	require.NotContains(t, storageMap, serverTagsFilterValuesKey)
 
 	mock := newRegistryTestClient("c1", "12", nil, nil)
-	opts := centrifuge.SubscribeOptions{}
+	reply := centrifuge.SubscribeReply{}
 	subscribeAllocs := testing.AllocsPerRun(1000, func() {
-		_ = env.h.subscribeFilterTemplate(mock, "chat:room", &opts)
+		env.h.answerSubscribe(mock, "chat:room", reply, nil, noopSubscribeCallback)
 	})
 	require.Zero(t, subscribeAllocs)
-	require.Nil(t, opts.ServerTagsFilter)
 
 	explicit := testServerTagsFilter()
 	refreshAllocs := testing.AllocsPerRun(1000, func() {

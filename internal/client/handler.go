@@ -263,10 +263,7 @@ func (h *Handler) Setup() error {
 		client.OnSubscribe(func(event centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
 			started := h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubscribe(client, event, subscribeProxyHandler, proxySubscribeStreamHandler)
-				if err == nil {
-					err = h.subscribeFilterTemplate(client, event.Channel, &reply.Options)
-				}
-				cb(reply, err)
+				h.answerSubscribe(client, event.Channel, reply, err, cb)
 			})
 			if !started {
 				// The callback must be invoked exactly once, also when the client
@@ -509,13 +506,6 @@ func (h *Handler) OnClientConnecting(
 		return centrifuge.ConnectReply{}, centrifuge.ErrorTooManyRequests
 	}
 
-	// Handle single connection enforcement before establishing connection.
-	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
-		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
-			return centrifuge.ConnectReply{}, err
-		}
-	}
-
 	// Automatically subscribe on personal server-side channel.
 	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && credentials.UserID != "" {
 		personalChannel, personalOptions, err := h.personalChannelSubscription(credentials.UserID)
@@ -607,8 +597,16 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
+	// A template which refuses the connection is checked before the single connection of the user is enforced, so a
+	// refused connect does not disconnect the other connection of the user.
 	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
+	}
+	// Handle single connection enforcement before establishing connection.
+	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
+		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
+			return centrifuge.ConnectReply{}, err
+		}
 	}
 	storeConnectionTokenFilters(storage, subscriptions)
 	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)

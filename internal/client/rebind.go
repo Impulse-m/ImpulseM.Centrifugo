@@ -244,6 +244,10 @@ func (h *Handler) onRefreshRebind(
 	if nextClass == rpcregistry.AuthClassPending2FA {
 		info = nil
 	}
+	// The values of the server tags filter templates are stored before the user moves, so a subscribe which overlaps the
+	// rebind is rendered with the values of one identity, see connectionFilterValues. A failed rebind stores them back.
+	filterValues := filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()}
+	previousValues, templated := h.storeFilterValues(c, filterValues)
 	err = c.Rebind(centrifuge.RebindOptions{
 		UserID:        newUser,
 		ExpireAt:      verified.ExpireAt,
@@ -251,6 +255,10 @@ func (h *Handler) onRefreshRebind(
 		Info:          info,
 	})
 	if err != nil {
+		if templated {
+			h.storeFilterValues(c, previousValues)
+			h.rebindFilterTemplates(c, filterValues, previousValues)
+		}
 		rec.identity.Store(prev)
 		h.detachRateLimit(c)
 		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again. A disconnect
@@ -281,7 +289,9 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	h.rebindFilterTemplates(c, filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()})
+	if templated {
+		h.rebindFilterTemplates(c, previousValues, filterValues)
+	}
 	if err := h.subscribeRebound(c, newUser, toSubscribe); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

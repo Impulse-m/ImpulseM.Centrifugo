@@ -368,6 +368,9 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 		env.h.answerSubscribe(mock, "chat:room", reply, nil, noopSubscribeCallback)
 	})
 	require.Zero(t, subscribeAllocs)
+	var answered centrifuge.SubscribeReply
+	env.h.answerSubscribe(mock, "chat:room", reply, nil, func(r centrifuge.SubscribeReply, _ error) { answered = r })
+	require.Nil(t, answered.Options.ServerTagsFilter)
 
 	explicit := testServerTagsFilter()
 	refreshAllocs := testing.AllocsPerRun(1000, func() {

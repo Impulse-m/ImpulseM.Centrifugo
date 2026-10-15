@@ -46,6 +46,9 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisErrors   prometheus.Counter
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
+
+	// Channel state metrics
+	channelStateOldestFailingBatch prometheus.Gauge
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -300,6 +303,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.channelStateOldestFailingBatch = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "channel_state",
+		Name:        "oldest_failing_batch_timestamp_seconds",
+		Help:        "Unix time when the oldest channel state batch that the proxy still rejects was first sent, 0 when no batch fails. A batch that stays rejected blocks the events behind it in its partition. The age is time() minus this value.",
+		ConstLabels: constLabels,
+	})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -331,6 +342,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisErrors,
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
+		m.channelStateOldestFailingBatch,
 	}
 }
 
@@ -421,7 +433,14 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+
+	ChannelStateOldestFailingBatchTimestamp = m.channelStateOldestFailingBatch
 }
+
+// ChannelStateOldestFailingBatchTimestamp is the Unix time, in seconds, when the oldest channel state batch that
+// the proxy still rejects was first sent. It is set by the fork metrics setup, and is nil when the metrics are not
+// initialised.
+var ChannelStateOldestFailingBatchTimestamp prometheus.Gauge
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.
 var redisDurationBuckets = []float64{

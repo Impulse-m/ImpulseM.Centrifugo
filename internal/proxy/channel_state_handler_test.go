@@ -184,3 +184,67 @@ func TestChannelStateHandlerGRPC(t *testing.T) {
 		})
 	}
 }
+
+// channelStateRejectingProxy rejects the batches whose first event has one of the channels in rejects.
+type channelStateRejectingProxy struct {
+	rejects map[string]bool
+}
+
+func (p *channelStateRejectingProxy) ProxyNotifyChannelState(_ context.Context, req *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
+	if p.rejects[req.Events[0].Channel] {
+		return &proxyproto.NotifyChannelStateResponse{
+			Error: &proxyproto.Error{Code: 100, Message: "rejected"},
+		}, nil
+	}
+	return &proxyproto.NotifyChannelStateResponse{}, nil
+}
+
+func (p *channelStateRejectingProxy) Protocol() string {
+	return "test"
+}
+
+func (p *channelStateRejectingProxy) Timeout() time.Duration {
+	return time.Second
+}
+
+// TestChannelStateHandlerOldestFailingBatch checks the gauge of the batch that the proxy rejects for the longest
+// time: it is the time the oldest rejected batch was first sent, and it returns to 0 once every batch is delivered.
+func TestChannelStateHandlerOldestFailingBatch(t *testing.T) {
+	proxy := &channelStateRejectingProxy{rejects: map[string]bool{}}
+	handle := NewChannelStateHandler(proxy).Handle()
+	gauge := func() float64 {
+		return testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp)
+	}
+	batch := func(channel string) []*proxyproto.ChannelEvent {
+		return []*proxyproto.ChannelEvent{{TimeMs: 1697206286533, Channel: channel, Type: "occupied"}}
+	}
+	const tolerance = 1e-3
+
+	proxy.rejects["a"] = true
+	before := float64(time.Now().UnixNano()) / float64(time.Second)
+	require.Error(t, handle(context.Background(), batch("a")))
+	after := float64(time.Now().UnixNano()) / float64(time.Second)
+	firstFailure := gauge()
+	require.GreaterOrEqual(t, firstFailure, before-tolerance)
+	require.LessOrEqual(t, firstFailure, after+tolerance)
+
+	// A second rejected batch does not move the gauge: the oldest one still counts.
+	proxy.rejects["b"] = true
+	require.Error(t, handle(context.Background(), batch("b")))
+	require.Equal(t, firstFailure, gauge())
+
+	// A batch rejected again keeps its first send time.
+	require.Error(t, handle(context.Background(), batch("a")))
+	require.Equal(t, firstFailure, gauge())
+
+	// Delivering the oldest batch moves the gauge to the next rejected one, which was sent later.
+	delete(proxy.rejects, "a")
+	require.NoError(t, handle(context.Background(), batch("a")))
+	require.NotZero(t, gauge())
+	require.GreaterOrEqual(t, gauge(), firstFailure)
+
+	// Delivering the last rejected batch clears the gauge.
+	delete(proxy.rejects, "b")
+	require.NoError(t, handle(context.Background(), batch("b")))
+	require.Zero(t, gauge())
+}

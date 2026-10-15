@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
 	"github.com/centrifugal/centrifuge"
@@ -39,6 +40,31 @@ func New(node *centrifuge.Node, config configtypes.Controller) (centrifuge.Contr
 			if err := controller.EnsureSchema(context.Background()); err != nil {
 				return nil, fmt.Errorf("error initializing Postgres controller schema: %w", err)
 			}
+		}
+		log.Info().Str("controller_type", config.Type).Msg("controller is enabled")
+		return controller, nil
+	}
+
+	if config.Type == "redis" {
+		shards, mode, err := confighelpers.CentrifugeRedisShards(node, config.Redis.Redis)
+		if err != nil {
+			return nil, fmt.Errorf("error creating Redis shards for controller: %w", err)
+		}
+		controller, err := NewRedisController(node, shards, config.Redis.Prefix)
+		if err != nil {
+			for _, shard := range shards {
+				shard.Close()
+			}
+			return nil, fmt.Errorf("error initializing Redis controller: %w", err)
+		}
+		log.Info().Str("controller_type", config.Type).Str("redis_mode", mode).Msg("controller is enabled")
+		return controller, nil
+	}
+
+	if config.Type == "nats" {
+		controller, err := NewNatsController(node, config.Nats)
+		if err != nil {
+			return nil, fmt.Errorf("error initializing Nats controller: %w", err)
 		}
 		log.Info().Str("controller_type", config.Type).Msg("controller is enabled")
 		return controller, nil

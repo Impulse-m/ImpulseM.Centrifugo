@@ -30,6 +30,14 @@ func checkConfig(t *testing.T, conf Config) {
 	require.Len(t, conf.Channel.Namespaces, 2)
 	require.Len(t, conf.Consumers, 1)
 	require.Equal(t, "kafka", conf.Consumers[0].Type)
+	require.Len(t, conf.Brokers, 1)
+	require.Equal(t, "sample", conf.Brokers[0].Name)
+	require.Equal(t, "redis", conf.Brokers[0].Type)
+	require.Equal(t, []string{"redis://10.0.0.5:6379"}, conf.Brokers[0].Redis.Address)
+	require.Equal(t, "sample", conf.Brokers[0].Redis.Prefix)
+	require.Len(t, conf.PresenceManagers, 1)
+	require.Equal(t, "sample", conf.PresenceManagers[0].Name)
+	require.Equal(t, "memory", conf.PresenceManagers[0].Type)
 	require.Equal(t, "ppp", conf.Proxies[0].Name)
 	require.Equal(t, configtypes.Duration(time.Second), conf.Proxies[0].Timeout)
 	require.Equal(t, true, conf.Consumers[0].Kafka.TLS.Enabled)
@@ -119,6 +127,33 @@ func TestConfigEnvVarsNamedArray(t *testing.T) {
 	require.Equal(t, "rpc2", conf.RPC.Namespaces[1].Name)
 	require.Equal(t, true, conf.RPC.Namespaces[0].ProxyEnabled)
 	require.Equal(t, "custom", conf.RPC.Namespaces[0].ProxyName)
+}
+
+func TestConfigEnvVarsNamedEngines(t *testing.T) {
+	_ = os.Setenv("CENTRIFUGO_BROKERS", `fast slow`)
+	_ = os.Setenv("CENTRIFUGO_BROKERS_FAST_TYPE", `redis`)
+	_ = os.Setenv("CENTRIFUGO_BROKERS_FAST_REDIS_ADDRESS", `redis://10.0.0.2:6379`)
+	_ = os.Setenv("CENTRIFUGO_PRESENCE_MANAGERS", `[{"name":"p","enabled":true,"type":"redis"}]`)
+	defer func() {
+		_ = os.Unsetenv("CENTRIFUGO_BROKERS")
+		_ = os.Unsetenv("CENTRIFUGO_BROKERS_FAST_TYPE")
+		_ = os.Unsetenv("CENTRIFUGO_BROKERS_FAST_REDIS_ADDRESS")
+		_ = os.Unsetenv("CENTRIFUGO_PRESENCE_MANAGERS")
+	}()
+	conf, meta := getConfig(t, "testdata/config.json")
+	require.Len(t, meta.UnknownEnvs, 0)
+	// Space-separated names are appended to the brokers loaded from the file, as for consumers.
+	require.Len(t, conf.Brokers, 3)
+	require.Equal(t, "sample", conf.Brokers[0].Name)
+	require.Equal(t, "fast", conf.Brokers[1].Name)
+	require.Equal(t, "redis", conf.Brokers[1].Type)
+	require.Equal(t, []string{"redis://10.0.0.2:6379"}, conf.Brokers[1].Redis.Address)
+	require.Equal(t, "slow", conf.Brokers[2].Name)
+	require.Equal(t, "memory", conf.Brokers[2].Type)
+	require.Equal(t, "centrifugo", conf.Brokers[2].Redis.Prefix)
+	require.Len(t, conf.PresenceManagers, 1)
+	require.Equal(t, "p", conf.PresenceManagers[0].Name)
+	require.Equal(t, "redis", conf.PresenceManagers[0].Type)
 }
 
 // TestIsKubernetesEnvVar validates the isKubernetesEnvVar function.

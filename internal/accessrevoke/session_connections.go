@@ -34,9 +34,10 @@ func (t *Tracked) Closed() bool {
 // more and then one, so Connections is one or two map lookups in one shard. Track holds the lock of the connection's
 // Tracked while it moves the connection between two shards, one shard at a time, so no operation holds two shard locks.
 //
-// Measured on a 16-thread Windows machine (Intel Core i5-12600K, go1.26 windows/amd64): 67.9 bytes retained per
-// indexed connection with 1M connections, one session each, after a GC (TestSessionConnectionsRetainedHeap);
-// BenchmarkSessionConnectionsTrackUntrackParallel runs at 425 ns/op with 0 allocs/op.
+// Measured on a 16-thread Windows machine (Intel Core i5-12600K, go1.26 windows/amd64, shared with other work): 67.8 to
+// 67.9 bytes retained per indexed connection with 1M connections, one session each, after a GC
+// (TestSessionConnectionsRetainedHeap). BenchmarkSessionConnectionsTrackUntrackParallel runs at 58 to 425 ns/op with 0
+// allocs/op, the spread being the load of the machine.
 type SessionConnections struct {
 	seed   maphash.Seed
 	shards [indexShards]sessionShard

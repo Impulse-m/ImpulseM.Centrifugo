@@ -66,3 +66,51 @@ func resolveCacheEmptyProxy(
 	}
 	return p, nil
 }
+
+// enableCacheEmptyProxies creates the cache empty proxies used by channels without namespace and by the
+// namespaces with cache_empty_proxy_enabled, and records them in proxyMap.
+func enableCacheEmptyProxies(
+	proxyMap *client.ProxyMap,
+	cfg config.Config,
+	namedProxies map[string]configtypes.Proxy,
+) error {
+	withoutNamespace := cfg.Channel.WithoutNamespace
+	if withoutNamespace.CacheEmptyProxyEnabled {
+		err := enableCacheEmptyProxy(proxyMap, cfg, namedProxies, withoutNamespace.CacheEmptyProxyName, "")
+		if err != nil {
+			return err
+		}
+	}
+	for _, ns := range cfg.Channel.Namespaces {
+		if !ns.CacheEmptyProxyEnabled {
+			continue
+		}
+		err := enableCacheEmptyProxy(proxyMap, cfg, namedProxies, ns.CacheEmptyProxyName, ns.Name)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enableCacheEmptyProxy resolves the cache empty proxy named by name and logs it. An empty namespace
+// means channels without namespace.
+func enableCacheEmptyProxy(
+	proxyMap *client.ProxyMap,
+	cfg config.Config,
+	namedProxies map[string]configtypes.Proxy,
+	name string,
+	namespace string,
+) error {
+	p, err := resolveCacheEmptyProxy(proxyMap, cfg, namedProxies, name)
+	if err != nil {
+		return err
+	}
+	event := log.Info().Str("proxy_name", name).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0])
+	if namespace == "" {
+		event.Msg("cache empty proxy enabled for channels without namespace")
+		return nil
+	}
+	event.Str("namespace", namespace).Msg("cache empty proxy enabled for channels in namespace")
+	return nil
+}

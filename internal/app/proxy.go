@@ -76,6 +76,11 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		}
 	}
 
+	err = enableCacheEmptyProxies(proxyMap, cfg, namedProxies)
+	if err != nil {
+		return nil, false, err
+	}
+
 	subscribeProxyEnabled := cfg.Channel.WithoutNamespace.SubscribeProxyEnabled
 	subscribeProxyName := cfg.Channel.WithoutNamespace.SubscribeProxyName
 	if subscribeProxyEnabled {
@@ -245,16 +250,6 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 		if len(p.EmulatedHeaders) > 0 {
 			keepEmulatedHeadersInContext = true
 		}
-	}
-
-	cacheEmptyProxyEnabled := cfg.Channel.WithoutNamespace.CacheEmptyProxyEnabled
-	cacheEmptyProxyName := cfg.Channel.WithoutNamespace.CacheEmptyProxyName
-	if cacheEmptyProxyEnabled {
-		p, err := resolveCacheEmptyProxy(proxyMap, cfg, namedProxies, cacheEmptyProxyName)
-		if err != nil {
-			return nil, false, err
-		}
-		log.Info().Str("proxy_name", cacheEmptyProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Msg("cache empty proxy enabled for channels without namespace")
 	}
 
 	for _, ns := range cfg.Channel.Namespaces {
@@ -427,15 +422,6 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 			if len(p.EmulatedHeaders) > 0 {
 				keepEmulatedHeadersInContext = true
 			}
-		}
-
-		if ns.CacheEmptyProxyEnabled {
-			cacheEmptyProxyName := ns.CacheEmptyProxyName
-			p, err := resolveCacheEmptyProxy(proxyMap, cfg, namedProxies, cacheEmptyProxyName)
-			if err != nil {
-				return nil, false, err
-			}
-			log.Info().Str("proxy_name", cacheEmptyProxyName).Str("endpoint", tools.RedactedLogURLs(p.Endpoint)[0]).Str("namespace", ns.Name).Msg("cache empty proxy enabled for channels in namespace")
 		}
 
 		if ns.SubscriptionType == "shared_poll" {

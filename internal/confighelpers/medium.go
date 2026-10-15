@@ -6,13 +6,11 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-// MediumEnabled reports whether channel options enable any channel medium feature.
-// It derives from MediumOptionsFromChannelOptions so a new medium option is picked up
-// in one place. Core's isMediumEnabled is the reference for the same rule.
+// MediumEnabled reports whether channel options enable any channel medium feature. It compares the
+// converted options with their zero value, so every medium option counts without being listed here.
+// Core's isMediumEnabled is the reference for the same rule.
 func MediumEnabled(chOpts configtypes.ChannelOptions) bool {
-	mediumOpts := MediumOptionsFromChannelOptions(chOpts)
-
-	return mediumOpts.SharedPositionSync || mediumOpts.KeepLatestPublication
+	return MediumOptionsFromChannelOptions(chOpts) != (centrifuge.ChannelMediumOptions{})
 }
 
 // MediumOptionsFromChannelOptions converts channel options into centrifuge channel medium options.

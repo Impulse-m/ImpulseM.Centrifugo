@@ -92,14 +92,61 @@ With PROXY protocol, the address the PROXY header reports is the previous hop, a
 
 Off by default, and then the auth throttle and the request log keep their previous rules. When on, the resolved address is used by the auth throttle and the request log, and sent to RPC registry targets as `x-forwarded-for`, or omitted when it is unknown. Not yet exposed to the connect proxy or the connections API. PROXY protocol does not apply to HTTP/3 or WebTransport, which are UDP; the header walk still does. Internal HTTP and gRPC API ports do not read PROXY headers unless they share the external port.
 
+### Per-namespace engines and custom controller
+
+A namespace can use its own broker and presence manager, so a namespace with heavy fan-out does not share a Redis instance, its PUB/SUB connections or its history keys with latency-sensitive channels. Control traffic (node pings, disconnects, subscribe and unsubscribe commands, revocations) can move off the broker to a `controller` of type `redis` or `nats`. The keys and semantics follow Centrifugo PRO (`brokers`, `presence_managers`, `broker_name`, `presence_manager_name`, `controller`). Off by default: without enabled `brokers` or `presence_managers` entries and without `broker_name` or `presence_manager_name`, nothing is created and no routing hook is set.
+
+```json
+{
+  "brokers": [
+    {"enabled": true, "name": "broadcast", "type": "redis", "redis": {"address": "redis://10.0.0.2:6379", "prefix": "centrifugo-broadcast"}},
+    {"enabled": true, "name": "rates", "type": "nats", "nats": {"url": "nats://localhost:4222"}}
+  ],
+  "presence_managers": [
+    {"enabled": true, "name": "presence", "type": "redis", "redis": {"address": "redis://10.0.0.3:6379"}}
+  ],
+  "channel": {
+    "without_namespace": {"broker_name": ""},
+    "namespaces": [
+      {"name": "broadcast", "broker_name": "broadcast", "presence_manager_name": "presence"},
+      {"name": "rates", "broker_name": "rates"}
+    ]
+  },
+  "controller": {"enabled": true, "type": "redis", "redis": {"address": "redis://localhost:6379"}}
+}
+```
+
+Rules:
+
+* `brokers[].type` is `memory`, `redis`, `nats` or `postgres`; `presence_managers[].type` is `memory` or `redis`. Each entry has the same connection options as the default `broker` and `presence_manager` sections.
+* A disabled entry is ignored entirely: it is not created and not connected. A namespace which references a disabled or unknown entry fails validation. An enabled entry is created at startup even when no namespace references it yet, so its connection is checked at startup.
+* `broker_name` and `presence_manager_name` apply to namespaces and to `channel.without_namespace`. An empty value means the default broker or presence manager. The selected broker serves the channel operations of its channels: publish, subscribe, history, stream position and presence. The map broker (`map_broker`) stays global, so map subscriptions use it whatever `broker_name` says.
+* Two Redis brokers on the same Redis (same `address`, `cluster_address`, `sentinel_address` and `db`) must have different prefixes. In cluster or sharded PUB/SUB modes two brokers with one prefix subscribe the same channels, so each publication is delivered twice. Presence managers have no such rule, since a channel has one presence manager.
+* Each entry owns its connections. The engine's Redis connections are not shared with entries, even when an address is the same.
+* Routing is fixed at startup. A reload is refused, and the old configuration stays, when it changes the enabled entries (names or types), the `broker_name` or `presence_manager_name` of a namespace which exists in both configurations, or the controller (`enabled` or `type`). A reload may add a namespace which selects an existing entry. Connection details of entries (addresses, timeouts) apply on reload, as the engine's do. The error is `namespace engines: ... changed, a restart is needed`.
+* `memory` entries keep publications on one node, as the memory engine does. A `nats` entry is at-most-once, and history on it returns not-available, as for the standalone Nats broker.
+* Named brokers and presence managers are closed after the node shuts down. A controller is not closed at process shutdown; its connections end with the process.
+* Each entry adds its connect time to startup, sequentially. A wrong address fails startup with the entry name in the error.
+
+The `controller` section takes the same connection options as the engine:
+
+* `redis`: `prefix` and the Redis connection options (`redis`). Control messages use the controller's own PUB/SUB, so channel traffic on the engine does not carry them. Metrics appear as the Redis broker PUB/SUB series labelled `name="controller"`.
+* `nats`: `prefix` and the Nats connection options (`nats`) without `allow_wildcards` and `raw_mode`.
+
+Resource costs, per entry, measured in connections and goroutines:
+
+* Named Redis broker: one pooled client per shard, one PUB/SUB connection per subscribe shard, about NumCPU PUB/SUB processor goroutines and one reconnect loop. The same as a standalone Redis broker.
+* Named Redis presence manager: one pooled client per shard and no goroutines.
+* Redis controller: one pooled client per shard, one control PUB/SUB connection and goroutine per shard, and one probe.
+* Nats broker or controller: one connection and its reader goroutine.
+* Per channel operation, a routed channel costs one channel options lookup and one map lookup, with no allocations. Numbers are in the benchmark `BenchmarkNamespaceEnginesBroker` in `internal/app`.
+
 ### Not implemented (yet)
 
 * Redis and PostgreSQL persistence for revocation.
 * `user_connections` API.
 * Redis replica offloading.
 * Sharded PUB/SUB.
-* Per-namespace engines.
-* Custom controllers.
 
 Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 

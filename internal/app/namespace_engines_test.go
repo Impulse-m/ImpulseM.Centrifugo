@@ -123,7 +123,7 @@ func TestNamespaceEnginesRouting(t *testing.T) {
 	cfg.Channel.WithoutNamespace.BrokerName = "alpha"
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{Name: "one", ChannelOptions: configtypes.ChannelOptions{BrokerName: "alpha"}},
-		{Name: "two", ChannelOptions: configtypes.ChannelOptions{BrokerName: "beta",PresenceManagerName: "presence"}},
+		{Name: "two", ChannelOptions: configtypes.ChannelOptions{BrokerName: "beta", PresenceManagerName: "presence"}},
 		{Name: "three"},
 	}
 	engines, cfgContainer, node := newNamespaceEnginesForTest(t, cfg)

@@ -78,7 +78,7 @@ func TestChannelStateHandlerHTTP(t *testing.T) {
 
 			proxy, err := NewHTTPChannelStateProxy(getTestHttpProxy(testCase, "/channel_state"))
 			require.NoError(t, err)
-			handle := NewChannelStateHandler(proxy, 5*time.Second).Handle()
+			handle := NewChannelStateHandler(proxy).Handle()
 
 			errorsBefore := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("http", "state", "default"))
 			err = handle(context.Background(), channelStateTestEvents())
@@ -118,7 +118,7 @@ func TestChannelStateHandlerHTTPTimeout(t *testing.T) {
 	proxyConfig.Timeout = configtypes.Duration(timeout)
 	proxy, err := NewHTTPChannelStateProxy(proxyConfig)
 	require.NoError(t, err)
-	handle := NewChannelStateHandler(proxy, timeout).Handle()
+	handle := NewChannelStateHandler(proxy).Handle()
 
 	started := time.Now()
 	err = handle(context.Background(), channelStateTestEvents())
@@ -161,7 +161,7 @@ func TestChannelStateHandlerGRPC(t *testing.T) {
 
 			proxy, err := NewGRPCChannelStateProxy("default", getTestGrpcProxy(testCase))
 			require.NoError(t, err)
-			handle := NewChannelStateHandler(proxy, 5*time.Second).Handle()
+			handle := NewChannelStateHandler(proxy).Handle()
 
 			errorsBefore := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("grpc", "state", "default"))
 			err = handle(context.Background(), channelStateTestEvents())

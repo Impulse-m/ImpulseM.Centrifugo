@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
@@ -43,4 +44,9 @@ func (p *HTTPChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req
 // Protocol ...
 func (p *HTTPChannelStateProxy) Protocol() string {
 	return "http"
+}
+
+// Timeout ...
+func (p *HTTPChannelStateProxy) Timeout() time.Duration {
+	return p.config.Timeout.ToDuration()
 }

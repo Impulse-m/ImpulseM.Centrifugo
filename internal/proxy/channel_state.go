@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
@@ -11,6 +12,8 @@ type ChannelStateProxy interface {
 	ProxyNotifyChannelState(context.Context, *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error)
 	// Protocol for metrics and logging.
 	Protocol() string
+	// Timeout of a single batch call.
+	Timeout() time.Duration
 }
 
 // GetChannelStateProxy creates the channel state proxy for the endpoint of p, HTTP or gRPC.

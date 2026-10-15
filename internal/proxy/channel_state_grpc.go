@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
@@ -36,4 +37,9 @@ func (p *GRPCChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req
 // Protocol ...
 func (p *GRPCChannelStateProxy) Protocol() string {
 	return "grpc"
+}
+
+// Timeout ...
+func (p *GRPCChannelStateProxy) Timeout() time.Duration {
+	return p.config.Timeout.ToDuration()
 }

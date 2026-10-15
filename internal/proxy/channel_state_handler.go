@@ -15,12 +15,12 @@ type ChannelStateHandler struct {
 	calls   *metrics.ProxyCallChildren
 }
 
-// NewChannelStateHandler creates a handler which calls the channel state proxy with the given timeout
-// for every batch.
-func NewChannelStateHandler(p ChannelStateProxy, timeout time.Duration) *ChannelStateHandler {
+// NewChannelStateHandler creates a handler which calls the channel state proxy for every batch, bounded by
+// the timeout of the proxy.
+func NewChannelStateHandler(p ChannelStateProxy) *ChannelStateHandler {
 	return &ChannelStateHandler{
 		proxy:   p,
-		timeout: timeout,
+		timeout: p.Timeout(),
 		calls:   metrics.NewProxyCallChildren(p.Protocol(), "state", "default"),
 	}
 }

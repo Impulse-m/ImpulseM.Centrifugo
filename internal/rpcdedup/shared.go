@@ -34,8 +34,9 @@ const (
 	// sharedCompleteAttempts is the number of tries of a record's write to the shared tier, and sharedCompleteBackoff
 	// the delay before the retry, which doubles. The writes of all tries together stay within one IO timeout, so the
 	// reply of the call is not held longer.
-	sharedCompleteAttempts = 2
-	sharedCompleteBackoff  = 50 * time.Millisecond
+	sharedCompleteAttempts   = 2
+	sharedCompleteBackoff    = 50 * time.Millisecond
+	sharedCompleteMaxBackoff = 500 * time.Millisecond
 )
 
 // SharedObserver observes the shared tier. Methods may be called from any goroutine.
@@ -227,11 +228,6 @@ func (s *Shared) watch(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = s.pollInitial
-	b.MaxInterval = s.pollMax
-	b.Multiplier = 2
-	b.RandomizationFactor = 0.2
 	rec, err := backoff.Retry(ctx, func() (Record, error) {
 		res, err := s.backend.Poll(ctx, key)
 		if err != nil {
@@ -244,7 +240,7 @@ func (s *Shared) watch(key Key, flight *Flight) {
 			return Record{Abandoned: true}, nil
 		}
 		return Record{}, errStillInFlight
-	}, backoff.WithBackOff(b), backoff.WithMaxElapsedTime(deadline))
+	}, backoff.WithBackOff(newRetryBackOff(s.pollInitial, s.pollMax)), backoff.WithMaxElapsedTime(deadline))
 	if err != nil {
 		rec = Record{Abandoned: true}
 	}
@@ -282,15 +278,11 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record) {
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), limit)
 	defer cancel()
-	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = sharedCompleteBackoff
-	b.Multiplier = 2
-	b.RandomizationFactor = 0.2
 	var attempts int
 	owned, err := backoff.Retry(ctx, func() (bool, error) {
 		attempts++
 		return s.backend.Complete(ctx, key, s.nodeID, stored, errJSON, s.ttl)
-	}, backoff.WithBackOff(b), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
+	}, backoff.WithBackOff(newRetryBackOff(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
 		return
@@ -445,6 +437,17 @@ func (s *Shared) flushAcks(ctx context.Context, keys []Key) {
 	if err := s.backend.Ack(ctx, acks); err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to forget acked calls", err)
 	}
+}
+
+// newRetryBackOff returns the policy of the retries of the shared tier: the delay starts at initial, doubles up to
+// maxDelay, and is randomized by a fifth either way, so that the retries of many calls do not come in step.
+func newRetryBackOff(initial time.Duration, maxDelay time.Duration) *backoff.ExponentialBackOff {
+	b := backoff.NewExponentialBackOff()
+	b.InitialInterval = initial
+	b.MaxInterval = maxDelay
+	b.Multiplier = 2
+	b.RandomizationFactor = 0.2
+	return b
 }
 
 // logError logs an error of the shared tier at most once per redisshard.ErrorLogInterval.

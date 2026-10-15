@@ -1043,6 +1043,20 @@ func TestSharedRunFlushesQueueInBatchesOnShutdown(t *testing.T) {
 	require.Equal(t, 23, flushed, "every queued ack reaches the shared tier")
 }
 
+// A drain whose budget is spent before it starts sends nothing, and counts every queued ack as dropped, so the drop
+// metric does not undercount the acks which a shutdown leaves unsent.
+func TestSharedDrainCountsQueueLeftWhenBudgetIsSpent(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.shared.ioTimeout = -time.Second
+	scope := testScope("u1", "a")
+	msgIDs := []uint64{1, 2, 3, 4, 5}
+	require.NoError(t, fx.shared.Ack(scope, msgIDs))
+
+	fx.shared.drainAcks([]Key{{Scope: scope, MsgID: 6}})
+	require.Equal(t, 0, countCalls(fx.backend.callLog(), "ack"), "no write starts after the budget is spent")
+	require.Equal(t, 6, fx.dropped, "the batch and the queue are counted as dropped")
+}
+
 // A shutdown whose Redis does not answer the acks is held for one IO timeout in all, not one per batch: the first batch
 // is cut by the budget, and the acks which are left are counted as dropped.
 func TestSharedDrainSharesOneIOTimeout(t *testing.T) {

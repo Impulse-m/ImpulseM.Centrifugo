@@ -136,10 +136,12 @@ func (b *NatsBroker) RegisterControlEventHandler(h centrifuge.ControlEventHandle
 	}
 	_, err = b.nc.Subscribe(string(b.controlChannel()), b.handleControl)
 	if err != nil {
+		b.nc.Close()
 		return err
 	}
 	_, err = b.nc.Subscribe(string(b.nodeChannel(b.node.ID())), b.handleControl)
 	if err != nil {
+		b.nc.Close()
 		return err
 	}
 	return nil

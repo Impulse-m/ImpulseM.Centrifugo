@@ -185,7 +185,8 @@ func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
 		refs = append(refs, newRedisEngineRef("engine", c.Engine.Redis.Redis, c.Engine.Redis.Prefix, true))
-	} else if c.Broker.Enabled && c.Broker.Type == "redis" {
+	} else if c.Broker.Enabled && (c.Broker.Type == "redis" || c.Broker.Type == "redisnats") {
+		// The redisnats broker keeps its history in the same Redis, with the same prefix.
 		refs = append(refs, newRedisEngineRef("broker", c.Broker.Redis.Redis, c.Broker.Redis.Prefix, true))
 	}
 	if c.MapBroker.Type == "redis" {

@@ -563,6 +563,16 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: `map_brokers "cursors" and map_brokers "scores" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
+			name: "default redisnats broker and a named redis broker with the same prefix",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "redisnats"
+				cfg.Broker.Redis.Prefix = "centrifugo-broadcast"
+				cfg.Broker.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+			},
+			wantErr: `broker and brokers "broadcast" use the same Redis and overlapping prefixes`,
+		},
+		{
 			name: "controller of type redis",
 			modify: func(cfg *Config) {
 				cfg.Controller.Enabled = true

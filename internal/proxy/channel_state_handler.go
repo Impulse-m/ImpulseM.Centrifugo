@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -56,7 +57,10 @@ func (h *ChannelStateHandler) Handle() func(ctx context.Context, events []*proxy
 		defer cancel()
 
 		resp, err := h.proxy.ProxyNotifyChannelState(ctx, &proxyproto.NotifyChannelStateRequest{Events: events})
-		if err == nil && resp != nil && resp.Error != nil {
+		if err == nil && resp == nil {
+			err = errors.New("channel state proxy returned no response")
+		}
+		if err == nil && resp.Error != nil {
 			err = proxyproto.ErrorFromProto(resp.Error)
 		}
 		end(err != nil)

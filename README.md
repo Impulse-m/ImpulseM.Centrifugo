@@ -137,13 +137,13 @@ The payloads are the JSON of `NotifyChannelStateRequest` and `NotifyCacheEmptyRe
 {"events": [{"time_ms": 1697206286533, "channel": "chat:index", "type": "occupied"}]}
 ```
 
-Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch be sent again. Cache empty request: `{"channel": "chat:index"}`; answer `{"result": {"populated": true}}`. An unreachable cache empty proxy rejects the subscription with an internal error.
+Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch be sent again. Cache empty request: `{"channel": "chat:index"}`; answer `{"result": {"populated": true}}` with a JSON body: a 200 with no body is an error. An unreachable cache empty proxy rejects the subscription with an internal error.
 
 Once the Redis wiring ships, the delivery rules below apply to channel state events. This build does not send them yet.
 
 * Delivery is at-least-once, in partition order: a batch whose answer is lost is sent again, so the backend must treat a repeated event as a no-op. Events of one channel reach the backend in the order they happened.
 * Retries back off from 100 ms to 20 s. Events are kept in Redis while the backend is down; the stream holds at most 8192 events per partition, and new events are dropped when it is full.
-* A batch the backend keeps rejecting (an `error` answer or a non-200 status) is retried at the 20 s cap until the backend accepts it. The events of the other channels in the same partition wait behind it, and the stream fills up as above. The backend must accept every batch it can decode: a 200 with an empty result or with no body counts as delivered, while an `error` answer or a non-200 status is retried. There is no skip of a batch. A rejected batch is logged at most once a minute, and `centrifugo_channel_state_oldest_failing_batch_timestamp_seconds` holds the time the oldest batch that still fails was first sent (0 when none fails): alert when `time() - that value` grows.
+* A batch the backend keeps rejecting (an `error` answer or a non-200 status) is retried at the 20 s cap until the backend accepts it. The events of the other channels in the same partition wait behind it, and the stream fills up as above. The backend must accept every batch it can decode: a 200 with an empty result counts as delivered, while an `error` answer, a 200 with no body or a non-200 status is retried. There is no skip of a batch. A rejected batch is logged at most once a minute, and `centrifugo_channel_state_oldest_failing_batch_timestamp_seconds` holds the time the oldest batch that still fails was first sent (0 when none fails): alert when `time() - that value` grows.
 * Redis must not evict these keys: set `maxmemory-policy noeviction`. Eviction loses events.
 * Use a separate Redis presence manager (`presence_manager.redis.channel_state`) when the engine is shared with other data, as PRO recommends.
 * Do not change `num_partitions`, or the number of Redis shards, while channels are occupied: their state is orphaned and a `vacated` event can be missed.

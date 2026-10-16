@@ -53,6 +53,7 @@ func TestChannelStateHandlerHTTP(t *testing.T) {
 			name:     "empty body",
 			status:   http.StatusOK,
 			response: ``,
+			wantErr:  true,
 		},
 		{
 			name:     "error in response",
@@ -227,12 +228,12 @@ func (p *channelStateNilProxy) Timeout() time.Duration {
 	return time.Second
 }
 
-// TestChannelStateHandlerNilResponse checks that a proxy which returns neither a response nor an error is handled
-// as delivered, without a panic. The HTTP proxy reaches the same outcome for an empty body.
+// TestChannelStateHandlerNilResponse checks that a proxy which returns neither a response nor an error fails the
+// batch, so it is sent again, without a panic.
 func TestChannelStateHandlerNilResponse(t *testing.T) {
 	handle := NewChannelStateHandler(&channelStateNilProxy{}).Handle()
 
-	require.NoError(t, handle(context.Background(), channelStateTestEvents()))
+	require.Error(t, handle(context.Background(), channelStateTestEvents()))
 }
 
 // TestChannelStateHandlerOldestFailingBatch checks the gauge of the batch that the proxy rejects for the longest

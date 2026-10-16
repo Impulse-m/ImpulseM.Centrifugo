@@ -30,7 +30,7 @@ func NewHTTPChannelStateProxy(p Config) (*HTTPChannelStateProxy, error) {
 // ProxyNotifyChannelState sends a batch of channel state events to application backend.
 // A status_to_code_transforms rule is not applied: there is no client to send a code to.
 // The headers come from a background context: a batch has no client, so no client headers are forwarded.
-// A 200 response with no body is delivered, the same as a response with an empty result.
+// A 200 response must carry a JSON body: an empty body fails to decode and the batch is sent again.
 func (p *HTTPChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
 	data, err := httpEncoder.EncodeNotifyChannelStateRequest(req)
 	if err != nil {
@@ -39,9 +39,6 @@ func (p *HTTPChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req
 	respData, err := p.httpCaller.CallHTTP(ctx, p.config.Endpoint, httpRequestHeaders(context.Background(), p.config), data)
 	if err != nil {
 		return nil, err
-	}
-	if len(respData) == 0 {
-		return &proxyproto.NotifyChannelStateResponse{}, nil
 	}
 	return httpDecoder.DecodeNotifyChannelStateResponse(respData)
 }

@@ -6,6 +6,8 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
+
+	"github.com/rs/zerolog/log"
 )
 
 // maxLifetimeSeconds is the largest number of seconds a time.Duration holds. A lifetime over it is over any limit.
@@ -38,4 +40,15 @@ func pendingLifetimeExceeded(
 		return true
 	}
 	return time.Duration(lifetime)*time.Second > maxLifetime
+}
+
+// pendingLifetimeRefused reports whether a connection token of class of clientID is over the pending lifetime limit of
+// the config. It is checked at connect and at refresh, and it logs the refusal.
+func (h *Handler) pendingLifetimeRefused(clientID string, class rpcregistry.AuthClass, token jwtverify.ConnectToken) bool {
+	maxLifetime := h.cfgContainer.ConfigRef().RPC.Registry.PendingMaxLifetime.ToDuration()
+	if !pendingLifetimeExceeded(class, token, maxLifetime, time.Now) {
+		return false
+	}
+	log.Info().Str("client", clientID).Msg("pending token lifetime over the limit")
+	return true
 }

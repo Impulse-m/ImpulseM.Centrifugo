@@ -10,12 +10,13 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-func CentrifugeRedisBroker(n *centrifuge.Node, prefix string, shards []*centrifuge.RedisShard, cfg configtypes.RedisBrokerCommon, skipPubSub bool) (*centrifuge.RedisBroker, error) {
+func CentrifugeRedisBroker(n *centrifuge.Node, name string, prefix string, shards []*centrifuge.RedisShard, cfg configtypes.RedisBrokerCommon, skipPubSub bool) (*centrifuge.RedisBroker, error) {
 	return centrifuge.NewRedisBroker(n, centrifuge.RedisBrokerConfig{
 		Shards:     shards,
 		Prefix:     prefix,
 		UseLists:   cfg.UseLists,
 		SkipPubSub: skipPubSub,
+		Name:       name,
 	})
 }
 

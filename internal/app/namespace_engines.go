@@ -305,19 +305,10 @@ func (e *namespaceEngines) createBroker(
 		}
 		return broker, "", nil
 	case "redis":
-		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
-		if err != nil {
-			return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-		}
+		broker, redisShards, mode, err := createRedisBrokerFrom(node, entry.Name, entry.Redis, false)
 		e.redisShards = append(e.redisShards, redisShards...)
-		broker, err := centrifuge.NewRedisBroker(node, centrifuge.RedisBrokerConfig{
-			Shards:   redisShards,
-			Prefix:   entry.Redis.Prefix,
-			UseLists: entry.Redis.UseLists,
-			Name:     entry.Name,
-		})
 		if err != nil {
-			return nil, mode, fmt.Errorf("error creating Redis broker: %w", err)
+			return nil, mode, err
 		}
 		return broker, mode, nil
 	case "nats":
@@ -335,6 +326,27 @@ func (e *namespaceEngines) createBroker(
 	default:
 		return nil, "", fmt.Errorf("unknown broker type: %s", entry.Type)
 	}
+}
+
+// createRedisBrokerFrom creates a Redis broker on its own Redis shards. It returns the shards, which the caller
+// closes or keeps, and the connection mode for logging. name labels the broker in metrics: the default broker has
+// none, a named broker carries its entry name. skipPubSub is set for the Redis part of the Redis + NATS broker.
+func createRedisBrokerFrom(
+	node *centrifuge.Node,
+	name string,
+	redisCfg configtypes.RedisBroker,
+	skipPubSub bool,
+) (*centrifuge.RedisBroker, []*centrifuge.RedisShard, string, error) {
+	redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, redisCfg.Redis)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+	}
+	broker, err := confighelpers.CentrifugeRedisBroker(
+		node, name, redisCfg.Prefix, redisShards, redisCfg.RedisBrokerCommon, skipPubSub)
+	if err != nil {
+		return nil, redisShards, mode, fmt.Errorf("error creating Redis broker: %w", err)
+	}
+	return broker, redisShards, mode, nil
 }
 
 // natsBrokerFrom creates a Nats broker with the settings of natsCfg, which applies publication_data_format of

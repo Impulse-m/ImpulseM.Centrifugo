@@ -88,7 +88,7 @@ func TestRecordAtRefreshAttachesOnce(t *testing.T) {
 }
 
 // TestRecordAtRefreshIsNotRebindable checks that the record of a connection which had none is not rebindable, even with
-// rebind enabled by a reload: its origin is not known, so it is taken as a connect proxy one, which never rebinds.
+// rebind enabled by a reload: its origin is unknown, and a connection of unknown origin never changes its identity.
 func TestRecordAtRefreshIsNotRebindable(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Client.Rebind.Enabled = true
@@ -100,10 +100,28 @@ func TestRecordAtRefreshIsNotRebindable(t *testing.T) {
 	client.OnDisconnectFunc = func(centrifuge.DisconnectHandler) {}
 
 	rec := h.recordAtRefresh(client)
-	require.Equal(t, originProxy, rec.identity.Load().origin)
+	require.Equal(t, originUnknown, rec.identity.Load().origin)
 	reply, _, err := h.onRefreshRebind(client, rec, "", jwtverify.ConnectToken{UserID: "42"}, rpcregistry.AuthClassAuthenticated)
 	require.Equal(t, centrifuge.RefreshReply{}, reply)
 	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+}
+
+// TestRecordAtRefreshKeepsUnknownOrigin checks that the origin of a record attached at refresh stays unknown through a
+// later refresh which keeps the identity, so a token of the connection can not turn it into a rebindable one.
+func TestRecordAtRefreshKeepsUnknownOrigin(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Client.Rebind.Enabled = true
+	h, _, _ := newAuthClassTestHandler(t, cfg)
+	var attached any
+	client := &rebindClientMock{}
+	client.ExtStateFunc = func() any { return attached }
+	client.SetExtStateFunc = func(v any) { attached = v }
+	client.OnDisconnectFunc = func(centrifuge.DisconnectHandler) {}
+
+	rec := h.recordAtRefresh(client)
+	require.Equal(t, originUnknown, rec.identity.Load().origin)
+	next := nextIdentity(rec.identity.Load(), originToken, rpcregistry.AuthClassAnonymous, "", "", jwtverify.ConnectToken{})
+	require.Equal(t, originUnknown, next.origin)
 }
 
 // TestDefaultConnectAllocatesNothing checks that the connect of a connection with a user, under the defaults, makes no

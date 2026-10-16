@@ -138,7 +138,7 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 // handler, see the known gaps of the README.
 //
 // The origin of such a connection is not known: it has no record, so it may be a connect proxy connection, made before a
-// reload enabled the record for every connection. It is taken as a proxy one, which never rebinds, so a reload can not
+// reload enabled the record for every connection. It takes the origin unknown, which never rebinds, so a reload can not
 // let it move to a user it did not connect as.
 func (h *Handler) recordAtRefresh(c rebindableClient) *connState {
 	storage, release := c.AcquireStorage()
@@ -147,7 +147,7 @@ func (h *Handler) recordAtRefresh(c rebindableClient) *connState {
 		return rec
 	}
 	rec := &connState{}
-	rec.identity.Store(nextIdentity(nil, originProxy, 0, "", "", jwtverify.ConnectToken{}))
+	rec.identity.Store(nextIdentity(nil, originUnknown, 0, "", "", jwtverify.ConnectToken{}))
 	c.SetExtState(rec)
 	release(storage)
 	h.installDisconnect(c, rec)

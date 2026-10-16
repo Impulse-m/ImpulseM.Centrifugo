@@ -66,6 +66,9 @@ const (
 	originToken
 	// originProxy is a connection made through a connect proxy.
 	originProxy
+	// originUnknown is a connection which had no record at connect, so its origin was not observed. It gets a record at
+	// a refresh which gives it a session, and never rebinds: any identity change is refused, as for a connect proxy one.
+	originUnknown
 )
 
 // connStateOf returns the record of the connection, nil when the connection has none.

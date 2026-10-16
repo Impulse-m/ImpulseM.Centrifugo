@@ -87,12 +87,14 @@ func (h *ChannelStateHandler) track(first *proxyproto.ChannelEvent, size int, er
 	key := newChannelStateBatchKey(first)
 	h.mu.Lock()
 	_, failing := h.failing[key]
-	if err == nil {
+	switch {
+	case err == nil && failing:
 		delete(h.failing, key)
-	} else if !failing {
+		h.updateGaugeLocked()
+	case err != nil && !failing:
 		h.failing[key] = time.Now()
+		h.updateGaugeLocked()
 	}
-	h.updateGaugeLocked()
 	h.mu.Unlock()
 
 	if err != nil && h.logLimiter.Allow() {

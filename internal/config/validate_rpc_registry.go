@@ -95,9 +95,16 @@ func validateRPCDedup(c Config) error {
 	return nil
 }
 
+// minRPCDedupPollInterval is the shortest fallback poll interval of the wakeup of a duplicate, see
+// rpc.registry.dedup.redis.notification.poll_interval.
+const minRPCDedupPollInterval = 100 * time.Millisecond
+
 // validateRPCDedupRedis checks the shared tier of exactly-once RPC: either it reuses the Redis of the engine, or its own
 // Redis configuration is valid and has a prefix.
 func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
+	if redis.Notification.Enabled && redis.Notification.PollInterval.ToDuration() < minRPCDedupPollInterval {
+		return fmt.Errorf("rpc.registry.dedup.redis.notification.poll_interval: must be at least %s, got %s", minRPCDedupPollInterval, redis.Notification.PollInterval.ToDuration())
+	}
 	if redis.ReuseFromEngine {
 		if c.Engine.Type != "redis" {
 			return errors.New("rpc.registry.dedup.redis.reuse_from_engine requires engine.type to be redis")

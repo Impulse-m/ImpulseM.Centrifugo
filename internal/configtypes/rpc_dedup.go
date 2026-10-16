@@ -22,6 +22,18 @@ type RPCDedupRedis struct {
 	ReuseFromEngine bool `mapstructure:"reuse_from_engine" json:"reuse_from_engine" envconfig:"reuse_from_engine" yaml:"reuse_from_engine" toml:"reuse_from_engine" doc:"Use the Redis and the prefix of the Redis engine. Requires engine.type redis."`
 	// RedisPrefixed is a Redis configuration. Ignored when ReuseFromEngine is set.
 	RedisPrefixed `mapstructure:",squash" yaml:",inline"`
+	// Notification is the wakeup of a duplicate which waits for a call on another node.
+	Notification RPCDedupNotification `mapstructure:"notification" json:"notification" envconfig:"notification" yaml:"notification" toml:"notification" doc:"Wakeup of duplicates which wait for a call on another node, see rpc.registry.dedup.redis.notification.enabled."`
+}
+
+// RPCDedupNotification configures the wakeup of a duplicate which waits for a call running on another node: the node
+// which runs the call notifies the waiting nodes when its record is written, so they read the answer at once instead
+// of polling for it. Polling stays as the fallback.
+type RPCDedupNotification struct {
+	// Enabled turns the wakeup on.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Wakes a duplicate which waits for a call running on another node by a node notification from that node, sent when the answer is written to Redis, instead of polling Redis every 50 to 500 ms for it. The notification travels over the broker which carries node control messages, as a cross-node cancel does, and polling stays as the fallback at poll_interval. Enable it on every node. Off by default. Needs rpc.registry.dedup.redis.enabled, and is ignored without it. Read at start: a change takes effect after a restart."`
+	// PollInterval is the fallback poll interval while the wakeup is on.
+	PollInterval Duration `mapstructure:"poll_interval" default:"2s" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"How often a waiting duplicate polls Redis for the answer while the wakeup is on. It is the delay a lost notification adds to a wait, and it sets the load of the waits whose owner node died: each polls once per interval until the in-flight record expires. At least 100ms. Default <<2s>>."`
 }
 
 // RPCDedup configures exactly-once RPC. A non-idempotent registry call with a msg_id is recorded, and a

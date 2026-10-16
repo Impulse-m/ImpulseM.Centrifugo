@@ -331,6 +331,46 @@ func TestValidateRPCDedupRedis(t *testing.T) {
 			},
 			wantErr: "rpc.registry.dedup.redis.prefix: must not be empty",
 		},
+		{
+			name: "notification poll interval below 100ms",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Notification.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Notification.PollInterval = configtypes.Duration(50 * time.Millisecond)
+			},
+			wantErr: "rpc.registry.dedup.redis.notification.poll_interval: must be at least 100ms, got 50ms",
+		},
+		{
+			name: "notification poll interval of 100ms",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Notification.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Notification.PollInterval = configtypes.Duration(100 * time.Millisecond)
+			},
+		},
+		{
+			name: "notification default poll interval",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Notification = DefaultConfig().RPC.Registry.Dedup.Redis.Notification
+				cfg.RPC.Registry.Dedup.Redis.Notification.Enabled = true
+			},
+		},
+		{
+			name: "short notification poll interval while the notification is off",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Notification.PollInterval = configtypes.Duration(50 * time.Millisecond)
+			},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,6 +390,8 @@ func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.False(t, cfg.RPC.Registry.Dedup.Redis.Enabled)
+	require.False(t, cfg.RPC.Registry.Dedup.Redis.Notification.Enabled)
+	require.Equal(t, 2*time.Second, cfg.RPC.Registry.Dedup.Redis.Notification.PollInterval.ToDuration())
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())
 	require.Equal(t, 2048, cfg.RPC.Registry.Dedup.MaxReplySize)

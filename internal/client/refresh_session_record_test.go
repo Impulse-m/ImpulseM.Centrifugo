@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,6 +66,67 @@ func TestRefreshToSessionIndexesTheConnection(t *testing.T) {
 				return len(node.Hub().Connections()) == 0
 			}, 5*time.Second, 5*time.Millisecond)
 		})
+	}
+}
+
+// TestClosedConnectionIsNotIndexedByRefresh checks that a connection with no user which closed before its refresh to a
+// token with a session is not indexed by that session. Its disconnect released its record, and a refresh of a closed
+// connection tracks nothing.
+func TestClosedConnectionIsNotIndexedByRefresh(t *testing.T) {
+	h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
+	now := time.Now().Unix()
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
+		"iat": now,
+	}))
+	client.Disconnect(centrifuge.DisconnectForceNoReconnect)
+	require.Eventually(t, func() bool {
+		return len(node.Hub().Connections()) == 0
+	}, 5*time.Second, 5*time.Millisecond)
+	// The hub drops a connection before its disconnect handler runs, so the test waits for the handler to mark the
+	// record closed. Only then is the refresh a refresh of a closed connection.
+	rec := connStateOf(client)
+	require.NotNil(t, rec)
+	require.Eventually(t, rec.track.Closed, 5*time.Second, 5*time.Millisecond)
+
+	session, _ := accessrevoke.Key(revokeTestUUID)
+	// The refresh of the closed connection may fail: only the index is checked.
+	_, _, _ = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: getConnTokenWithClaims(t, map[string]any{
+			"iat": now,
+			"jti": revokeTestUUID,
+		}),
+	}, nil)
+	require.Empty(t, store.SessionConnections().Connections(session))
+}
+
+// TestRefreshRacingDisconnectIndexesNothing runs a refresh to a token with a session and the disconnect of the connection
+// at once, many times. Whichever of the two comes first, the index holds no entry for the session once the connection is
+// gone.
+func TestRefreshRacingDisconnectIndexesNothing(t *testing.T) {
+	h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
+	now := time.Now().Unix()
+	session, _ := accessrevoke.Key(revokeTestUUID)
+	refreshToken := getConnTokenWithClaims(t, map[string]any{
+		"iat": now,
+		"jti": revokeTestUUID,
+	})
+	for i := 0; i < 50; i++ {
+		client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
+			"iat": now,
+		}))
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, _ = h.OnRefresh(client, centrifuge.RefreshEvent{Token: refreshToken}, nil)
+		}()
+		client.Disconnect(centrifuge.DisconnectForceNoReconnect)
+		wg.Wait()
+		// The hub drops a connection before its disconnect handler runs, so the index is checked until the handler has
+		// released the connection, not at once.
+		require.Eventually(t, func() bool {
+			return len(store.SessionConnections().Connections(session)) == 0
+		}, 5*time.Second, 5*time.Millisecond)
 	}
 }
 

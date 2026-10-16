@@ -72,6 +72,12 @@ func TestCacheEmptyHandlerHTTP(t *testing.T) {
 			response: `{"result": {"populated": false}}`,
 		},
 		{
+			name:     "empty body",
+			status:   http.StatusOK,
+			response: ``,
+			wantErr:  true,
+		},
+		{
 			name:     "unexpected status",
 			status:   http.StatusInternalServerError,
 			response: `{}`,
@@ -282,6 +288,25 @@ func TestCacheEmptyHandlerNamedProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, reply.Populated)
 	require.Empty(t, defaultCalls)
+}
+
+// TestCacheEmptyHandlerOwnsProxies checks that a proxy added to the caller's map after construction is not used:
+// the subscription is rejected with the internal error, without a panic.
+func TestCacheEmptyHandlerOwnsProxies(t *testing.T) {
+	proxies := map[string]CacheEmptyProxy{"default": &cacheEmptyNilProxy{}}
+	handler := NewCacheEmptyHandler(proxies)
+	proxies["late"] = &cacheEmptyNilProxy{}
+
+	opts := configtypes.ChannelOptions{
+		CacheEmptyProxyEnabled: true,
+		CacheEmptyProxyName:    "late",
+		ForceRecoveryMode:      "cache",
+	}
+	cfgContainer := newCacheEmptyTestContainer(t, opts, true, "late")
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+
+	require.ErrorIs(t, err, centrifuge.ErrorInternal)
+	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
 }
 
 // blockingCacheEmptyProxy counts its calls and holds each one until release is closed.

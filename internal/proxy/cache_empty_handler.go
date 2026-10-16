@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"maps"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -27,14 +28,16 @@ type CacheEmptyHandler struct {
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
 func NewCacheEmptyHandler(proxies map[string]CacheEmptyProxy) *CacheEmptyHandler {
-	calls := make(map[string]*metrics.ProxyCallChildren, len(proxies))
-	groups := make(map[string]*singleflight.Group, len(proxies))
-	for name, p := range proxies {
+	// The handler keeps its own copy, so a later change of the caller's map cannot add a name without a group or a call.
+	owned := maps.Clone(proxies)
+	calls := make(map[string]*metrics.ProxyCallChildren, len(owned))
+	groups := make(map[string]*singleflight.Group, len(owned))
+	for name, p := range owned {
 		calls[name] = metrics.NewProxyCallChildren(p.Protocol(), "cache_empty", name)
 		groups[name] = &singleflight.Group{}
 	}
 	return &CacheEmptyHandler{
-		proxies:    proxies,
+		proxies:    owned,
 		calls:      calls,
 		groups:     groups,
 		logLimiter: tools.NewIntervalLimiter(time.Minute),
@@ -45,11 +48,8 @@ func NewCacheEmptyHandler(proxies map[string]CacheEmptyProxy) *CacheEmptyHandler
 // proxy is called: a channel whose options have cache_empty_proxy_enabled off gets an empty reply.
 func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.CacheEmptyHandler {
 	return func(e centrifuge.CacheEmptyEvent) (centrifuge.CacheEmptyReply, error) {
-		chOpts, found, err := cfgContainer.ChannelOptionsRef(e.Channel)
-		if err != nil {
-			log.Error().Err(err).Str("channel", e.Channel).Msg("error getting channel options for cache empty")
-			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
-		}
+		// ChannelOptionsRef never returns an error.
+		chOpts, found, _ := cfgContainer.ChannelOptionsRef(e.Channel)
 		if !found || !chOpts.CacheEmptyProxyEnabled {
 			return centrifuge.CacheEmptyReply{}, nil
 		}

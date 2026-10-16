@@ -10,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
@@ -21,14 +22,16 @@ type channelStateBatchKey struct {
 	timeMs    int64
 }
 
-// ChannelStateHandler delivers batches of channel state events to the channel state proxy. The oldest failing
-// batch gauge is process wide, so one handler is supported per process.
+// ChannelStateHandler delivers batches of channel state events to the channel state proxy. The gauge is
+// shared by the handlers of a process: handlers which share one gauge overwrite each other's value.
 type ChannelStateHandler struct {
 	proxy   ChannelStateProxy
 	timeout time.Duration
 	calls   *metrics.ProxyCallChildren
 	// logLimiter lets a rejected batch be logged at most once a minute.
 	logLimiter *tools.IntervalLimiter
+	// gauge holds the time of the oldest rejected batch. nil turns the gauge off.
+	gauge prometheus.Gauge
 	// mu guards failing.
 	mu sync.Mutex
 	// failing maps the first event of each rejected batch to the time the batch was first sent.
@@ -37,13 +40,14 @@ type ChannelStateHandler struct {
 }
 
 // NewChannelStateHandler creates a handler which calls the channel state proxy for every batch, bounded by
-// the timeout of the proxy.
-func NewChannelStateHandler(p ChannelStateProxy) *ChannelStateHandler {
+// the timeout of the proxy. The gauge is the channel state oldest failing batch gauge; nil turns it off.
+func NewChannelStateHandler(p ChannelStateProxy, gauge prometheus.Gauge) *ChannelStateHandler {
 	return &ChannelStateHandler{
 		proxy:      p,
 		timeout:    p.Timeout(),
 		calls:      metrics.NewProxyCallChildren(p.Protocol(), "state", "default"),
 		logLimiter: tools.NewIntervalLimiter(time.Minute),
+		gauge:      gauge,
 		failing:    map[channelStateBatchKey]time.Time{},
 	}
 }
@@ -119,7 +123,7 @@ func newChannelStateBatchKey(first *proxyproto.ChannelEvent) channelStateBatchKe
 // updateGaugeLocked sets the gauge to the time of the oldest rejected batch, or to 0 when no batch is rejected.
 // The caller holds mu.
 func (h *ChannelStateHandler) updateGaugeLocked() {
-	if metrics.ChannelStateOldestFailingBatchTimestamp == nil {
+	if h.gauge == nil {
 		return
 	}
 	var oldest time.Time
@@ -132,5 +136,5 @@ func (h *ChannelStateHandler) updateGaugeLocked() {
 	if !oldest.IsZero() {
 		timestamp = float64(oldest.UnixNano()) / float64(time.Second)
 	}
-	metrics.ChannelStateOldestFailingBatchTimestamp.Set(timestamp)
+	h.gauge.Set(timestamp)
 }

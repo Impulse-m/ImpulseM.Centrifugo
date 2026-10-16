@@ -13,6 +13,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -84,7 +85,7 @@ func TestChannelStateHandlerHTTP(t *testing.T) {
 
 			proxy, err := NewHTTPChannelStateProxy(getTestHttpProxy(testCase, "/channel_state"))
 			require.NoError(t, err)
-			handle := NewChannelStateHandler(proxy).Handle()
+			handle := NewChannelStateHandler(proxy, nil).Handle()
 
 			errorsBefore := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("http", "state", "default"))
 			err = handle(context.Background(), channelStateTestEvents())
@@ -124,7 +125,7 @@ func TestChannelStateHandlerHTTPTimeout(t *testing.T) {
 	proxyConfig.Timeout = configtypes.Duration(timeout)
 	proxy, err := NewHTTPChannelStateProxy(proxyConfig)
 	require.NoError(t, err)
-	handle := NewChannelStateHandler(proxy).Handle()
+	handle := NewChannelStateHandler(proxy, nil).Handle()
 
 	started := time.Now()
 	err = handle(context.Background(), channelStateTestEvents())
@@ -167,7 +168,7 @@ func TestChannelStateHandlerGRPC(t *testing.T) {
 
 			proxy, err := NewGRPCChannelStateProxy("default", getTestGrpcProxy(testCase))
 			require.NoError(t, err)
-			handle := NewChannelStateHandler(proxy).Handle()
+			handle := NewChannelStateHandler(proxy, nil).Handle()
 
 			errorsBefore := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("grpc", "state", "default"))
 			err = handle(context.Background(), channelStateTestEvents())
@@ -231,7 +232,7 @@ func (p *channelStateNilProxy) Timeout() time.Duration {
 // TestChannelStateHandlerNilResponse checks that a proxy which returns neither a response nor an error fails the
 // batch, so it is sent again, without a panic.
 func TestChannelStateHandlerNilResponse(t *testing.T) {
-	handle := NewChannelStateHandler(&channelStateNilProxy{}).Handle()
+	handle := NewChannelStateHandler(&channelStateNilProxy{}, nil).Handle()
 
 	require.Error(t, handle(context.Background(), channelStateTestEvents()))
 }
@@ -239,11 +240,14 @@ func TestChannelStateHandlerNilResponse(t *testing.T) {
 // TestChannelStateHandlerOldestFailingBatch checks the gauge of the batch that the proxy rejects for the longest
 // time: it is the time the oldest rejected batch was first sent, and it returns to 0 once every batch is delivered.
 func TestChannelStateHandlerOldestFailingBatch(t *testing.T) {
+	t.Parallel()
+
 	proxy := &channelStateRejectingProxy{rejects: map[string]bool{}}
-	handler := NewChannelStateHandler(proxy)
+	chGauge := newTestChannelStateGauge()
+	handler := NewChannelStateHandler(proxy, chGauge)
 	handle := handler.Handle()
 	gauge := func() float64 {
-		return testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp)
+		return testutil.ToFloat64(chGauge)
 	}
 	batch := func(channel string) []*proxyproto.ChannelEvent {
 		return []*proxyproto.ChannelEvent{{TimeMs: 1697206286533, Channel: channel, Type: "occupied"}}
@@ -289,15 +293,23 @@ func TestChannelStateHandlerOldestFailingBatch(t *testing.T) {
 // TestChannelStateHandlerForget checks that a forgotten rejected batch no longer holds the gauge, which is what
 // the partition consumer relies on when it stops delivering the batch.
 func TestChannelStateHandlerForget(t *testing.T) {
+	t.Parallel()
+
 	proxy := &channelStateRejectingProxy{rejects: map[string]bool{"a": true}}
-	handler := NewChannelStateHandler(proxy)
+	chGauge := newTestChannelStateGauge()
+	handler := NewChannelStateHandler(proxy, chGauge)
 	handle := handler.Handle()
 	batch := []*proxyproto.ChannelEvent{{TimeMs: 1697206286533, Channel: "a", Type: "occupied"}}
 
 	require.Error(t, handle(context.Background(), batch))
-	require.NotZero(t, testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp))
+	require.NotZero(t, testutil.ToFloat64(chGauge))
 
 	handler.Forget(batch)
-	require.Zero(t, testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp))
+	require.Zero(t, testutil.ToFloat64(chGauge))
 	handler.Forget(nil)
+}
+
+// newTestChannelStateGauge returns a gauge which is not registered, so each test reads only its own value.
+func newTestChannelStateGauge() prometheus.Gauge {
+	return prometheus.NewGauge(prometheus.GaugeOpts{Name: "channel_state_test_oldest_failing_batch"})
 }

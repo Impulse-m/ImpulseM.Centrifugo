@@ -30,12 +30,18 @@ func watcherRunning(fx *sharedFixture) bool {
 	return fx.shared.watching
 }
 
+// listWaiter lists nodeID as a waiter of the in-flight record of key, as its begin does.
+func listWaiter(t *testing.T, fx *sharedFixture, key Key, fingerprint [32]byte, nodeID string) {
+	t.Helper()
+	_, err := fx.backend.begin(context.Background(), key, fingerprint, nodeID, time.Second, 64)
+	require.NoError(t, err)
+}
+
 // fillWaiters lists count other nodes as waiters of the in-flight record of key, as their begins would.
 func fillWaiters(t *testing.T, fx *sharedFixture, key Key, fingerprint [32]byte, count int) {
 	t.Helper()
 	for i := range count {
-		_, err := fx.backend.begin(context.Background(), key, fingerprint, fmt.Sprintf("waiter-%d", i), time.Second, 64)
-		require.NoError(t, err)
+		listWaiter(t, fx, key, fingerprint, fmt.Sprintf("waiter-%d", i))
 	}
 }
 
@@ -368,8 +374,8 @@ func TestSharedCompleteWakesWaiters(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-c")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
 	require.False(t, flightOpen(owner))
@@ -382,8 +388,8 @@ func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-c")
 	fx.backend.wakeErr = errors.New("wake failed")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
@@ -397,7 +403,7 @@ func TestSharedCompleteAbandonedWakesWaiters(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Abandoned: true, NotRun: true}))
 	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}}, fx.backend.wakeCalls())
@@ -406,7 +412,7 @@ func TestSharedCompleteAbandonedWakesWaiters(t *testing.T) {
 func TestSharedCompleteNotOwnedWakesNobody(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-c")
 	// The flight was never begun here: the record belongs to node-b, so this write does not take effect.
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
@@ -427,7 +433,7 @@ func TestSharedCompleteFailedWriteWakesNobody(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
 	fx.backend.setFail(errors.New("redis is down"))
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
@@ -439,7 +445,7 @@ func TestSharedCompleteWithoutWakeupWakesNobody(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
 	require.Empty(t, fx.backend.wakeCalls())

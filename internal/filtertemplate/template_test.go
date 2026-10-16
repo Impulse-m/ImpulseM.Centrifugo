@@ -119,7 +119,7 @@ func TestEmptyFilterHasNoTemplate(t *testing.T) {
 
 func TestSetClaimsUnionAndNamespaces(t *testing.T) {
 	set, err := CompileSet(map[string]Source{
-		"topic":  {Filter: sessionFilter()},
+		"topic": {Filter: sessionFilter()},
 		"":      {Filter: tenantFilter()},
 		"plain": {},
 	})

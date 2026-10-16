@@ -77,12 +77,12 @@ func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string)
 	defer cancel()
 
 	resp, err := p.ProxyNotifyCacheEmpty(ctx, &proxyproto.NotifyCacheEmptyRequest{Channel: channel})
+	if err == nil && resp == nil {
+		err = errors.New("cache empty proxy returned no response")
+	}
 	end(err != nil)
 	if err != nil {
 		return false, err
-	}
-	if resp == nil {
-		return false, errors.New("cache empty proxy returned no response")
 	}
 	return resp.Result != nil && resp.Result.Populated, nil
 }

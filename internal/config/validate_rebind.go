@@ -6,8 +6,8 @@ import (
 
 // validateRebind rejects rebind together with the refresh proxy. The refresh proxy answers refreshes
 // without the token user, so the connection cannot be moved to the identity of the token. It also rejects
-// allow_downgrade with more than one command at a time per connection: a subscription which commits while a
-// downgrade runs could then stay on the logged-out connection.
+// allow_downgrade with more than one command at a time per connection. It does not close the server API window
+// of a subscription which commits while a downgrade runs, see the known gaps of the rpcregistry README.
 func validateRebind(cfg Config) error {
 	if cfg.Client.Rebind.Enabled && cfg.Client.Proxy.Refresh.Enabled {
 		return errors.New("client.rebind.enabled can't be used with client.proxy.refresh.enabled")

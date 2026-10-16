@@ -8,6 +8,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
@@ -219,4 +220,53 @@ func TestServerTagsFilterTemplateRebindStoresTokenFilters(t *testing.T) {
 	filters, _ := storage[connectionTokenFiltersKey].(map[string]*protocol.FilterNode)
 	release(storage)
 	require.True(t, proto.Equal(sessionFilter("s-1"), filters["lenient:srv"]), "got %v", filters)
+}
+
+// TestServerTagsFilterTemplateRebindWhileTemplatesOff checks a connection which stored its template values keeps them on
+// a rebind made while the config has no templates. A later reload which adds the template renders the user the connection
+// has now, not the empty user it had when the templates were switched off.
+func TestServerTagsFilterTemplateRebindWhileTemplatesOff(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "owned",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
+				},
+			},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	// The anonymous connection stored its values on connect, with no user.
+	client, state := newRebindTestClient("", "anonymous")
+	storeFilterValues(client, filtertemplate.Values{})
+
+	// The templates are switched off, and the connection rebinds to a user.
+	off := config.DefaultConfig()
+	off.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "owned", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	off.Client.Rebind = configtypes.Rebind{Enabled: true}
+	off.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(off))
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "u2", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "u2", state.user)
+
+	// The templates come back, and a render uses the user the connection has now.
+	require.NoError(t, cfgContainer.Reload(cfg))
+	values := connectionFilterValues(client)
+	require.Equal(t, "u2", values.User)
+	rendered, err := h.templateOf("owned:room").Render(values)
+	require.NoError(t, err)
+	require.Equal(t, "u2", rendered.Val)
 }

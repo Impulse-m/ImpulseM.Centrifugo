@@ -32,7 +32,9 @@ var unsubscribeInsufficientState = centrifuge.Unsubscribe{Code: centrifuge.Unsub
 // connectFilterTemplates applies the server tags filter templates to the subscriptions of a connection. The
 // values of the connection are stored, so that later subscriptions and refreshes render the same filters. They are
 // stored even when all of them are missing, so a refresh compares them with the values of its token.
-// A missing value of a template under reject refuses the connection.
+// A missing value of a template under reject refuses the connection. The subscriptions are the map of the verified token,
+// owned by the call: the templates are applied to it in place, and storeConnectionTokenFilters stores the combined filters
+// from it.
 func (h *Handler) connectFilterTemplates(
 	cfg *config.Config,
 	clientID string,
@@ -131,7 +133,8 @@ func (h *Handler) refreshFilterTemplate(client Client, channel string, explicit 
 // The claim check is the primary rule, and the comparison of the filters in tokenChannelsChanged is the second.
 // A template which refuses a token subscription is not an error of the refresh: the connection is disconnected with
 // insufficient state, the client reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a
-// refused server-side subscription.
+// refused server-side subscription. extra.Subs is the map of the refresh, owned by the call, and the templates are
+// applied to it in place.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
 	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		storage, release := client.AcquireStorage()
@@ -157,9 +160,11 @@ type rebindFilters struct {
 }
 
 // prepareRebindFilters returns the template values of a rebind of c to newUser with the claims of its token. The values
-// the connection has are read here, before the rebind moves them.
+// the connection has are read here, before the rebind moves them. A connection which stored values keeps them on every
+// rebind, also while the config has no templates: a reload which adds one must render the identity the connection has
+// now, not the one it had when the templates were switched off.
 func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !hasStoredFilterValues(c) {
 		return rebindFilters{}
 	}
 	return rebindFilters{
@@ -368,6 +373,14 @@ func connectionFilterValues(c Client) filtertemplate.Values {
 func storedFilterValues(storage map[string]any) (filtertemplate.Values, bool) {
 	stored, ok := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
 	return stored, ok
+}
+
+// hasStoredFilterValues reports whether a connection stored values for its server tags filter templates.
+func hasStoredFilterValues(c Client) bool {
+	storage, release := c.AcquireStorage()
+	_, ok := storedFilterValues(storage)
+	release(storage)
+	return ok
 }
 
 // storedValuesOf returns the part of values which is stored: the user and the claims. The client is not stored.

@@ -83,7 +83,6 @@ func (e MissingValueError) Error() string {
 
 // Template is a compiled namespace template. It is immutable and safe for concurrent use.
 type Template struct {
-	set       *Set
 	root      *node
 	onMissing OnMissing
 	// nodeCount, pointerCount and valueCount are the sizes of the parts of the tree a render

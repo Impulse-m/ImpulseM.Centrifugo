@@ -2,10 +2,12 @@ package filtertemplate
 
 import (
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasttemplate"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -274,6 +276,35 @@ func BenchmarkTemplateRender(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := tmpl.Render(values); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkFasttemplateBaseline renders the two templated strings of BenchmarkTemplateRender with fasttemplate alone, the
+// floor of the render without the filter tree.
+func BenchmarkFasttemplateBaseline(b *testing.B) {
+	tenant, err := fasttemplate.NewTemplate("{{claims.tenant}}", "{{", "}}")
+	if err != nil {
+		b.Fatal(err)
+	}
+	audience, err := fasttemplate.NewTemplate("user:{{user}}", "{{", "}}")
+	if err != nil {
+		b.Fatal(err)
+	}
+	tag := func(_ io.Writer, name string) (int, error) {
+		if name == "user" || name == "claims.tenant" {
+			return 0, nil
+		}
+		return 0, errors.New("unknown tag " + name)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := tenant.ExecuteFuncStringWithErr(tag); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := audience.ExecuteFuncStringWithErr(tag); err != nil {
 			b.Fatal(err)
 		}
 	}

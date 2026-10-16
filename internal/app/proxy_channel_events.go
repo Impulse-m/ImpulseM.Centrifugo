@@ -14,20 +14,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// channelStateProxyEnabled reports whether channel state events are enabled for any namespace or
-// for channels without namespace.
-func channelStateProxyEnabled(cfg config.Config) bool {
-	if cfg.Channel.WithoutNamespace.StateProxyEnabled {
-		return true
-	}
-	for _, ns := range cfg.Channel.Namespaces {
-		if ns.StateProxyEnabled {
-			return true
-		}
-	}
-	return false
-}
-
 // buildChannelStateProxy creates the channel state proxy of channel.proxy.state. The proxy is shared by
 // all namespaces: one endpoint receives the events of all of them.
 func buildChannelStateProxy(cfg config.Config) (proxy.ChannelStateProxy, error) {
@@ -81,7 +67,7 @@ func enableChannelEventProxies(
 	cfg config.Config,
 	namedProxies map[string]configtypes.Proxy,
 ) error {
-	if channelStateProxyEnabled(cfg) {
+	if len(channelStateLayout(cfg)) > 0 {
 		csp, err := buildChannelStateProxy(cfg)
 		if err != nil {
 			return err
@@ -98,41 +84,45 @@ func enableCacheEmptyProxies(
 	cfg config.Config,
 	namedProxies map[string]configtypes.Proxy,
 ) error {
-	return forEachCacheEmptyGroup(cfg, func(name string, namespace string) error {
-		return enableCacheEmptyProxy(proxyMap, cfg, namedProxies, name, namespace)
-	})
-}
-
-// forEachCacheEmptyGroup calls fn with the cache empty proxy name and the namespace of each channel group that
-// has a cache empty proxy enabled. The group of channels without namespace has the empty namespace. It stops at
-// the first error fn returns.
-func forEachCacheEmptyGroup(cfg config.Config, fn func(name string, namespace string) error) error {
-	withoutNamespace := cfg.Channel.WithoutNamespace
-	if withoutNamespace.CacheEmptyProxyEnabled {
-		if err := fn(withoutNamespace.CacheEmptyProxyName, ""); err != nil {
-			return err
-		}
-	}
-	for _, ns := range cfg.Channel.Namespaces {
-		if !ns.CacheEmptyProxyEnabled {
-			continue
-		}
-		if err := fn(ns.CacheEmptyProxyName, ns.Name); err != nil {
+	for _, group := range cacheEmptyGroups(cfg) {
+		err := enableCacheEmptyProxy(proxyMap, cfg, namedProxies, group.name, group.namespace)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// cacheEmptyGroup is a channel group with a cache empty proxy enabled: the name of the proxy and the namespace
+// of the group. The group of channels without namespace has the empty namespace.
+type cacheEmptyGroup struct {
+	name      string
+	namespace string
+}
+
+// cacheEmptyGroups returns the channel groups with a cache empty proxy enabled: the channels without namespace
+// first, then the namespaces in config order.
+func cacheEmptyGroups(cfg config.Config) []cacheEmptyGroup {
+	var groups []cacheEmptyGroup
+	withoutNamespace := cfg.Channel.WithoutNamespace
+	if withoutNamespace.CacheEmptyProxyEnabled {
+		groups = append(groups, cacheEmptyGroup{name: withoutNamespace.CacheEmptyProxyName, namespace: ""})
+	}
+	for _, ns := range cfg.Channel.Namespaces {
+		if ns.CacheEmptyProxyEnabled {
+			groups = append(groups, cacheEmptyGroup{name: ns.CacheEmptyProxyName, namespace: ns.Name})
+		}
+	}
+	return groups
+}
+
 // cacheEmptyLayout returns the cache empty proxy name of each enabled channel group, keyed by namespace. Channels
 // without namespace are keyed by the empty string.
 func cacheEmptyLayout(cfg config.Config) map[string]string {
 	layout := map[string]string{}
-	// The callback never fails, so the error of forEachCacheEmptyGroup is always nil.
-	_ = forEachCacheEmptyGroup(cfg, func(name string, namespace string) error {
-		layout[namespace] = name
-		return nil
-	})
+	for _, group := range cacheEmptyGroups(cfg) {
+		layout[group.namespace] = group.name
+	}
 	return layout
 }
 
@@ -147,32 +137,35 @@ func checkCacheEmptyReload(startup map[string]string, newCfg config.Config) erro
 	return errors.New("cache empty proxies changed by reload: enabling, disabling, adding, removing or renaming one needs a restart, and the whole reload is refused until then")
 }
 
-// cacheEmptyTarget is the endpoint and the timeout of a cache empty proxy, as the config sets them.
-type cacheEmptyTarget struct {
+// proxyTarget is the endpoint and the timeout of a proxy, as the config sets them.
+type proxyTarget struct {
 	endpoint string
 	timeout  configtypes.Duration
 }
 
+// newProxyTarget returns the target of the proxy p.
+func newProxyTarget(p configtypes.Proxy) proxyTarget {
+	return proxyTarget{endpoint: p.Endpoint, timeout: p.Timeout}
+}
+
 // cacheEmptyTargets returns the target of each cache empty proxy of the enabled channel groups, keyed by the
 // proxy name. The proxies are created from these targets at startup.
-func cacheEmptyTargets(cfg config.Config) map[string]cacheEmptyTarget {
+func cacheEmptyTargets(cfg config.Config) map[string]proxyTarget {
 	named := make(map[string]configtypes.Proxy, len(cfg.Proxies))
 	for _, p := range cfg.Proxies {
 		named[p.Name] = p.Proxy
 	}
-	targets := map[string]cacheEmptyTarget{}
-	// The callback never fails, so the error of forEachCacheEmptyGroup is always nil.
-	_ = forEachCacheEmptyGroup(cfg, func(name string, _ string) error {
-		p, _ := cacheEmptyProxyConfig(cfg, named, name)
-		targets[name] = cacheEmptyTarget{endpoint: p.Endpoint, timeout: p.Timeout}
-		return nil
-	})
+	targets := map[string]proxyTarget{}
+	for _, group := range cacheEmptyGroups(cfg) {
+		p, _ := cacheEmptyProxyConfig(cfg, named, group.name)
+		targets[group.name] = newProxyTarget(p)
+	}
 	return targets
 }
 
 // warnCacheEmptyTargetsReload logs a warning for each cache empty proxy whose endpoint or timeout differs in the
 // reloaded config. A reload keeps the proxies created at startup, so the new values take effect on restart.
-func warnCacheEmptyTargetsReload(startup map[string]cacheEmptyTarget, newCfg config.Config) {
+func warnCacheEmptyTargetsReload(startup map[string]proxyTarget, newCfg config.Config) {
 	reloaded := cacheEmptyTargets(newCfg)
 	for name, target := range startup {
 		if reloaded[name] == target {
@@ -184,39 +177,14 @@ func warnCacheEmptyTargetsReload(startup map[string]cacheEmptyTarget, newCfg con
 	}
 }
 
-// channelStateTarget is the endpoint and the timeout of the channel state proxy, as the config sets them.
-type channelStateTarget struct {
-	endpoint string
-	timeout  configtypes.Duration
-}
-
-// channelStateTargetOf returns the target of the channel state proxy of the config.
-func channelStateTargetOf(cfg config.Config) channelStateTarget {
-	return channelStateTarget{endpoint: cfg.Channel.Proxy.State.Endpoint, timeout: cfg.Channel.Proxy.State.Timeout}
-}
-
-// channelStatePlacement is the Redis placement of the channel state events of the engine and of the presence manager.
-type channelStatePlacement struct {
-	engine   configtypes.RedisChannelState
-	presence configtypes.RedisChannelState
-}
-
-// channelStatePlacementOf returns the Redis placement of the channel state events of the config.
-func channelStatePlacementOf(cfg config.Config) channelStatePlacement {
-	return channelStatePlacement{
-		engine:   cfg.Engine.Redis.ChannelState,
-		presence: cfg.PresenceManager.Redis.ChannelState,
-	}
-}
-
 // reloadGuard holds the layouts and the targets of the startup config, and checks each reloaded config
 // against them. The proxies and the engine hooks are created from the startup config, so a reload keeps
 // their layout and only logs the changes which take effect after a restart.
 type reloadGuard struct {
 	cacheEmptyLayout      map[string]string
-	cacheEmptyTargets     map[string]cacheEmptyTarget
+	cacheEmptyTargets     map[string]proxyTarget
 	channelStateGroups    []string
-	channelStateTarget    channelStateTarget
+	channelStateTarget    proxyTarget
 	channelStatePlacement channelStatePlacement
 }
 

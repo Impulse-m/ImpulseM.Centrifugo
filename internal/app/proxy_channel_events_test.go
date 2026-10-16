@@ -101,11 +101,11 @@ func TestEnableCacheEmptyProxies(t *testing.T) {
 			name: "enabled namespace only",
 			modify: func(cfg *config.Config) {
 				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+					{Name: "example", ChannelOptions: configtypes.ChannelOptions{
 						CacheEmptyProxyEnabled: true,
 						CacheEmptyProxyName:    "other",
 					}},
-					{Name: "news", ChannelOptions: configtypes.ChannelOptions{
+					{Name: "sample", ChannelOptions: configtypes.ChannelOptions{
 						CacheEmptyProxyName: "missing",
 					}},
 				}
@@ -116,7 +116,7 @@ func TestEnableCacheEmptyProxies(t *testing.T) {
 			name: "named proxy not found",
 			modify: func(cfg *config.Config) {
 				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+					{Name: "example", ChannelOptions: configtypes.ChannelOptions{
 						CacheEmptyProxyEnabled: true,
 						CacheEmptyProxyName:    "missing",
 					}},
@@ -149,13 +149,13 @@ func TestEnableCacheEmptyProxies(t *testing.T) {
 	}
 }
 
-// newCacheEmptyStartupConfig returns the config at startup for TestCheckCacheEmptyReload: the chat namespace
+// newCacheEmptyStartupConfig returns the config at startup for TestCheckCacheEmptyReload: the example namespace
 // has its cache empty proxy enabled, under the name other.
 func newCacheEmptyStartupConfig() config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Proxy.CacheEmpty = newChannelEventsTestProxy("http://localhost:8000/default")
 	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-		{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+		{Name: "example", ChannelOptions: configtypes.ChannelOptions{
 			CacheEmptyProxyEnabled: true,
 			CacheEmptyProxyName:    "other",
 		}},
@@ -208,7 +208,7 @@ func TestCheckCacheEmptyReload(t *testing.T) {
 			name: "namespace enabled",
 			modify: func(cfg *config.Config) {
 				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
-					Name: "news",
+					Name: "sample",
 					ChannelOptions: configtypes.ChannelOptions{
 						CacheEmptyProxyEnabled: true,
 						CacheEmptyProxyName:    "other",
@@ -221,7 +221,7 @@ func TestCheckCacheEmptyReload(t *testing.T) {
 			name: "disabled namespace added",
 			modify: func(cfg *config.Config) {
 				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
-					Name: "news",
+					Name: "sample",
 					ChannelOptions: configtypes.ChannelOptions{
 						CacheEmptyProxyName: "missing",
 					},
@@ -267,11 +267,11 @@ func TestCacheEmptyTargets(t *testing.T) {
 		return cfg
 	}
 	startup := cacheEmptyTargets(newStartupConfig())
-	require.Equal(t, cacheEmptyTarget{
+	require.Equal(t, proxyTarget{
 		endpoint: "http://localhost:8000/default",
 		timeout:  configtypes.Duration(time.Second),
 	}, startup["default"])
-	require.Equal(t, cacheEmptyTarget{
+	require.Equal(t, proxyTarget{
 		endpoint: "http://localhost:8000/other",
 		timeout:  configtypes.Duration(time.Second),
 	}, startup["other"])

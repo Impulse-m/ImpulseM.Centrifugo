@@ -81,6 +81,25 @@ func channelStateLayout(cfg config.Config) []string {
 	return layout
 }
 
+// channelStateTargetOf returns the target of the channel state proxy of the config.
+func channelStateTargetOf(cfg config.Config) proxyTarget {
+	return newProxyTarget(cfg.Channel.Proxy.State)
+}
+
+// channelStatePlacement is the Redis placement of the channel state events of the engine and of the presence manager.
+type channelStatePlacement struct {
+	engine   configtypes.RedisChannelState
+	presence configtypes.RedisChannelState
+}
+
+// channelStatePlacementOf returns the Redis placement of the channel state events of the config.
+func channelStatePlacementOf(cfg config.Config) channelStatePlacement {
+	return channelStatePlacement{
+		engine:   cfg.Engine.Redis.ChannelState,
+		presence: cfg.PresenceManager.Redis.ChannelState,
+	}
+}
+
 // checkChannelStateReload rejects a reloaded config which enables or disables channel state for a channel group.
 // The presence keys of a channel are chosen by its group while its subscribers are connected, so the groups
 // can change only with a restart.

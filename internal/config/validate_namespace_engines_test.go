@@ -414,30 +414,30 @@ func TestValidateNamespaceEngines(t *testing.T) {
 		},
 		{
 			name: "two named redis sentinel brokers on the same master with disjoint sentinel hosts",
-				modify: func(cfg *Config) {
-					cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
-					cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379", "10.0.0.3:26379"}
-					cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
-					cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
-					cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379", "10.0.0.5:26379"}
-					cfg.Brokers[1].Redis.Redis.SentinelMasterName = "mymaster"
-				},
-				wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+				cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379", "10.0.0.3:26379"}
+				cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
+				cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
+				cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379", "10.0.0.5:26379"}
+				cfg.Brokers[1].Redis.Redis.SentinelMasterName = "mymaster"
 			},
-			{
-				name: "two named redis sentinel brokers on other masters with disjoint sentinel hosts",
-				modify: func(cfg *Config) {
-					cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
-					cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379"}
-					cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
-					cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
-					cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379"}
-					cfg.Brokers[1].Redis.Redis.SentinelMasterName = "othermaster"
-				},
-				wantErr: "",
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "two named redis sentinel brokers on other masters with disjoint sentinel hosts",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+				cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379"}
+				cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
+				cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
+				cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379"}
+				cfg.Brokers[1].Redis.Redis.SentinelMasterName = "othermaster"
 			},
-			{
-				name: "engine redis cluster address and a named redis address on the same host",
+			wantErr: "",
+		},
+		{
+			name: "engine redis cluster address and a named redis address on the same host",
 			modify: func(cfg *Config) {
 				cfg.Engine.Type = "redis"
 				cfg.Engine.Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379"}
@@ -848,27 +848,27 @@ func TestValidateNamespaceEngines(t *testing.T) {
 		},
 		{
 			name: "two named nats brokers with the same prefix and wildcards on one of them",
-				modify: func(cfg *Config) {
-					cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
-					cfg.Brokers[0].Nats.Prefix = "shared"
-					cfg.Brokers[0].Nats.AllowWildcards = true
-					cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
-					cfg.Brokers[1].Nats.Prefix = "shared"
-				},
-				wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "shared"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
-			{
-				name: "two named nats brokers whose prefixes nest at a token boundary without wildcards",
-				modify: func(cfg *Config) {
-					cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
-					cfg.Brokers[0].Nats.Prefix = "a"
-					cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
-					cfg.Brokers[1].Nats.Prefix = "a.client"
-				},
-				wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "two named nats brokers whose prefixes nest at a token boundary without wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "a"
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "a.client"
 			},
-			{
-				name: "named nats broker in raw mode with an empty root and a non-raw broker",
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with an empty root and a non-raw broker",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
 				cfg.Brokers[0].Nats.Prefix = "foobar"

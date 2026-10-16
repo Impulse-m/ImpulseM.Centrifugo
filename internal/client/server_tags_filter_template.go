@@ -213,8 +213,10 @@ func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate
 // checkReboundFilters returns the template values of a rebind of c to newUser, and refuses the rebind when a template of
 // a subscription which the new identity gets has a missing value under reject. The subscriptions are the personal
 // channel, the token subscriptions and the server-side channels which the connection holds, read here before the rebind
-// moves the connection. They are rendered only to check them: the rebind renders them again once it is applied. It does
-// nothing when no config has templates and the connection stored no values.
+// moves the connection. They are rendered only to check them: the rebind renders them again once it is applied. A
+// connection which holds a server-side channel of a template namespace that connect did not store with its template is
+// disconnected with insufficient state, see untemplatedServerSide. It does nothing when no config has templates and the
+// connection stored no values.
 func (h *Handler) checkReboundFilters(
 	c rebindableClient,
 	claims filtertemplate.Claims,
@@ -227,7 +229,11 @@ func (h *Handler) checkReboundFilters(
 	}
 	// The server-side channels are kept for every identity, also the anonymous one: a skip template renders with the
 	// explicit filter only, and a reject template refuses the rebind here, as it does for the token subscriptions.
-	for channel, opts := range storedServerSideSubscriptions(c) {
+	serverSide := storedServerSideSubscriptions(c)
+	if h.untemplatedServerSide(c, serverSide) {
+		return rebindFilters{}, centrifuge.DisconnectInsufficientState
+	}
+	for channel, opts := range serverSide {
 		if !c.IsSubscribed(channel) {
 			continue
 		}
@@ -256,6 +262,26 @@ func (h *Handler) checkReboundFilters(
 	return filters, nil
 }
 
+// untemplatedServerSide reports whether c holds a uni-connect or connect proxy channel of a namespace with a template
+// which is not in serverSide, the channels stored with their template on connect. Connect subscribed such a channel
+// without a template, and no later rebind can give it one: it has no stored filter to render again. The rebind would
+// leave it unsubscribed or unfiltered, so it is refused by a disconnect with insufficient state. The client reconnects,
+// the connect proxy and the token run again, and every channel comes back with the template of the config.
+func (h *Handler) untemplatedServerSide(c rebindableClient, serverSide map[string]centrifuge.SubscribeOptions) bool {
+	for channel, chCtx := range c.ChannelsWithContext() {
+		if chCtx.Source != subsource.UniConnect && chCtx.Source != subsource.ConnectProxy {
+			continue
+		}
+		if _, ok := serverSide[channel]; ok {
+			continue
+		}
+		if h.templateOf(channel) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // storeFilterValues stores the values as the values the templates of a connection are rendered with, after its user
 // moved to the values. The values come from a token, so the connection is no longer unbound.
 func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
@@ -269,8 +295,7 @@ func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 // and the channels with a template are unsubscribed when the values changed. The client resubscribes them with filters
 // rendered with the new values. The server-side channels which the rebind subscribes again, see
 // reboundTemplateSubscriptions, come back with the new filters too. A server-side channel which connect did not store
-// with a template is unsubscribed as well: its explicit filter is not known here, so it is not subscribed again, and
-// its channel keeps no filter of the previous values.
+// with a template does not get here: checkReboundFilters disconnects the connection for it.
 func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters) {
 	if !filters.enabled && !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return

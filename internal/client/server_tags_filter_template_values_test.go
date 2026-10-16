@@ -197,10 +197,11 @@ func TestServerTagsFilterTemplateReloadChangesClaimPaths(t *testing.T) {
 	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
 }
 
-// TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide checks a rebind with other values unsubscribes a
-// uni-connect channel which the connection got before a template was configured. Connect subscribed it without a
-// template, so it has no stored filter to render again, and it must not stay subscribed without the template.
-func TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide(t *testing.T) {
+// TestServerTagsFilterTemplateRebindDisconnectsUntemplatedServerSide checks a rebind of a connection which holds a
+// uni-connect channel the connection got before a template was configured is refused by a disconnect with insufficient
+// state. Connect subscribed it without a template, so it has no stored filter to render again. The rebind does not move
+// the connection, so the reconnect subscribes the channel with the template.
+func TestServerTagsFilterTemplateRebindDisconnectsUntemplatedServerSide(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
@@ -226,10 +227,11 @@ func TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide(t *test
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
 	}, nil)
-	require.NoError(t, err)
-	require.Equal(t, "42", state.user)
-	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:uni"].Code)
-	require.NotContains(t, state.channels, "lenient:uni")
+	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
+	require.Empty(t, state.rebinds)
+	require.Equal(t, "", state.user)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "lenient:uni")
 }
 
 // TestServerTagsFilterTemplateRebindReloadAddsTemplate checks a reload which adds a template while a rebind runs, after the

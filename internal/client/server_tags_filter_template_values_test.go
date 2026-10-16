@@ -157,3 +157,38 @@ func TestServerTagsFilterTemplateReloadChangesClaimPaths(t *testing.T) {
 	disconnect := transport.waitDisconnect(t)
 	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
 }
+
+// TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide checks a rebind with other values keeps a uni-connect
+// channel which the connection got before a template was configured. Connect subscribed it without a template, so its
+// filter does not depend on the values, and it is not among the server-side subscriptions stored with a template.
+func TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "lenient",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	// The templates are configured after the connect of the connection.
+	reloaded := templateTestConfig()
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", state.user)
+	require.NotContains(t, state.unsubscribed, "lenient:uni")
+	require.Contains(t, state.channels, "lenient:uni")
+}

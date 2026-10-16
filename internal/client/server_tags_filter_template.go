@@ -188,10 +188,18 @@ func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters)
 	if sameFilterValues(filters.previous, filters.values) {
 		return
 	}
-	for channel := range c.ChannelsWithContext() {
-		if h.templateOf(channel) != nil {
-			c.Unsubscribe(channel, unsubscribeInsufficientState)
+	serverSide := storedServerSideSubscriptions(c)
+	for channel, chCtx := range c.ChannelsWithContext() {
+		if h.templateOf(channel) == nil {
+			continue
 		}
+		// A server-side channel which connect subscribed without a template has no filter which depends on the values,
+		// so it keeps its filter. Only the ones stored on connect are subscribed again with the new values.
+		isServerSide := chCtx.Source == subsource.UniConnect || chCtx.Source == subsource.ConnectProxy
+		if _, stored := serverSide[channel]; isServerSide && !stored {
+			continue
+		}
+		c.Unsubscribe(channel, unsubscribeInsufficientState)
 	}
 }
 

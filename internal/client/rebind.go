@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -233,6 +234,12 @@ func (h *Handler) onRefreshRebind(
 	}
 
 	newUser := coreUserID(nextClass, verified.UserID)
+	// An upgrade subscribes the personal channel and the channels of its token after the identity moves. Core closes a
+	// connection whose subscribe finds client.channel_limit reached, so an upgrade which would not fit is refused here,
+	// while the connection keeps its identity and its channels.
+	if newUser != "" && h.reboundChannelsExceedLimit(c, newUser, verified.Subs, cfg) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorLimitExceeded
+	}
 	oldUser := c.UserID()
 	// An upgrade to a user takes the connect rate limit of that user, the bucket a connect of the user takes. A refused take
 	// is an error of the refresh: nothing has changed yet, so the connection keeps its identity.
@@ -469,6 +476,37 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 		}
 	}
 	return subscribeChannels(c, toSubscribe)
+}
+
+// reboundChannelsExceedLimit reports whether subscribeRebound would take c over client.channel_limit: the channels it
+// adds to c, which c is not subscribed to yet, on top of the channels c has. A personal channel which cannot be resolved
+// is not counted, as subscribeRebound disconnects for it. Without a limit it reports false.
+func (h *Handler) reboundChannelsExceedLimit(
+	c rebindableClient,
+	userID string,
+	subs map[string]centrifuge.SubscribeOptions,
+	cfg *config.Config,
+) bool {
+	limit := cfg.Client.ChannelLimit
+	if limit <= 0 {
+		return false
+	}
+	added := make(map[string]struct{}, len(subs)+1)
+	if cfg.Client.SubscribeToUserPersonalChannel.Enabled {
+		if personalChannel, _, err := h.personalChannelSubscription(userID); err == nil {
+			added[personalChannel] = struct{}{}
+		}
+	}
+	for channel := range subs {
+		added[channel] = struct{}{}
+	}
+	count := len(c.ChannelsWithContext())
+	for channel := range added {
+		if !c.IsSubscribed(channel) {
+			count++
+		}
+	}
+	return count > limit
 }
 
 // restorePersonalChannel subscribes a connection with a user to its personal channel when it is not subscribed to it. A

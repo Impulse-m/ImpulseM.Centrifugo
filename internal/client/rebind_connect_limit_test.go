@@ -65,6 +65,41 @@ func TestRebindUpgradeTakesUserConnectLimit(t *testing.T) {
 	require.Equal(t, "45", upgraded.UserID())
 }
 
+// TestRebindUpgradeRefusedAtChannelLimit checks that an upgrade which would take the connection over client.channel_limit
+// is refused before the identity moves: the connection keeps its identity and its channels, and nothing is rebound. An
+// upgrade which fits under the limit goes through, the limit itself included.
+func TestRebindUpgradeRefusedAtChannelLimit(t *testing.T) {
+	now := time.Now().Unix()
+	cfg := newRebindTestConfig(configtypes.Rebind{Enabled: true}, configtypes.RateLimitUserCommand{})
+	cfg.Client.ChannelLimit = 2
+	h, _ := newRebindTestHandlerWithConfig(t, cfg)
+
+	// Two client channels fill the limit, so the personal channel of the upgrade does not fit.
+	refused, refusedState := newRebindTestClient("", "anonymous")
+	refusedState.channels["chat:one"] = centrifuge.ChannelContext{}
+	refusedState.channels["chat:two"] = centrifuge.ChannelContext{}
+	before := refused.ExtState().(*connState).identity.Load()
+	_, _, err := h.OnRefresh(refused, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "45", "authenticated", revokeTestUUID, map[string]any{"iat": now}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorLimitExceeded, err)
+	require.Empty(t, refusedState.rebinds)
+	require.Empty(t, refused.UserID())
+	require.Same(t, before, refused.ExtState().(*connState).identity.Load())
+	require.Len(t, refusedState.channels, 2)
+
+	// With one channel of headroom the upgrade fits: the personal channel takes the last place.
+	upgraded, upgradedState := newRebindTestClient("", "anonymous")
+	upgradedState.channels["chat:one"] = centrifuge.ChannelContext{}
+	_, _, err = h.OnRefresh(upgraded, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "45", "authenticated", revokeTestOtherUUID, map[string]any{"iat": now}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "45", upgraded.UserID())
+	require.Len(t, upgradedState.rebinds, 1)
+	require.Len(t, upgradedState.channels, 2)
+}
+
 // TestRebindUpgradeOfOtherUserTakesItsBucket checks that the take is made for the user the connection upgrades to: a
 // user whose bucket is empty does not refuse an upgrade to another user.
 func TestRebindUpgradeOfOtherUserTakesItsBucket(t *testing.T) {

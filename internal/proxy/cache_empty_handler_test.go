@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,10 +199,33 @@ func (p *blockingCacheEmptyProxy) Timeout() time.Duration {
 	return time.Second
 }
 
+// singleflightDoFrame is the stack frame of a goroutine that is inside singleflight.Group.Do, either as the
+// caller which runs the function or as a caller which waits for it.
+const singleflightDoFrame = "singleflight.(*Group).Do("
+
+// waitForSingleflightCallers returns once want goroutines are inside singleflight.Group.Do. A caller inside Do
+// while the call is in flight joins that call, so the test releases the backend only after every subscriber
+// has joined it. It fails the test when the callers do not get there in time.
+func waitForSingleflightCallers(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if strings.Count(string(buf[:n]), singleflightDoFrame) >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fewer than %d subscribers reached the in-flight call", want)
+		}
+		runtime.Gosched()
+	}
+}
+
 // TestCacheEmptyHandlerCoalescesInflightCalls checks that subscribers which find the same channel empty while
-// a call is in flight share one backend call. The release of the backend waits until every subscriber has
-// reached the handler, so all of them join the same call. Without coalescing the backend gets one call per
-// subscriber, and the count assertion fails.
+// a call is in flight share one backend call. The release of the backend waits until every subscriber is inside
+// the shared call, see waitForSingleflightCallers, so all of them join the same call. Without coalescing no
+// subscriber waits in singleflight, and the wait fails. Without a shared result the count assertion fails.
 func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
 	const subscribers = 16
 
@@ -214,8 +239,6 @@ func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
 	cfgContainer := newCacheEmptyTestContainer(t, opts, false)
 	cacheEmpty := handler.Handle(cfgContainer)
 
-	var reached sync.WaitGroup
-	reached.Add(subscribers)
 	start := make(chan struct{})
 	replies := make(chan centrifuge.CacheEmptyReply, subscribers)
 	errs := make(chan error, subscribers)
@@ -225,14 +248,13 @@ func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
 		go func() {
 			defer done.Done()
 			<-start
-			reached.Done()
 			reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
 			replies <- reply
 			errs <- err
 		}()
 	}
 	close(start)
-	reached.Wait()
+	waitForSingleflightCallers(t, subscribers)
 	close(proxy.release)
 	done.Wait()
 	close(replies)

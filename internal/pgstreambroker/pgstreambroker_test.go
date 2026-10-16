@@ -1488,7 +1488,7 @@ func TestPostgresStreamBroker_DayRolloverWithLookahead(t *testing.T) {
 	_, err = e.pool.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s (channel, channel_offset, kind, data, created_at, shard_id)
 		VALUES ($1, 1, 0, '\x'::bytea, $2, 0)
-	`, e.names.stream), "test_day_rollover", tomorrow.Add(time.Hour))
+	`, e.names.stream), "test_day_rollover", time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 1, 0, 0, 0, time.UTC))
 	require.NoError(t, err, "insert into tomorrow's partition should succeed via lookahead")
 }
 

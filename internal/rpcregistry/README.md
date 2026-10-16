@@ -172,6 +172,35 @@ When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the conn
 
 A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, a connection which has no user and a token session also gets one, anonymous ones included, and is indexed by its session. Its connect then reads the token identity of the client under the client lock. The store is set whenever access revocation is in use, so this is the cost of that feature, and a connection with every feature off allocates nothing for the record.
 
+### Token exchange over the connection
+
+An SDK can obtain its connection token over the connection it has just opened, instead of receiving it from the app before connect. The app keeps a long-lived refresh token, and the SDK exchanges it for a short access token and renews that before it expires. The server needs three settings for this, all off by default:
+
+```json
+"client": {
+  "allow_anonymous_connect_without_token": true,
+  "rebind": {
+    "enabled": true
+  }
+}
+```
+
+* `client.allow_anonymous_connect_without_token: true` accepts a connection without a token, so the SDK can connect before it holds an access token.
+* `client.rebind.enabled: true` lets a refresh change the user of the connection. The connection stays anonymous until the exchange gives it a user, and the transitions of the table above decide the refresh.
+* The exchange is a registry method with `auth_class: anonymous`. Its calls never carry the connection token, so the issuer authenticates the call by the refresh token in the request alone.
+
+```yaml
+methods:
+  - method: session.exchange                       # client RPC method name
+    grpc_method: /example.auth.v1.SessionService/Exchange
+    target: auth
+    auth_class: anonymous
+```
+
+The request and the reply of the exchange are bytes the issuer defines: the server forwards them as any registry call does and does not read them. The access token the issuer returns is an ordinary connection token, verified by `client.token` like any other. Its `exp` drives the SDK's renewal, and a refresh with it rebinds the connection to the user of the token, with its personal channel and the channels of the token.
+
+The rotation of the refresh token and the grace the issuer keeps for the previous one belong to the issuer. The server does not store or check refresh tokens.
+
 ### Known gaps
 
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.

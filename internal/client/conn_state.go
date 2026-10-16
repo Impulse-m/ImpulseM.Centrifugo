@@ -109,6 +109,13 @@ func (h *Handler) configNeedsConnState(cfg *config.Config) bool {
 		h.clientLimiter != nil
 }
 
+// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. It reads
+// the user Core holds, which is the user the connect credentials gave, so a connection with a user under the default
+// config is decided without reading its storage.
+func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
+	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(client.UserID())
+}
+
 // storeNeedsConnState reports whether the access store needs a record for a connection with userID: every connection
 // with no user, whether or not its token has a session, so the record is there when a refresh gives it one.
 func (h *Handler) storeNeedsConnState(userID string) bool {

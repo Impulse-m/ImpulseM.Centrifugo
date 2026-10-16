@@ -55,14 +55,15 @@ func NewRedisController(node *centrifuge.Node, shards []*centrifuge.RedisShard, 
 	return &RedisController{broker: broker, shards: shards}, nil
 }
 
-// RegisterControlEventHandler starts the control PUB/SUB of every shard and returns once each one has subscribed,
-// so the node does not serve clients before it receives the control messages of the other nodes.
+// RegisterControlEventHandler starts the control PUB/SUB of every shard. It returns once Core has finished the first
+// subscription attempt of each shard. Core discards the error of that attempt and retries a failed one in the
+// background, so the return does not prove that the control messages of other nodes are received.
 func (c *RedisController) RegisterControlEventHandler(h centrifuge.ControlEventHandler) error {
 	if err := c.broker.RegisterControlEventHandler(h); err != nil {
 		return err
 	}
-	// Core waits for the control subscription only in RegisterBrokerEventHandler. The controller has SkipPubSub set,
-	// so Core starts no channel subscriptions and returns after that wait, without calling the handler.
+	// Core waits for the first control subscription of each shard only in RegisterBrokerEventHandler. The controller has
+	// SkipPubSub set, so Core starts no channel subscriptions and returns after that wait, without calling the handler.
 	return c.broker.RegisterBrokerEventHandler(noopBrokerEventHandler{})
 }
 

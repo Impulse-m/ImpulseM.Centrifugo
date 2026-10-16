@@ -504,6 +504,13 @@ func (h *Handler) OnClientConnecting(
 		return centrifuge.ConnectReply{}, centrifuge.ErrorTooManyRequests
 	}
 
+	// Handle single connection enforcement before establishing connection.
+	if !cfg.HasServerTagsFilterTemplates() && credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
+		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
+			return centrifuge.ConnectReply{}, err
+		}
+	}
+
 	// Automatically subscribe on personal server-side channel.
 	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && credentials.UserID != "" {
 		personalChannel, personalOptions, err := h.personalChannelSubscription(credentials.UserID)
@@ -595,13 +602,12 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
-	// A template which refuses the connection is checked before the single connection of the user is enforced, so a
-	// refused connect does not disconnect the other connection of the user.
+	// With templates, a template which refuses the connection is checked before the single connection of the user is
+	// enforced, so a refused connect does not disconnect the other connection of the user.
 	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
-	// Handle single connection enforcement before establishing connection.
-	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
+	if cfg.HasServerTagsFilterTemplates() && credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
 		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
 			return centrifuge.ConnectReply{}, err
 		}
@@ -1355,7 +1361,7 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
-	if refusesHistory(chOpts) {
+	if refusesHistory(&chOpts) {
 		return centrifuge.HistoryReply{}, centrifuge.ErrorPermissionDenied
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

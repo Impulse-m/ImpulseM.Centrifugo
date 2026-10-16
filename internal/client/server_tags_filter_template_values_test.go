@@ -111,6 +111,37 @@ func TestServerTagsFilterTemplateRefreshWithoutClaims(t *testing.T) {
 	require.True(t, unbound)
 }
 
+// TestServerTagsFilterTemplateRefreshUnboundDropsRefusedSub checks a refresh of a connection without a token which
+// carries a token subscription in a namespace whose template refuses it, since the token has no claim for it. The
+// connection is not disconnected: the subscription is dropped from the refresh, so it is not subscribed without its
+// template, and the refresh is answered.
+func TestServerTagsFilterTemplateRefreshUnboundDropsRefusedSub(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	env := newTemplateEnv(t, cfg)
+	transport := newRecordingTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), env.node, transport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
+	require.Nil(t, transport.waitReply(t, 1).Error)
+
+	sendRateLimitCommand(client, &protocol.Command{
+		Id: 2,
+		Refresh: &protocol.RefreshRequest{
+			Token: getConnTokenWithClaims(t, map[string]any{"subs": map[string]any{"chat:srv": map[string]any{}}}),
+		},
+	})
+	require.Nil(t, transport.waitReply(t, 2).Error)
+	require.False(t, transport.disconnected())
+	require.False(t, client.IsSubscribed("chat:srv"))
+
+	storage, release := client.AcquireStorage()
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	require.True(t, unbound)
+}
+
 // TestServerTagsFilterTemplateReloadChangesClaimPaths checks a refresh after a reload which changes the union of the
 // claim paths disconnects a connection whose claims differ by name. The values line up by position, so a comparison
 // by position would keep the connection.

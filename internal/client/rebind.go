@@ -216,10 +216,9 @@ func (h *Handler) onRefreshRebind(
 
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
-	// The subscriptions of the new identity are built before anything moves, so a refusal of a template leaves the
+	// The templates of the subscriptions of the new identity are checked before anything moves, so a refusal leaves the
 	// connection as it was.
-	filters := h.prepareRebindFilters(c, verified.FilterTemplateClaims, newUser)
-	toSubscribe, err := h.reboundSubscriptions(c, newUser, verified.Subs, filters)
+	filters, err := h.checkReboundFilters(c, verified.FilterTemplateClaims, verified.Subs, newUser)
 	if err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
@@ -284,8 +283,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	h.storeReboundTokenFilters(c, toSubscribe)
-	if err := h.subscribeRebound(c, newUser, toSubscribe); err != nil {
+	if err := h.subscribeRebound(c, newUser, verified.Subs, filters); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if verified.Meta != nil {
@@ -431,22 +429,29 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 	return chOpts.SubscribeForAnonymous
 }
 
-// reboundSubscriptions returns the subscriptions a connection moved to userID gets before the move: its personal
-// channel, the channels of its token, and the server-side channels with a template, see reboundTemplateSubscriptions.
-// A personal channel which cannot be resolved disconnects the connection, and a template refusal is an error of the
-// refresh; both come before the rebind, so the connection keeps its identity.
-func (h *Handler) reboundSubscriptions(
+// subscribeRebound subscribes a rebound connection to the channels of its token. A connection with a user also gets
+// its personal channel, and the single connection of the user is enforced first. The channels the connection has
+// already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
+// does not disconnect it. A personal channel which cannot be resolved disconnects the connection after the rebind,
+// which leaves no half-moved connection: a disconnect ends the connection and releases what it holds. The templates
+// of the subscriptions are applied to them, see reboundTemplateSubscriptions.
+func (h *Handler) subscribeRebound(
 	c rebindableClient,
 	userID string,
 	subs map[string]centrifuge.SubscribeOptions,
 	filters rebindFilters,
-) (map[string]centrifuge.SubscribeOptions, error) {
+) error {
 	cfg := h.cfgContainer.ConfigRef()
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
 	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled {
+		if cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
+			if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
+				return err
+			}
+		}
 		personalChannel, personalOptions, err := h.personalChannelSubscription(userID)
 		if err != nil {
-			return nil, centrifuge.DisconnectServerError
+			return centrifuge.DisconnectServerError
 		}
 		toSubscribe[personalChannel] = personalOptions
 	}
@@ -455,23 +460,8 @@ func (h *Handler) reboundSubscriptions(
 			toSubscribe[channel] = opts
 		}
 	}
-	if err := h.reboundTemplateSubscriptions(c, userID, toSubscribe, filters); err != nil {
-		return nil, err
-	}
-	return toSubscribe, nil
-}
-
-// subscribeRebound subscribes a rebound connection to the channels of toSubscribe, see reboundSubscriptions. A
-// connection with a user has the single connection of the user enforced first. The channels the connection has
-// already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
-// does not disconnect it. A failure after the rebind disconnects the connection, which leaves no half-moved
-// connection: a disconnect ends the connection and releases what it holds.
-func (h *Handler) subscribeRebound(c rebindableClient, userID string, toSubscribe map[string]centrifuge.SubscribeOptions) error {
-	cfg := h.cfgContainer.ConfigRef()
-	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
-		if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
-			return err
-		}
+	if err := h.reboundTemplateSubscriptions(c, toSubscribe, filters); err != nil {
+		return err
 	}
 	return subscribeChannels(c, toSubscribe)
 }

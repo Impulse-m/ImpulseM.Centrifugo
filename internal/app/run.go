@@ -132,6 +132,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		ConstLabels:      nil, // Can be populated from config in the future.
 		Registerer:       nil, // Use prometheus.DefaultRegisterer.
 		NativeHistograms: cfg.Prometheus.NativeHistograms,
+		ChannelState:     len(channelStateLayout(cfg)) > 0,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("error initializing metrics")

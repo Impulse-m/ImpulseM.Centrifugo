@@ -23,6 +23,9 @@ type Config struct {
 	// for OpenTelemetry export via the client_golang Prometheus bridge.
 	// Text-format scrapes lose _bucket series; use protobuf scrape format.
 	NativeHistograms bool
+	// ChannelState creates the channel state metrics. It is set when the node sends channel state events, so
+	// the metrics are not exported otherwise.
+	ChannelState bool
 }
 
 // nativeHistogramOpts returns opts unchanged when native is false. When true,
@@ -321,7 +324,7 @@ func newRegistry(cfg Config) (*Registry, error) {
 		[]string{"path", "method", "status"},
 	)
 
-	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels)
+	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels, cfg.ChannelState)
 
 	// Postgres-specific broker metrics carry a postgres_ name prefix. Cleanup is
 	// Postgres-specific here: only the PG stream broker prunes rows (the "pass"

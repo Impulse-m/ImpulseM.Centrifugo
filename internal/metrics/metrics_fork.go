@@ -55,8 +55,8 @@ type forkRegistry struct {
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
-// registration.
-func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
+// registration. The channel state metrics are created only when channelState is set.
+func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels, channelState bool) []prometheus.Collector {
 	m.accessRevokeRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
@@ -337,15 +337,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
 	}
 
-	m.channelStateOldestFailingBatch = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "channel_state",
-		Name:        "oldest_failing_batch_timestamp_seconds",
-		Help:        "Unix time when the oldest channel state batch that the proxy still rejects was first sent, 0 when no batch fails. A batch that stays rejected blocks the events behind it in its partition. The age is time() minus this value.",
-		ConstLabels: constLabels,
-	})
-
-	return []prometheus.Collector{
+	collectors := []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
@@ -379,8 +371,18 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRemotePolls,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
-		m.channelStateOldestFailingBatch,
 	}
+	if channelState {
+		m.channelStateOldestFailingBatch = prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace:   metricsNamespace,
+			Subsystem:   "channel_state",
+			Name:        "oldest_failing_batch_timestamp_seconds",
+			Help:        "Unix time when the oldest channel state batch that the proxy still rejects was first sent, 0 when no batch fails. A batch that stays rejected blocks the events behind it in its partition. The age is time() minus this value.",
+			ConstLabels: constLabels,
+		})
+		collectors = append(collectors, m.channelStateOldestFailingBatch)
+	}
+	return collectors
 }
 
 // ProxyCallChildren holds the proxy metric children of one proxy name. They are resolved once by

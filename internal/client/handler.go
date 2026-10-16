@@ -70,6 +70,9 @@ type Handler struct {
 	trackSigVerifierKey     string
 	trackSigPrevVerifier    *trackSignatureVerifier
 	trackSigPrevVerifierKey string
+
+	// runningConcurrency is the client.concurrency the handler runs with. It is read at Setup, and a reload does not change it.
+	runningConcurrency int
 }
 
 // NewHandler creates new Handler.
@@ -210,6 +213,7 @@ func (h *Handler) Setup() error {
 
 	cfg := h.cfgContainer.ConfigRef()
 	concurrency := cfg.Client.Concurrency
+	h.runningConcurrency = concurrency
 
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err

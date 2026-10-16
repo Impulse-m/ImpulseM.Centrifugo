@@ -183,9 +183,12 @@ func (h *Handler) onRefreshRebind(
 	if prev.origin == originProxy {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
+	// A downgrade is refused while the handler runs with a concurrency above one: client.concurrency is read at start, so a
+	// reload which allows a downgrade does not change the connections which run, and two commands could interleave with it.
+	allowDowngrade := cfg.Client.Rebind.AllowDowngrade && h.runningConcurrency <= 1
 	// A logout of a connection with a user disconnects it unless allow_downgrade is set. The check comes before the
 	// class check, so the logout of a connection is disconnected the same way whatever its class.
-	if verified.UserID == "" && c.UserID() != "" && !cfg.Client.Rebind.AllowDowngrade {
+	if verified.UserID == "" && c.UserID() != "" && !allowDowngrade {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	claim := h.registryConfig().AuthClassClaim
@@ -200,7 +203,7 @@ func (h *Handler) onRefreshRebind(
 	if held := prev.account; held != "" && verified.UserID != "" && held != verified.UserID {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
-	if err := rebindTransitionError(effectiveClass(prev, claim, c.UserID()), nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
+	if err := rebindTransitionError(effectiveClass(prev, claim, c.UserID()), nextClass, allowDowngrade); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 

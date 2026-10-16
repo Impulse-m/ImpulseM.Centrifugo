@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -256,6 +257,16 @@ func (h *Handler) filterWithValues(
 		return explicit, nil
 	}
 	return subscriptionFilter(tmpl, values, channel, explicit)
+}
+
+// refusesHistory returns the error of a history call on a channel with chOpts. The template filters the publications of a
+// subscription, and history reads publications without the subscription, so a channel with a template refuses it.
+// Recovery is not refused: it applies the filter of the subscription.
+func refusesHistory(chOpts *configtypes.ChannelOptions) error {
+	if chOpts.HasServerTagsFilterTemplate() {
+		return centrifuge.ErrorPermissionDenied
+	}
+	return nil
 }
 
 // templateOf returns the server tags filter template of the namespace of channel, or nil when it has none. A channel of

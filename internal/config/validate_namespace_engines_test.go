@@ -1307,6 +1307,18 @@ func TestCheckNamespaceEnginesReloadWithoutEnginesAllowsBoundaryChange(t *testin
 	require.NoError(t, CheckNamespaceEnginesReload(oldCfg, newCfg, NewNamespaceEnginesRecord(oldCfg)))
 }
 
+// TestCheckNamespaceEnginesReloadWithoutEnginesKeepsPostgresController checks that a configuration without named
+// engines and with a Postgres controller reloads its controller settings as it did before r13.
+func TestCheckNamespaceEnginesReloadWithoutEnginesKeepsPostgresController(t *testing.T) {
+	oldCfg := DefaultConfig()
+	oldCfg.Controller = postgresControllerConfig("cf")
+	newCfg := DefaultConfig()
+	newCfg.Controller = postgresControllerConfig("other")
+	newCfg.Controller.Enabled = false
+	newCfg.Channel.Namespaces = []configtypes.ChannelNamespace{{Name: "news"}}
+	require.NoError(t, CheckNamespaceEnginesReload(oldCfg, newCfg, NewNamespaceEnginesRecord(oldCfg)))
+}
+
 // TestValidateDefaultOnlyConfigLoads checks that a configuration with only the default broker keeps loading when
 // that broker is NATS in raw mode without a controller: the named NATS subject checks do not apply to it.
 func TestValidateDefaultOnlyConfigLoads(t *testing.T) {

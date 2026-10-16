@@ -127,6 +127,9 @@ func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *Namespace
 		}
 	}
 
+	if !controllerChecked(oldCfg, newCfg) {
+		return nil
+	}
 	if oldCfg.Controller.Enabled != newCfg.Controller.Enabled || oldCfg.Controller.Type != newCfg.Controller.Type {
 		return namespaceEnginesChanged("controller")
 	}
@@ -134,6 +137,19 @@ func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *Namespace
 		return namespaceEnginesChanged("prefix of controller")
 	}
 	return nil
+}
+
+// controllerChecked reports whether a reload is subject to the controller checks. They apply to a configuration with
+// enabled named engines, or with a Redis or NATS controller, which are the settings r13 adds. Any other configuration,
+// such as one with a Postgres controller only, reloads as it did before r13.
+func controllerChecked(oldCfg Config, newCfg Config) bool {
+	return hasEnabledEngines(oldCfg) || hasEnabledEngines(newCfg) ||
+		isNewControllerType(oldCfg.Controller.Type) || isNewControllerType(newCfg.Controller.Type)
+}
+
+// isNewControllerType reports whether a controller type is one which r13 adds.
+func isNewControllerType(controllerType string) bool {
+	return controllerType == "redis" || controllerType == "nats"
 }
 
 // controllerPrefix returns the prefix which the controller keeps from startup: the Redis and Nats channel prefix,

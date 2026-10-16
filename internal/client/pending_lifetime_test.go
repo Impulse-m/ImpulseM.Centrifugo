@@ -82,6 +82,13 @@ func TestPendingLifetimeExceeded(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "pending with a negative exp is over the limit like one without exp",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: -1, IssuedAt: now.Unix()},
+			maxLifetime: maxLifetime,
+			want:        true,
+		},
+		{
 			name:        "pending with an iat of zero is over the limit like one without iat",
 			class:       rpcregistry.AuthClassPending2FA,
 			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 120, IssuedAt: 0},

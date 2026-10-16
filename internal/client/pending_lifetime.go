@@ -28,7 +28,7 @@ func pendingLifetimeExceeded(
 	if class != rpcregistry.AuthClassPending2FA || maxLifetime <= 0 {
 		return false
 	}
-	if token.ExpireAt == 0 || token.IssuedAt <= 0 {
+	if token.ExpireAt <= 0 || token.IssuedAt <= 0 {
 		return true
 	}
 	start := clock().Unix()

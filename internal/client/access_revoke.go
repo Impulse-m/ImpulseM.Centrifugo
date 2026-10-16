@@ -121,9 +121,7 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 		rec = adoptConnState(client)
 	}
 	if rec != nil && (h.accessStore != nil || h.userLimiter != nil) {
-		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
-			h.onClientDisconnect(client, rec)
-		})
+		h.installDisconnect(client, rec)
 	}
 	if rec != nil && h.accessStore != nil && client.UserID() == "" {
 		h.trackSession(client, rec, rec.identity.Load().identity.Session)
@@ -152,9 +150,7 @@ func (h *Handler) recordAtRefresh(c rebindableClient) *connState {
 	rec.identity.Store(nextIdentity(nil, originProxy, 0, "", "", jwtverify.ConnectToken{}))
 	c.SetExtState(rec)
 	release(storage)
-	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
-		h.onClientDisconnect(c, rec)
-	})
+	h.installDisconnect(c, rec)
 	return rec
 }
 
@@ -192,6 +188,14 @@ func (h *Handler) onClientDisconnect(c rebindableClient, rec *connState) {
 	if h.accessStore != nil {
 		h.accessStore.SessionConnections().Close(c, &rec.track)
 	}
+}
+
+// installDisconnect installs the disconnect handler which releases the record of a connection when it closes. It is
+// installed by trackConnect and recordAtRefresh, the two paths which attach a record.
+func (h *Handler) installDisconnect(c rebindableClient, rec *connState) {
+	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
+		h.onClientDisconnect(c, rec)
+	})
 }
 
 // connectTokenIdentity returns the identity of a connection token, checked against the access revocation

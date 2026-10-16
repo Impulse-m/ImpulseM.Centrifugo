@@ -147,7 +147,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		if !entry.Enabled {
 			continue
 		}
-		mapBroker, redisShards, mode, err := createNamedMapBroker(node, entry)
+		mapBroker, redisShards, mode, err := createMapBroker(node, entry.MapBroker)
 		e.redisShards = append(e.redisShards, redisShards...)
 		if err != nil {
 			return fmt.Errorf("map_brokers[%s]: %w", entry.Name, err)
@@ -386,13 +386,13 @@ func createRedisPresenceManagerFrom(
 	return presenceManager, redisShards, mode, nil
 }
 
-// createNamedMapBroker creates a named map broker by its type. It returns the Redis shards it created, which the
-// caller closes at shutdown, and the connection mode for logging.
-func createNamedMapBroker(
+// createMapBroker creates a map broker by its type, the default one or a named one. It returns the Redis shards it
+// created, which the caller closes or keeps, and the connection mode for logging.
+func createMapBroker(
 	node *centrifuge.Node,
-	entry configtypes.NamedMapBroker,
+	cfg configtypes.MapBroker,
 ) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
-	switch entry.Type {
+	switch cfg.Type {
 	case "memory":
 		mapBroker, err := createMemoryMapBroker(node)
 		if err != nil {
@@ -400,15 +400,15 @@ func createNamedMapBroker(
 		}
 		return mapBroker, nil, "", nil
 	case "redis":
-		return createRedisMapBroker(node, entry.Redis)
+		return createRedisMapBroker(node, cfg.Redis)
 	case "postgres":
-		mapBroker, err := createPostgresMapBroker(node, entry.Postgres)
+		mapBroker, err := createPostgresMapBroker(node, cfg.Postgres)
 		if err != nil {
 			return nil, nil, "", err
 		}
 		return mapBroker, nil, "postgres", nil
 	default:
-		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", entry.Type)
+		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", cfg.Type)
 	}
 }
 

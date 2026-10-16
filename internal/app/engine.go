@@ -267,26 +267,7 @@ func createRedisPresenceManager(n *centrifuge.Node, cfgContainer *config.Contain
 
 func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) error {
 	cfg := cfgContainer.Config()
-	var mapBroker centrifuge.MapBroker
-	var mapBrokerMode string
-	var err error
-	switch cfg.MapBroker.Type {
-	case "memory":
-		mapBroker, err = createMemoryMapBroker(node)
-	case "redis":
-		mapBroker, _, mapBrokerMode, err = createRedisMapBroker(node, cfg.MapBroker.Redis)
-		if err != nil {
-			return err
-		}
-	case "postgres":
-		mapBroker, err = createPostgresMapBroker(node, cfg.MapBroker.Postgres)
-		if err != nil {
-			return err
-		}
-		mapBrokerMode = "postgres"
-	default:
-		return fmt.Errorf("unknown map broker type: %s", cfg.MapBroker.Type)
-	}
+	mapBroker, _, mapBrokerMode, err := createMapBroker(node, cfg.MapBroker)
 	if err != nil {
 		return fmt.Errorf("error creating map broker: %v", err)
 	}

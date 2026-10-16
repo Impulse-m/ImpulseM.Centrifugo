@@ -232,6 +232,42 @@ func TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide(t *test
 	require.NotContains(t, state.channels, "lenient:uni")
 }
 
+// TestServerTagsFilterTemplateRebindReloadAddsTemplate checks a reload which adds a template while a rebind runs, after the
+// rebind was checked against a config without templates, does not subscribe the token subscription of the new identity
+// without its template. The template refuses it, since the token has no sid claim, so the connection is disconnected.
+func TestServerTagsFilterTemplateRebindReloadAddsTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "chat",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		reloaded := templateTestConfig()
+		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+		reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+		require.NoError(t, cfgContainer.Reload(reloaded))
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"chat:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectPermissionDenied, err)
+	require.Equal(t, "42", state.user)
+	require.NotContains(t, state.subscribed, "chat:srv")
+	require.NotContains(t, state.channels, "chat:srv")
+}
+
 // TestServerTagsFilterTemplateRebindStoresTokenFilters checks a rebind with other values stores the filters of the
 // connection token subscriptions it subscribes, so that a refresh with the same claims compares them with the filters
 // the channels have, and keeps the connection.

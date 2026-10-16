@@ -195,9 +195,10 @@ func (h *Handler) dropRefusedFilterTemplateSubscriptions(client Client, subs map
 }
 
 // rebindFilters are the values of the server tags filter templates which a rebind moves a connection between: the values
-// of the new identity and the values the connection had. enabled is false when no config has templates, and then the
-// rebind does nothing with them. serverSide are the server-side channels with a template which the connection holds and
-// which the rebind subscribes again, read before the rebind moves the connection.
+// of the new identity and the values the connection had. enabled is false when the config had no templates and the
+// connection stored no values when the rebind was checked; the rebind then reads the config again before it applies
+// them, see reboundTemplateSubscriptions and commitRebindFilters. serverSide are the server-side channels with a template
+// which the connection holds and which the rebind subscribes again, read before the rebind moves the connection.
 type rebindFilters struct {
 	enabled    bool
 	previous   filtertemplate.Values
@@ -210,13 +211,14 @@ type rebindFilters struct {
 // rebind, also while the config has no templates: a reload which adds one must render the identity the connection has
 // now, not the one it had when the templates were switched off.
 func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
+	values := filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()}
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !hasStoredFilterValues(c) {
-		return rebindFilters{}
+		return rebindFilters{values: values}
 	}
 	return rebindFilters{
 		enabled:  true,
 		previous: connectionFilterValues(c),
-		values:   filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()},
+		values:   values,
 	}
 }
 
@@ -282,11 +284,13 @@ func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 // with a template is unsubscribed as well: its explicit filter is not known here, so it is not subscribed again, and
 // its channel keeps no filter of the previous values.
 func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters) {
-	if !filters.enabled {
+	if !filters.enabled && !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return
 	}
 	storeFilterValues(c, filters.values)
-	if sameFilterValues(filters.previous, filters.values) {
+	// A rebind checked while the config had no templates has no previous values, so its templated channels are
+	// unsubscribed whenever the config has templates now: they were subscribed without a template.
+	if filters.enabled && sameFilterValues(filters.previous, filters.values) {
 		return
 	}
 	for channel := range c.ChannelsWithContext() {
@@ -340,14 +344,16 @@ func (h *Handler) storeReboundTokenFilters(c rebindableClient, toSubscribe map[s
 
 // reboundTemplateSubscriptions completes toSubscribe, the subscriptions of a rebind, with the server-side channels with a
 // template which checkReboundFilters read, and applies the templates to all of them with the values of the new identity.
-// The stored filters of the token subscriptions are updated after that, see storeReboundTokenFilters. The refusal of a
-// template is checked before the rebind, so it does not fail here.
+// The config is read here, not when the rebind was checked: a reload which added a template in between must not leave
+// a templated channel unfiltered. The stored filters of the token subscriptions are updated after that, see
+// storeReboundTokenFilters. A refusal is checked before the rebind, so one found here means the config was reloaded since,
+// and the connection is disconnected: the rebind is applied, and a disconnect releases what it holds.
 func (h *Handler) reboundTemplateSubscriptions(
 	c rebindableClient,
 	toSubscribe map[string]centrifuge.SubscribeOptions,
 	filters rebindFilters,
 ) error {
-	if !filters.enabled {
+	if !filters.enabled && !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
 	for channel, opts := range filters.serverSide {
@@ -356,7 +362,7 @@ func (h *Handler) reboundTemplateSubscriptions(
 		}
 	}
 	if err := h.applyFilterTemplates(toSubscribe, filters.values); err != nil {
-		return centrifuge.ErrorPermissionDenied
+		return centrifuge.DisconnectPermissionDenied
 	}
 	h.storeReboundTokenFilters(c, toSubscribe)
 	return nil

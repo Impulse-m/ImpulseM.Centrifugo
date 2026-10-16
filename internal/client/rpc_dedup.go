@@ -59,8 +59,6 @@ type rpcDedupState struct {
 	afterBackend func()
 	// notifyLog limits how often a failed cancel notification is logged.
 	notifyLog *tools.IntervalLimiter
-	// wakeup is set when the wakeup of duplicates by the done notification is on, see setupRPCDedupRedis.
-	wakeup bool
 }
 
 // newRPCDedupState returns the exactly-once RPC state of the config, or nil when the dedup is off. The state is

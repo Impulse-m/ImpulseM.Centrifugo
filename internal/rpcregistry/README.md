@@ -26,6 +26,9 @@ The registry lets clients call existing gRPC methods of backend services through
 * `errors`: protocol errors returned for failures of the registry itself: unknown method, auth class mismatch, request too large, and a call cancelled by the client. Each has `code`, `message`, and optional `app_code` and `app_type`.
 * `app_error`: names of the gRPC trailers which carry the application error code and type. Defaults are `app-code` and `app-type`.
 * `grpc_status_to_code_transforms`: overrides for the default mapping of gRPC status codes to protocol errors, see [error mapping](#error-mapping).
+* `max_inflight_bytes`: the node-wide budget of registry calls in flight, in bytes. Default `0`, no budget. A call costs its request bytes plus its response bound, and a call which would take the budget over the limit is refused, see [Admission](#admission). Read at start.
+* `memory_watermark_bytes`: the resident memory above which new registry calls are refused. Default `0`, off. Read at start, see [Admission](#admission).
+* `errors.overloaded`: the temporary error of a refused call. Default code and message are those of `ErrorTooManyRequests`, `111` and `too many requests`. Its metadata carries `x-centrifugo-retry: later`.
 * When the registry is enabled, the server advertises the RPC options capability (bit 32) in the connect reply, so SDKs can send per-call headers. Clients which do not ask for the capability are unaffected.
 
 Registry file:
@@ -67,6 +70,16 @@ methods:
 ```
 
 The same tree works as JSON. Each method and target field left unset inherits from the target, then from `defaults`, then from the built-in values: `timeout` 5s, `max_request_bytes` 64 KiB, `max_response_bytes` 1 MiB, `idempotent` false. Method names match `^[A-Za-z0-9_.:/-]{1,128}$`, gRPC method paths match `^/[\w.]+/\w+$`. Header allow-lists are lower-case. `authorization`, `traceparent`, `tracestate`, `x-forwarded-for` and names with the `x-centrifugo-` prefix are reserved and rejected in both allow-lists.
+
+Target and method fields for routing and sizes, all off unless set:
+
+* `load_balancing: ring_hash` with `affinity_header: <name>` picks the replica of a target by a consistent hash of the value of the per-call header `<name>`. The gRPC `ring_hash` policy does the hashing. A call without the header gets a random replica. `affinity_header` is refused with any other policy, and `ring_hash` needs it. The name is lower-case, is not a reserved name, does not end in `-bin`, and at least one method of the target must list it in `headers`, so the header reaches the backend. The server never parses the value: the backend which issues it validates it. `GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY=false` in the environment makes a target with `ring_hash` fail the config check, since gRPC would hash at random.
+* `response_size_hint: {request_field: N, overhead_bytes: 1024}` bounds the reply of a call by the number the request carries in field `N`, a varint field, plus `overhead_bytes`, so a small read reserves a small budget. The bound is the call's receive limit, so a reply over it fails as a reply over `max_response_bytes` does. A request without the field, with a zero value, or with a value at or above `max_response_bytes` minus the overhead, gets `max_response_bytes`. Zero `overhead_bytes` means 1024. The scan reads at most 256 top-level fields of the request.
+
+Patterns for the answers of a backend which the client acts on, both through `error_metadata`:
+
+* A move is an error whose trailer names the place which has the data, for example `x-example-relocate: eu-2`. The client's pool reroutes the call on it. The server does nothing special: it copies the listed trailer into the error metadata.
+* A redirect is a reply or an error which names a URL, for example a presigned one in `x-example-location`. The client fetches the bytes itself. The server never proxies the URL.
 
 Auth classes say which connections can call a method. Every connection has one class:
 
@@ -263,7 +276,7 @@ Off by default. Turn it on with `rpc.registry.dedup.enabled`. It needs `rpc.regi
 * Ack. A call lists in `ack` the `msg_id`s whose replies it received. Their records are removed.
 * Mutations and disconnects. A non-idempotent call in a scope runs on a context which a disconnect does not cancel, so a backend commit completes, and its answer is kept. A disconnect which the status mapping makes of the answer is kept as a protocol error with its code and reason, so a retransmit gets it without a second backend call. A non-idempotent call without a scope, and an idempotent call, are cancelled by a disconnect.
 * A store failure answers a tracked call with the temporary `errors.dedup_unavailable` under `on_store_error: fail_closed`, the default. Under `fail_open` the call runs without dedup. The same applies to a call of a new scope which the node cannot admit within its budgets, see Admission. Idempotent calls do not use the store.
-* Retry signal. An error which tells the client that its call was not executed carries the metadata key `x-centrifugo-retry`, which the server sets itself. Its value is `new_msg_id` on `errors.msg_id_invalid` for a `msg_id` outside the window of a first transmission (a retransmit gets no key, since its call may have run), and `later` on `errors.dedup_unavailable`, when the store refuses the call under `fail_closed`, and when a duplicate waits past the method timeout for the call it joined. With the shared tier (see Shared records), `later` is also sent when the shared tier fails to begin a call under `fail_closed`, to the call and to each duplicate which joined it on this node, and when a duplicate waits on another node past the method timeout. A duplicate whose watch on another node gives up, because the record of the call disappears or its polls fail before an answer, gets `dedup_unavailable` without the key: the call may have run there. Under `fail_open` a call whose `msg_id` already runs on its connection gets `errors.dedup_unavailable` without the key: the call is running, and a resend would run it again. A duplicate of a call whose owner panicked gets `errors.dedup_unavailable` without the key too, and so does a retransmit of its `msg_id`: the call may have run, so the record of the error is kept and the call is not run again. The app decides whether to start a new call. `new_msg_id` means the client re-syncs its clock from the reply time and sends the call again with a new `msg_id`. `later` means the client sends the same call again, with the same `msg_id`, after a short delay. A later resend joins the call of its owner while the owner runs, and gets the owner's record once it is kept. A record which the store has dropped by then is a miss, and the call runs again: the signal does not guard against a dropped record. After a `begin` whose reply was lost under `fail_closed`, the in-flight record of the refused call stays in Redis with no call running, so a later resend to that node waits for the record to expire and is answered `errors.dedup_unavailable` without the key, see Re-execution windows. The call has not run, and a retransmit after the expiry runs it. A cancel is never sent again. No other error carries the key: a call which ran, `errors.msg_id_reused`, `errors.result_evicted`, a cancel, and the gate errors do not. These errors are never recorded. A record written before the key existed may hold it, and its replay to a retransmit drops it. Clients which do not know the key ignore it.
+* Retry signal. An error which tells the client that its call was not executed carries the metadata key `x-centrifugo-retry`, which the server sets itself. Its value is `new_msg_id` on `errors.msg_id_invalid` for a `msg_id` outside the window of a first transmission (a retransmit gets no key, since its call may have run), `later` on `errors.overloaded` when admission refuses the call (see [Admission](#admission)), `later` on `errors.dedup_unavailable`, when the store refuses the call under `fail_closed`, and when a duplicate waits past the method timeout for the call it joined. With the shared tier (see Shared records), `later` is also sent when the shared tier fails to begin a call under `fail_closed`, to the call and to each duplicate which joined it on this node, and when a duplicate waits on another node past the method timeout. A duplicate whose watch on another node gives up, because the record of the call disappears or its polls fail before an answer, gets `dedup_unavailable` without the key: the call may have run there. Under `fail_open` a call whose `msg_id` already runs on its connection gets `errors.dedup_unavailable` without the key: the call is running, and a resend would run it again. A duplicate of a call whose owner panicked gets `errors.dedup_unavailable` without the key too, and so does a retransmit of its `msg_id`: the call may have run, so the record of the error is kept and the call is not run again. The app decides whether to start a new call. `new_msg_id` means the client re-syncs its clock from the reply time and sends the call again with a new `msg_id`. `later` means the client sends the same call again, with the same `msg_id`, after a short delay. A later resend joins the call of its owner while the owner runs, and gets the owner's record once it is kept. A record which the store has dropped by then is a miss, and the call runs again: the signal does not guard against a dropped record. After a `begin` whose reply was lost under `fail_closed`, the in-flight record of the refused call stays in Redis with no call running, so a later resend to that node waits for the record to expire and is answered `errors.dedup_unavailable` without the key, see Re-execution windows. The call has not run, and a retransmit after the expiry runs it. A cancel is never sent again. No other error carries the key: a call which ran, `errors.msg_id_reused`, `errors.result_evicted`, a cancel, and the gate errors do not. These errors are never recorded. A record written before the key existed may hold it, and its replay to a retransmit drops it. Clients which do not know the key ignore it.
 * Records are node-local unless `redis.enabled` is set, see Shared records.
 * Secrecy. The instance is a bearer secret. It must be random, made by the application, of at least 128 bits (22 base64url characters), kept per installation or per tab, and never shared or logged. Whoever knows it can retransmit and cancel calls in its scope. The server never logs the instance or a scope.
 
@@ -343,9 +356,77 @@ What a flood can do. A client with a valid scope which sends distinct `msg_id`s 
 
 Recommended deployment. Use a dedicated Redis for the shared tier, with `maxmemory` set and `maxmemory-policy volatile-lru`, or `noeviction` on a Redis sized for its load. Do not use `volatile-ttl`: it evicts the keys with the shortest remaining TTL first, and an in-flight record has a shorter TTL than a done record, so under `maxmemory` the in-flight records of running calls go first. Evicting an in-flight record lets a retransmit of its call run it again while the first execution still runs, so the call can execute twice at once. A done record that is evicted only makes a retransmit of its call run again, which is the eviction semantics of the node-local store. Under `volatile-lru` an in-flight record is evicted only when it is the least recently used key, which is rare for a running call, but it is possible, and the backend must dedupe by `msg_id` for the calls which cannot run twice. Do not use an `allkeys-*` policy on a Redis which the engine shares: a Redis under `noeviction` fails the writes of `begin` at `maxmemory`, and those then follow `on_store_error`. `reuse_from_engine` suits small deployments, where the records live in the `rpc` namespace under the engine prefix. Redis 6 or later is required. The scripts do not call `TIME`, so they replicate and run on Redis 6 and later.
 
+## Admission
+
+Admission decides whether a registry call may run, before its dedup and its backend call. It has two signals, both off by default. Each call is admitted or refused as one.
+
+* The in-flight budget (`max_inflight_bytes`) is a node-wide sum of the costs of the calls in flight. A call's cost is its request bytes plus its response bound (the method's `max_response_bytes`, or the hinted size with `response_size_hint`). A call which would take the sum over the budget is refused, and nothing is queued: a call's memory is allocated when the server reads it, so waiting would hold what the budget is meant to bound. The budget is charged with a compare-and-swap, so a call which fits is never refused because another call is charged at the same moment.
+* The memory watermark (`memory_watermark_bytes`) refuses calls while the resident memory of the Go runtime is at or over it, the quantity `GOMEMLIMIT` is measured against. The sample is taken on the admission path, at most every 100 ms, so there is no goroutine or timer. Refusals stop when the memory is under 90% of the watermark, so a node at the edge does not flap call by call. Set the watermark below `GOMEMLIMIT` or the container limit.
+
+A refused call is answered with `errors.overloaded`, temporary, with `x-centrifugo-retry: later`: the call was not executed, so the client sends it again later, with the same `msg_id` if it has one. A refused call is not recorded for exactly-once RPC. Both keys are read at start, and a config reload does not change them.
+
+Config validation refuses a budget below the cost of any method, a negative budget or watermark, since such a method could never run. The rules which depend on bandwidth or latency are documented in [Large-payload fleets](#large-payload-fleets).
+
+Refusals are counted in `centrifugo_rpc_registry_admission_refusals_total{reason}`, with reason `inflight` or `memory`, and in `calls_total` with result `overloaded`. The budget in use is `centrifugo_rpc_registry_inflight_bytes`.
+
+## Large-payload fleets
+
+A large-payload fleet is an ordinary Centrifugo deployment whose registry is configured for big frames. It needs no server feature beyond the keys above and the response size hint: the frame limit, the reply queue, the write timeout and the concurrency are the existing keys of the fleet. The numbers below are an example for a chunk profile of 512 KiB parts with 1 MiB reads, and any other profile substitutes its own.
+
+```json
+{
+  "websocket": {"message_size_limit": 1114112, "write_timeout": "60s"},
+  "client": {
+    "concurrency": 4,
+    "queue_max_size": 4263936,
+    "user_connection_limit": 16,
+    "connection_rate_limit": 2000
+  },
+  "rpc": {"registry": {
+    "enabled": true,
+    "file": "/etc/centrifugo/rpc_registry_large.yaml",
+    "max_inflight_bytes": 536870912,
+    "memory_watermark_bytes": 3221225472
+  }}
+}
+```
+
+Rules, with their reasons:
+
+* `websocket.message_size_limit` is at least the largest `max_request_bytes` plus 1 KiB of envelope. 1114112 is 1 MiB plus 64 KiB.
+* `client.queue_max_size` is at least `client.concurrency` times the largest `max_response_bytes`, plus 64 KiB. A reply over the queue disconnects the client as slow, and the queue holds at most one reply per call in flight.
+* `client.concurrency` is at least the window of the client's pool plus one. At the default `0`, calls run one at a time on the read loop, so a window of one is what a socket carries without blocking it. A larger window needs the concurrency raised, or the read loop blocks on the semaphore and reads no pongs, and the connection is closed when a call outlives the pong timeout.
+* `websocket.write_timeout` is at least the largest response over the slowest client link: 1 MiB at 1 Mbit/s takes 8 s.
+* The registry file lists only the large-payload methods, each with `idempotent: true`, an explicit `timeout`, `max_request_bytes` and `max_response_bytes`, `response_size_hint` on reads, the affinity header in `headers` and the moves and redirects in `error_metadata`. Targets which keep state per object on a replica use `ring_hash`.
+* No channel namespaces, and no personal channel on the fleet: client subscriptions are refused by default, and the fleet runs no broker. Issue tokens without `channels`, since each would add a server-side subscription.
+
+### Sizing the admission
+
+Calls in flight obey Little's law: the bytes in flight equal the admitted payload rate times the time a call stays on the node. So `max_inflight_bytes` is about twice the bytes in flight at the 99th percentile of the backend latency, and the memory of the calls in flight is at most about three times the budget while they are being moved, and about one time it while they wait on the backend. For a node on a 1 Gbit/s link, about 125 MB/s of payload, and a p99 of 2 s, the bytes in flight at the tail are about 250 MB, so the example budget is 512 MiB.
+
+The watermark sits at 75% to 80% of `GOMEMLIMIT`, or of the container limit less the headroom of the kernel and the sockets. The example's 3 GiB on a 4 GiB node leaves the budget's transient of 1.5 GiB its place, and catches what the budget cannot see: the writer queues of slow readers, the decoder buffers, and everything else the node does.
+
+Alert on `centrifugo_rpc_registry_inflight_bytes / max_inflight_bytes > 0.8`, and on `rate(centrifugo_rpc_registry_admission_refusals_total[5m]) > 0` by `reason`. `inflight` means the backend is slow for the offered load. `memory` means the node is undersized, or slow readers hold the writer queues.
+
+### Connection churn
+
+What a client costs the fleet beyond its calls, and the key which bounds each line:
+
+| Line | Bound | Key |
+|---|---|---|
+| Sockets per client | connections per endpoint times the endpoint keys in use, 2 at the defaults of the client pool | client pool options |
+| Sockets per user per node | the line above times the devices of the user on the node | `client.user_connection_limit` |
+| New sockets per second per node | the reconnect storm after a deploy | `client.connection_rate_limit` |
+| Idle sockets | the client pool closes a socket after its idle timeout; the server closes a socket only when it stops answering pings | client pool `idleTimeout`, `client.stale_close_delay` for unauthenticated sockets |
+| Token mints per open | one at most per open, and a mint reaches the issuer only once per expiry of the cached token | the token provider of the client |
+
+An application which keeps transfers rare keeps its sockets closed between them. One which transfers continuously keeps two sockets per client open.
+
 ## Metrics
 
-* `centrifugo_rpc_registry_calls_total{rpc_method, result}`: calls by method and result (`ok`, `error`, `cancelled`, `timeout`, `denied`, `unknown`). A call to a name which is not in the registry counts as `unknown`.
+* `centrifugo_rpc_registry_calls_total{rpc_method, result}`: calls by method and result (`ok`, `error`, `cancelled`, `timeout`, `denied`, `unknown`, `overloaded`). A call to a name which is not in the registry counts as `unknown`.
+* `centrifugo_rpc_registry_inflight_bytes`: bytes of registry calls in flight on the node, by the cost of admission. It is set only when `max_inflight_bytes` is set, and reads zero otherwise.
+* `centrifugo_rpc_registry_admission_refusals_total{reason}`: calls which admission refused, by `reason`: `inflight` for the budget, `memory` for the watermark. See [Admission](#admission).
 * `centrifugo_rpc_registry_errors_total{rpc_method, app_type}`: failed calls with an application error type. Cancelled calls are not counted here.
 * `centrifugo_rpc_registry_reloads_total{trigger, result}`: reloads of the registry. `trigger` is `signal` for a configuration reload on SIGHUP, and `poll` for a change of the registry file found by the poll. `result` is `ok` or `error`. A touch without a change of content is not a reload. A reload which fails, on a content or a dial error, counts as `error`. A file which cannot be read is logged and not counted.
 * Per target, the proxy metrics with protocol `grpc` and type `rpc`: `centrifugo_proxy_duration_seconds`, `centrifugo_proxy_duration_seconds_histogram`, `centrifugo_proxy_errors` and `centrifugo_proxy_inflight_requests`. A call cancelled by the client is not observed in them, as the proxy handler does for a closed client; `centrifugo_proxy_inflight_requests` still counts it while it runs.
@@ -363,7 +444,15 @@ Recommended deployment. Use a dedicated Redis for the shared tier, with `maxmemo
 * `centrifugo_rpc_registry_dedup_remote_waits_total{end}`: waits for calls on other nodes, by how they ended. `notified` is a wait which a done notification woke, and whose poll found the answer or the key gone; `polled` is a wait which a fallback or ramp poll ended; `deadline` is a wait which the in-flight TTL ended. With the wakeup on, `polled` while the owners are alive means lost notifications, and `polled` during a node loss is expected. Suggested alert with the wakeup on, while no node is lost: `rate(centrifugo_rpc_registry_dedup_remote_waits_total{end="polled"}[5m]) > 0`.
 * `centrifugo_rpc_registry_dedup_notifications_total{op, result}`: node notifications of exactly-once RPC which this node sent. `op` is `cancel`, which asks the node which runs a call to cancel it, or `done`, which tells a waiting node that the record is written; `result` is `ok` or `error`. A `done` error means the waiting node polls for the answer instead.
 * `centrifugo_rpc_registry_retransmit_total{rpc_method}`: calls which the client sent again after a transport loss.
-* The series are created when the registry is built. Each registry method exports one zero-valued `calls_total` series per result, so N methods export 6·N series. Each target exports its four proxy series, the same way. The `unknown` method label is the exception: its series are created on the first call to an unknown name.
+* The series are created when the registry is built. Each registry method exports one zero-valued `calls_total` series per result, so N methods export 7·N series. Each target exports its four proxy series, the same way. The `unknown` method label is the exception: its series are created on the first call to an unknown name.
+
+## Parity
+
+Centrifugo PRO has no RPC method registry, so the features of this registry have no PRO equivalent to match:
+
+| Feature | Status |
+|---|---|
+| Large-payload fleets, affinity routing, admission by in-flight bytes and memory | fork extension, no PRO equivalent |
 
 ## Planned
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/backoffpolicy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -122,7 +123,7 @@ func TestSharedWakeupCheckIsJittered(t *testing.T) {
 	const samples = 1000
 	distinct := make(map[time.Duration]struct{})
 	for range samples {
-		delay := newRetryBackOff(time.Second, time.Second).NextBackOff()
+		delay := backoffpolicy.Exponential(time.Second, time.Second).NextBackOff()
 		require.GreaterOrEqual(t, delay, 800*time.Millisecond)
 		require.LessOrEqual(t, delay, 1200*time.Millisecond)
 		distinct[delay] = struct{}{}

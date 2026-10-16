@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/backoffpolicy"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
@@ -333,7 +334,7 @@ func (s *Shared) watch(key Key, flight *Flight) {
 func (s *Shared) watchPolling(key Key, flight *Flight) {
 	ctx, cancel := context.WithTimeout(context.Background(), flight.timeout+s.inflightGrace)
 	defer cancel()
-	schedule := newRetryBackOff(s.pollInitial, s.pollMax)
+	schedule := backoffpolicy.Exponential(s.pollInitial, s.pollMax)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -365,7 +366,7 @@ func (s *Shared) watchWake(key Key, flight *Flight) {
 	started := time.Now()
 	// A backoff whose initial and maximum interval are both checkDelay yields checkDelay plus or minus a fifth, the
 	// ramp's own jitter, so the checks of a wave spread over 0.8 s.
-	timer := time.NewTimer(newRetryBackOff(s.checkDelay, s.checkDelay).NextBackOff())
+	timer := time.NewTimer(backoffpolicy.Exponential(s.checkDelay, s.checkDelay).NextBackOff())
 	defer timer.Stop()
 	checked := false
 	for {
@@ -566,7 +567,7 @@ func (s *Shared) completeShared(ctx context.Context, key Key, flight *Flight, re
 	res, err := backoff.Retry(ctx, func() (CompleteResult, error) {
 		attempts++
 		return s.backend.Complete(ctx, key, s.nodeID, stored, errJSON, s.ttl)
-	}, backoff.WithBackOff(newRetryBackOff(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
+	}, backoff.WithBackOff(backoffpolicy.Exponential(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
 		return nil
@@ -761,17 +762,6 @@ func (s *Shared) flushAcks(ctx context.Context, keys []Key) bool {
 		return false
 	}
 	return true
-}
-
-// newRetryBackOff returns the policy of the retries of the shared tier: the delay starts at initial, doubles up to
-// maxDelay, and is randomized by a fifth either way, so that the retries of many calls do not come in step.
-func newRetryBackOff(initial time.Duration, maxDelay time.Duration) *backoff.ExponentialBackOff {
-	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = initial
-	b.MaxInterval = maxDelay
-	b.Multiplier = 2
-	b.RandomizationFactor = 0.2
-	return b
 }
 
 // logError logs an error of the shared tier at most once per redisshard.ErrorLogInterval.

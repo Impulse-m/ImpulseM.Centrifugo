@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/backoffpolicy"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/redis/rueidis"
@@ -102,7 +103,7 @@ func (r *Redis) watchShard(ctx context.Context, index int, stream string, wake f
 		defer r.observer.WakeWatching(-1)
 	}
 	cursor := "0-0"
-	retry := newRetryBackOff(wakeRetryMin, wakeRetryMax)
+	retry := backoffpolicy.Exponential(wakeRetryMin, wakeRetryMax)
 	for ctx.Err() == nil {
 		shard, err := r.watchedShard(index)
 		var entries []wakeEntry

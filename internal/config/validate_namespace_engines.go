@@ -312,9 +312,9 @@ type natsEngineRef struct {
 // the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes,
 // including the ones of the default NATS broker when Core makes it the controller. A channel is subscribed only on
 // the broker which routes it, so the channel spaces of two brokers conflict only when one is nested in the other, or
-// through a wildcard subscription. A
-// raw mode root is concatenated with the channel, and a control subject is subscribed as it is, so they conflict
-// with any subject they can match, since a publication would reach the other subscription.
+// through a wildcard subscription. A raw mode root is concatenated with the channel, and a control subject is
+// subscribed as it is, so they conflict with any subject they can match, since a publication would reach the other
+// subscription.
 func validateNamedNatsSubjects(c Config) error {
 	if !c.Controller.Enabled && !hasEnabledEngines(c) {
 		// A configuration with only the default broker has no other subject to overlap with. Its own control subjects

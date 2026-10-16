@@ -101,8 +101,8 @@ func (r *NamespaceEnginesRecord) check(newCfg Config) error {
 // CheckNamespaceEnginesReload refuses a reload which changes what the named brokers, presence managers and map
 // brokers route: the set of enabled entries with their types and Redis or PostgreSQL prefixes, the engine selection
 // of a namespace (recorded since startup, see NamespaceEnginesRecord), and the controller with its type and prefix.
-// Such a change needs a restart. Connection details of the entries and of the controller are applied on reload as
-// for the default engine.
+// Such a change needs a restart. Connection details of the entries and of the controller are accepted on reload but
+// read at startup only, as for the engine.
 func CheckNamespaceEnginesReload(oldCfg Config, newCfg Config, record *NamespaceEnginesRecord) error {
 	if !slices.Equal(enabledBrokerKeys(oldCfg), enabledBrokerKeys(newCfg)) {
 		return namespaceEnginesChanged("enabled entries of brokers")

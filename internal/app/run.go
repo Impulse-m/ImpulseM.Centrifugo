@@ -406,6 +406,7 @@ func handleSignals(
 	cfg := cfgContainer.Config()
 	// The cache empty proxies were created from the config at startup, so a reload must keep their layout.
 	cacheEmptyStartup := cacheEmptyLayout(cfg)
+	cacheEmptyTargetsStartup := cacheEmptyTargets(cfg)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, os.Interrupt, syscall.SIGTERM)
 	for {
@@ -434,6 +435,7 @@ func handleSignals(
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
+			warnCacheEmptyTargetsReload(cacheEmptyTargetsStartup, newCfg)
 			log.Info().Msg("configuration successfully reloaded")
 		case syscall.SIGINT, os.Interrupt, syscall.SIGTERM:
 			log.Info().Msg("shutting down ...")

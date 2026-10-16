@@ -251,3 +251,68 @@ func TestCheckCacheEmptyReload(t *testing.T) {
 		})
 	}
 }
+
+// TestCacheEmptyTargets checks the endpoint and timeout of each cache empty proxy, which a reload compares with the
+// startup values: a change of either one is seen for that proxy only.
+func TestCacheEmptyTargets(t *testing.T) {
+	newStartupConfig := func() config.Config {
+		cfg := newCacheEmptyStartupConfig()
+		cfg.Channel.WithoutNamespace = configtypes.ChannelOptions{
+			CacheEmptyProxyEnabled: true,
+			CacheEmptyProxyName:    config.DefaultProxyName,
+		}
+		cfg.Proxies = []configtypes.NamedProxy{
+			{Name: "other", Proxy: newChannelEventsTestProxy("http://localhost:8000/other")},
+		}
+		return cfg
+	}
+	startup := cacheEmptyTargets(newStartupConfig())
+	require.Equal(t, cacheEmptyTarget{
+		endpoint: "http://localhost:8000/default",
+		timeout:  configtypes.Duration(time.Second),
+	}, startup["default"])
+	require.Equal(t, cacheEmptyTarget{
+		endpoint: "http://localhost:8000/other",
+		timeout:  configtypes.Duration(time.Second),
+	}, startup["other"])
+
+	testCases := []struct {
+		name        string
+		modify      func(cfg *config.Config)
+		wantChanged []string
+	}{
+		{
+			name:   "unchanged",
+			modify: func(cfg *config.Config) {},
+		},
+		{
+			name: "endpoint of the default proxy",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Proxy.CacheEmpty.Endpoint = "http://localhost:8000/moved"
+			},
+			wantChanged: []string{"default"},
+		},
+		{
+			name: "timeout of the named proxy",
+			modify: func(cfg *config.Config) {
+				cfg.Proxies[0].Proxy.Timeout = configtypes.Duration(2 * time.Second)
+			},
+			wantChanged: []string{"other"},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newStartupConfig()
+			tc.modify(&cfg)
+			reloaded := cacheEmptyTargets(cfg)
+
+			var changed []string
+			for name, target := range startup {
+				if reloaded[name] != target {
+					changed = append(changed, name)
+				}
+			}
+			require.ElementsMatch(t, tc.wantChanged, changed)
+		})
+	}
+}

@@ -257,6 +257,6 @@ func TestConfigValidateNamesWithoutNamespaceOfTemplateErrorOnce(t *testing.T) {
 		Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "eq", "val": "{{claims.}}"},
 	}
 	err := cfg.Validate()
-	require.ErrorContains(t, err, "without_namespace: filter")
+	require.ErrorContains(t, err, "channel.without_namespace: filter")
 	require.NotContains(t, err.Error(), "in channel.without_namespace")
 }

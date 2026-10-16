@@ -23,18 +23,10 @@ func validateServerTagsFilterTemplate(name string, c configtypes.ChannelOptions)
 		return nil
 	}
 	if c.Presence || c.JoinLeave || c.ForcePushJoinLeave || c.MapClientsPresenceChannelPrefix != "" || c.MapUsersPresenceChannelPrefix != "" {
-		return fmt.Errorf("%s: presence, join_leave, force_push_join_leave and the map presence prefixes must be off with server_tags_filter_template", templateLabel(name))
+		return fmt.Errorf("%s: presence, join_leave, force_push_join_leave and the map presence prefixes must be off with server_tags_filter_template", filtertemplate.Label(name))
 	}
 	if c.SubscriptionType == "shared_poll" {
-		return fmt.Errorf("%s: server_tags_filter_template is not supported with subscription_type shared_poll", templateLabel(name))
+		return fmt.Errorf("%s: server_tags_filter_template is not supported with subscription_type shared_poll", filtertemplate.Label(name))
 	}
 	return nil
-}
-
-// templateLabel names the channels a template applies to in an error message.
-func templateLabel(name string) string {
-	if name == "" {
-		return "channel.without_namespace"
-	}
-	return fmt.Sprintf("namespace %q", name)
 }

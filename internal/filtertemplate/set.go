@@ -21,7 +21,7 @@ const (
 	userVariable          = "user"
 	clientVariable        = "client"
 	claimPrefix           = "claims."
-	withoutNamespaceLabel = "without_namespace"
+	withoutNamespaceLabel = "channel.without_namespace"
 )
 
 // node is a compiled filter node. Op, key and cmp are literal.
@@ -86,8 +86,17 @@ func (s *Set) Template(name string) *Template {
 	return s.templates[name]
 }
 
+// Label names the channels of a namespace in an error message: the namespace, or channel.without_namespace for "".
+// The config errors of the templates use it too, so one spelling reaches the operator.
+func Label(name string) string {
+	if name == "" {
+		return withoutNamespaceLabel
+	}
+	return fmt.Sprintf("namespace %q", name)
+}
+
 func compileSource(name string, src Source) (*Template, error) {
-	label := sourceLabel(name)
+	label := Label(name)
 	if len(src.Filter) == 0 {
 		if src.OnMissingValue != "" {
 			return nil, fmt.Errorf("%s: on_missing_value requires filter", label)
@@ -115,13 +124,6 @@ func compileSource(name string, src Source) (*Template, error) {
 	t := &Template{root: root, onMissing: onMissing}
 	t.countParts()
 	return t, nil
-}
-
-func sourceLabel(name string) string {
-	if name == "" {
-		return withoutNamespaceLabel
-	}
-	return fmt.Sprintf("namespace %q", name)
 }
 
 func parseOnMissing(value string) (OnMissing, error) {

@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
-
-	"google.golang.org/grpc/metadata"
 )
 
 // GRPCChannelStateProxy sends channel state events to the application backend over gRPC.
@@ -25,8 +23,7 @@ func NewGRPCChannelStateProxy(name string, p Config) (ChannelStateProxy, error) 
 }
 
 // ProxyNotifyChannelState sends a batch of channel state events to application backend.
-// The metadata comes from a background context: a batch has no client, so no client metadata is forwarded.
+// A batch has no client, so the context carries no client metadata; only the static metadata of the proxy is sent.
 func (p *GRPCChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
-	md, _ := metadata.FromOutgoingContext(grpcRequestContext(context.Background(), p.config))
-	return p.client.NotifyChannelState(metadata.NewOutgoingContext(ctx, md), req)
+	return p.client.NotifyChannelState(grpcRequestContext(ctx, p.config), req)
 }

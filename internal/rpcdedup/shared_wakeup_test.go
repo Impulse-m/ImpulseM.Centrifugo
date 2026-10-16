@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,6 +158,26 @@ func TestSharedWakeupManyWakesCoalesce(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
+	// The first poll of the watcher is held until the five wakes are sent, so the wakes after the first find the watcher
+	// busy with its poll, and coalesce into one pending wake, as they do while a poll is in flight.
+	polling := make(chan struct{})
+	released := make(chan struct{})
+	var holdOnce sync.Once
+	fx.backend.beforeRead = func() {
+		holdOnce.Do(func() {
+			close(polling)
+			<-released
+		})
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(released)
+		})
+	}
+	// The hold must end before the fixture stops its watcher, even when the test fails first.
+	t.Cleanup(release)
+
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
@@ -164,11 +185,14 @@ func TestSharedWakeupManyWakesCoalesce(t *testing.T) {
 	for range 5 {
 		fx.shared.Wake(sharedKey)
 	}
-	require.Eventually(t, func() bool {
-		return fx.pollCount() >= 1
-	}, 5*time.Second, time.Millisecond)
+	select {
+	case <-polling:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the watcher did not poll")
+	}
+	release()
 	time.Sleep(20 * time.Millisecond)
-	require.LessOrEqual(t, fx.pollCount(), 2)
+	require.LessOrEqual(t, fx.pollCount(), 2, "the poll in flight and at most one coalesced pending wake")
 	require.True(t, flightOpen(owner))
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)

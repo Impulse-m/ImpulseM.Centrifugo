@@ -71,6 +71,9 @@ type fakeBackend struct {
 	// afterBegin runs once a begin call has answered, outside the lock: a call which lands after the script does, such
 	// as the owner's completion of a call which the begin found in flight.
 	afterBegin func()
+	// beforeRead runs when a poll of the shared tier starts, before it reads, outside the lock: a hook which blocks holds
+	// the wait which polls there.
+	beforeRead func()
 	// wakes are the calls of Wake, in order, and wakeErr is the failure of every Wake call.
 	wakes   []wakeCall
 	wakeErr error
@@ -339,6 +342,9 @@ func (f *fakeBackend) Cancel(_ context.Context, key Key, failure *centrifuge.Err
 func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
 	if err := f.enter("poll"); err != nil {
 		return PollResult{}, err
+	}
+	if f.beforeRead != nil {
+		f.beforeRead()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

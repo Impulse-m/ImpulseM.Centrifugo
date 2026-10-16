@@ -775,7 +775,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
 				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+			wantErr: "",
 		},
 		{
 			name: "named nats broker in raw mode with an empty root and a non-raw broker",
@@ -875,11 +875,22 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "default nats broker and a named nats broker with the same prefix",
+			name: "default nats broker and a named nats broker with the same prefix and no wildcards",
 			modify: func(cfg *Config) {
 				cfg.Broker.Enabled = true
 				cfg.Broker.Type = "nats"
 				cfg.Broker.Nats.Prefix = "shared"
+				cfg.Brokers[1].Nats.Prefix = "shared"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default nats broker with wildcards and a named nats broker with the same prefix",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "shared"
+				cfg.Broker.Nats.AllowWildcards = true
 				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
 			wantErr: `broker and brokers "rates" use overlapping NATS subjects`,

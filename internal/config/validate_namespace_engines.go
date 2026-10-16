@@ -297,19 +297,23 @@ func newRedisControlRefs(label string, redisCfg configtypes.Redis, prefix string
 // natsEngineRef is a NATS subject of the configuration: the subject space of the default broker or of a named
 // broker, or a subject which a NATS controller subscribes. space is the subject prefix, and exact marks a subject
 // which is subscribed as it is. isDefault marks the default broker, and the subjects which the default broker
-// subscribes as the controller when it is not in raw mode.
+// subscribes as the controller when it is not in raw mode. channel marks the channel space of a broker which is not in
+// raw mode, and wildcards marks a broker which allows wildcard subscriptions.
 type natsEngineRef struct {
 	label     string
 	space     string
 	exact     bool
 	isDefault bool
+	channel   bool
+	wildcards bool
 }
 
 // validateNamedNatsSubjects rejects two NATS subjects of the configuration which overlap, see natsSpacesConflict:
 // the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes,
-// including the ones of the default NATS broker when Core makes it the controller. A publication to one of them
-// reaches the subscription of the other, so a node would deliver it twice. A wildcard subscription does not change
-// this, since it stays inside the subject space of its broker.
+// including the ones of the default NATS broker when Core makes it the controller. A channel is subscribed only on
+// the broker which routes it, so the channel spaces of two brokers conflict only through a wildcard subscription. A
+// raw mode root is concatenated with the channel, and a control subject is subscribed as it is, so they conflict
+// with any subject they can match, since a publication would reach the other subscription.
 func validateNamedNatsSubjects(c Config) error {
 	if !c.Controller.Enabled && !hasEnabledNamedEngine(c) {
 		// A configuration with only the default broker has no other subject to overlap with. Its own control subjects
@@ -375,15 +379,18 @@ func hasEnabledNamedEngine(c Config) bool {
 // in raw mode uses the raw mode prefix as its space, since its subjects are the prefix followed by the channel.
 // Any other broker uses its prefix followed by .client., as in natsbroker.
 func newNatsBrokerRef(label string, natsCfg configtypes.NatsBroker, isDefault bool) natsEngineRef {
-	space := natsCfg.Prefix + ".client."
-	if natsCfg.RawMode.Enabled {
-		space = natsCfg.RawMode.Prefix
-	}
-	return natsEngineRef{
+	ref := natsEngineRef{
 		label:     label,
-		space:     space,
+		space:     natsCfg.Prefix + ".client.",
 		isDefault: isDefault,
+		channel:   true,
+		wildcards: natsCfg.AllowWildcards,
 	}
+	if natsCfg.RawMode.Enabled {
+		ref.space = natsCfg.RawMode.Prefix
+		ref.channel = false
+	}
+	return ref
 }
 
 // newNatsControllerRefs returns the subjects which a NATS controller subscribes, as natsbroker does: the control
@@ -405,8 +412,13 @@ func newNatsControllerRefs(label string, natsCfg configtypes.NatsPrefixed, isDef
 	}
 }
 
-// natsSpacesConflict reports whether two NATS references can match the same subject, see spacesConflict.
+// natsSpacesConflict reports whether two NATS references can match the same subject, see spacesConflict. Two channel
+// spaces which are not in raw mode conflict only when a broker allows wildcard subscriptions: each channel is
+// subscribed only on the broker which routes it, so an exact channel subject reaches one broker.
 func natsSpacesConflict(a natsEngineRef, b natsEngineRef) bool {
+	if a.channel && b.channel && !a.wildcards && !b.wildcards {
+		return false
+	}
 	return spacesConflict(a.space, a.exact, b.space, b.exact)
 }
 

@@ -49,11 +49,16 @@ type forkRegistry struct {
 	rpcRegistryDedupNotifications *prometheus.CounterVec
 	rpcRegistryDedupWakes         *prometheus.CounterVec
 	rpcRegistryDedupWakeWatchers  prometheus.Gauge
+
+	// Push notification metrics, see metrics_push.go
+	pushRegistry
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
 // registration.
 func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
+	pushCollectors := m.initPushMetrics(metricsNamespace, constLabels)
+
 	m.accessRevokeRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
@@ -352,7 +357,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
-	return []prometheus.Collector{
+	return append(pushCollectors, []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
@@ -388,7 +393,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupNotifications,
 		m.rpcRegistryDedupWakes,
 		m.rpcRegistryDedupWakeWatchers,
-	}
+	}...)
 }
 
 // ProxyCallChildren holds the proxy metric children of one proxy name. They are resolved once by
@@ -455,6 +460,8 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications
 	RPCRegistryDedupWakesTotal = m.rpcRegistryDedupWakes
 	RPCRegistryDedupWakeWatchers = m.rpcRegistryDedupWakeWatchers
+
+	m.setPushMetrics()
 }
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.

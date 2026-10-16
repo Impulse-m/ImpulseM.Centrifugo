@@ -13,6 +13,13 @@ func TestScrubReplacesEveryToken(t *testing.T) {
 	require.Equal(t, "device <token> refused, then <token> again and <token> too", Scrub(text, tokens))
 }
 
+func TestScrubReplacesALongerTokenWhichHasAnotherTokenAsPrefix(t *testing.T) {
+	text := "refused abcdef and abc"
+
+	require.Equal(t, "refused <token> and <token>", Scrub(text, []string{"abc", "abcdef"}))
+	require.Equal(t, "refused <token> and <token>", Scrub(text, []string{"abcdef", "abc"}))
+}
+
 func TestScrubLeavesOtherTextUnchanged(t *testing.T) {
 	text := `{"code":"UNREGISTERED","message":"the registration is gone"}`
 

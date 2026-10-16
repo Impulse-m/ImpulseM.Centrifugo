@@ -64,7 +64,7 @@ func (h *Handler) connectFilterTemplates(
 	if serverSide := h.serverSideSubscriptions(subscriptions); serverSide != nil {
 		storage[serverTagsFilterServerSideKey] = serverSide
 	}
-	if err := h.applyFilterTemplates(subscriptions, values); err != nil {
+	if err := h.applyFilterTemplates(subscriptions, values, false); err != nil {
 		return centrifuge.DisconnectPermissionDenied
 	}
 	return nil
@@ -161,7 +161,8 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 		unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
 		release(storage)
 		if unbound {
-			h.dropRefusedFilterTemplateSubscriptions(client, extra.Subs)
+			// With dropRefused the refused subscriptions are removed and no error is returned.
+			_ = h.applyFilterTemplates(extra.Subs, connectionFilterValues(client), true)
 		} else {
 			if !stored.Claims.Equal(extra.FilterTemplateClaims) {
 				return true
@@ -172,26 +173,6 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 		}
 	}
 	return tokenChannelsChanged(client, extra.Subs)
-}
-
-// dropRefusedFilterTemplateSubscriptions applies the templates to subs with the values of the connection, as
-// templateSubscriptions does, but removes the subscriptions which a missing value refuses instead of failing. It is
-// used for an unbound connection, whose refused subscriptions must not be subscribed without their template.
-func (h *Handler) dropRefusedFilterTemplateSubscriptions(client Client, subs map[string]centrifuge.SubscribeOptions) {
-	values := connectionFilterValues(client)
-	for channel, opts := range subs {
-		tmpl := h.templateOf(channel)
-		if tmpl == nil {
-			continue
-		}
-		filter, err := subscriptionFilter(tmpl, values, channel, opts.ServerTagsFilter)
-		if err != nil {
-			delete(subs, channel)
-			continue
-		}
-		opts.ServerTagsFilter = filter
-		subs[channel] = opts
-	}
 }
 
 // rebindFilters are the values of the server tags filter templates which a rebind moves a connection between: the values
@@ -262,7 +243,7 @@ func (h *Handler) checkReboundFilters(
 			candidates[channel] = opts
 		}
 	}
-	if err := h.applyFilterTemplates(candidates, filters.values); err != nil {
+	if err := h.applyFilterTemplates(candidates, filters.values, false); err != nil {
 		return rebindFilters{}, centrifuge.ErrorPermissionDenied
 	}
 	return filters, nil
@@ -361,7 +342,7 @@ func (h *Handler) reboundTemplateSubscriptions(
 			toSubscribe[channel] = opts
 		}
 	}
-	if err := h.applyFilterTemplates(toSubscribe, filters.values); err != nil {
+	if err := h.applyFilterTemplates(toSubscribe, filters.values, false); err != nil {
 		return centrifuge.DisconnectPermissionDenied
 	}
 	h.storeReboundTokenFilters(c, toSubscribe)
@@ -374,7 +355,7 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
-	if err := h.applyFilterTemplates(subs, connectionFilterValues(c)); err != nil {
+	if err := h.applyFilterTemplates(subs, connectionFilterValues(c), false); err != nil {
 		return centrifuge.ErrorPermissionDenied
 	}
 	return nil
@@ -382,8 +363,13 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 
 // applyFilterTemplates sets the server tags filter of every subscription whose namespace has a template to the
 // template combined with the explicit filter of the subscription. It returns the error of the first missing value
-// under reject.
-func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) error {
+// under reject. With dropRefused, a subscription which such a value refuses is removed from subs instead, and no error
+// is returned: an unbound connection must not subscribe it without its template.
+func (h *Handler) applyFilterTemplates(
+	subs map[string]centrifuge.SubscribeOptions,
+	values filtertemplate.Values,
+	dropRefused bool,
+) error {
 	for channel, opts := range subs {
 		tmpl := h.templateOf(channel)
 		if tmpl == nil {
@@ -391,6 +377,10 @@ func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptio
 		}
 		filter, err := subscriptionFilter(tmpl, values, channel, opts.ServerTagsFilter)
 		if err != nil {
+			if dropRefused {
+				delete(subs, channel)
+				continue
+			}
 			return err
 		}
 		opts.ServerTagsFilter = filter

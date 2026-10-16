@@ -626,11 +626,7 @@ func TestAnonymousConnectExchangeAndRefreshUpgrades(t *testing.T) {
 	require.True(t, client.IsSubscribed(h.cfgContainer.PersonalChannel("42")))
 
 	// The meta claim of the access token replaces the connection's attribution at the rebind.
-	storage, release := client.AcquireStorage()
-	meta, ok := storage[clientstorage.KeyMeta].(json.RawMessage)
-	release(storage)
-	require.True(t, ok)
-	require.Equal(t, json.RawMessage(`{"installation":"x"}`), meta)
+	require.Equal(t, json.RawMessage(`{"installation":"x"}`), storedMeta(t, client))
 
 	// A later refresh whose token carries another meta claim replaces the attribution of the connection.
 	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
@@ -639,9 +635,22 @@ func TestAnonymousConnectExchangeAndRefreshUpgrades(t *testing.T) {
 		}),
 	}, nil)
 	require.NoError(t, err)
-	storage, release = client.AcquireStorage()
-	meta, ok = storage[clientstorage.KeyMeta].(json.RawMessage)
-	release(storage)
+	require.Equal(t, json.RawMessage(`{"installation":"y"}`), storedMeta(t, client))
+
+	// A refresh whose token carries no meta claim keeps the attribution the connection has, as upstream's refresh does.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, json.RawMessage(`{"installation":"y"}`), storedMeta(t, client))
+}
+
+// storedMeta returns the meta the storage of client holds, and fails the test when it holds none.
+func storedMeta(t *testing.T, client Client) json.RawMessage {
+	t.Helper()
+	storage, release := client.AcquireStorage()
+	defer release(storage)
+	meta, ok := storage[clientstorage.KeyMeta].(json.RawMessage)
 	require.True(t, ok)
-	require.Equal(t, json.RawMessage(`{"installation":"y"}`), meta)
+	return meta
 }

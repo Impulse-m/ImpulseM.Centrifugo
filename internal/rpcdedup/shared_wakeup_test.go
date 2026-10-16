@@ -46,6 +46,15 @@ func fillWaiters(t *testing.T, fx *sharedFixture, key Key, fingerprint [32]byte,
 	}
 }
 
+// requireEndCountEventually waits until the waits of the fixture which ended as end number count. A wait is counted as
+// ended after its flight is done, so a test which reads the count right after the flight is done waits for it.
+func requireEndCountEventually(t *testing.T, fx *sharedFixture, end string, count int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return fx.endCount(end) == count
+	}, 2*time.Second, 5*time.Millisecond, "the waits counted as ended %s", end)
+}
+
 func TestSharedWakeupRegistersWaiterOnRemoteInFlight(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
@@ -83,7 +92,7 @@ func TestSharedWithoutWakeupDoesNotRegister(t *testing.T) {
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndPolled))
+	requireEndCountEventually(t, fx, WatchEndPolled, 1)
 }
 
 func TestSharedWakeupCompletesWithoutReading(t *testing.T) {
@@ -99,7 +108,7 @@ func TestSharedWakeupCompletesWithoutReading(t *testing.T) {
 	waitDone(t, owner)
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
 	require.Equal(t, 1, fx.pollCount())
-	require.Equal(t, 1, fx.endCount(WatchEndWoken))
+	requireEndCountEventually(t, fx, WatchEndWoken, 1)
 }
 
 func TestSharedWakeupLostWakeIsAnsweredAtCheck(t *testing.T) {
@@ -114,7 +123,7 @@ func TestSharedWakeupLostWakeIsAnsweredAtCheck(t *testing.T) {
 	// The wake is lost: the check finds the answer.
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndChecked))
+	requireEndCountEventually(t, fx, WatchEndChecked, 1)
 	require.Equal(t, 1, fx.pollCount())
 }
 
@@ -151,7 +160,7 @@ func TestSharedWakeupBeforeRemoteMarkIsKept(t *testing.T) {
 	waitDone(t, owner)
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
 	require.Equal(t, 1, fx.pollCount())
-	require.Equal(t, 1, fx.endCount(WatchEndWoken))
+	requireEndCountEventually(t, fx, WatchEndWoken, 1)
 }
 
 func TestSharedWakeupManyWakesCoalesce(t *testing.T) {
@@ -218,7 +227,7 @@ func TestSharedWakeupStaleWakeKeepsWaiting(t *testing.T) {
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	fx.shared.Wake(sharedKey)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndWoken))
+	requireEndCountEventually(t, fx, WatchEndWoken, 1)
 }
 
 func TestSharedWakeupOwnerCrashReadsOnceThenDeadline(t *testing.T) {
@@ -234,7 +243,7 @@ func TestSharedWakeupOwnerCrashReadsOnceThenDeadline(t *testing.T) {
 	// The owner died: the record stays in flight, and the deadline abandons the wait without a read.
 	waitDone(t, owner)
 	require.True(t, owner.Record().Abandoned)
-	require.Equal(t, 1, fx.endCount(WatchEndDeadline))
+	requireEndCountEventually(t, fx, WatchEndDeadline, 1)
 	require.Equal(t, 1, fx.pollCount())
 }
 
@@ -250,7 +259,7 @@ func TestSharedWakeupRecordMissingAfterWake(t *testing.T) {
 	fx.shared.Wake(sharedKey)
 	waitDone(t, owner)
 	require.True(t, owner.Record().Abandoned)
-	require.Equal(t, 1, fx.endCount(WatchEndWoken))
+	requireEndCountEventually(t, fx, WatchEndWoken, 1)
 }
 
 func TestSharedWakeupFullRefusesWait(t *testing.T) {
@@ -369,7 +378,7 @@ func TestSharedWakeupWatcherRestartsAfterIdle(t *testing.T) {
 	fx.backend.finish(otherKey, sharedWakeupRecord)
 	fx.backend.deliverWake(otherKey)
 	waitDone(t, second)
-	require.Equal(t, 2, fx.endCount(WatchEndWoken), "both waits were woken, one before the idle stop and one after the restart")
+	requireEndCountEventually(t, fx, WatchEndWoken, 2)
 }
 
 func TestSharedWakeupWatcherNotStoppedWhileWaiting(t *testing.T) {
@@ -485,7 +494,7 @@ func TestSharedWithoutWakeupPollsAsBefore(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndPolled))
+	requireEndCountEventually(t, fx, WatchEndPolled, 1)
 	require.Equal(t, 0, fx.endCount(WatchEndWoken))
 	require.Equal(t, 0, fx.endCount(WatchEndChecked))
 }

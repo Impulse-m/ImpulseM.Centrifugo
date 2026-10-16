@@ -411,7 +411,7 @@ func (h *Handler) templateOf(channel string) *filtertemplate.Template {
 // publications of every tenant or session the template keeps apart. Recovery is not refused: it is the catch-up of
 // a filtered subscription and applies the filter.
 func refusesHistory(chOpts *configtypes.ChannelOptions) bool {
-	return chOpts.Compiled.ServerTagsFilterTemplate != nil
+	return chOpts.HasServerTagsFilterTemplate()
 }
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an

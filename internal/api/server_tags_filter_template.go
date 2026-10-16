@@ -8,5 +8,5 @@ import (
 // subscription has no connection whose values a server tags filter template is rendered with, and a subscription without
 // the template would bypass it, so it is refused on a channel which has one.
 func refusesAPISubscribe(chOpts *configtypes.ChannelOptions) bool {
-	return chOpts.Compiled.ServerTagsFilterTemplate != nil
+	return chOpts.HasServerTagsFilterTemplate()
 }

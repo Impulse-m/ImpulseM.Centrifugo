@@ -16,3 +16,9 @@ type ServerTagsFilterTemplate struct {
 	// refuses the subscription, skip applies no template to it.
 	OnMissingValue string `mapstructure:"on_missing_value" json:"on_missing_value" envconfig:"on_missing_value" yaml:"on_missing_value" toml:"on_missing_value" doc:"What to do when a template variable has no value for the connection: <<reject>> (default) refuses the subscription, <<skip>> applies no template to it."`
 }
+
+// HasServerTagsFilterTemplate reports whether the channel options have a server tags filter template, which is compiled
+// from the namespace config.
+func (o *ChannelOptions) HasServerTagsFilterTemplate() bool {
+	return o.Compiled.ServerTagsFilterTemplate != nil
+}

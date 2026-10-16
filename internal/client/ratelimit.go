@@ -87,47 +87,15 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	return nil
 }
 
-// warnDefaultFallback logs a warning for each map or track operation which has no buckets while its
-// previous operation (publish or sub_refresh) has buckets, and default has none. Such an operation is not
-// limited after an upgrade: it used to count as publish or sub_refresh and now falls back to default only.
+// warnDefaultFallback logs a warning for each operation which ratelimit.UnlimitedFallbacks reports for section.
+// Commands of namespaces with a namespace override are still limited, the others are not.
 func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
-	if ratelimit.HasBuckets(ops.Default.Enabled, ops.Default.Buckets) {
-		return
+	for _, op := range ratelimit.UnlimitedFallbacks(ops) {
+		log.Warn().
+			Str("section", section).
+			Str("operation", op.String()).
+			Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
 	}
-	if channelLimitSet(ops.Publish) {
-		warnUnlimitedOperation(section, ratelimit.OperationMapPublish.String(), ratelimit.HasBuckets(ops.MapPublish.Enabled, ops.MapPublish.Buckets))
-		warnUnlimitedOperation(section, ratelimit.OperationMapRemove.String(), ratelimit.HasBuckets(ops.MapRemove.Enabled, ops.MapRemove.Buckets))
-	}
-	if channelLimitSet(ops.SubRefresh) {
-		warnUnlimitedOperation(section, ratelimit.OperationTrack.String(), ratelimit.HasBuckets(ops.Track.Enabled, ops.Track.Buckets))
-		warnUnlimitedOperation(section, ratelimit.OperationUntrack.String(), ratelimit.HasBuckets(ops.Untrack.Enabled, ops.Untrack.Buckets))
-	}
-}
-
-// warnUnlimitedOperation logs a warning about operation of section when it has no base buckets. Commands of
-// namespaces with a namespace override are still limited, the others are not.
-func warnUnlimitedOperation(section string, operation string, set bool) {
-	if set {
-		return
-	}
-	log.Warn().
-		Str("section", section).
-		Str("operation", operation).
-		Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
-}
-
-// channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
-// Such an operation is limited for some channels, so it is not left to the fallback after an upgrade.
-func channelLimitSet(buckets configtypes.RateLimitChannelBuckets) bool {
-	if ratelimit.HasBuckets(buckets.Enabled, buckets.Buckets) {
-		return true
-	}
-	for _, override := range buckets.NamespaceOverrides {
-		if ratelimit.HasBuckets(override.Enabled, override.Buckets) {
-			return true
-		}
-	}
-	return false
 }
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit

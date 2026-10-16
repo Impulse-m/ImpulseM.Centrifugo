@@ -505,7 +505,7 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	// Handle single connection enforcement before establishing connection.
-	if !cfg.HasServerTagsFilterTemplates() && credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
+	if !cfg.HasServerTagsFilterTemplates() && singleConnectionApplies(cfg, credentials) {
 		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
 			return centrifuge.ConnectReply{}, err
 		}
@@ -607,7 +607,7 @@ func (h *Handler) OnClientConnecting(
 	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
-	if cfg.HasServerTagsFilterTemplates() && credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
+	if cfg.HasServerTagsFilterTemplates() && singleConnectionApplies(cfg, credentials) {
 		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
 			return centrifuge.ConnectReply{}, err
 		}

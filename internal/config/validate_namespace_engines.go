@@ -311,6 +311,11 @@ type natsEngineRef struct {
 // reaches the subscription of the other, so a node would deliver it twice. A wildcard subscription does not change
 // this, since it stays inside the subject space of its broker.
 func validateNamedNatsSubjects(c Config) error {
+	if !c.Controller.Enabled && !hasEnabledNamedEngine(c) {
+		// A configuration with only the default broker has no other subject to overlap with. Its own control subjects
+		// are then not compared with its root, so such a configuration keeps loading as it did before.
+		return nil
+	}
 	var refs []natsEngineRef
 	if c.Broker.Enabled && (c.Broker.Type == "nats" || c.Broker.Type == "redisnats") {
 		refs = append(refs, newNatsBrokerRef("broker", c.Broker.Nats, true))
@@ -344,6 +349,26 @@ func validateNamedNatsSubjects(c Config) error {
 		)
 	}
 	return nil
+}
+
+// hasEnabledNamedEngine reports whether the configuration has an enabled named broker, presence manager or map broker.
+func hasEnabledNamedEngine(c Config) bool {
+	for _, b := range c.Brokers {
+		if b.Enabled {
+			return true
+		}
+	}
+	for _, pm := range c.PresenceManagers {
+		if pm.Enabled {
+			return true
+		}
+	}
+	for _, mb := range c.MapBrokers {
+		if mb.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // newNatsBrokerRef returns the reference of a NATS broker with the subject space which its channels use. A broker

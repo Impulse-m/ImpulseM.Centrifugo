@@ -1306,3 +1306,13 @@ func TestCheckNamespaceEnginesReloadWithoutEnginesAllowsBoundaryChange(t *testin
 	newCfg.Channel.PrivatePrefix = "!"
 	require.NoError(t, CheckNamespaceEnginesReload(oldCfg, newCfg, NewNamespaceEnginesRecord(oldCfg)))
 }
+
+// TestValidateDefaultOnlyConfigLoads checks that a configuration with only the default broker keeps loading when
+// that broker is NATS in raw mode without a controller: the named NATS subject checks do not apply to it.
+func TestValidateDefaultOnlyConfigLoads(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Broker.Enabled = true
+	cfg.Broker.Type = "nats"
+	cfg.Broker.Nats.RawMode.Enabled = true
+	require.NoError(t, cfg.Validate())
+}

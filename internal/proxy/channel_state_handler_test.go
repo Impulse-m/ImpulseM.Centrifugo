@@ -50,6 +50,11 @@ func TestChannelStateHandlerHTTP(t *testing.T) {
 			response: `{"result": {}}`,
 		},
 		{
+			name:     "empty body",
+			status:   http.StatusOK,
+			response: ``,
+		},
+		{
 			name:     "error in response",
 			status:   http.StatusOK,
 			response: `{"error": {"code": 100, "message": "x"}}`,
@@ -222,7 +227,8 @@ func (p *channelStateNilProxy) Timeout() time.Duration {
 	return time.Second
 }
 
-// TestChannelStateHandlerNilResponse checks that a response without a body is handled as delivered, without a panic.
+// TestChannelStateHandlerNilResponse checks that a proxy which returns neither a response nor an error is handled
+// as delivered, without a panic. The HTTP proxy reaches the same outcome for an empty body.
 func TestChannelStateHandlerNilResponse(t *testing.T) {
 	handle := NewChannelStateHandler(&channelStateNilProxy{}).Handle()
 

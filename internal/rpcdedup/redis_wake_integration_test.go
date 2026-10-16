@@ -242,3 +242,36 @@ func TestRedisWatchWakesSkipsMalformedEntry(t *testing.T) {
 		return integrationStreamLen(t, connector, stream) == 0
 	}, time.Second, 10*time.Millisecond, fmt.Sprintf("the entries of %s are deleted", stream))
 }
+
+func TestRedisWatchWakesStopsWhenIdleOnFailedRead(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	observer := &integrationBackendObserver{}
+	connector := newIntegrationConnector(t, prefix)
+	backend := NewRedis(prefix, connector, 0, observer)
+	backend.readBlock = 100 * time.Millisecond
+	stream := WakeStreamKey(prefix, "node-b")
+	// A string under the stream key makes every XREAD fail with WRONGTYPE.
+	_, err := integrationDo(connector, func(c rueidis.Client) rueidis.Completed {
+		return c.B().Set().Key(stream).Value("x").Build()
+	}).ToString()
+	require.NoError(t, err)
+
+	var idleCalls atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	woken := make(chan Key, 8)
+	done := startIntegrationWatcher(ctx, backend, "node-b", func() bool {
+		idleCalls.Add(1)
+		return true
+	}, woken)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("a watcher whose reads fail does not stop within 1 s once the node is idle")
+	}
+	require.Positive(t, observer.errors.Load(), "the failed reads are counted")
+	require.Positive(t, idleCalls.Load(), "the failed read asks whether the node is idle")
+	require.Equal(t, int64(0), observer.watchers.Load(), "the watcher is no longer counted after its stop")
+}

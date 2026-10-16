@@ -94,8 +94,9 @@ func (r *Redis) WatchWakes(ctx context.Context, nodeID string, wake func(Key), i
 
 // watchShard is the loop of the wake watcher of one shard. It reads the stream from a cursor, which is the last entry it
 // processed, and deletes the entries it processed. An empty read, which is a block that timed out, ends the loop when
-// idle reports true; a failed read is counted, logged at most once per interval, and read again from the start of the
-// stream after a backoff. The loop ends when ctx is done. It is bracketed by the gauge of the wake watchers.
+// idle reports true; a failed read is counted, logged at most once per interval, and ends the loop the same way when
+// idle reports true, otherwise it is read again from the start of the stream after a backoff. The loop ends when ctx
+// is done. It is bracketed by the gauge of the wake watchers.
 func (r *Redis) watchShard(ctx context.Context, index int, stream string, wake func(Key), idle func() bool) {
 	if r.observer != nil {
 		r.observer.WakeWatching(1)
@@ -116,6 +117,9 @@ func (r *Redis) watchShard(ctx context.Context, index int, stream string, wake f
 			r.countError()
 			r.logWatchError(err)
 			cursor = "0-0"
+			if idle() {
+				return
+			}
 			timer := time.NewTimer(retry.NextBackOff())
 			select {
 			case <-ctx.Done():

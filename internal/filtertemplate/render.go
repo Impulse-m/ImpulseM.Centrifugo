@@ -9,30 +9,37 @@ import (
 
 // renderer builds one fresh tree of a template. The nodes, the child pointers and the vals of the
 // tree are carved from three slices allocated once per render, so a render allocates one slice per
-// part and one string per templated field. Measured on an Intel i5-12600K (Windows, GOWORK=off go test
-// -bench -benchmem -count=3): BenchmarkTemplateRender 221-231 ns/op, 544 B/op, 5 allocs/op;
-// BenchmarkPlainRender (renderPlain, one allocation per node and per slice) 246-251 ns/op, 544 B/op,
-// 7 allocs/op; BenchmarkFasttemplateBaseline 54.6-55.0 ns/op, 5 B/op, 1 allocs/op. The arena is kept: it
-// is the only form within the allocation bound of TestRenderAllocationBound (nodes + templated fields + 1),
-// which the plain form exceeds with 7 allocations for the same template.
+// part and one string per templated field. Measured on 2026-10-16 with BenchmarkTemplateRender, the
+// render makes 5 allocations per op. The plain form, one allocation per node and per slice, makes 7
+// for the same template, which exceeds the bound of TestRenderAllocationBound (nodes + templated
+// fields + 1), so the arena is kept.
 type renderer struct {
-	v      Values
-	nodes  []protocol.FilterNode
-	ptrs   []*protocol.FilterNode
-	values []string
+	v           Values
+	placeholder bool
+	nodes       []protocol.FilterNode
+	ptrs        []*protocol.FilterNode
+	values      []string
 }
+
+// placeholderValue is the text which every variable of a placeholder is rendered as.
+const placeholderValue = "x"
 
 // Render returns a fresh filter tree of the template with the values substituted. The template is
 // not changed, so every call builds its own tree. A variable without a value gives a
 // MissingValueError which names the variable.
 func (t *Template) Render(v Values) (*protocol.FilterNode, error) {
-	r := renderer{
+	r := t.newRenderer(v)
+	return r.node(t.root)
+}
+
+// newRenderer returns a renderer with the slices of one render of the template allocated.
+func (t *Template) newRenderer(v Values) renderer {
+	return renderer{
 		v:      v,
 		nodes:  make([]protocol.FilterNode, t.nodeCount),
 		ptrs:   make([]*protocol.FilterNode, t.pointerCount),
 		values: make([]string, t.valueCount),
 	}
-	return r.node(t.root)
 }
 
 func (r *renderer) node(n *node) (*protocol.FilterNode, error) {
@@ -71,13 +78,31 @@ func (r *renderer) node(n *node) (*protocol.FilterNode, error) {
 	return out, nil
 }
 
+// Placeholder returns a fresh filter tree of the template with every variable rendered as "x". It has the shape
+// of a render, so the structure of the template can be checked with it when the config is loaded. Its fields
+// never fail to render, so the error of the render is not checked.
+func (t *Template) Placeholder() *protocol.FilterNode {
+	r := t.newRenderer(Values{})
+	r.placeholder = true
+	out, _ := r.node(t.root)
+	return out
+}
+
 // field returns the value of a field: its text when it has no variables, otherwise the text with
-// the variables substituted by fasttemplate.
+// the variables substituted by fasttemplate, or by the placeholder value in a placeholder.
 func (r *renderer) field(f *field) (string, error) {
 	if f.tmpl == nil {
 		return f.text, nil
 	}
+	if r.placeholder {
+		return f.tmpl.ExecuteFuncString(placeholderTag), nil
+	}
 	return f.tmpl.ExecuteFuncStringWithErr(r.tag)
+}
+
+// placeholderTag writes the placeholder value for a variable of a placeholder.
+func placeholderTag(w io.Writer, _ string) (int, error) {
+	return io.WriteString(w, placeholderValue)
 }
 
 // tag writes the value of the variable of one tag. A variable without a value is a MissingValueError, which

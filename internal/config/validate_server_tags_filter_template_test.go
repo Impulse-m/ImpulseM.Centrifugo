@@ -158,9 +158,44 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 			wantErr: `without_namespace`,
 		},
 		{
+			name:      "unknown cmp names the namespace",
+			namespace: "chat",
+			template: configtypes.ServerTagsFilterTemplate{
+				Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "equals", "val": "{{user}}"},
+			},
+			wantErr: `namespace "chat": filter:`,
+		},
+		{
+			name:      "in without vals",
+			namespace: "chat",
+			template: configtypes.ServerTagsFilterTemplate{
+				Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "in", "val": "{{user}}"},
+			},
+			wantErr: `namespace "chat": filter:`,
+		},
+		{
+			name:      "not with two children",
+			namespace: "chat",
+			template: configtypes.ServerTagsFilterTemplate{
+				Filter: configtypes.TagsFilterNode{
+					"op": "not",
+					"nodes": []any{
+						map[string]any{"key": "a", "cmp": "eq", "val": "x"},
+						map[string]any{"key": "b", "cmp": "eq", "val": "{{user}}"},
+					},
+				},
+			},
+			wantErr: `namespace "chat": filter:`,
+		},
+		{
 			name:      "valid",
 			namespace: "chat",
 			template:  sessionTemplate(),
+		},
+		{
+			name:      "valid nested tree",
+			namespace: "tenant",
+			template:  tenantTemplate(),
 		},
 	}
 	for _, tt := range tests {

@@ -166,6 +166,23 @@ func TestRenderUserAndClient(t *testing.T) {
 	require.Equal(t, "c-9/bob", got.Val)
 }
 
+func TestPlaceholderRendersEveryVariableAsX(t *testing.T) {
+	tmpl := compileOne(t, "tenant", Source{Filter: tenantFilter()})
+	want := &protocol.FilterNode{
+		Op: "and",
+		Nodes: []*protocol.FilterNode{
+			{Key: "tenant", Cmp: "eq", Val: "x"},
+			{Key: "audience", Cmp: "in", Vals: []string{"all", "user:x"}},
+		},
+	}
+	require.True(t, proto.Equal(want, tmpl.Placeholder()))
+	// The placeholder does not change the template: a render still reports its missing values.
+	_, err := tmpl.Render(Values{})
+	var missing MissingValueError
+	require.ErrorAs(t, err, &missing)
+	require.Equal(t, "claims.tenant", missing.Variable)
+}
+
 func TestRenderMissingValues(t *testing.T) {
 	tmpl := compileOne(t, "chat", Source{Filter: sessionFilter()})
 	tests := []struct {
@@ -276,67 +293,6 @@ func BenchmarkTemplateRender(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := tmpl.Render(values); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-// renderPlain builds the tree of n with one allocation per node, per vals slice and per child slice: the plain form which
-// the arena of Render is measured against. It renders the fields with the renderer, and nothing else is shared. It is
-// test code, Render does not use it.
-func renderPlain(n *node, v Values) (*protocol.FilterNode, error) {
-	r := renderer{v: v}
-	val, err := r.field(&n.val)
-	if err != nil {
-		return nil, err
-	}
-	out := &protocol.FilterNode{Op: n.op, Key: n.key, Cmp: n.cmp, Val: val}
-	if n.vals != nil {
-		out.Vals = make([]string, len(n.vals))
-		for i := range n.vals {
-			s, err := r.field(&n.vals[i])
-			if err != nil {
-				return nil, err
-			}
-			out.Vals[i] = s
-		}
-	}
-	if len(n.nodes) > 0 {
-		out.Nodes = make([]*protocol.FilterNode, len(n.nodes))
-		for i, child := range n.nodes {
-			c, err := renderPlain(child, v)
-			if err != nil {
-				return nil, err
-			}
-			out.Nodes[i] = c
-		}
-	}
-	return out, nil
-}
-
-func TestRenderPlainMatchesRender(t *testing.T) {
-	tmpl := compileOne(t, "tenant", Source{Filter: tenantFilter()})
-	values := Values{Claims: Claims{Paths: []string{"tenant"}, Values: []string{"acme"}}, User: "u1"}
-	plain, err := renderPlain(tmpl.root, values)
-	require.NoError(t, err)
-	arena, err := tmpl.Render(values)
-	require.NoError(t, err)
-	require.True(t, proto.Equal(plain, arena))
-}
-
-// BenchmarkPlainRender renders the template of BenchmarkTemplateRender with one allocation per node, see renderPlain.
-func BenchmarkPlainRender(b *testing.B) {
-	set, err := CompileSet(map[string]Source{"tenant": {Filter: tenantFilter()}})
-	if err != nil {
-		b.Fatal(err)
-	}
-	root := set.Template("tenant").root
-	claims := Claims{Paths: []string{"tenant"}, Values: []string{"acme"}}
-	values := Values{Claims: claims, User: "u1"}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := renderPlain(root, values); err != nil {
 			b.Fatal(err)
 		}
 	}

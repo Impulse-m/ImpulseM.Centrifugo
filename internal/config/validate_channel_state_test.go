@@ -127,6 +127,20 @@ func TestValidateChannelState(t *testing.T) {
 			wantErr: "cache empty proxy with name \"unknown\" not found",
 		},
 		{
+			name: "cache empty proxy with empty name",
+			mutate: func(cfg *Config) {
+				cfg.Channel.WithoutNamespace.CacheEmptyProxyName = ""
+			},
+			wantErr: "cache empty proxy with name \"\" not found",
+		},
+		{
+			name: "cache empty proxy name not checked when disabled",
+			mutate: func(cfg *Config) {
+				cfg.Channel.WithoutNamespace.CacheEmptyProxyEnabled = false
+				cfg.Channel.WithoutNamespace.CacheEmptyProxyName = "unknown"
+			},
+		},
+		{
 			name: "cache empty default proxy without endpoint",
 			mutate: func(cfg *Config) {
 				cfg.Channel.Proxy.CacheEmpty.Endpoint = ""

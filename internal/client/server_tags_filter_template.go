@@ -302,14 +302,16 @@ func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 // rendered with the new values. The server-side channels which the rebind subscribes again, see
 // reboundTemplateSubscriptions, come back with the new filters too. A server-side channel which connect did not store
 // with a template does not get here: checkReboundFilters disconnects the connection for it. A reload which adds a template
-// after checkReboundFilters checked a connection without templates leaves such a channel here: it has no template to
-// render, so the rebind would unsubscribe it, and the connection is disconnected with insufficient state instead. The
-// rebind is applied already, and the disconnect releases what the connection holds.
+// after checkReboundFilters looked at the connection leaves such a channel here: it has no template to render, so the
+// rebind would unsubscribe it or keep it unfiltered, and the connection is disconnected with insufficient state instead. The
+// rebind is applied already, and the disconnect releases what the connection holds. It is checked whether or not the
+// connection stored values, since a reload can add a template to the namespace of any uni-connect channel of the connection.
 func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters) error {
-	if !filters.enabled && !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+	templated := h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates()
+	if !filters.enabled && !templated {
 		return nil
 	}
-	if !filters.enabled && h.untemplatedServerSide(c, storedServerSideSubscriptions(c)) {
+	if templated && h.untemplatedServerSide(c, storedServerSideSubscriptions(c)) {
 		return centrifuge.DisconnectInsufficientState
 	}
 	storeFilterValues(c, filters.values)

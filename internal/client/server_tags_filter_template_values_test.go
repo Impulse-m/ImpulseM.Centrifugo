@@ -305,6 +305,69 @@ func TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects(t *testing.
 	require.Contains(t, state.channels, "chat:uni")
 }
 
+// TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection checks a reload which adds a template to the
+// namespace of a uni-connect channel after a rebind of a connection which stored values was checked. The channel has no
+// template to render, even when the claim values are the same, so the connection is disconnected with insufficient state
+// and the channel is kept.
+func TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "chat",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+				},
+			},
+		},
+		{Name: "plain", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	// The anonymous connection stored its values on connect, with the claim it had then.
+	client, state := newRebindTestClient("", "anonymous")
+	storeFilterValues(client, filtertemplate.Values{Claims: filtertemplate.Claims{Paths: []string{"sid"}, Values: []string{"s-0"}}})
+	state.channels["plain:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		reloaded := config.DefaultConfig()
+		reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+			{
+				Name: "chat",
+				ChannelOptions: configtypes.ChannelOptions{
+					SubscribeForClient: true,
+					ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+						Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+					},
+				},
+			},
+			{
+				Name: "plain",
+				ChannelOptions: configtypes.ChannelOptions{
+					SubscribeForClient: true,
+					ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+						Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+					},
+				},
+			},
+		}
+		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+		reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+		require.NoError(t, cfgContainer.Reload(reloaded))
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-0"}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "plain:uni")
+}
+
 // TestServerTagsFilterTemplateRefreshReloadHeldPersonalChannel checks a refresh with a claim value, after a reload added a
 // template to the namespace of the personal channel which the connection holds, disconnects the connection with
 // insufficient state. The held channel is not rendered again, so the refresh is not refused with a missing value.

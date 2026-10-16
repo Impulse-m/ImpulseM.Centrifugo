@@ -42,6 +42,31 @@ func TestServerTagsFilterTemplateConnectionUsesStoredUser(t *testing.T) {
 	require.Equal(t, "", values.Claims.Value("sid"))
 }
 
+// TestServerTagsFilterTemplateUnboundClaimRefusedUnderSkip checks a connection without a token, whose claims are never bound,
+// is refused a subscription whose template has a missing claim even under skip: the client chose the connect path, so the
+// subscription must not be delivered without the template. A bound connection with the same missing claim is subscribed
+// without the template, as skip says.
+func TestServerTagsFilterTemplateUnboundClaimRefusedUnderSkip(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	var answeredErr error
+	answerCallback := func(_ centrifuge.SubscribeReply, err error) {
+		answeredErr = err
+	}
+
+	unbound := newRegistryTestClient("c1", "u1", nil, map[string]any{
+		serverTagsFilterValuesKey:  filtertemplate.Values{User: "u1"},
+		serverTagsFilterUnboundKey: true,
+	})
+	env.h.answerSubscribe(unbound, "lenient:room", centrifuge.SubscribeReply{}, nil, answerCallback)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, answeredErr)
+
+	bound := newRegistryTestClient("c2", "u1", nil, map[string]any{
+		serverTagsFilterValuesKey: filtertemplate.Values{User: "u1"},
+	})
+	env.h.answerSubscribe(bound, "lenient:room", centrifuge.SubscribeReply{}, nil, answerCallback)
+	require.NoError(t, answeredErr)
+}
+
 // TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes checks a subscribe whose values are changed by a rebind
 // before the subscription is committed is unsubscribed, and one whose values stay the same is not.
 func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) {

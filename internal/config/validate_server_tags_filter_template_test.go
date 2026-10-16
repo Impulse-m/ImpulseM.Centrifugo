@@ -242,6 +242,22 @@ func TestValidateServerTagsFilterTemplateRefusesSharedPoll(t *testing.T) {
 	}
 }
 
+func TestValidateServerTagsFilterTemplateRefusesSubscribeStreamProxy(t *testing.T) {
+	options := configtypes.ChannelOptions{SubscribeStreamProxyEnabled: true, ServerTagsFilterTemplate: sessionTemplate()}
+	require.ErrorContains(t, validateServerTagsFilterTemplate("stream", options), `namespace "stream": server_tags_filter_template is not supported with subscribe_stream_proxy_enabled`)
+	// Without a template the stream proxy is not refused here.
+	require.NoError(t, validateServerTagsFilterTemplate("stream", configtypes.ChannelOptions{SubscribeStreamProxyEnabled: true}))
+}
+
+func TestConfigValidateRefusesSubscribeStreamProxyOfTemplatedNamespace(t *testing.T) {
+	cfg := DefaultConfig()
+	ns := namespaceWithTemplate("stream", sessionTemplate())
+	ns.SubscribeStreamProxyEnabled = true
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{ns}
+	err := cfg.Validate()
+	require.ErrorContains(t, err, `namespace "stream": server_tags_filter_template is not supported with subscribe_stream_proxy_enabled`)
+}
+
 func TestConfigValidateRefusesSharedPollOfTemplatedNamespace(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SharedPoll.HMACSecretKey = "secret"

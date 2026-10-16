@@ -76,7 +76,8 @@ func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) 
 }
 
 // TestServerTagsFilterTemplateFailedRebindRestoresValues checks a rebind which Core refuses leaves the values of the
-// connection as they were, and the channels which were subscribed with the values of the rebind are unsubscribed.
+// connection as they were, and no channel: the templated channel of the connection stays subscribed, since nothing it
+// was subscribed with has changed.
 func TestServerTagsFilterTemplateFailedRebindRestoresValues(t *testing.T) {
 	cfg := templateTestConfig()
 	cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
@@ -97,6 +98,7 @@ func TestServerTagsFilterTemplateFailedRebindRestoresValues(t *testing.T) {
 
 	client, state := newRebindTestClient("", "anonymous")
 	state.channels["open:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+	state.channels["open:srv"] = centrifuge.ChannelContext{Source: subsource.ConnectionToken}
 	state.rebindErr = errors.New("rebind refused")
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
@@ -108,7 +110,10 @@ func TestServerTagsFilterTemplateFailedRebindRestoresValues(t *testing.T) {
 	values := connectionFilterValues(client)
 	require.Equal(t, "", values.User)
 	require.Equal(t, "", values.Claims.Value("sid"))
-	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
+	require.NotContains(t, state.unsubscribed, "open:room")
+	require.NotContains(t, state.unsubscribed, "open:srv")
+	require.Contains(t, state.channels, "open:room")
+	require.Contains(t, state.channels, "open:srv")
 }
 
 // TestServerTagsFilterTemplateRefusedConnectKeepsSingleConnection checks a connect which a template refuses leaves the

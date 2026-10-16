@@ -342,6 +342,53 @@ func TestServerTagsFilterTemplateRebindResubscribes(t *testing.T) {
 	require.True(t, proto.Equal(sessionFilter("s-1"), state.subscribed["lenient:srv"].ServerTagsFilter), "got %v", state.subscribed["lenient:srv"].ServerTagsFilter)
 }
 
+// TestServerTagsFilterTemplateRebindResubscribesUniConnect checks a uni-connect channel with a template, which an
+// anonymous connection holds, is unsubscribed by a rebind with other values and subscribed again with the filter of the
+// new values, since the connection keeps it.
+func TestServerTagsFilterTemplateRebindResubscribesUniConnect(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	storage, release := client.AcquireStorage()
+	storage[serverTagsFilterUniConnectKey] = map[string]centrifuge.SubscribeOptions{
+		"lenient:uni": {Source: subsource.UniConnect},
+	}
+	release(storage)
+	state.channels["lenient:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:uni"].Code)
+	require.Contains(t, state.subscribed, "lenient:uni")
+	require.Equal(t, uint8(subsource.UniConnect), state.subscribed["lenient:uni"].Source)
+	require.True(t, proto.Equal(sessionFilter("s-1"), state.subscribed["lenient:uni"].ServerTagsFilter), "got %v", state.subscribed["lenient:uni"].ServerTagsFilter)
+}
+
+// TestServerTagsFilterTemplateUniConnectSubscriptions checks only the uni-connect channels with a template are kept for a
+// rebind, and without their filter, since a rebind renders it with its own values.
+func TestServerTagsFilterTemplateUniConnectSubscriptions(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	subs := map[string]centrifuge.SubscribeOptions{
+		"lenient:uni": {Source: subsource.UniConnect, ServerTagsFilter: sessionFilter("x")},
+		"plain:uni":   {Source: subsource.UniConnect},
+		"lenient:srv": {Source: subsource.ConnectionToken},
+	}
+	uni := env.h.uniConnectSubscriptions(subs)
+	require.Len(t, uni, 1)
+	require.Equal(t, uint8(subsource.UniConnect), uni["lenient:uni"].Source)
+	require.Nil(t, uni["lenient:uni"].ServerTagsFilter)
+	require.NotNil(t, subs["lenient:uni"].ServerTagsFilter, "the subscriptions of the connect are not changed")
+	require.Nil(t, env.h.uniConnectSubscriptions(map[string]centrifuge.SubscribeOptions{"lenient:srv": {Source: subsource.ConnectionToken}}))
+}
+
 // TestServerTagsFilterTemplateOffByDefault checks a config without templates keeps nothing: no storage key, no claims
 // on the connection token, and no allocations in the helpers.
 func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {

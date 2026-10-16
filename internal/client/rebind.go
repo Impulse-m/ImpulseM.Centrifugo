@@ -218,10 +218,17 @@ func (h *Handler) onRefreshRebind(
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
 	// The subscriptions of the new identity are built before anything moves, so a refusal of a template leaves the
-	// connection as it was.
-	toSubscribe, err := h.reboundSubscriptions(newUser, verified.Subs, filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()})
+	// connection as it was. The values of the templates are the ones of the new identity; they are read before the
+	// rebind to compare them after it.
+	filterValues := filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()}
+	templated := cfg.HasServerTagsFilterTemplates()
+	toSubscribe, err := h.reboundSubscriptions(c, newUser, verified.Subs, filterValues)
 	if err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
+	}
+	var previousValues filtertemplate.Values
+	if templated {
+		previousValues = connectionFilterValues(c)
 	}
 	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
@@ -244,10 +251,6 @@ func (h *Handler) onRefreshRebind(
 	if nextClass == rpcregistry.AuthClassPending2FA {
 		info = nil
 	}
-	// The values of the server tags filter templates are stored before the user moves, so a subscribe which overlaps the
-	// rebind is rendered with the values of one identity, see connectionFilterValues. A failed rebind stores them back.
-	filterValues := filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()}
-	previousValues, templated := h.storeFilterValues(c, filterValues)
 	err = c.Rebind(centrifuge.RebindOptions{
 		UserID:        newUser,
 		ExpireAt:      verified.ExpireAt,
@@ -255,10 +258,6 @@ func (h *Handler) onRefreshRebind(
 		Info:          info,
 	})
 	if err != nil {
-		if templated {
-			h.storeFilterValues(c, previousValues)
-			h.rebindFilterTemplates(c, filterValues, previousValues)
-		}
 		rec.identity.Store(prev)
 		h.detachRateLimit(c)
 		// A connection closed meanwhile is released by its disconnect, so the old user is not attached again. A disconnect
@@ -275,6 +274,13 @@ func (h *Handler) onRefreshRebind(
 		}
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
+	// The values of the templates move with the user once the rebind is applied, so a rebind which Core refuses changes
+	// neither the values nor a channel. A subscribe which overlaps the move renders with the stored values, see
+	// connectionFilterValues, and answerSubscribe unsubscribes it when the values changed while it committed.
+	if templated {
+		h.storeFilterValues(c, filterValues)
+		h.rebindFilterTemplates(c, previousValues, filterValues)
+	}
 	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, rec, newUser, identity)
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
@@ -289,9 +295,6 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	if templated {
-		h.rebindFilterTemplates(c, previousValues, filterValues)
-	}
 	if err := h.subscribeRebound(c, newUser, toSubscribe); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
@@ -439,10 +442,13 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 }
 
 // reboundSubscriptions returns the subscriptions a connection moved to userID gets before the move: its personal
-// channel, and the channels of its token. The server tags filter templates are rendered with values, which are the
-// values of the new identity. A personal channel which cannot be resolved disconnects the connection, and a template
-// refusal is an error of the refresh; both come before the rebind, so the connection keeps its identity.
+// channel, the channels of its token, and the uni-connect channels which it holds with a template. The server tags
+// filter templates are rendered with values, which are the values of the new identity. A personal channel which cannot
+// be resolved disconnects the connection, and a template refusal is an error of the refresh; both come before the
+// rebind, so the connection keeps its identity. The uni-connect channels stay with a user, and a move to an anonymous
+// identity unsubscribes them, see unsubscribeNotAnonymous.
 func (h *Handler) reboundSubscriptions(
+	c rebindableClient,
 	userID string,
 	subs map[string]centrifuge.SubscribeOptions,
 	values filtertemplate.Values,
@@ -459,6 +465,13 @@ func (h *Handler) reboundSubscriptions(
 	for channel, opts := range subs {
 		if _, ok := toSubscribe[channel]; !ok {
 			toSubscribe[channel] = opts
+		}
+	}
+	if userID != "" && cfg.HasServerTagsFilterTemplates() {
+		for channel, opts := range storedUniConnectSubscriptions(c) {
+			if _, ok := toSubscribe[channel]; !ok && c.IsSubscribed(channel) {
+				toSubscribe[channel] = opts
+			}
 		}
 	}
 	if cfg.HasServerTagsFilterTemplates() {

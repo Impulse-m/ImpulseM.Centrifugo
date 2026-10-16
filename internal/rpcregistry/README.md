@@ -205,7 +205,7 @@ The issuer keeps accepting a consumed refresh token for a grace, and answers it 
 
 The issuer refuses a refresh token with any gRPC status and the `app-type` trailer (`rpc.registry.app_error.type_key`), for example `REFRESH_TOKEN_REFUSED`. The SDKs classify the refusal by that name, from a list the app configures, never by the protocol code or the application code. No `grpc_status_to_code_transforms` entry is needed.
 
-The `meta` claim of the access token is the connection's attribution: it is stored at connect, replaced at every refresh and rebind by the presented token's, forwarded to proxies with `include_connection_meta`, and read by backends from the `authorization: Bearer` token of non-anonymous calls. The exchange call is anonymous, so its attribution is in the request the issuer defined.
+The `meta` claim of the access token is the connection's attribution: it is stored at connect, replaced at a refresh or rebind whose token carries the claim (a token without it keeps the attribution the connection has, as upstream's refresh does; an issuer that wants to drop it sends an empty object), forwarded to proxies with `include_connection_meta`, and read by backends from the `authorization: Bearer` token of non-anonymous calls. The exchange call is anonymous, so its attribution is in the request the issuer defined.
 
 ### Known gaps
 

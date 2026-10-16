@@ -52,6 +52,7 @@ func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) 
 	rebound := newRegistryTestClient("c1", "12", nil, map[string]any{
 		serverTagsFilterValuesKey: filtertemplate.Values{User: "12", Claims: sidClaimsOf("s-1")},
 	})
+	rebound.IsSubscribedFunc = func(string) bool { return true }
 	unsubscribed := map[string]centrifuge.Unsubscribe{}
 	rebound.UnsubscribeFunc = func(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 		unsubscribed[ch] = unsubscribe[0]
@@ -67,12 +68,25 @@ func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) 
 	steady := newRegistryTestClient("c2", "12", nil, map[string]any{
 		serverTagsFilterValuesKey: filtertemplate.Values{User: "12", Claims: sidClaimsOf("s-1")},
 	})
+	steady.IsSubscribedFunc = func(string) bool { return true }
 	steadyUnsubscribed := map[string]centrifuge.Unsubscribe{}
 	steady.UnsubscribeFunc = func(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 		steadyUnsubscribed[ch] = unsubscribe[0]
 	}
 	env.h.answerSubscribe(steady, "topic:room", reply, nil, noopSubscribeCallback)
 	require.Empty(t, steadyUnsubscribed)
+}
+
+// TestServerTagsFilterTemplateFailedCommitRecordsNothing checks a subscribe which Core did not commit leaves no record of
+// a templated channel, so the record does not grow with the subscribe attempts of a client.
+func TestServerTagsFilterTemplateFailedCommitRecordsNothing(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client := newRegistryTestClient("c1", "12", nil, map[string]any{
+		serverTagsFilterValuesKey: filtertemplate.Values{User: "12", Claims: sidClaimsOf("s-1")},
+	})
+	client.IsSubscribedFunc = func(string) bool { return false }
+	env.h.answerSubscribe(client, "topic:room", centrifuge.SubscribeReply{}, nil, noopSubscribeCallback)
+	require.Empty(t, templatedChannelsOf(client))
 }
 
 // TestServerTagsFilterTemplateFailedRebindRestoresValues checks a rebind which Core refuses leaves the values of the

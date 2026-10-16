@@ -101,7 +101,8 @@ func (h *Handler) serverSideSubscriptions(subs map[string]centrifuge.SubscribeOp
 // here does, so the channel never keeps a filter of values the connection no longer has. The commit of cb is complete
 // when it returns, so the unsubscribe does not wait for the subscribe. The window between the commit and that
 // unsubscribe is accepted: the channel can deliver publications which the filter of the previous identity allowed,
-// and only until the unsubscribe.
+// and only until the unsubscribe. The channel is recorded after cb, and only when it is subscribed, so a commit which
+// failed leaves no record. A rebind finds a committed channel through ChannelsWithContext.
 func (h *Handler) answerSubscribe(
 	client Client,
 	channel string,
@@ -120,8 +121,11 @@ func (h *Handler) answerSubscribe(
 		return
 	}
 	reply.Options.ServerTagsFilter = filter
-	h.recordTemplatedChannel(client, channel)
 	cb(reply, nil)
+	if !client.IsSubscribed(channel) {
+		return
+	}
+	h.recordTemplatedChannel(client, channel)
 	if !sameFilterValues(values, connectionFilterValues(client)) {
 		client.Unsubscribe(channel, unsubscribeInsufficientState)
 	}

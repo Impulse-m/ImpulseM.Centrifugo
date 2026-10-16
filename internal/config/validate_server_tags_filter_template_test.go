@@ -60,7 +60,7 @@ func TestServerTagsFilterTemplateCompiled(t *testing.T) {
 		Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
 	}
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
-		namespaceWithTemplate("chat", sessionTemplate()),
+		namespaceWithTemplate("topic", sessionTemplate()),
 		namespaceWithTemplate("tenant", tenantTemplate()),
 		{Name: "plain"},
 	}
@@ -72,10 +72,10 @@ func TestServerTagsFilterTemplateCompiled(t *testing.T) {
 	require.True(t, prepared.HasServerTagsFilterTemplates())
 	require.Equal(t, []string{"org.tenant", "sid"}, prepared.ServerTagsFilterClaims())
 
-	chat, ok, err := container.ChannelOptionsRef("chat:room")
+	topicOpts, ok, err := container.ChannelOptionsRef("topic:room")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.NotNil(t, chat.Compiled.ServerTagsFilterTemplate)
+	require.NotNil(t, topicOpts.Compiled.ServerTagsFilterTemplate)
 
 	tenant, ok, err := container.ChannelOptionsRef("tenant:room")
 	require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestServerTagsFilterTemplateCompiled(t *testing.T) {
 
 func TestServerTagsFilterTemplateDoesNotChangeCallerConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{namespaceWithTemplate("chat", sessionTemplate())}
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{namespaceWithTemplate("topic", sessionTemplate())}
 	_, err := NewContainer(cfg)
 	require.NoError(t, err)
 	// The caller's config is not changed by the preparation.
@@ -112,15 +112,15 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 	}{
 		{
 			name:      "unknown filter field names the namespace",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{"key": "k", "cmpp": "eq", "val": "x"},
 			},
-			wantErr: `namespace "chat"`,
+			wantErr: `namespace "topic"`,
 		},
 		{
 			name:      "unknown variable",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "eq", "val": "{{session}}"},
 			},
@@ -128,21 +128,21 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 		},
 		{
 			name:      "variable in key",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{"key": "{{user}}", "cmp": "eq", "val": "x"},
 			},
-			wantErr: `namespace "chat"`,
+			wantErr: `namespace "topic"`,
 		},
 		{
 			name:      "on missing value without filter",
-			namespace: "chat",
+			namespace: "topic",
 			template:  configtypes.ServerTagsFilterTemplate{OnMissingValue: "skip"},
-			wantErr:   `namespace "chat": on_missing_value requires filter`,
+			wantErr:   `namespace "topic": on_missing_value requires filter`,
 		},
 		{
 			name:      "unknown on missing value",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter:         configtypes.TagsFilterNode{"key": "k", "cmp": "eq", "val": "x"},
 				OnMissingValue: "ignore",
@@ -159,23 +159,23 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 		},
 		{
 			name:      "unknown cmp names the namespace",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "equals", "val": "{{user}}"},
 			},
-			wantErr: `namespace "chat": filter:`,
+			wantErr: `namespace "topic": filter:`,
 		},
 		{
 			name:      "in without vals",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{"key": "k", "cmp": "in", "val": "{{user}}"},
 			},
-			wantErr: `namespace "chat": filter:`,
+			wantErr: `namespace "topic": filter:`,
 		},
 		{
 			name:      "not with two children",
-			namespace: "chat",
+			namespace: "topic",
 			template: configtypes.ServerTagsFilterTemplate{
 				Filter: configtypes.TagsFilterNode{
 					"op": "not",
@@ -185,11 +185,11 @@ func TestValidateServerTagsFilterTemplate(t *testing.T) {
 					},
 				},
 			},
-			wantErr: `namespace "chat": filter:`,
+			wantErr: `namespace "topic": filter:`,
 		},
 		{
 			name:      "valid",
-			namespace: "chat",
+			namespace: "topic",
 			template:  sessionTemplate(),
 		},
 		{
@@ -224,11 +224,11 @@ func TestValidateServerTagsFilterTemplateRefusesPresence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.options.ServerTagsFilterTemplate = sessionTemplate()
-			require.ErrorContains(t, validateServerTagsFilterTemplate("chat", tt.options), `namespace "chat": presence, join_leave`)
+			require.ErrorContains(t, validateServerTagsFilterTemplate("topic", tt.options), `namespace "topic": presence, join_leave`)
 		})
 	}
 	// Without a template the options are not refused here.
-	require.NoError(t, validateServerTagsFilterTemplate("chat", configtypes.ChannelOptions{Presence: true, JoinLeave: true}))
+	require.NoError(t, validateServerTagsFilterTemplate("topic", configtypes.ChannelOptions{Presence: true, JoinLeave: true}))
 }
 
 func TestValidateServerTagsFilterTemplateRefusesSharedPoll(t *testing.T) {
@@ -278,7 +278,7 @@ func TestConfigValidateNamesNamespaceOfTemplateError(t *testing.T) {
 
 func TestServerTagsFilterTemplateFromEnvJSON(t *testing.T) {
 	var namespaces configtypes.ChannelNamespaces
-	err := namespaces.Decode(`[{"name": "chat", "server_tags_filter_template": {"filter": {"key": "session", "cmp": "neq", "val": "{{claims.sid}}"}, "on_missing_value": "skip"}}]`)
+	err := namespaces.Decode(`[{"name": "topic", "server_tags_filter_template": {"filter": {"key": "session", "cmp": "neq", "val": "{{claims.sid}}"}, "on_missing_value": "skip"}}]`)
 	require.NoError(t, err)
 	require.Len(t, namespaces, 1)
 	template := namespaces[0].ServerTagsFilterTemplate

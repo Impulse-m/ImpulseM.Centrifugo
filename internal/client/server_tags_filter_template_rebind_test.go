@@ -24,7 +24,7 @@ func TestServerTagsFilterTemplateRestoredPersonalRefusedIsPermissionDenied(t *te
 	env := newTemplateEnv(t, templateTestConfig())
 	client := newRegistryTestClient("c1", "12", nil, nil)
 	client.IsSubscribedFunc = func(string) bool { return false }
-	err := env.h.subscribeRestoredPersonal(client, "chat:room", centrifuge.SubscribeOptions{})
+	err := env.h.subscribeRestoredPersonal(client, "topic:room", centrifuge.SubscribeOptions{})
 	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
 }
 
@@ -108,7 +108,7 @@ func TestServerTagsFilterTemplateRefreshAfterTemplatesRemoved(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name:           "chat",
+			Name:           "topic",
 			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
 		},
 	}
@@ -144,10 +144,10 @@ func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {
 	client, state := newRebindTestClient("", "anonymous")
 	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
 
-	// The token has no sid claim, which the template of chat needs under reject.
+	// The token has no sid claim, which the template of topic needs under reject.
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
-			"subs": map[string]any{"chat:srv": map[string]any{}},
+			"subs": map[string]any{"topic:srv": map[string]any{}},
 		}),
 	}, nil)
 	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
@@ -212,12 +212,12 @@ func TestServerTagsFilterTemplateRefreshUnboundDropsRefusedSub(t *testing.T) {
 	sendRateLimitCommand(client, &protocol.Command{
 		Id: 2,
 		Refresh: &protocol.RefreshRequest{
-			Token: getConnTokenWithClaims(t, map[string]any{"subs": map[string]any{"chat:srv": map[string]any{}}}),
+			Token: getConnTokenWithClaims(t, map[string]any{"subs": map[string]any{"topic:srv": map[string]any{}}}),
 		},
 	})
 	require.Nil(t, transport.waitReply(t, 2).Error)
 	require.False(t, transport.disconnected())
-	require.False(t, client.IsSubscribed("chat:srv"))
+	require.False(t, client.IsSubscribed("topic:srv"))
 
 	storage, release := client.AcquireStorage()
 	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
@@ -232,7 +232,7 @@ func TestServerTagsFilterTemplateReloadChangesClaimPaths(t *testing.T) {
 	first := config.DefaultConfig()
 	first.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name: "chat",
+			Name: "topic",
 			ChannelOptions: configtypes.ChannelOptions{
 				SubscribeForClient: true,
 				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
@@ -324,7 +324,7 @@ func TestServerTagsFilterTemplateRebindReloadAddsTemplate(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name:           "chat",
+			Name:           "topic",
 			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
 		},
 	}
@@ -344,13 +344,13 @@ func TestServerTagsFilterTemplateRebindReloadAddsTemplate(t *testing.T) {
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
-			"subs": map[string]any{"chat:srv": map[string]any{}},
+			"subs": map[string]any{"topic:srv": map[string]any{}},
 		}),
 	}, nil)
 	require.Equal(t, centrifuge.DisconnectPermissionDenied, err)
 	require.Equal(t, "42", state.user)
-	require.NotContains(t, state.subscribed, "chat:srv")
-	require.NotContains(t, state.channels, "chat:srv")
+	require.NotContains(t, state.subscribed, "topic:srv")
+	require.NotContains(t, state.channels, "topic:srv")
 }
 
 // TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects checks a reload which adds a template after a rebind was
@@ -360,7 +360,7 @@ func TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects(t *testing.
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name:           "chat",
+			Name:           "topic",
 			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
 		},
 	}
@@ -371,7 +371,7 @@ func TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects(t *testing.
 	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
 
 	client, state := newRebindTestClient("", "anonymous")
-	state.channels["chat:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+	state.channels["topic:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
 	state.beforeApply = func(centrifuge.RebindOptions) {
 		reloaded := templateTestConfig()
 		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
@@ -385,7 +385,7 @@ func TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects(t *testing.
 	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
 	require.Equal(t, "42", state.user)
 	require.Empty(t, state.unsubscribed)
-	require.Contains(t, state.channels, "chat:uni")
+	require.Contains(t, state.channels, "topic:uni")
 }
 
 // TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection checks a reload which adds a template to the
@@ -396,7 +396,7 @@ func TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection(t *t
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name: "chat",
+			Name: "topic",
 			ChannelOptions: configtypes.ChannelOptions{
 				SubscribeForClient: true,
 				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
@@ -420,7 +420,7 @@ func TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection(t *t
 		reloaded := config.DefaultConfig()
 		reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
 			{
-				Name: "chat",
+				Name: "topic",
 				ChannelOptions: configtypes.ChannelOptions{
 					SubscribeForClient: true,
 					ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
@@ -457,18 +457,18 @@ func TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection(t *t
 func TestServerTagsFilterTemplateRefreshReloadHeldPersonalChannel(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
-		{Name: "chat", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+		{Name: "topic", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
 	}
 	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
-	cfg.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "chat"
+	cfg.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "topic"
 	env := newTemplateEnv(t, cfg)
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, nil))
-	require.True(t, client.IsSubscribed("chat:#12"))
+	require.True(t, client.IsSubscribed("topic:#12"))
 
 	// The templates are configured after the connect of the connection, which stored no values.
 	reloaded := templateTestConfig()
 	reloaded.Client.SubscribeToUserPersonalChannel.Enabled = true
-	reloaded.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "chat"
+	reloaded.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "topic"
 	require.NoError(t, env.cfgContainer.Reload(reloaded))
 
 	// The refresh has a value for the template claim which the connection has no value for, and the held personal channel

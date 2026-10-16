@@ -58,7 +58,7 @@ func TestCompileForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tmpl := compileOne(t, "chat", Source{Filter: tt.filter, OnMissingValue: tt.onMiss})
+			tmpl := compileOne(t, "topic", Source{Filter: tt.filter, OnMissingValue: tt.onMiss})
 			require.NotNil(t, tmpl)
 		})
 	}
@@ -90,43 +90,43 @@ func TestCompileErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := CompileSet(map[string]Source{"chat": tt.source})
+			_, err := CompileSet(map[string]Source{"topic": tt.source})
 			require.Error(t, err)
-			require.Contains(t, err.Error(), `namespace "chat"`)
+			require.Contains(t, err.Error(), `namespace "topic"`)
 		})
 	}
 }
 
 // TestCompileErrorNamesField checks a compile error names the namespace, the node and the field of the variable.
 func TestCompileErrorNamesField(t *testing.T) {
-	_, err := CompileSet(map[string]Source{"chat": {Filter: map[string]any{
+	_, err := CompileSet(map[string]Source{"topic": {Filter: map[string]any{
 		"op": "and",
 		"nodes": []any{
 			map[string]any{"key": "k", "cmp": "eq", "val": "x"},
 			map[string]any{"key": "k", "cmp": "in", "vals": []any{"a", "{{claims}}"}},
 		},
 	}}})
-	require.EqualError(t, err, `namespace "chat": filter: nodes[1]: vals[1]: unknown variable "claims"`)
+	require.EqualError(t, err, `namespace "topic": filter: nodes[1]: vals[1]: unknown variable "claims"`)
 }
 
 func TestEmptyFilterHasNoTemplate(t *testing.T) {
-	set, err := CompileSet(map[string]Source{"chat": {}, "other": {Filter: map[string]any{}}})
+	set, err := CompileSet(map[string]Source{"topic": {}, "other": {Filter: map[string]any{}}})
 	require.NoError(t, err)
-	require.Nil(t, set.Template("chat"))
+	require.Nil(t, set.Template("topic"))
 	require.Nil(t, set.Template("other"))
 	require.Empty(t, set.Claims())
 }
 
 func TestSetClaimsUnionAndNamespaces(t *testing.T) {
 	set, err := CompileSet(map[string]Source{
-		"chat":  {Filter: sessionFilter()},
+		"topic":  {Filter: sessionFilter()},
 		"":      {Filter: tenantFilter()},
 		"plain": {},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"sid", "tenant"}, set.Claims())
 	require.NotNil(t, set.Template(""))
-	require.NotNil(t, set.Template("chat"))
+	require.NotNil(t, set.Template("topic"))
 	require.Nil(t, set.Template("plain"))
 	require.Nil(t, set.Template("missing"))
 }
@@ -196,7 +196,7 @@ func TestPlaceholderRendersEveryVariableAsX(t *testing.T) {
 }
 
 func TestRenderMissingValues(t *testing.T) {
-	tmpl := compileOne(t, "chat", Source{Filter: sessionFilter()})
+	tmpl := compileOne(t, "topic", Source{Filter: sessionFilter()})
 	tests := []struct {
 		name     string
 		values   Values
@@ -236,7 +236,7 @@ func TestRenderMissingClientIsMissing(t *testing.T) {
 }
 
 func TestRenderStalePathsResolveByName(t *testing.T) {
-	tmpl := compileOne(t, "chat", Source{Filter: map[string]any{
+	tmpl := compileOne(t, "topic", Source{Filter: map[string]any{
 		"op": "and",
 		"nodes": []any{
 			map[string]any{"key": "a", "cmp": "eq", "val": "{{claims.org}}"},
@@ -252,7 +252,7 @@ func TestRenderStalePathsResolveByName(t *testing.T) {
 }
 
 func TestRenderPathAbsentFromStalePathsIsMissing(t *testing.T) {
-	tmpl := compileOne(t, "chat", Source{Filter: sessionFilter()})
+	tmpl := compileOne(t, "topic", Source{Filter: sessionFilter()})
 	// The reload added the sid path: the connection was verified before, so its claims have no sid.
 	stale := Claims{Paths: []string{"org"}, Values: []string{"acme"}}
 	got, err := tmpl.Render(Values{Claims: stale, User: "u"})

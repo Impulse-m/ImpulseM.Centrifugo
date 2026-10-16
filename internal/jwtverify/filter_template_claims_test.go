@@ -20,7 +20,7 @@ func filterTemplateTestVerifier(t testing.TB) *VerifierJWT {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name: "chat",
+			Name: "topic",
 			ChannelOptions: configtypes.ChannelOptions{
 				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
 					Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},

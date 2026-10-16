@@ -81,12 +81,12 @@ func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) 
 	rebound.UnsubscribeFunc = func(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 		unsubscribed[ch] = unsubscribe[0]
 	}
-	env.h.answerSubscribe(rebound, "chat:room", reply, nil, func(centrifuge.SubscribeReply, error) {
+	env.h.answerSubscribe(rebound, "topic:room", reply, nil, func(centrifuge.SubscribeReply, error) {
 		storage, release := rebound.AcquireStorage()
 		storage[serverTagsFilterValuesKey] = filtertemplate.Values{User: "12", Claims: sidClaimsOf("s-2"), Client: "c1"}
 		release(storage)
 	})
-	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), unsubscribed["chat:room"].Code)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), unsubscribed["topic:room"].Code)
 
 	// Without a store during the commit the subscription stays.
 	steady := newRegistryTestClient("c2", "12", nil, map[string]any{
@@ -96,7 +96,7 @@ func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) 
 	steady.UnsubscribeFunc = func(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 		steadyUnsubscribed[ch] = unsubscribe[0]
 	}
-	env.h.answerSubscribe(steady, "chat:room", reply, nil, noopSubscribeCallback)
+	env.h.answerSubscribe(steady, "topic:room", reply, nil, noopSubscribeCallback)
 	require.Empty(t, steadyUnsubscribed)
 }
 
@@ -151,7 +151,7 @@ func TestServerTagsFilterTemplateRefusedConnectKeepsSingleConnection(t *testing.
 	env := newTemplateEnv(t, cfg)
 	_, firstTransport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
 
-	// The second token has no sid, which the template of chat needs under reject, so its connect is refused with 3507.
+	// The second token has no sid, which the template of topic needs under reject, so its connect is refused with 3507.
 	secondTransport := newRecordingTransport()
 	secondClient, closeFn, err := centrifuge.NewClient(context.Background(), env.node, secondTransport)
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestServerTagsFilterTemplateRefusedConnectKeepsSingleConnection(t *testing.
 	sendRateLimitCommand(secondClient, &protocol.Command{
 		Id: 1,
 		Connect: &protocol.ConnectRequest{
-			Token: connTokenOf(t, map[string]any{"subs": map[string]any{"chat:srv": map[string]any{}}}),
+			Token: connTokenOf(t, map[string]any{"subs": map[string]any{"topic:srv": map[string]any{}}}),
 		},
 	})
 	require.Equal(t, centrifuge.DisconnectPermissionDenied.Code, secondTransport.waitDisconnect(t).Code)

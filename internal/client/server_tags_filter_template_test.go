@@ -42,11 +42,11 @@ func newTemplateEnv(t *testing.T, cfg config.Config) *templateEnv {
 }
 
 // sessionTemplateNamespaces returns the config of a namespace which subscribes clients with a session template
-// under reject ("chat") and under skip ("lenient").
+// under reject ("topic") and under skip ("lenient").
 func sessionTemplateNamespaces() configtypes.ChannelNamespaces {
 	return configtypes.ChannelNamespaces{
 		{
-			Name: "chat",
+			Name: "topic",
 			ChannelOptions: configtypes.ChannelOptions{
 				SubscribeForClient: true,
 				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
@@ -137,11 +137,11 @@ func sessionFilter(session string) *protocol.FilterNode {
 func TestServerTagsFilterTemplateClientSubscription(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
-	subscribeClient(t, client, transport, 2, "chat:room", "")
+	subscribeClient(t, client, transport, 2, "topic:room", "")
 
-	publishTagged(t, env.node, "chat:room", `{"n":1}`, map[string]string{"session": "s-1"})
-	publishTagged(t, env.node, "chat:room", `{"n":2}`, map[string]string{"session": "s-2"})
-	publishTagged(t, env.node, "chat:room", `{"n":3}`, nil)
+	publishTagged(t, env.node, "topic:room", `{"n":1}`, map[string]string{"session": "s-1"})
+	publishTagged(t, env.node, "topic:room", `{"n":2}`, map[string]string{"session": "s-2"})
+	publishTagged(t, env.node, "topic:room", `{"n":3}`, nil)
 	waitPushed(t, transport, `{"n":3}`)
 	require.Equal(t, []string{`{"n":2}`, `{"n":3}`}, transport.pushedData())
 }
@@ -151,13 +151,13 @@ func TestServerTagsFilterTemplateClientSubscription(t *testing.T) {
 func TestServerTagsFilterTemplateWithSubscriptionTokenFilter(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
-	subscribeClient(t, client, transport, 2, "chat:room", getSubscribeTokenHSWithServerTagsFilter("12", "chat:room", testServerTagsFilter()))
+	subscribeClient(t, client, transport, 2, "topic:room", getSubscribeTokenHSWithServerTagsFilter("12", "topic:room", testServerTagsFilter()))
 
 	// Matches the explicit filter, but has the session of the connection.
-	publishTagged(t, env.node, "chat:room", `{"n":1}`, map[string]string{"type": "a", "tier": "x", "session": "s-1"})
+	publishTagged(t, env.node, "topic:room", `{"n":1}`, map[string]string{"type": "a", "tier": "x", "session": "s-1"})
 	// Has another session, but misses the explicit filter.
-	publishTagged(t, env.node, "chat:room", `{"n":2}`, map[string]string{"type": "b", "tier": "x", "session": "s-2"})
-	publishTagged(t, env.node, "chat:room", `{"n":3}`, map[string]string{"type": "a", "tier": "x", "session": "s-2"})
+	publishTagged(t, env.node, "topic:room", `{"n":2}`, map[string]string{"type": "b", "tier": "x", "session": "s-2"})
+	publishTagged(t, env.node, "topic:room", `{"n":3}`, map[string]string{"type": "a", "tier": "x", "session": "s-2"})
 	waitPushed(t, transport, `{"n":3}`)
 	require.Equal(t, []string{`{"n":3}`}, transport.pushedData())
 }
@@ -171,7 +171,7 @@ func TestServerTagsFilterTemplateSubscribeProxyFilter(t *testing.T) {
 	reply := centrifuge.SubscribeReply{Options: centrifuge.SubscribeOptions{ServerTagsFilter: testServerTagsFilter()}}
 	var answered centrifuge.SubscribeReply
 	var answeredErr error
-	env.h.answerSubscribe(client, "chat:room", reply, nil, func(r centrifuge.SubscribeReply, err error) {
+	env.h.answerSubscribe(client, "topic:room", reply, nil, func(r centrifuge.SubscribeReply, err error) {
 		answered = r
 		answeredErr = err
 	})
@@ -193,11 +193,11 @@ func TestServerTagsFilterTemplateMissingClaim(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
 
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, nil))
-	sendRateLimitCommand(client, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "chat:room"}})
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "topic:room"}})
 	reply := transport.waitReply(t, 2)
 	require.NotNil(t, reply.Error)
 	require.Equal(t, centrifuge.ErrorPermissionDenied.Code, reply.Error.Code)
-	require.False(t, client.IsSubscribed("chat:room"))
+	require.False(t, client.IsSubscribed("topic:room"))
 
 	client, transport = connectWithConnToken(t, env.node, connTokenOf(t, nil))
 	subscribeClient(t, client, transport, 2, "lenient:room", "")
@@ -210,12 +210,12 @@ func TestServerTagsFilterTemplateMissingClaim(t *testing.T) {
 // unfiltered under skip.
 func TestServerTagsFilterTemplateConnectionSubscriptions(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
-	subs := map[string]any{"subs": map[string]any{"chat:srv": map[string]any{}}}
+	subs := map[string]any{"subs": map[string]any{"topic:srv": map[string]any{}}}
 
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, mergeClaims(subs, map[string]any{"sid": "s-1"})))
-	require.True(t, client.IsSubscribed("chat:srv"))
-	publishTagged(t, env.node, "chat:srv", `{"n":1}`, map[string]string{"session": "s-1"})
-	publishTagged(t, env.node, "chat:srv", `{"n":2}`, map[string]string{"session": "s-2"})
+	require.True(t, client.IsSubscribed("topic:srv"))
+	publishTagged(t, env.node, "topic:srv", `{"n":1}`, map[string]string{"session": "s-1"})
+	publishTagged(t, env.node, "topic:srv", `{"n":2}`, map[string]string{"session": "s-2"})
 	waitPushed(t, transport, `{"n":2}`)
 	require.Equal(t, []string{`{"n":2}`}, transport.pushedData())
 
@@ -248,9 +248,9 @@ func mergeClaims(base map[string]any, extra map[string]any) map[string]any {
 // disconnects with insufficient state.
 func TestServerTagsFilterTemplateRefreshKeepsSubscriptions(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
-	subs := map[string]any{"subs": map[string]any{"chat:srv": map[string]any{}}}
+	subs := map[string]any{"subs": map[string]any{"topic:srv": map[string]any{}}}
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, mergeClaims(subs, map[string]any{"sid": "s-1"})))
-	require.True(t, client.IsSubscribed("chat:srv"))
+	require.True(t, client.IsSubscribed("topic:srv"))
 	repliesBefore := transport.replyCount()
 
 	// Same claims: the loop guard keeps the connection, the only reply is the refresh one.
@@ -261,7 +261,7 @@ func TestServerTagsFilterTemplateRefreshKeepsSubscriptions(t *testing.T) {
 	reply := transport.waitReply(t, 2)
 	require.Nil(t, reply.Error)
 	require.False(t, transport.disconnected())
-	require.True(t, client.IsSubscribed("chat:srv"))
+	require.True(t, client.IsSubscribed("topic:srv"))
 	require.Equal(t, repliesBefore+1, transport.replyCount())
 
 	// Other claims: the connection is disconnected to resubscribe with the values of the new token.
@@ -278,22 +278,22 @@ func TestServerTagsFilterTemplateRefreshKeepsSubscriptions(t *testing.T) {
 func TestServerTagsFilterTemplateSubRefresh(t *testing.T) {
 	env := newTemplateEnv(t, templateTestConfig())
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
-	subscribeClient(t, client, transport, 2, "chat:room", getSubscribeTokenHSWithServerTagsFilter("12", "chat:room", testServerTagsFilter()))
+	subscribeClient(t, client, transport, 2, "topic:room", getSubscribeTokenHSWithServerTagsFilter("12", "topic:room", testServerTagsFilter()))
 
 	newFilter := &protocol.FilterNode{Key: "type", Cmp: "eq", Val: "b"}
 	sendRateLimitCommand(client, &protocol.Command{
 		Id: 3,
 		SubRefresh: &protocol.SubRefreshRequest{
-			Channel: "chat:room",
-			Token:   getSubscribeTokenHSWithServerTagsFilter("12", "chat:room", newFilter),
+			Channel: "topic:room",
+			Token:   getSubscribeTokenHSWithServerTagsFilter("12", "topic:room", newFilter),
 		},
 	})
 	require.Nil(t, transport.waitReply(t, 3).Error)
 
 	// The template still drops the own session, and the new explicit filter applies.
-	publishTagged(t, env.node, "chat:room", `{"n":1}`, map[string]string{"type": "b", "session": "s-1"})
-	publishTagged(t, env.node, "chat:room", `{"n":2}`, map[string]string{"type": "b", "session": "s-2"})
-	publishTagged(t, env.node, "chat:room", `{"n":3}`, map[string]string{"type": "a", "session": "s-2"})
+	publishTagged(t, env.node, "topic:room", `{"n":1}`, map[string]string{"type": "b", "session": "s-1"})
+	publishTagged(t, env.node, "topic:room", `{"n":2}`, map[string]string{"type": "b", "session": "s-2"})
+	publishTagged(t, env.node, "topic:room", `{"n":3}`, map[string]string{"type": "a", "session": "s-2"})
 	waitPushed(t, transport, `{"n":2}`)
 	require.Equal(t, []string{`{"n":2}`}, transport.pushedData())
 
@@ -301,13 +301,13 @@ func TestServerTagsFilterTemplateSubRefresh(t *testing.T) {
 	sendRateLimitCommand(client, &protocol.Command{
 		Id: 4,
 		SubRefresh: &protocol.SubRefreshRequest{
-			Channel: "chat:room",
-			Token:   getSubscribeTokenHS("12", "chat:room", 0),
+			Channel: "topic:room",
+			Token:   getSubscribeTokenHS("12", "topic:room", 0),
 		},
 	})
 	require.Nil(t, transport.waitReply(t, 4).Error)
-	publishTagged(t, env.node, "chat:room", `{"n":4}`, map[string]string{"type": "b", "session": "s-1"})
-	publishTagged(t, env.node, "chat:room", `{"n":5}`, map[string]string{"type": "b", "session": "s-3"})
+	publishTagged(t, env.node, "topic:room", `{"n":4}`, map[string]string{"type": "b", "session": "s-1"})
+	publishTagged(t, env.node, "topic:room", `{"n":5}`, map[string]string{"type": "b", "session": "s-3"})
 	waitPushed(t, transport, `{"n":5}`)
 	require.Equal(t, []string{`{"n":2}`, `{"n":5}`}, transport.pushedData())
 }
@@ -325,7 +325,7 @@ func TestServerTagsFilterTemplateRebindResubscribes(t *testing.T) {
 
 	client, state := newRebindTestClient("", "anonymous")
 	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
-	state.channels["chat:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+	state.channels["topic:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
 
 	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
 		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
@@ -336,7 +336,7 @@ func TestServerTagsFilterTemplateRebindResubscribes(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:room"].Code)
-	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["chat:room"].Code)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["topic:room"].Code)
 	require.Contains(t, state.subscribed, "lenient:srv")
 	require.True(t, proto.Equal(sessionFilter("s-1"), state.subscribed["lenient:srv"].ServerTagsFilter), "got %v", state.subscribed["lenient:srv"].ServerTagsFilter)
 }
@@ -443,18 +443,18 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	mock := newRegistryTestClient("c1", "12", nil, nil)
 	reply := centrifuge.SubscribeReply{}
 	subscribeAllocs := testing.AllocsPerRun(1000, func() {
-		env.h.answerSubscribe(mock, "chat:room", reply, nil, noopSubscribeCallback)
+		env.h.answerSubscribe(mock, "topic:room", reply, nil, noopSubscribeCallback)
 	})
 	require.Zero(t, subscribeAllocs)
 	var answered centrifuge.SubscribeReply
-	env.h.answerSubscribe(mock, "chat:room", reply, nil, func(r centrifuge.SubscribeReply, _ error) { answered = r })
+	env.h.answerSubscribe(mock, "topic:room", reply, nil, func(r centrifuge.SubscribeReply, _ error) { answered = r })
 	require.Nil(t, answered.Options.ServerTagsFilter)
 
 	explicit := testServerTagsFilter()
-	_, refreshErr := env.h.refreshFilterTemplate(mock, "chat:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
+	_, refreshErr := env.h.refreshFilterTemplate(mock, "topic:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
 	require.NoError(t, refreshErr)
 	refreshAllocs := testing.AllocsPerRun(1000, func() {
-		_, _ = env.h.refreshFilterTemplate(mock, "chat:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
+		_, _ = env.h.refreshFilterTemplate(mock, "topic:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
 	})
 	require.Zero(t, refreshAllocs)
 }
@@ -463,24 +463,44 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 // no claims, so its claim variables are missing and the policy applies, and a new connection is filtered.
 func TestServerTagsFilterTemplateConfigReload(t *testing.T) {
 	cfg := config.DefaultConfig()
-	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "chat", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "topic", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
 	env := newTemplateEnv(t, cfg)
 	oldClient, oldTransport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
 	require.NotNil(t, oldClient)
 
 	require.NoError(t, env.cfgContainer.Reload(templateTestConfig()))
 
-	sendRateLimitCommand(oldClient, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "chat:room"}})
+	sendRateLimitCommand(oldClient, &protocol.Command{Id: 2, Subscribe: &protocol.SubscribeRequest{Channel: "topic:room"}})
 	reply := oldTransport.waitReply(t, 2)
 	require.NotNil(t, reply.Error)
 	require.Equal(t, centrifuge.ErrorPermissionDenied.Code, reply.Error.Code)
 
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
-	subscribeClient(t, client, transport, 2, "chat:room", "")
-	publishTagged(t, env.node, "chat:room", `{"n":1}`, map[string]string{"session": "s-1"})
-	publishTagged(t, env.node, "chat:room", `{"n":2}`, map[string]string{"session": "s-2"})
+	subscribeClient(t, client, transport, 2, "topic:room", "")
+	publishTagged(t, env.node, "topic:room", `{"n":1}`, map[string]string{"session": "s-1"})
+	publishTagged(t, env.node, "topic:room", `{"n":2}`, map[string]string{"session": "s-2"})
 	waitPushed(t, transport, `{"n":2}`)
 	require.Equal(t, []string{`{"n":2}`}, transport.pushedData())
+}
+
+// TestServerTagsFilterTemplateRefreshAfterReloadAddsTemplate checks a connection which connected before a reload added a
+// template stores no values, so its refresh is changed even when the refresh token has no value for the template claim:
+// it is disconnected with insufficient state, and its reconnect binds the values.
+func TestServerTagsFilterTemplateRefreshAfterReloadAddsTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "topic", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
+	env := newTemplateEnv(t, cfg)
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{}))
+	require.NotNil(t, client)
+
+	require.NoError(t, env.cfgContainer.Reload(templateTestConfig()))
+
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{})},
+	})
+	disconnect := transport.waitDisconnect(t)
+	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
 }
 
 // TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate checks a reload which runs during the connect proxy call and
@@ -488,13 +508,13 @@ func TestServerTagsFilterTemplateConfigReload(t *testing.T) {
 // templates are applied with the config read after the call, not with the config of the connect's start.
 func TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate(t *testing.T) {
 	cfg := config.DefaultConfig()
-	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "chat", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "topic", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
 	env := newTemplateEnv(t, cfg)
 
 	reloaded := config.DefaultConfig()
 	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
-			Name: "chat",
+			Name: "topic",
 			ChannelOptions: configtypes.ChannelOptions{
 				SubscribeForClient: true,
 				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
@@ -507,14 +527,14 @@ func TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate(t *testing.T) {
 		require.NoError(t, env.cfgContainer.Reload(reloaded))
 		return centrifuge.ConnectReply{
 			Credentials:   &centrifuge.Credentials{UserID: "42"},
-			Subscriptions: map[string]centrifuge.SubscribeOptions{"chat:srv": {}},
+			Subscriptions: map[string]centrifuge.SubscribeOptions{"topic:srv": {}},
 		}, proxy.ConnectExtra{}, nil
 	}
 
 	reply, err := env.h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{ClientID: "c1"}, connectProxyHandler, true)
 	require.NoError(t, err)
 	want := &protocol.FilterNode{Key: "owner", Cmp: "eq", Val: "42"}
-	require.True(t, proto.Equal(want, reply.Subscriptions["chat:srv"].ServerTagsFilter), "got %v", reply.Subscriptions["chat:srv"].ServerTagsFilter)
+	require.True(t, proto.Equal(want, reply.Subscriptions["topic:srv"].ServerTagsFilter), "got %v", reply.Subscriptions["topic:srv"].ServerTagsFilter)
 }
 
 // TestServerTagsFilterTemplateUnsubscribeForgetsChannels checks that the record of templated channels keeps only the
@@ -525,7 +545,7 @@ func TestServerTagsFilterTemplateUnsubscribeForgetsChannels(t *testing.T) {
 	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
 	const channelCount int = 50
 	for i := 0; i < channelCount; i++ {
-		channel := fmt.Sprintf("chat:room-%d", i)
+		channel := fmt.Sprintf("topic:room-%d", i)
 		subscribeID := uint32(2 + i)
 		unsubscribeID := uint32(2 + channelCount + i)
 		subscribeClient(t, client, transport, subscribeID, channel, "")

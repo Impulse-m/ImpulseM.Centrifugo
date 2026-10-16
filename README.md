@@ -101,7 +101,7 @@ A namespace can set `server_tags_filter_template`: a server tags filter applied 
 "channel": {
   "namespaces": [
     {
-      "name": "chat",
+      "name": "topic",
       "allow_subscribe_for_client": true,
       "server_tags_filter_template": {
         "filter": {"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},

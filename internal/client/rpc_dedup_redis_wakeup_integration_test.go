@@ -4,13 +4,14 @@ package client
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
+	"github.com/centrifugal/centrifugo/v6/internal/service"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -18,36 +19,83 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// dedupRegistryWithRedisWakeup returns the dedup registry of dedupRegistryWithRedis, with the wakeup by notification
-// on and pollInterval as its fallback poll interval.
-func dedupRegistryWithRedisWakeup(prefix string, pollInterval time.Duration) configtypes.RPCRegistry {
+// dedupRegistryWithRedisWakeup returns the dedup registry of dedupRegistryWithRedis, with the wakeup on and the default
+// cap of the waiter nodes.
+func dedupRegistryWithRedisWakeup(prefix string) configtypes.RPCRegistry {
 	reg := dedupRegistryWithRedis(prefix)
-	reg.Dedup.Redis.Notification = configtypes.RPCDedupNotification{
-		Enabled:      true,
-		PollInterval: configtypes.Duration(pollInterval),
+	reg.Dedup.Redis.Wakeup = configtypes.RPCDedupWakeup{
+		Enabled:        true,
+		MaxWaiterNodes: 64,
 	}
 	return reg
 }
 
-// testWakeupMetrics sets the wakeup series of the dedup metrics for the test, before its handlers are built. It returns
-// the poll counter, the waits by end and the notifications by op and result.
-func testWakeupMetrics(t *testing.T) (prometheus.Counter, *prometheus.CounterVec, *prometheus.CounterVec) {
+// dedupRegistryWithRedisWakeupCap returns dedupRegistryWithRedisWakeup with the cap of the waiter nodes at maxWaiterNodes.
+func dedupRegistryWithRedisWakeupCap(prefix string, maxWaiterNodes int) configtypes.RPCRegistry {
+	reg := dedupRegistryWithRedisWakeup(prefix)
+	reg.Dedup.Redis.Wakeup.MaxWaiterNodes = maxWaiterNodes
+	return reg
+}
+
+// wakeupMetrics are the series of the wakeup which a test reads.
+type wakeupMetrics struct {
+	reads         prometheus.Counter
+	waits         *prometheus.CounterVec
+	notifications *prometheus.CounterVec
+	wakes         *prometheus.CounterVec
+	watchers      prometheus.Gauge
+}
+
+// testWakeupMetrics sets the wakeup series of the dedup metrics for the test, before its handlers are built. The
+// previous series are restored when the test ends.
+func testWakeupMetrics(t *testing.T) wakeupMetrics {
 	t.Helper()
-	polls := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_remote_polls_total"})
-	waits := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_remote_waits_total"}, []string{"end"})
-	notifications := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_notifications_total"}, []string{"op", "result"})
-	previousPolls := metrics.RPCRegistryDedupRemotePollsTotal
+	m := wakeupMetrics{
+		reads:         prometheus.NewCounter(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_remote_reads_total"}),
+		waits:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_remote_waits_total"}, []string{"end"}),
+		notifications: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_notifications_total"}, []string{"op", "result"}),
+		wakes:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "test_rpc_registry_dedup_wakes_total"}, []string{"result"}),
+		watchers:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_rpc_registry_dedup_wake_watchers"}),
+	}
+	previousReads := metrics.RPCRegistryDedupRemoteReadsTotal
 	previousWaits := metrics.RPCRegistryDedupRemoteWaitsTotal
 	previousNotifications := metrics.RPCRegistryDedupNotificationsTotal
-	metrics.RPCRegistryDedupRemotePollsTotal = polls
-	metrics.RPCRegistryDedupRemoteWaitsTotal = waits
-	metrics.RPCRegistryDedupNotificationsTotal = notifications
+	previousWakes := metrics.RPCRegistryDedupWakesTotal
+	previousWatchers := metrics.RPCRegistryDedupWakeWatchers
+	metrics.RPCRegistryDedupRemoteReadsTotal = m.reads
+	metrics.RPCRegistryDedupRemoteWaitsTotal = m.waits
+	metrics.RPCRegistryDedupNotificationsTotal = m.notifications
+	metrics.RPCRegistryDedupWakesTotal = m.wakes
+	metrics.RPCRegistryDedupWakeWatchers = m.watchers
 	t.Cleanup(func() {
-		metrics.RPCRegistryDedupRemotePollsTotal = previousPolls
+		metrics.RPCRegistryDedupRemoteReadsTotal = previousReads
 		metrics.RPCRegistryDedupRemoteWaitsTotal = previousWaits
 		metrics.RPCRegistryDedupNotificationsTotal = previousNotifications
+		metrics.RPCRegistryDedupWakesTotal = previousWakes
+		metrics.RPCRegistryDedupWakeWatchers = previousWatchers
 	})
-	return polls, waits, notifications
+	return m
+}
+
+// startHandlerServices runs the services of h until the test ends, as the node does: the shared tier flushes its acks,
+// and its wake watchers run while it has remote waits.
+func startHandlerServices(t *testing.T, h *Handler) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{}, len(h.Services()))
+	services := h.Services()
+	for _, s := range services {
+		go func(s service.Service) {
+			_ = s.Run(ctx)
+			done <- struct{}{}
+		}(s)
+	}
+	t.Cleanup(func() {
+		cancel()
+		for range services {
+			<-done
+		}
+	})
 }
 
 // integrationWaiters returns the waiters field of the in-flight record of key in the integration Redis, and false when
@@ -66,17 +114,55 @@ func integrationWaiters(t *testing.T, prefix string, key rpcdedup.Key) (string, 
 	return value, true
 }
 
-// A duplicate which waits for a call on another node is woken by the done notification of the node which runs the call,
-// and answers without polling for the record.
-func TestRPCDedupRedisRemoteJoinWakesByNotification(t *testing.T) {
+// blockedXReadClients returns the clients of the integration Redis which block on an XREAD, as CLIENT LIST shows them.
+func blockedXReadClients(t *testing.T) int {
+	t.Helper()
+	shard := integrationShard(t)
+	list, err := shard.RunOp(func(c rueidis.Client) rueidis.RedisResult {
+		return c.Do(context.Background(), c.B().ClientList().Build())
+	}).ToString()
+	require.NoError(t, err)
+	blocked := 0
+	for _, line := range strings.Split(list, "\n") {
+		var isXRead, isBlocked bool
+		for _, field := range strings.Fields(line) {
+			if field == "cmd=xread" {
+				isXRead = true
+			}
+			if strings.HasPrefix(field, "flags=") && strings.Contains(field, "b") {
+				isBlocked = true
+			}
+		}
+		if isXRead && isBlocked {
+			blocked++
+		}
+	}
+	return blocked
+}
+
+// requireNoBlockedXRead waits until no client of the integration Redis blocks on an XREAD. A connection which a test
+// cancelled may be listed for a moment after its close, so the check allows a short settle time; a wake watcher which
+// idles would stay blocked and fail it.
+func requireNoBlockedXRead(t *testing.T) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return blockedXReadClients(t) == 0
+	}, 2*time.Second, 10*time.Millisecond, "a wake watcher holds a blocked XREAD")
+}
+
+// A duplicate which waits for a call on another node is woken through the wake stream of its node when the call is
+// written, and answers without reading the record again.
+func TestRPCDedupRedisRemoteJoinWakesThroughStream(t *testing.T) {
 	vec := testDedupOutcomes(t)
-	polls, waits, notifications := testWakeupMetrics(t)
+	m := testWakeupMetrics(t)
 	prefix := uniqueRedisPrefix()
 	cleanupRedisPrefix(t, prefix)
 	backend := newDedupBackend(t)
-	reg := dedupRegistryWithRedisWakeup(prefix, time.Hour)
+	reg := dedupRegistryWithRedisWakeup(prefix)
 	nodeA := newRedisDedupHandler(t, reg, backend)
 	nodeB := newRedisDedupHandler(t, reg, backend)
+	startHandlerServices(t, nodeA)
+	startHandlerServices(t, nodeB)
 	clientA := newDedupClient("a1", "42", nil, testInstance)
 	clientB := newDedupClient("b1", "42", nil, testInstance)
 	msgID := dedupMsgID(25)
@@ -88,89 +174,78 @@ func TestRPCDedupRedisRemoteJoinWakesByNotification(t *testing.T) {
 	duplicate := dedupCallAsync(nodeB, clientB, "users.get", msgID, "gate")
 	requireJoined(t, joinSignal)
 	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_remote"))
-	// node-b is registered as a waiter in the record of node-a.
+	// node-b is listed as a waiter in the record of node-a, and its wake watcher runs.
 	waiters, found := integrationWaiters(t, prefix, key)
 	require.True(t, found)
 	require.Equal(t, nodeB.node.ID(), waiters)
-
-	handler := nodeB.NotificationHandlers()[rpcdedup.DoneNotificationOp]
-	require.NotNil(t, handler)
+	require.Equal(t, 1.0, testutil.ToFloat64(m.watchers))
 
 	released := time.Now()
 	backend.releaseGate()
 	r1 := waitDedupResult(t, owner)
 	require.NoError(t, r1.err)
-	// The nodes of the test do not share a control broker, so the test delivers node-a's done notification to node-b.
-	handler(centrifuge.NotificationEvent{
-		FromNodeID: nodeA.node.ID(),
-		Op:         rpcdedup.DoneNotificationOp,
-		Data:       rpcdedup.EncodeDone(key),
-	})
 	r2 := waitDedupResult(t, duplicate)
-	t.Logf("wait latency with the wakeup: %s", time.Since(released))
+	t.Logf("wait latency with the wake stream: %s", time.Since(released))
 	require.NoError(t, r2.err)
 	require.Equal(t, []byte("reply:gate"), r2.reply.Data)
 	require.True(t, r2.reply.Cached)
 	require.Len(t, backend.Calls(), 1)
 
-	require.Equal(t, 1.0, testutil.ToFloat64(polls))
-	require.Equal(t, 1.0, testutil.ToFloat64(waits.WithLabelValues(rpcdedup.WatchEndNotified)))
-	// node-a could not send the notification here, which the metric counts as an error.
-	require.Equal(t, 1.0, testutil.ToFloat64(notifications.WithLabelValues(metrics.RPCRegistryDedupNotifyDone, "error")))
+	require.Equal(t, 1.0, testutil.ToFloat64(m.reads))
+	require.Equal(t, 1.0, testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndWoken)))
+	require.Equal(t, 1.0, testutil.ToFloat64(m.wakes.WithLabelValues("ok")))
 }
 
-// A duplicate which waits for a call on another node is answered by the fallback poll when its notification is lost.
-func TestRPCDedupRedisRemoteJoinFallsBackWhenNotificationIsLost(t *testing.T) {
+// A duplicate beyond the cap of the waiter nodes is answered with the later error at once, and counted as refused.
+func TestRPCDedupRedisRemoteJoinFullIsLater(t *testing.T) {
 	vec := testDedupOutcomes(t)
-	polls, waits, _ := testWakeupMetrics(t)
+	m := testWakeupMetrics(t)
 	prefix := uniqueRedisPrefix()
 	cleanupRedisPrefix(t, prefix)
 	backend := newDedupBackend(t)
-	// The shortest poll interval which config validation accepts.
-	reg := dedupRegistryWithRedisWakeup(prefix, 100*time.Millisecond)
+	reg := dedupRegistryWithRedisWakeupCap(prefix, 1)
 	nodeA := newRedisDedupHandler(t, reg, backend)
 	nodeB := newRedisDedupHandler(t, reg, backend)
-	clientA := newDedupClient("a1", "42", nil, testInstance)
-	clientB := newDedupClient("b1", "42", nil, testInstance)
+	nodeC := newRedisDedupHandler(t, reg, backend)
+	startHandlerServices(t, nodeA)
+	startHandlerServices(t, nodeB)
+	startHandlerServices(t, nodeC)
 	msgID := dedupMsgID(26)
 
-	owner := dedupCallAsync(nodeA, clientA, "users.get", msgID, "gate")
+	owner := dedupCallAsync(nodeA, newDedupClient("a1", "42", nil, testInstance), "users.get", msgID, "gate")
 	backend.waitEntered(t)
-	joinSignal := testJoinSignal(nodeB)
-	duplicate := dedupCallAsync(nodeB, clientB, "users.get", msgID, "gate")
-	requireJoined(t, joinSignal)
-	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_remote"))
+	joinB := testJoinSignal(nodeB)
+	duplicateB := dedupCallAsync(nodeB, newDedupClient("b1", "42", nil, testInstance), "users.get", msgID, "gate")
+	requireJoined(t, joinB)
 
-	// Nothing is delivered: the duplicate gets its answer from the fallback poll.
+	refused := dedupCallAsyncResult(t, nodeC, newDedupClient("c1", "42", nil, testInstance), "users.get", msgID, "gate")
+	requireRetrySignal(t, refused.err, rpcRetryLater)
+	require.Equal(t, 1.0, testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndRefused)))
+	// The refused duplicate is counted too: the record was in flight on another node.
+	require.Equal(t, 2.0, testDedupCount(vec, "hit_inflight_remote"))
+
 	backend.releaseGate()
 	require.NoError(t, waitDedupResult(t, owner).err)
-	r2 := waitDedupResult(t, duplicate)
-	require.NoError(t, r2.err)
-	require.Equal(t, []byte("reply:gate"), r2.reply.Data)
-	require.True(t, r2.reply.Cached)
+	require.NoError(t, waitDedupResult(t, duplicateB).err)
 	require.Len(t, backend.Calls(), 1)
-
-	require.Equal(t, 1.0, testutil.ToFloat64(waits.WithLabelValues(rpcdedup.WatchEndPolled)))
-	require.GreaterOrEqual(t, testutil.ToFloat64(polls), 1.0)
 }
 
-// Without the wakeup, the handler has no done notification, and the record of a remote wait holds no waiter.
-func TestRPCDedupRedisWakeupOffRegistersNoHandler(t *testing.T) {
+// With the wakeup off, a remote wait starts no wake watcher, and the record of the call holds no waiter.
+func TestRPCDedupRedisWakeupOffStartsNoWatcher(t *testing.T) {
 	vec := testDedupOutcomes(t)
+	m := testWakeupMetrics(t)
 	prefix := uniqueRedisPrefix()
 	cleanupRedisPrefix(t, prefix)
 	backend := newDedupBackend(t)
 	reg := dedupRegistryWithRedis(prefix)
 	nodeA := newRedisDedupHandler(t, reg, backend)
 	nodeB := newRedisDedupHandler(t, reg, backend)
+	startHandlerServices(t, nodeA)
+	startHandlerServices(t, nodeB)
 	clientA := newDedupClient("a1", "42", nil, testInstance)
 	clientB := newDedupClient("b1", "42", nil, testInstance)
 	msgID := dedupMsgID(27)
 	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
-
-	handlers := nodeB.NotificationHandlers()
-	require.Contains(t, handlers, rpcdedup.CancelNotificationOp)
-	require.NotContains(t, handlers, rpcdedup.DoneNotificationOp)
 
 	owner := dedupCallAsync(nodeA, clientA, "users.get", msgID, "gate")
 	backend.waitEntered(t)
@@ -180,18 +255,34 @@ func TestRPCDedupRedisWakeupOffRegistersNoHandler(t *testing.T) {
 	require.Equal(t, 1.0, testDedupCount(vec, "hit_inflight_remote"))
 	_, found := integrationWaiters(t, prefix, key)
 	require.False(t, found, "a begin without the wakeup registers no waiter")
+	require.Equal(t, 0.0, testutil.ToFloat64(m.watchers))
+	requireNoBlockedXRead(t)
 
 	backend.releaseGate()
 	require.NoError(t, waitDedupResult(t, owner).err)
 	require.NoError(t, waitDedupResult(t, duplicate).err)
 }
 
-// With the wakeup on, the handlers of the node include the done notification.
-func TestRPCDedupRedisWakeupRegistersDoneHandler(t *testing.T) {
+// With the wakeup on and no remote wait, a node runs no wake watcher and holds no blocked read.
+func TestRPCDedupRedisWakeupIdleStartsNoWatcher(t *testing.T) {
+	m := testWakeupMetrics(t)
+	prefix := uniqueRedisPrefix()
+	cleanupRedisPrefix(t, prefix)
+	backend := newDedupBackend(t)
+	h := newRedisDedupHandler(t, dedupRegistryWithRedisWakeup(prefix), backend)
+	startHandlerServices(t, h)
+
+	require.Equal(t, 0.0, testutil.ToFloat64(m.watchers))
+	requireNoBlockedXRead(t)
+}
+
+// The handlers of the node carry the cancel notification only: the wakes travel through the wake streams.
+func TestRPCDedupRedisNotificationHandlersAreCancelOnly(t *testing.T) {
 	backend := newDedupBackend(t)
 	prefix := uniqueRedisPrefix()
 	cleanupRedisPrefix(t, prefix)
-	h := newRedisDedupHandler(t, dedupRegistryWithRedisWakeup(prefix, time.Second), backend)
-	require.Contains(t, h.NotificationHandlers(), rpcdedup.CancelNotificationOp)
-	require.Contains(t, h.NotificationHandlers(), rpcdedup.DoneNotificationOp)
+	h := newRedisDedupHandler(t, dedupRegistryWithRedisWakeup(prefix), backend)
+	handlers := h.NotificationHandlers()
+	require.Len(t, handlers, 1)
+	require.Contains(t, handlers, rpcdedup.CancelNotificationOp)
 }

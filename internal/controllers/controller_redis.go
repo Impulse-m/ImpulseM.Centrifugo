@@ -41,10 +41,12 @@ var _ centrifuge.Controller = (*RedisController)(nil)
 // NewRedisController creates a controller on the given Redis shards. Control channels are derived from
 // the prefix. It must be created after the node, since it uses the node ID.
 func NewRedisController(node *centrifuge.Node, shards []*centrifuge.RedisShard, prefix string) (*RedisController, error) {
+	// The controller has no history, so Core does not need the Redis streams capability check (UseLists).
 	broker, err := centrifuge.NewRedisBroker(node, centrifuge.RedisBrokerConfig{
 		Shards:     shards,
 		Prefix:     prefix,
-		Name:       "controller",
+		Name:       configtypes.RedisControllerBrokerName,
+		UseLists:   true,
 		SkipPubSub: true,
 	})
 	if err != nil {

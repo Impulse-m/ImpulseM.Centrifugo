@@ -21,10 +21,6 @@ var knownNamedMapBrokerTypes = []string{"memory", "redis", "postgres"}
 
 var knownControllerTypes = []string{"postgres", "redis", "nats"}
 
-// reservedEngineName is the name of the Redis controller's broker. Its metrics and logs carry this name, so
-// no broker may use it.
-const reservedEngineName = "controller"
-
 // defaultRedisPrefix is the prefix which Core uses when a Redis broker or presence manager has none.
 const defaultRedisPrefix = "centrifuge"
 
@@ -68,7 +64,7 @@ func validateNamespaceEngines(c Config) error {
 		if b.RedisNats != nil {
 			return fmt.Errorf("brokers %q: redisnats is not supported on named brokers", b.Name)
 		}
-		if b.Name == reservedEngineName {
+		if b.Name == configtypes.RedisControllerBrokerName {
 			return fmt.Errorf("invalid broker name: %s is reserved", b.Name)
 		}
 		brokerNames = append(brokerNames, b.Name)

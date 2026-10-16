@@ -1,5 +1,9 @@
 package configtypes
 
+// RedisControllerBrokerName is the name of the Redis controller's broker. Its metrics and logs carry this name, so
+// no named broker may use it.
+const RedisControllerBrokerName = "controller"
+
 // NamedBroker is an extra broker which channels select with the broker_name channel option.
 type NamedBroker struct {
 	// Name is a unique name of the broker, referenced by the broker_name channel option.

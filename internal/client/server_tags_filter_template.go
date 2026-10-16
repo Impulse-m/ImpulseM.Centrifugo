@@ -4,7 +4,6 @@ import (
 	"errors"
 	"maps"
 
-	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -39,9 +38,10 @@ var unsubscribeInsufficientState = centrifuge.Unsubscribe{Code: centrifuge.Unsub
 // stored even when all of them are missing, so a refresh compares them with the values of its token.
 // A missing value of a template under reject refuses the connection. A tokenless connection (connect proxy) is marked
 // unbound, see serverTagsFilterUnboundKey. The subscriptions are the map of the verified token, owned by the call: the
-// templates are applied to it in place, and storeConnectionTokenFilters stores the combined filters from it.
+// templates are applied to it in place, and storeConnectionTokenFilters stores the combined filters from it. The config
+// is read here, not from the snapshot of the connect: a reload during the connect proxy call adds a template which
+// the subscriptions of the proxy must get.
 func (h *Handler) connectFilterTemplates(
-	cfg *config.Config,
 	clientID string,
 	credentials *centrifuge.Credentials,
 	verified jwtverify.ConnectToken,
@@ -49,7 +49,7 @@ func (h *Handler) connectFilterTemplates(
 	subscriptions map[string]centrifuge.SubscribeOptions,
 	storage map[string]any,
 ) error {
-	if !cfg.HasServerTagsFilterTemplates() {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
 	values := filtertemplate.Values{Claims: verified.FilterTemplateClaims, Client: clientID}

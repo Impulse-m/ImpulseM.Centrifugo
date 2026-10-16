@@ -11,6 +11,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
+	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
@@ -429,11 +430,10 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	release(storage)
 	require.False(t, ok)
 
-	cfg := env.cfgContainer.ConfigRef()
 	subs := map[string]centrifuge.SubscribeOptions{"room": {}}
 	storageMap := map[string]any{}
 	connectAllocs := testing.AllocsPerRun(1000, func() {
-		_ = env.h.connectFilterTemplates(cfg, "c1", nil, jwtverify.ConnectToken{}, false, subs, storageMap)
+		_ = env.h.connectFilterTemplates("c1", nil, jwtverify.ConnectToken{}, false, subs, storageMap)
 	})
 	require.Zero(t, connectAllocs)
 	require.NotContains(t, storageMap, serverTagsFilterValuesKey)
@@ -477,4 +477,38 @@ func TestServerTagsFilterTemplateConfigReload(t *testing.T) {
 	publishTagged(t, env.node, "chat:room", `{"n":2}`, map[string]string{"session": "s-2"})
 	waitPushed(t, transport, `{"n":2}`)
 	require.Equal(t, []string{`{"n":2}`}, transport.pushedData())
+}
+
+// TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate checks a reload which runs during the connect proxy call and
+// adds a template to the namespace of a subscription the proxy returns: the subscription gets the template, because the
+// templates are applied with the config read after the call, not with the config of the connect's start.
+func TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "chat", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}}}
+	env := newTemplateEnv(t, cfg)
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "chat",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
+				},
+			},
+		},
+	}
+	connectProxyHandler := func(context.Context, centrifuge.ConnectEvent) (centrifuge.ConnectReply, proxy.ConnectExtra, error) {
+		require.NoError(t, env.cfgContainer.Reload(reloaded))
+		return centrifuge.ConnectReply{
+			Credentials:   &centrifuge.Credentials{UserID: "42"},
+			Subscriptions: map[string]centrifuge.SubscribeOptions{"chat:srv": {}},
+		}, proxy.ConnectExtra{}, nil
+	}
+
+	reply, err := env.h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{ClientID: "c1"}, connectProxyHandler, true)
+	require.NoError(t, err)
+	want := &protocol.FilterNode{Key: "owner", Cmp: "eq", Val: "42"}
+	require.True(t, proto.Equal(want, reply.Subscriptions["chat:srv"].ServerTagsFilter), "got %v", reply.Subscriptions["chat:srv"].ServerTagsFilter)
 }

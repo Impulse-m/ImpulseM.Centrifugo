@@ -604,7 +604,7 @@ func (h *Handler) OnClientConnecting(
 
 	// With templates, a template which refuses the connection is checked before the single connection of the user is
 	// enforced, so a refused connect does not disconnect the other connection of the user.
-	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
+	if err := h.connectFilterTemplates(e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
 	if cfg.HasServerTagsFilterTemplates() && singleConnectionApplies(cfg, credentials) {

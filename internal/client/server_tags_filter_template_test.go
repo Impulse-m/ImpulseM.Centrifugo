@@ -433,6 +433,7 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 
 	subs := map[string]centrifuge.SubscribeOptions{"room": {}}
 	storageMap := map[string]any{}
+	require.NoError(t, env.h.connectFilterTemplates("c1", nil, jwtverify.ConnectToken{}, false, subs, storageMap))
 	connectAllocs := testing.AllocsPerRun(1000, func() {
 		_ = env.h.connectFilterTemplates("c1", nil, jwtverify.ConnectToken{}, false, subs, storageMap)
 	})
@@ -450,6 +451,8 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	require.Nil(t, answered.Options.ServerTagsFilter)
 
 	explicit := testServerTagsFilter()
+	_, refreshErr := env.h.refreshFilterTemplate(mock, "chat:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
+	require.NoError(t, refreshErr)
 	refreshAllocs := testing.AllocsPerRun(1000, func() {
 		_, _ = env.h.refreshFilterTemplate(mock, "chat:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
 	})

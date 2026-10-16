@@ -14,7 +14,9 @@ const maxLifetimeSeconds = int64(math.MaxInt64 / int64(time.Second))
 // pendingLifetimeExceeded reports whether a connection token of class is a pending token over the limit maxLifetime.
 // Only a pending token has a limit, and a zero limit is no limit. The lifetime of the token is its exp minus the earlier
 // of its iat and now, so an iat in the future does not shorten it. A token without exp has no end, so it is over any
-// limit. The clock is read only for a pending token under a limit.
+// limit. A token without iat, or with an iat of 0, has no issue time to measure from, so it is over any limit too: a
+// token issued long before the check would otherwise be measured from the check. The clock is read only for a pending
+// token under a limit.
 func pendingLifetimeExceeded(
 	class rpcregistry.AuthClass,
 	token jwtverify.ConnectToken,
@@ -24,11 +26,11 @@ func pendingLifetimeExceeded(
 	if class != rpcregistry.AuthClassPending2FA || maxLifetime <= 0 {
 		return false
 	}
-	if token.ExpireAt == 0 {
+	if token.ExpireAt == 0 || token.IssuedAt == 0 {
 		return true
 	}
 	start := clock().Unix()
-	if token.IssuedAt != 0 && token.IssuedAt < start {
+	if token.IssuedAt < start {
 		start = token.IssuedAt
 	}
 	lifetime := token.ExpireAt - start

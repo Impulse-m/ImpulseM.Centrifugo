@@ -75,11 +75,25 @@ func TestPendingLifetimeExceeded(t *testing.T) {
 			want:        true,
 		},
 		{
-			name:        "pending within the limit by now without iat",
+			name:        "pending within the limit by exp without iat is over the limit",
 			class:       rpcregistry.AuthClassPending2FA,
 			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 120},
 			maxLifetime: maxLifetime,
-			want:        false,
+			want:        true,
+		},
+		{
+			name:        "pending with an iat of zero is over the limit like one without iat",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 120, IssuedAt: 0},
+			maxLifetime: maxLifetime,
+			want:        true,
+		},
+		{
+			name:        "pending issued long before the check without iat is over the limit",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 240},
+			maxLifetime: maxLifetime,
+			want:        true,
 		},
 		{
 			name:        "pending without exp has no end",
@@ -142,7 +156,7 @@ func fixedClock(now time.Time) func() time.Time {
 }
 
 // pendingLifetimeToken returns a connection token of class pending_2fa with user 42, which lives for lifetime from its
-// issue time. A zero iat leaves the claim out, and the lifetime is counted from now.
+// issue time. Without iat the claim is left out, and such a token is over any lifetime limit.
 func pendingLifetimeToken(t *testing.T, lifetime time.Duration, withIat bool) string {
 	t.Helper()
 	now := time.Now().Unix()

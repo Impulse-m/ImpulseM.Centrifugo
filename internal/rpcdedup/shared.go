@@ -188,7 +188,7 @@ func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 // the call with fail-closed.
 func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	flight.begun = time.Now().UnixNano()
-	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace)
+	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace, false)
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to begin a call", err)
 		if s.failOpen {
@@ -285,7 +285,7 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON str
 	ctx, cancel := context.WithDeadline(context.Background(), limit)
 	defer cancel()
 	var attempts int
-	owned, err := backoff.Retry(ctx, func() (bool, error) {
+	res, err := backoff.Retry(ctx, func() (CompleteResult, error) {
 		attempts++
 		return s.backend.Complete(ctx, key, s.nodeID, stored, errJSON, s.ttl)
 	}, backoff.WithBackOff(newRetryBackOff(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
@@ -293,7 +293,7 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON str
 		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
 		return
 	}
-	if !owned && attempts == 1 {
+	if !res.Owned && attempts == 1 {
 		s.lostOwnership()
 	}
 }

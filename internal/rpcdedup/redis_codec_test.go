@@ -153,6 +153,34 @@ func TestParsePollReplies(t *testing.T) {
 	require.ErrorIs(t, err, errMalformedReply)
 }
 
+func TestParseCompleteReplies(t *testing.T) {
+	owned, err := parseComplete([]string{"1", ""})
+	require.NoError(t, err)
+	require.True(t, owned.Owned)
+	require.Empty(t, owned.Waiters)
+
+	withWaiters, err := parseComplete([]string{"1", "node-b node-c"})
+	require.NoError(t, err)
+	require.True(t, withWaiters.Owned)
+	require.Equal(t, []string{"node-b", "node-c"}, withWaiters.Waiters)
+
+	notOwned, err := parseComplete([]string{"0", ""})
+	require.NoError(t, err)
+	require.False(t, notOwned.Owned)
+	require.Empty(t, notOwned.Waiters)
+
+	_, err = parseComplete([]string{"1"})
+	require.ErrorIs(t, err, errMalformedReply)
+	_, err = parseComplete([]string{"2", ""})
+	require.ErrorIs(t, err, errMalformedReply)
+}
+
+func TestSplitWaiters(t *testing.T) {
+	require.Empty(t, splitWaiters(""))
+	require.Equal(t, []string{"a"}, splitWaiters("a"))
+	require.Equal(t, []string{"a", "b", "c"}, splitWaiters("a b c"))
+}
+
 func TestParseTombstoneWithoutErrorIsMalformed(t *testing.T) {
 	// A cancelled record always holds its error: without it, the record would answer a success with an empty reply.
 	_, err := parseBegin([]string{"cancelled", ""})

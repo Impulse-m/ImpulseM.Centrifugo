@@ -124,7 +124,7 @@ func (f *fakeBackend) entry(key Key) (fakeEntry, bool) {
 }
 
 // Begin implements Backend with the semantics of beginScript.
-func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration) (BeginResult, error) {
+func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration, _ bool) (BeginResult, error) {
 	if err := f.enter("begin"); err != nil {
 		return BeginResult{}, err
 	}
@@ -151,7 +151,13 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 }
 
 // Complete implements Backend with the semantics of completeScript: only the owner completes its record.
-func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ string, _ time.Duration) (bool, error) {
+func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ string, _ time.Duration) (CompleteResult, error) {
+	owned, err := f.complete(ctx, key, nodeID, rec)
+	return CompleteResult{Owned: owned}, err
+}
+
+// complete is Complete with the owned flag as its result.
+func (f *fakeBackend) complete(ctx context.Context, key Key, nodeID string, rec Record) (bool, error) {
 	if err := f.enter("complete"); err != nil {
 		return false, err
 	}

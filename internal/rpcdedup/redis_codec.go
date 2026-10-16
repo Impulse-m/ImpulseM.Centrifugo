@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifuge"
@@ -24,7 +25,13 @@ const (
 	redisFieldReply    = "r"
 	redisFieldError    = "e"
 	redisFieldUncached = "u"
+	// redisFieldWaiters is the node ids of the waiters of an in-flight record, space-separated.
+	redisFieldWaiters = "w"
 )
+
+// maxWaiters is the number of waiter node ids an in-flight record lists. A node beyond it is not registered and relies
+// on its fallback poll. It is the 8 of beginScript.
+const maxWaiters = 8
 
 // errMalformedReply is returned for a script reply which the Redis backend does not know. It means a foreign write
 // under the same prefix, and is counted as a Redis error.
@@ -157,6 +164,25 @@ func parseCancel(parts []string) (CancelResult, error) {
 		return CancelResult{State: CancelInFlight, Owner: parts[1]}, nil
 	}
 	return CancelResult{}, errMalformedReply
+}
+
+// parseComplete returns the result of the complete script from its reply: owned, and the waiters of the record.
+func parseComplete(parts []string) (CompleteResult, error) {
+	if len(parts) != 2 {
+		return CompleteResult{}, errMalformedReply
+	}
+	switch parts[0] {
+	case "0":
+		return CompleteResult{}, nil
+	case "1":
+		return CompleteResult{Owned: true, Waiters: splitWaiters(parts[1])}, nil
+	}
+	return CompleteResult{}, errMalformedReply
+}
+
+// splitWaiters returns the node ids of a waiter list, none for "".
+func splitWaiters(w string) []string {
+	return strings.Fields(w)
 }
 
 // parseRecord returns the record of the reply fields of a done record: reply, error JSON and the uncached flag.

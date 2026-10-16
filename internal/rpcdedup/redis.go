@@ -83,11 +83,20 @@ type ScopeAcks struct {
 	MsgIDs []uint64
 }
 
+// CompleteResult is the result of Backend.Complete.
+type CompleteResult struct {
+	// Owned is whether this node owned the in-flight record, so the write took effect.
+	Owned bool
+	// Waiters are the ids of the nodes which registered as waiters of the record, when it was owned. Empty otherwise.
+	Waiters []string
+}
+
 // Backend is the shared tier of a Shared store. Redis implements it; tests use a fake. Complete takes errJSON, the
-// encoded error of rec, which the caller encodes once.
+// encoded error of rec, which the caller encodes once. Begin with register set adds nodeID to the waiters of a call
+// which runs on another node, which its owner notifies when the record is written.
 type Backend interface {
-	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration) (BeginResult, error)
-	Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (bool, error)
+	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error)
+	Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (CompleteResult, error)
 	Cancel(ctx context.Context, key Key, failure *centrifuge.Error, ttl time.Duration) (CancelResult, error)
 	Poll(ctx context.Context, key Key) (PollResult, error)
 	Ack(ctx context.Context, acks []ScopeAcks) error
@@ -126,10 +135,10 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 }
 
 // Begin implements Backend with the begin script.
-func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration) (BeginResult, error) {
+func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error) {
 	var result BeginResult
 	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
-		args := []string{string(fingerprint[:]), nodeID, redisTTLMillis(inflightTTL)}
+		args := []string{string(fingerprint[:]), nodeID, redisTTLMillis(inflightTTL), registerArg(register)}
 		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
 			return beginScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
 		})
@@ -143,32 +152,40 @@ func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID
 	return result, err
 }
 
-// Complete implements Backend with the complete script. It returns false, and no error, when this node does not own the
-// in-flight record. That is not a failed call, so this method does not count it as a Redis error: a retried write finds
+// Complete implements Backend with the complete script. It returns Owned false, and no error, when this node does not own
+// the in-flight record. That is not a failed call, so this method does not count it as a Redis error: a retried write finds
 // the record done by its first attempt, whose reply was lost. The caller counts the ownership it lost on its first write.
-func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (bool, error) {
+func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (CompleteResult, error) {
 	reply, uncached := recordArgs(rec)
 	abandoned := "0"
 	if rec.Abandoned {
 		abandoned = "1"
 	}
 	args := []string{nodeID, reply, errJSON, uncached, redisTTLMillis(ttl), abandoned}
-	var owned bool
+	var result CompleteResult
 	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
 		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
 			return completeScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
 		})
-		n, err := res.AsInt64()
+		parts, err := replyStrings(res)
 		if err != nil {
 			return err
 		}
-		owned = n == 1
-		return nil
+		result, err = parseComplete(parts)
+		return err
 	})
 	if err != nil {
-		return false, err
+		return CompleteResult{}, err
 	}
-	return owned, nil
+	return result, nil
+}
+
+// registerArg returns the register argument of the begin script.
+func registerArg(register bool) string {
+	if register {
+		return "1"
+	}
+	return "0"
 }
 
 // Cancel implements Backend with the cancel script.

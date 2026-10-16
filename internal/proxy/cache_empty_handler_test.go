@@ -216,6 +216,38 @@ func TestCacheEmptyHandlerDisabled(t *testing.T) {
 	require.Empty(t, calls)
 }
 
+// cacheEmptyNilProxy answers every call with neither a result nor an error.
+type cacheEmptyNilProxy struct{}
+
+func (p *cacheEmptyNilProxy) ProxyNotifyCacheEmpty(_ context.Context, _ *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+	return nil, nil
+}
+
+func (p *cacheEmptyNilProxy) Protocol() string {
+	return "test"
+}
+
+func (p *cacheEmptyNilProxy) Timeout() time.Duration {
+	return time.Second
+}
+
+// TestCacheEmptyHandlerNilResponse checks that a proxy which returns no response rejects the subscription
+// with the internal error, without a panic.
+func TestCacheEmptyHandlerNilResponse(t *testing.T) {
+	handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": &cacheEmptyNilProxy{}})
+
+	opts := configtypes.ChannelOptions{
+		CacheEmptyProxyEnabled: true,
+		CacheEmptyProxyName:    "default",
+		ForceRecoveryMode:      "cache",
+	}
+	cfgContainer := newCacheEmptyTestContainer(t, opts, true)
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+
+	require.ErrorIs(t, err, centrifuge.ErrorInternal)
+	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
+}
+
 // TestCacheEmptyHandlerNamedProxy checks that the proxy is picked by cache_empty_proxy_name.
 func TestCacheEmptyHandlerNamedProxy(t *testing.T) {
 	testCase := tools.NewCommonHTTPProxyTestCase(context.Background())

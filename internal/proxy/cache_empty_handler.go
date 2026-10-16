@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -89,6 +90,9 @@ func (h *CacheEmptyHandler) call(name string, p CacheEmptyProxy, channel string)
 	end(err != nil)
 	if err != nil {
 		return false, err
+	}
+	if resp == nil {
+		return false, errors.New("cache empty proxy returned no response")
 	}
 	return resp.Result != nil && resp.Result.Populated, nil
 }

@@ -151,10 +151,12 @@ func (h *Handler) refreshFilterTemplate(
 
 // tokenSubscriptionsChanged reports whether the server-side subscriptions of a connection changed on refresh.
 // A connection whose template claims changed is changed: its filters are fixed for its life, so it is
-// disconnected. A connection which stored values is compared while the config has no templates too: a reload which
-// removed them leaves its channels filtered with the claims it had, and the refresh carries no claims to render them
-// again, so a stored connection is disconnected then, once, and its reconnect stores no values. Otherwise the templates
-// are applied to the subscriptions of the token before they are compared.
+// disconnected. A connection which stored no values while the config has templates is changed too, since a reload
+// added them after its connect and its values are unknown; its reconnect binds them. A connection which stored values
+// is compared while the config has no templates too: a reload which removed them leaves its channels filtered with the
+// claims it had, and the refresh carries no claims to render them again, so a stored connection is disconnected then,
+// once, and its reconnect stores no values. Otherwise the templates are applied to the subscriptions of the token before
+// they are compared.
 // The claim check is the primary rule, and the comparison of the filters in tokenChannelsChanged is the second.
 // A bound connection whose template refuses a token subscription is disconnected with insufficient state: the client
 // reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a refused server-side
@@ -176,6 +178,9 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 	if unbound {
 		h.dropRefusedFilterTemplates(extra.Subs, connectionFilterValues(client))
 		return tokenChannelsChanged(client, extra.Subs)
+	}
+	if !stores {
+		return true
 	}
 	if !stored.Claims.Equal(extra.FilterTemplateClaims) {
 		return true
@@ -207,27 +212,35 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 // template combined with the explicit filter of the subscription. It returns the error of the first missing value
 // under reject.
 func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) error {
-	for channel, opts := range subs {
-		filtered, err := h.applyFilterTemplate(channel, opts, values)
-		if err != nil {
-			return err
-		}
-		subs[channel] = filtered
-	}
-	return nil
+	return h.applyFilterTemplatesTo(subs, values, false)
 }
 
 // dropRefusedFilterTemplates is applyFilterTemplates for an unbound connection: a subscription which a template refuses
 // is removed from subs instead of failing the call, so an unbound connection must not subscribe it without its template.
 func (h *Handler) dropRefusedFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) {
+	// Dropping a refused subscription never fails, so the error is always nil.
+	_ = h.applyFilterTemplatesTo(subs, values, true)
+}
+
+// applyFilterTemplatesTo applies the templates of subs as applyFilterTemplates does. A refused subscription is removed from
+// subs when dropRefused is set, and the call fails with the first refusal otherwise.
+func (h *Handler) applyFilterTemplatesTo(
+	subs map[string]centrifuge.SubscribeOptions,
+	values filtertemplate.Values,
+	dropRefused bool,
+) error {
 	for channel, opts := range subs {
 		filtered, err := h.applyFilterTemplate(channel, opts, values)
 		if err != nil {
-			delete(subs, channel)
-			continue
+			if dropRefused {
+				delete(subs, channel)
+				continue
+			}
+			return err
 		}
 		subs[channel] = filtered
 	}
+	return nil
 }
 
 // applyFilterTemplate returns the subscription opts with the template of channel combined with its explicit filter. A

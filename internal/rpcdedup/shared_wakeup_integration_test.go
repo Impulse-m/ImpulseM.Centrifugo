@@ -104,7 +104,7 @@ func TestSharedTwoNodesWakeupCompletesWithoutPolling(t *testing.T) {
 	lookup, err := nodeB.shared.Begin(key, duplicate)
 	require.NoError(t, err)
 	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
-	waiters, found := integrationField(t, nodeA.connector, redisKey, redisFieldWaiters)
+	waiters, found := integrationField(t, nodeA.connector, redisKey, "w")
 	require.True(t, found)
 	require.Equal(t, "node-b", waiters)
 

@@ -219,28 +219,28 @@ func TestRedisBackendBeginRegistersWaiter(t *testing.T) {
 
 	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, true)
 	require.NoError(t, err)
-	_, found := integrationField(t, connector, redisKey, redisFieldWaiters)
+	_, found := integrationField(t, connector, redisKey, "w")
 	require.False(t, found, "the owner's own begin registers no waiter")
 
 	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
 	require.NoError(t, err)
 	require.Equal(t, BeginInFlight, begin.State)
-	waiters, _ := integrationField(t, connector, redisKey, redisFieldWaiters)
+	waiters, _ := integrationField(t, connector, redisKey, "w")
 	require.Equal(t, "node-b", waiters)
 
 	_, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
 	require.NoError(t, err)
-	waiters, _ = integrationField(t, connector, redisKey, redisFieldWaiters)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
 	require.Equal(t, "node-b", waiters, "a node is listed once")
 
 	_, err = backend.Begin(ctx, key, fingerprint, "node-c", integrationTTL, true)
 	require.NoError(t, err)
-	waiters, _ = integrationField(t, connector, redisKey, redisFieldWaiters)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
 	require.Equal(t, "node-b node-c", waiters)
 
 	_, err = backend.Begin(ctx, key, fingerprint, "node-d", integrationTTL, false)
 	require.NoError(t, err)
-	waiters, _ = integrationField(t, connector, redisKey, redisFieldWaiters)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
 	require.Equal(t, "node-b node-c", waiters, "a begin without register does not register")
 }
 
@@ -257,7 +257,7 @@ func TestRedisBackendBeginWithoutRegisterWritesNoWaiter(t *testing.T) {
 	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginInFlight, begin.State)
-	_, found := integrationField(t, connector, redisKey, redisFieldWaiters)
+	_, found := integrationField(t, connector, redisKey, "w")
 	require.False(t, found)
 }
 
@@ -275,7 +275,7 @@ func TestRedisBackendBeginWaiterCap(t *testing.T) {
 		_, err = backend.Begin(ctx, key, fingerprint, fmt.Sprintf("node-%d", i), integrationTTL, true)
 		require.NoError(t, err)
 	}
-	waiters, _ := integrationField(t, connector, redisKey, redisFieldWaiters)
+	waiters, _ := integrationField(t, connector, redisKey, "w")
 	listed := splitWaiters(waiters)
 	require.Len(t, listed, maxWaiters)
 	require.NotContains(t, listed, fmt.Sprintf("node-%d", maxWaiters))
@@ -301,14 +301,14 @@ func TestRedisBackendCompleteReturnsAndDropsWaiters(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.Owned)
 	require.Empty(t, result.Waiters)
-	_, found := integrationField(t, connector, redisKey, redisFieldWaiters)
+	_, found := integrationField(t, connector, redisKey, "w")
 	require.True(t, found)
 
 	result, err = backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	require.True(t, result.Owned)
 	require.Equal(t, []string{"node-b", "node-c"}, result.Waiters)
-	_, found = integrationField(t, connector, redisKey, redisFieldWaiters)
+	_, found = integrationField(t, connector, redisKey, "w")
 	require.False(t, found, "a done record drops its waiters")
 	_, found = integrationField(t, connector, redisKey, "n")
 	require.False(t, found)

@@ -25,8 +25,6 @@ const (
 	redisFieldReply    = "r"
 	redisFieldError    = "e"
 	redisFieldUncached = "u"
-	// redisFieldWaiters is the node ids of the waiters of an in-flight record, space-separated.
-	redisFieldWaiters = "w"
 )
 
 // maxWaiters is the number of waiter node ids an in-flight record lists. A node beyond it is not registered and relies

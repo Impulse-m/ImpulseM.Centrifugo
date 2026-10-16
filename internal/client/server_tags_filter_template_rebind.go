@@ -252,7 +252,7 @@ func (h *Handler) subscribeRestoredPersonal(c rebindableClient, channel string, 
 	}
 	toSubscribe := map[string]centrifuge.SubscribeOptions{channel: opts}
 	if err := h.templateSubscriptions(c, toSubscribe); err != nil {
-		return err
+		return centrifuge.ErrorPermissionDenied
 	}
 	return subscribeChannels(c, toSubscribe)
 }

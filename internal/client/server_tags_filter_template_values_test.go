@@ -17,6 +17,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// TestServerTagsFilterTemplateRestoredPersonalRefusedIsPermissionDenied checks that a refusal of the template of a restored
+// personal channel is ErrorPermissionDenied, which a refresh returns to the client, and not the template error, which
+// Core turns into an internal error.
+func TestServerTagsFilterTemplateRestoredPersonalRefusedIsPermissionDenied(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client := newRegistryTestClient("c1", "12", nil, nil)
+	client.IsSubscribedFunc = func(string) bool { return false }
+	err := env.h.subscribeRestoredPersonal(client, "chat:room", centrifuge.SubscribeOptions{})
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+}
+
 // TestServerTagsFilterTemplateRebindUserChangeUnsubscribes checks a rebind which gives a connection without a user a
 // user unsubscribes its channels with a template, although the claims are the same: the template renders another user.
 func TestServerTagsFilterTemplateRebindUserChangeUnsubscribes(t *testing.T) {

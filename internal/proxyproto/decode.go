@@ -83,15 +83,6 @@ func (e *JSONDecoder) DecodeNotifyCacheEmptyResponse(data []byte) (*NotifyCacheE
 	return &resp, nil
 }
 
-func (e *JSONDecoder) DecodeNotifyChannelStateResponse(data []byte) (*NotifyChannelStateResponse, error) {
-	var resp NotifyChannelStateResponse
-	err := json.Unmarshal(data, &resp)
-	if err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 func (e *JSONDecoder) DecodeMapPublishResponse(data []byte) (*MapPublishResponse, error) {
 	var resp MapPublishResponse
 	err := json.Unmarshal(data, &resp)

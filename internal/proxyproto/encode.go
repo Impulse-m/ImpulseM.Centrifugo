@@ -48,10 +48,6 @@ func (e *JSONEncoder) EncodeNotifyCacheEmptyRequest(req *NotifyCacheEmptyRequest
 	return json.Marshal(req)
 }
 
-func (e *JSONEncoder) EncodeNotifyChannelStateRequest(req *NotifyChannelStateRequest) ([]byte, error) {
-	return json.Marshal(req)
-}
-
 func (e *JSONEncoder) EncodeMapPublishRequest(req *MapPublishRequest) ([]byte, error) {
 	return json.Marshal(req)
 }

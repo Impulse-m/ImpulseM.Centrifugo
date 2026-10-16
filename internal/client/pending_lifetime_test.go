@@ -47,6 +47,27 @@ func TestPendingLifetimeExceeded(t *testing.T) {
 			want:        false,
 		},
 		{
+			name:        "pending with an iat in the future is over the limit by now",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 3600 + 240, IssuedAt: now.Unix() + 3600},
+			maxLifetime: maxLifetime,
+			want:        true,
+		},
+		{
+			name:        "pending with an iat in the future within the limit by now",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 240, IssuedAt: now.Unix() + 3600},
+			maxLifetime: maxLifetime,
+			want:        false,
+		},
+		{
+			name:        "pending with an iat after exp is over the limit by now",
+			class:       rpcregistry.AuthClassPending2FA,
+			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 600, IssuedAt: now.Unix() + 3600},
+			maxLifetime: maxLifetime,
+			want:        true,
+		},
+		{
 			name:        "pending over the limit by now without iat",
 			class:       rpcregistry.AuthClassPending2FA,
 			token:       jwtverify.ConnectToken{ExpireAt: now.Unix() + 301},
@@ -98,8 +119,25 @@ func TestPendingLifetimeExceeded(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, pendingLifetimeExceeded(tt.class, tt.token, tt.maxLifetime, now))
+			require.Equal(t, tt.want, pendingLifetimeExceeded(tt.class, tt.token, tt.maxLifetime, fixedClock(now)))
 		})
+	}
+}
+
+func TestPendingLifetimeClockIsNotReadWithoutLimit(t *testing.T) {
+	clock := func() time.Time {
+		t.Fatal("the clock is read without a limit")
+		return time.Time{}
+	}
+	token := jwtverify.ConnectToken{ExpireAt: 1, IssuedAt: 1}
+	require.False(t, pendingLifetimeExceeded(rpcregistry.AuthClassPending2FA, token, 0, clock))
+	require.False(t, pendingLifetimeExceeded(rpcregistry.AuthClassAuthenticated, token, time.Minute, clock))
+}
+
+// fixedClock returns a clock which reads now.
+func fixedClock(now time.Time) func() time.Time {
+	return func() time.Time {
+		return now
 	}
 }
 

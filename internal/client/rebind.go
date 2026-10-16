@@ -28,7 +28,7 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
-	if pendingLifetimeExceeded(class, token, cfg.RPC.Registry.PendingMaxLifetime.ToDuration(), time.Now()) {
+	if pendingLifetimeExceeded(class, token, cfg.RPC.Registry.PendingMaxLifetime.ToDuration(), time.Now) {
 		log.Info().Str("client", c.ID()).Msg("pending refresh token lifetime over the limit")
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}

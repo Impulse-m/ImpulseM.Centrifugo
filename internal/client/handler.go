@@ -463,7 +463,7 @@ func (h *Handler) OnClientConnecting(
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
-		if pendingLifetimeExceeded(class, token, cfg.RPC.Registry.PendingMaxLifetime.ToDuration(), time.Now()) {
+		if pendingLifetimeExceeded(class, token, cfg.RPC.Registry.PendingMaxLifetime.ToDuration(), time.Now) {
 			log.Info().Str("client", e.ClientID).Msg("pending connection token lifetime over the limit")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}

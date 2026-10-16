@@ -49,25 +49,7 @@ func newNamespaceEngines(cfgContainer *config.Container) *namespaceEngines {
 	// Routing hooks are set for each kind with an enabled entry, not only for the kinds which a namespace
 	// selects at startup: a reload may add a namespace which selects an existing entry. The validation
 	// guarantees that a selection names an enabled entry, so the entries are the whole condition.
-	var routeBrokers bool
-	for _, entry := range cfg.Brokers {
-		if entry.Enabled {
-			routeBrokers = true
-		}
-	}
-	var routePresence bool
-	for _, entry := range cfg.PresenceManagers {
-		if entry.Enabled {
-			routePresence = true
-		}
-	}
-	var routeMap bool
-	for _, entry := range cfg.MapBrokers {
-		if entry.Enabled {
-			routeMap = true
-		}
-	}
-
+	routeBrokers, routePresence, routeMap := config.EnabledEngineKinds(cfg)
 	if !routeBrokers && !routePresence && !routeMap {
 		return nil
 	}
@@ -134,7 +116,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		}
 		broker, mode, err := e.createBroker(node, cfgContainer, entry)
 		if err != nil {
-			return fmt.Errorf("error creating broker %s: %w", entry.Name, err)
+			return fmt.Errorf("brokers[%s]: %w", entry.Name, err)
 		}
 		e.brokers[entry.Name] = broker
 		log.Info().
@@ -151,7 +133,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		presenceManager, redisShards, mode, err := createNamedPresenceManager(node, entry)
 		e.redisShards = append(e.redisShards, redisShards...)
 		if err != nil {
-			return fmt.Errorf("error creating presence manager %s: %w", entry.Name, err)
+			return fmt.Errorf("presence_managers[%s]: %w", entry.Name, err)
 		}
 		e.presenceManagers[entry.Name] = presenceManager
 		log.Info().
@@ -168,7 +150,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 		mapBroker, redisShards, mode, err := createNamedMapBroker(node, entry)
 		e.redisShards = append(e.redisShards, redisShards...)
 		if err != nil {
-			return fmt.Errorf("error creating map broker %s: %w", entry.Name, err)
+			return fmt.Errorf("map_brokers[%s]: %w", entry.Name, err)
 		}
 		e.mapBrokers[entry.Name] = mapBroker
 		log.Info().
@@ -220,29 +202,25 @@ func (e *namespaceEngines) close() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), e.closeTimeout)
 	defer cancel()
-	for name, broker := range e.brokers {
-		if closer, ok := broker.(centrifuge.Closer); ok {
-			if err := closer.Close(ctx); err != nil {
-				log.Error().Err(err).Str("kind", "broker").Str("name", name).Msg("error closing namespace engine")
-			}
-		}
-	}
-	for name, presenceManager := range e.presenceManagers {
-		if closer, ok := presenceManager.(centrifuge.Closer); ok {
-			if err := closer.Close(ctx); err != nil {
-				log.Error().Err(err).Str("kind", "presence_manager").Str("name", name).Msg("error closing namespace engine")
-			}
-		}
-	}
-	for name, mapBroker := range e.mapBrokers {
-		if closer, ok := mapBroker.(centrifuge.Closer); ok {
-			if err := closer.Close(ctx); err != nil {
-				log.Error().Err(err).Str("kind", "map_broker").Str("name", name).Msg("error closing namespace engine")
-			}
-		}
-	}
+	closeEngines(ctx, "broker", e.brokers)
+	closeEngines(ctx, "presence_manager", e.presenceManagers)
+	closeEngines(ctx, "map_broker", e.mapBrokers)
 	for _, shard := range e.redisShards {
 		shard.Close()
+	}
+}
+
+// closeEngines closes each named engine of the map which implements centrifuge.Closer. An error is logged, and the
+// other engines are still closed.
+func closeEngines[T any](ctx context.Context, kind string, engines map[string]T) {
+	for name, engine := range engines {
+		closer, ok := any(engine).(centrifuge.Closer)
+		if !ok {
+			continue
+		}
+		if err := closer.Close(ctx); err != nil {
+			log.Error().Err(err).Str("kind", kind).Str("name", name).Msg("error closing namespace engine")
+		}
 	}
 }
 
@@ -341,8 +319,13 @@ func createRedisBrokerFrom(
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
 	}
-	broker, err := confighelpers.CentrifugeRedisBroker(
-		node, name, redisCfg.Prefix, redisShards, redisCfg.RedisBrokerCommon, skipPubSub)
+	broker, err := centrifuge.NewRedisBroker(node, centrifuge.RedisBrokerConfig{
+		Shards:     redisShards,
+		Prefix:     redisCfg.Prefix,
+		UseLists:   redisCfg.UseLists,
+		SkipPubSub: skipPubSub,
+		Name:       name,
+	})
 	if err != nil {
 		return nil, redisShards, mode, fmt.Errorf("error creating Redis broker: %w", err)
 	}
@@ -411,7 +394,7 @@ func createNamedMapBroker(
 ) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
 	switch entry.Type {
 	case "memory":
-		mapBroker, err := centrifuge.NewMemoryMapBroker(node, centrifuge.MemoryMapBrokerConfig{})
+		mapBroker, err := createMemoryMapBroker(node)
 		if err != nil {
 			return nil, nil, "", err
 		}

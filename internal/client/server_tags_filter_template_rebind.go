@@ -36,8 +36,9 @@ func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate
 	storage, release := c.AcquireStorage()
 	stored, ok := storedFilterValues(storage)
 	recorded, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	recordedCount := len(recorded)
 	release(storage)
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !ok && len(recorded) == 0 {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !ok && recordedCount == 0 {
 		return rebindFilters{values: values}
 	}
 	previous := filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}

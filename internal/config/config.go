@@ -193,6 +193,7 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	v.SetDefault("token_revoke.enabled", true)
 	v.SetDefault("user_tokens_invalidate.enabled", true)
 	setRPCRegistryDefaults(v)
+	setChannelStateDefaults(v)
 
 	if cmd != nil {
 		bindPFlags := []string{

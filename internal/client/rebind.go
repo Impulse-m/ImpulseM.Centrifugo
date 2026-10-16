@@ -186,6 +186,12 @@ func (h *Handler) onRefreshRebind(
 	// A downgrade is refused while the handler runs with a concurrency above one: client.concurrency is read at start, so a
 	// reload which allows a downgrade does not change the connections which run, and two commands could interleave with it.
 	allowDowngrade := cfg.Client.Rebind.AllowDowngrade && h.runningConcurrency <= 1
+	// A connection which holds a user is refused an anonymous token above one command at a time, whatever its class:
+	// the channels of the user go in two passes, and a second command could commit between them. The user is the one
+	// the connection holds, not the one Core sees, so a pending connection, which Core sees with no user, is covered too.
+	if verified.UserID == "" && prev.tokenUser != "" && h.runningConcurrency > 1 {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
 	// A logout of a connection with a user disconnects it unless allow_downgrade is set. The check comes before the
 	// class check, so the logout of a connection is disconnected the same way whatever its class.
 	if verified.UserID == "" && c.UserID() != "" && !allowDowngrade {

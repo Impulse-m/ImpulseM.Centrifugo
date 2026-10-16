@@ -530,7 +530,7 @@ type ChannelProxyContainer struct {
 	// SharedPollRefresh proxy configuration.
 	SharedPollRefresh Proxy `mapstructure:"shared_poll_refresh" json:"shared_poll_refresh" envconfig:"shared_poll_refresh" yaml:"shared_poll_refresh" toml:"shared_poll_refresh" doc:"Default shared poll refresh proxy configuration used for channels that reference the proxy by name <<default>>."`
 	// State proxy configuration.
-	State Proxy `mapstructure:"state" json:"state" envconfig:"state" yaml:"state" toml:"state" doc:"Channel state proxy configuration. Receives occupied and vacated channel events for namespaces with state_proxy_enabled."`
+	State Proxy `mapstructure:"state" json:"state" envconfig:"state" yaml:"state" toml:"state" doc:"Channel state proxy configuration. Receives occupied and vacated channel events for namespaces with state_proxy_enabled. Not sent by this build yet."`
 	// CacheEmpty proxy configuration.
 	CacheEmpty Proxy `mapstructure:"cache_empty" json:"cache_empty" envconfig:"cache_empty" yaml:"cache_empty" toml:"cache_empty" doc:"Default cache empty proxy configuration used for channels that reference the proxy by name <<default>>."`
 }

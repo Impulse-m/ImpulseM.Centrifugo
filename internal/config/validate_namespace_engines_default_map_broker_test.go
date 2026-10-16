@@ -23,7 +23,7 @@ func TestValidateNamespaceEnginesDefaultMapBroker(t *testing.T) {
 				cfg.MapBroker.Redis.Prefix = "centrifugo-broadcast"
 				cfg.MapBroker.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
 			},
-			wantErr: `map_broker and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `map_broker and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "default redis map broker and named redis broker with the same address and another prefix",
@@ -42,7 +42,7 @@ func TestValidateNamespaceEnginesDefaultMapBroker(t *testing.T) {
 				cfg.MapBroker.Redis.Redis.Address = []string{"redis://10.0.0.4:6379"}
 				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.4:6379", "centrifugo-cursors")}
 			},
-			wantErr: `map_broker and map_brokers "cursors" use the same Redis and the same prefix`,
+			wantErr: `map_broker and map_brokers "cursors" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "default redis map broker and default redis broker with the same address and prefix",

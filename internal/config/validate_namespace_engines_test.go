@@ -232,7 +232,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis and named redis broker with the same address and another prefix",
@@ -255,11 +255,26 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "two named redis brokers on one host whose prefixes overlap at a token boundary",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "centrifugo-broadcast"
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast.client")
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "two named redis brokers on one host whose prefixes only start alike",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcasts")
+			},
+			wantErr: "",
+		},
+		{
 			name: "two named redis brokers with the same address and prefix",
 			modify: func(cfg *Config) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers with the same prefix and another database",
@@ -267,14 +282,14 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.DB = 1
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers with the same prefix and the same host in another form",
 			modify: func(cfg *Config) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "rediss://user:secret@10.0.0.2:6379/3", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers, one host without a port and the same host with the default port",
@@ -282,7 +297,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers, one with an addr host which the other one uses",
@@ -290,7 +305,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2:6379?addr=10.0.0.4:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "10.0.0.4:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "a redis+cluster address and a standalone redis broker with the same prefix on other hosts",
@@ -298,7 +313,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.Address = []string{"redis+cluster://10.0.0.2:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.9:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis without the scheme and a named redis broker with it",
@@ -307,7 +322,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.Address = []string{"10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers with the same prefix on another redis",
@@ -322,7 +337,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "")
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifuge")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis with an empty prefix and a named redis broker with the default prefix",
@@ -332,7 +347,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Prefix = ""
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "redis://10.0.0.2:6379", "centrifuge")
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers with the default address and the same prefix",
@@ -340,7 +355,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
 				cfg.Brokers[1] = namedRedisBroker("rates", "127.0.0.1:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named redis brokers with comma-separated cluster hosts in another order",
@@ -350,7 +365,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
 				cfg.Brokers[1].Redis.Redis.ClusterAddress = []string{"10.0.0.3:6379", "10.0.0.2:6379"}
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis cluster address and a named redis address on the same host",
@@ -359,7 +374,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379"}
 				cfg.Engine.Redis.Prefix = "centrifugo-broadcast"
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "a cluster redis broker and a standalone redis broker with the same prefix on other hosts",
@@ -367,7 +382,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.Redis.ClusterAddress = []string{"redis://10.0.0.5:6379"}
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis cluster and a named redis cluster with the same prefix and hosts written differently",
@@ -379,7 +394,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[0].Redis.ClusterAddress = []string{"127.0.0.1:7000"}
 				cfg.Brokers[0].Redis.Prefix = "shared"
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis cluster and a named redis standalone with the same prefix on other hosts",
@@ -389,7 +404,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Engine.Redis.ClusterAddress = []string{"10.0.0.5:7000"}
 				cfg.Brokers[0].Redis.Prefix = "shared"
 			},
-			wantErr: `engine and brokers "broadcast" use the same Redis and the same prefix`,
+			wantErr: `engine and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "engine redis cluster and a named redis standalone with another prefix",
@@ -526,7 +541,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 					namedRedisMapBroker("scores", "redis://10.0.0.4:6379", "centrifugo-cursors"),
 				}
 			},
-			wantErr: `map_brokers "cursors" and map_brokers "scores" use the same Redis and the same prefix`,
+			wantErr: `map_brokers "cursors" and map_brokers "scores" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "named redis map broker and named redis broker with the same address and prefix",
@@ -535,7 +550,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 					namedRedisMapBroker("cursors", "redis://10.0.0.2:6379", "centrifugo-broadcast"),
 				}
 			},
-			wantErr: `brokers "broadcast" and map_brokers "cursors" use the same Redis and the same prefix`,
+			wantErr: `brokers "broadcast" and map_brokers "cursors" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "two named postgres map brokers with the same DSN and table prefix",
@@ -572,6 +587,65 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "unknown controller type: foo",
 		},
 		{
+			name: "named nats broker in raw mode under the channel space of a non-raw broker with wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "centrifugo"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.client."
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode whose root is the prefix of a non-raw channel space with wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "a"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "a"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with a root inside a non-raw channel space with wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "a"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "a.client"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "two non-raw nats brokers whose prefixes nest at a token boundary with wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "a"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "a.client"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with a root which only starts like a non-raw channel space",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "a"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "a.clientx"
+			},
+			wantErr: "",
+		},
+		{
 			name: "two named nats brokers with the same prefix and wildcards on one of them",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
@@ -580,7 +654,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
 				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
-			wantErr: `brokers "broadcast" and brokers "rates" use the same NATS subject prefix`,
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
 		},
 		{
 			name: "two named nats brokers with the same prefix and no wildcards",
@@ -612,7 +686,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Broker.Nats.AllowWildcards = true
 				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
-			wantErr: `broker and brokers "rates" use the same NATS subject prefix`,
+			wantErr: `broker and brokers "rates" use overlapping NATS subjects`,
 		},
 		{
 			name: "controller of unknown type while disabled",

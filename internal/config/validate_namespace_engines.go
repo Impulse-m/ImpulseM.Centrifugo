@@ -178,12 +178,13 @@ func validateNamespaceEngineRef(
 }
 
 // validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same
-// Redis and the same prefix. The default broker and the default map broker are not compared with each other: they
-// have always been accepted together. Core subscribes a channel only on the broker which routes it, so in standalone
-// mode such brokers do not duplicate publications. Core turns on sharded PUB/SUB only with
-// NumShardedPubSubPartitions, which the server does not set; then brokers with one prefix subscribe the same
-// partition channels and deliver each publication twice. The rule keeps that mode safe. A cluster broker conflicts
-// with any broker of the same prefix, since the cluster hosts are not resolved when the configuration is validated.
+// Redis and prefixes whose channel spaces overlap, see channelSpace. The default broker and the default map broker
+// are not compared with each other: they have always been accepted together. Core subscribes a channel only on the
+// broker which routes it, so in standalone mode such brokers do not duplicate publications. Core turns on sharded
+// PUB/SUB only with NumShardedPubSubPartitions, which the server does not set; then brokers with one prefix subscribe
+// the same partition channels and deliver each publication twice. The rule keeps that mode safe. A cluster broker
+// conflicts with any broker of the same prefix, since the cluster hosts are not resolved when the configuration is
+// validated.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
@@ -210,12 +211,12 @@ func validateNamedRedisPrefixes(c Config) error {
 			return ref.isDefault
 		},
 		func(a redisEngineRef, b redisEngineRef) bool {
-			return a.prefix == b.prefix && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
+			return subjectSpacesOverlap(a.channelSpace(), b.channelSpace()) && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
 		},
 	)
 	if found {
 		return fmt.Errorf(
-			"%s and %s use the same Redis and the same prefix; set a distinct prefix",
+			"%s and %s use the same Redis and overlapping prefixes; set a distinct prefix",
 			first.label, second.label,
 		)
 	}
@@ -253,19 +254,26 @@ func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, 
 	}
 }
 
-// natsEngineRef is a NATS broker of the configuration: the default broker or a named broker. root is the subject prefix
-// which its channels are published and subscribed under, and wildcards marks a broker which subscribes wildcard
-// subjects. isDefault marks the default broker.
+// channelSpace returns the space of the Redis channels which the broker publishes and subscribes: its prefix
+// followed by .client., as in Core. Two prefixes whose spaces overlap, such as "a" and "a.client", can name the
+// same channel.
+func (ref redisEngineRef) channelSpace() string {
+	return ref.prefix + ".client."
+}
+
+// natsEngineRef is a NATS broker of the configuration: the default broker or a named broker. space is the subject
+// space which its channels are published and subscribed under, see newNatsEngineRef, and wildcards marks a broker
+// which subscribes wildcard subjects. isDefault marks the default broker.
 type natsEngineRef struct {
 	label     string
-	root      string
+	space     string
 	wildcards bool
 	isDefault bool
 }
 
-// validateNamedNatsSubjects rejects two NATS brokers, default or named, which use the same subject prefix when one of
-// them allows wildcard subscriptions. A wildcard subscription of a broker receives the publications of the other
-// broker too, since they match the same subjects, so a node would deliver each publication twice.
+// validateNamedNatsSubjects rejects two NATS brokers, default or named, whose subject spaces overlap when one of them
+// allows wildcard subscriptions. A wildcard subscription of a broker receives the publications of the other broker
+// too, since they match the same subjects, so a node would deliver each publication twice.
 func validateNamedNatsSubjects(c Config) error {
 	var refs []natsEngineRef
 	if c.Broker.Enabled && c.Broker.Type == "nats" {
@@ -282,31 +290,48 @@ func validateNamedNatsSubjects(c Config) error {
 			return ref.isDefault
 		},
 		func(a natsEngineRef, b natsEngineRef) bool {
-			return a.root == b.root && (a.wildcards || b.wildcards)
+			return subjectSpacesOverlap(a.space, b.space) && (a.wildcards || b.wildcards)
 		},
 	)
 	if found {
 		return fmt.Errorf(
-			"%s and %s use the same NATS subject prefix and one of them allows wildcards; set a distinct prefix",
+			"%s and %s use overlapping NATS subjects and one of them allows wildcards; set a distinct prefix",
 			first.label, second.label,
 		)
 	}
 	return nil
 }
 
-// newNatsEngineRef returns the reference of a NATS broker with the subject prefix which it uses. In raw mode the
-// channels are prefixed with the raw mode prefix instead.
+// newNatsEngineRef returns the reference of a NATS broker with the subject space which its channels use. A broker
+// in raw mode uses the raw mode prefix as its space, since its subjects are the prefix followed by the channel.
+// Any other broker uses its prefix followed by .client., as in natsbroker.
 func newNatsEngineRef(label string, natsCfg configtypes.NatsBroker, isDefault bool) natsEngineRef {
-	root := natsCfg.Prefix
+	space := natsCfg.Prefix + ".client."
 	if natsCfg.RawMode.Enabled {
-		root = natsCfg.RawMode.Prefix
+		space = natsCfg.RawMode.Prefix
 	}
 	return natsEngineRef{
 		label:     label,
-		root:      root,
+		space:     space,
 		wildcards: natsCfg.AllowWildcards,
 		isDefault: isDefault,
 	}
+}
+
+// subjectSpacesOverlap reports whether two subject spaces can match the same subject: they are equal, or one
+// continues the other at a token boundary. "a.client." and "a.client.x" overlap, since a channel may add "x";
+// "a.client." and "a.clientx" do not.
+func subjectSpacesOverlap(a string, b string) bool {
+	return subjectSpaceWithin(a, b) || subjectSpaceWithin(b, a)
+}
+
+// subjectSpaceWithin reports whether space is outer or lies inside it at a token boundary. A space which ends with
+// a dot is a boundary by itself.
+func subjectSpaceWithin(space string, outer string) bool {
+	if !strings.HasPrefix(space, outer) {
+		return false
+	}
+	return len(space) == len(outer) || space[len(outer)] == '.' || strings.HasSuffix(outer, ".")
 }
 
 // validateNamedPostgresTables rejects two Postgres brokers, default or named, and named map brokers which use the

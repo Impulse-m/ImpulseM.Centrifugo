@@ -121,7 +121,7 @@ Two backend hooks, both off by default and both as in the Centrifugo PRO docs (`
   },
   "namespaces": [
     {
-      "name": "chat",
+      "name": "example",
       "presence": true,
       "state_proxy_enabled": true,
       "history_size": 1,
@@ -137,16 +137,16 @@ Two backend hooks, both off by default and both as in the Centrifugo PRO docs (`
 The payloads are the JSON of `NotifyChannelStateRequest` and `NotifyCacheEmptyRequest` in `internal/proxyproto/proxy.proto`:
 
 ```json
-{"events": [{"time_ms": 1697206286533, "channel": "chat:index", "type": "occupied"}]}
+{"events": [{"time_ms": 1697206286533, "channel": "example:index", "type": "occupied"}]}
 ```
 
-Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch be sent again. Cache empty request: `{"channel": "chat:index"}`; answer `{"result": {"populated": true}}` with a JSON body. An `error` answer, a non-200 status, a 200 without a body or an unreachable cache empty proxy rejects the subscription with an internal error.
+Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch be sent again. Cache empty request: `{"channel": "example:index"}`; answer `{"result": {"populated": true}}` with a JSON body. An `error` answer, a non-200 status, a 200 without a body, a 200 with a `null` body or an unreachable cache empty proxy rejects the subscription with an internal error.
 
 The delivery rules below apply to channel state events.
 
 * Delivery is at-least-once, in partition order: a batch whose answer is lost is sent again, so the backend must treat a repeated event as a no-op. Events of one channel reach the backend in the order they happened.
 * Retries back off from 100 ms to 20 s. Events are kept in Redis while the backend is down; the stream holds at most 8192 events per partition, and new events are dropped when it is full.
-* A batch the backend keeps rejecting (an `error` answer or a non-200 status) is retried at the 20 s cap until the backend accepts it. The events of the other channels in the same partition wait behind it, and the stream fills up as above. The backend must accept every batch it can decode: a 200 with an empty result counts as delivered, while an `error` answer, a 200 with no body or a non-200 status is retried. There is no skip of a batch. A rejected batch is logged at most once a minute. The stuck-partition metric `centrifugo_channel_state_oldest_failing_batch_timestamp_seconds` holds the time the oldest batch that still fails was first sent (0 when none fails); alert when `time() - that value` grows. The value is kept by the node which rejected the batch: when that node stops delivering the partition while the batch waits for its retry (its lease moves to another node), the node keeps the value until it restarts, so read the metric together with the node that owns the partition. A client can cause this stall without operator action: a channel the backend rejects in its channel state endpoint stalls its partition as soon as a client subscribes to it, which is possible wherever the namespace has no subscribe proxy. Answer `error` only for a failure a retry can fix (the database is down, the backend is overloaded): the batch is sent again until it is accepted, as in Centrifugo PRO. Never reject a batch by its content: a backend that does not want the events of some channel answers `{"result": {}}` and ignores them, because a batch rejected for good stalls its partition for every namespace and node. Alert on the metric.
+* A batch the backend keeps rejecting (an `error` answer or a non-200 status) is retried at the 20 s cap until the backend accepts it. The events of the other channels in the same partition wait behind it, and the stream fills up as above. The backend must accept every batch it can decode: a 200 with an empty result counts as delivered, while an `error` answer, a 200 with no body, a 200 with a `null` body or a non-200 status is retried. There is no skip of a batch. A rejected batch is logged at most once a minute. The stuck-partition metric `centrifugo_channel_state_oldest_failing_batch_timestamp_seconds` holds the time the oldest batch that still fails was first sent (0 when none fails); alert when `time() - that value` grows. The value is kept by the node which rejected the batch: when that node stops delivering the partition while the batch waits for its retry (its lease moves to another node), the node keeps the value until it restarts, so read the metric together with the node that owns the partition. A client can cause this stall without operator action: a channel the backend rejects in its channel state endpoint stalls its partition as soon as a client subscribes to it, which is possible wherever the namespace has no subscribe proxy. Answer `error` only for a failure a retry can fix (the database is down, the backend is overloaded): the batch is sent again until it is accepted, as in Centrifugo PRO. Never reject a batch by its content: a backend that does not want the events of some channel answers `{"result": {}}` and ignores them, because a batch rejected for good stalls its partition for every namespace and node. Alert on the metric.
 * Redis must not evict these keys: set `maxmemory-policy noeviction`. Eviction loses events.
 * Use a separate Redis presence manager (`presence_manager.redis.channel_state`) when the engine is shared with other data, as PRO recommends.
 * Do not change `num_partitions`, or the number of Redis shards, while channels are occupied: their state is orphaned and a `vacated` event can be missed.

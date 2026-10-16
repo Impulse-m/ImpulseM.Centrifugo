@@ -45,18 +45,18 @@ func (p *channelStateTestProxy) Timeout() time.Duration {
 	return time.Second
 }
 
-// newChannelStateTestConfig returns the config for TestChannelStateEngineConfig: the chat namespace enables channel
+// newChannelStateTestConfig returns the config for TestChannelStateEngineConfig: the example namespace enables channel
 // state, the other one does not.
 func newChannelStateTestConfig() config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Engine.Type = "redis"
 	cfg.Channel.Proxy.State = newChannelEventsTestProxy("http://localhost:8000/state")
 	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-		{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+		{Name: "example", ChannelOptions: configtypes.ChannelOptions{
 			Presence:          true,
 			StateProxyEnabled: true,
 		}},
-		{Name: "news", ChannelOptions: configtypes.ChannelOptions{
+		{Name: "sample", ChannelOptions: configtypes.ChannelOptions{
 			Presence: true,
 		}},
 	}
@@ -67,12 +67,12 @@ func newChannelStateTestConfig() config.Config {
 func TestChannelStateBatch(t *testing.T) {
 	when := time.UnixMilli(1697206286533)
 	batch := channelStateBatch([]centrifuge.ChannelStateEvent{
-		{Channel: "chat:index", Type: centrifuge.ChannelStateOccupied, Time: when},
-		{Channel: "chat:index", Type: centrifuge.ChannelStateVacated, Time: when.Add(time.Second)},
+		{Channel: "example:index", Type: centrifuge.ChannelStateOccupied, Time: when},
+		{Channel: "example:index", Type: centrifuge.ChannelStateVacated, Time: when.Add(time.Second)},
 	})
 	require.Len(t, batch, 2)
 	require.Equal(t, int64(1697206286533), batch[0].TimeMs)
-	require.Equal(t, "chat:index", batch[0].Channel)
+	require.Equal(t, "example:index", batch[0].Channel)
 	require.Equal(t, "occupied", batch[0].Type)
 	require.Equal(t, int64(1697206287533), batch[1].TimeMs)
 	require.Equal(t, "vacated", batch[1].Type)
@@ -82,10 +82,10 @@ func TestChannelStateBatch(t *testing.T) {
 // TestChannelStateLayout checks the channel groups which channel state enables.
 func TestChannelStateLayout(t *testing.T) {
 	cfg := newChannelStateTestConfig()
-	require.Equal(t, []string{"chat"}, channelStateLayout(cfg))
+	require.Equal(t, []string{"example"}, channelStateLayout(cfg))
 
 	cfg.Channel.WithoutNamespace.StateProxyEnabled = true
-	require.Equal(t, []string{"", "chat"}, channelStateLayout(cfg))
+	require.Equal(t, []string{"", "example"}, channelStateLayout(cfg))
 
 	require.Empty(t, channelStateLayout(config.DefaultConfig()))
 }
@@ -174,8 +174,8 @@ func TestChannelStateEngineConfig(t *testing.T) {
 		proxyMap := &client.ProxyMap{ChannelStateProxy: &channelStateTestProxy{}}
 		chConfig := channelStateEngineConfig(cfgContainer, proxyMap, placement)
 		require.NotNil(t, chConfig)
-		require.True(t, chConfig.Enabled("chat:index"))
-		require.False(t, chConfig.Enabled("news:index"))
+		require.True(t, chConfig.Enabled("example:index"))
+		require.False(t, chConfig.Enabled("sample:index"))
 		require.False(t, chConfig.Enabled("index"))
 		require.False(t, chConfig.Enabled("missing:index"))
 		require.Equal(t, 8, chConfig.NumPartitions)
@@ -198,11 +198,11 @@ func TestChannelStateEngineConfig(t *testing.T) {
 		require.NotNil(t, chConfig)
 		when := time.UnixMilli(1697206286533)
 		err := chConfig.Handler(context.Background(), []centrifuge.ChannelStateEvent{
-			{Channel: "chat:index", Type: centrifuge.ChannelStateOccupied, Time: when},
+			{Channel: "example:index", Type: centrifuge.ChannelStateOccupied, Time: when},
 		})
 		require.NoError(t, err)
 		require.Len(t, state.batches, 1)
-		require.Equal(t, "chat:index", state.batches[0][0].Channel)
+		require.Equal(t, "example:index", state.batches[0][0].Channel)
 	})
 
 	t.Run("handler returns the proxy error", func(t *testing.T) {
@@ -211,7 +211,7 @@ func TestChannelStateEngineConfig(t *testing.T) {
 		chConfig := channelStateEngineConfig(cfgContainer, proxyMap, placement)
 		require.NotNil(t, chConfig)
 		err := chConfig.Handler(context.Background(), []centrifuge.ChannelStateEvent{
-			{Channel: "chat:index", Type: centrifuge.ChannelStateVacated, Time: time.Now()},
+			{Channel: "example:index", Type: centrifuge.ChannelStateVacated, Time: time.Now()},
 		})
 		require.Error(t, err)
 	})

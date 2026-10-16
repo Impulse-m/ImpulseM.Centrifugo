@@ -75,7 +75,7 @@ func (b *channelStateBackend) hasEvent(channel string, eventType string) bool {
 	return false
 }
 
-// newChannelStateIntegrationConfig returns a config with channel state on the chat namespace, and the Redis presence
+// newChannelStateIntegrationConfig returns a config with channel state on the example namespace, and the Redis presence
 // manager in the placement of presenceManager: presence_manager when true, the engine otherwise. The prefix is unique
 // per call, and the vacated delay is short.
 func newChannelStateIntegrationConfig(endpoint string, presenceManager bool) config.Config {
@@ -85,11 +85,11 @@ func newChannelStateIntegrationConfig(endpoint string, presenceManager bool) con
 		Timeout:  configtypes.Duration(time.Second),
 	}
 	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-		{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+		{Name: "example", ChannelOptions: configtypes.ChannelOptions{
 			Presence:          true,
 			StateProxyEnabled: true,
 		}},
-		{Name: "news", ChannelOptions: configtypes.ChannelOptions{
+		{Name: "sample", ChannelOptions: configtypes.ChannelOptions{
 			Presence: true,
 		}},
 	}
@@ -152,17 +152,17 @@ func TestChannelStateRedisDelivery(t *testing.T) {
 			})
 
 			info := &centrifuge.ClientInfo{ClientID: "client-1", UserID: "user-1"}
-			require.NoError(t, presenceManager.AddPresence("chat:index", "client-1", info))
+			require.NoError(t, presenceManager.AddPresence("example:index", "client-1", info))
 			require.Eventually(t, func() bool {
-				return backend.hasEvent("chat:index", "occupied")
+				return backend.hasEvent("example:index", "occupied")
 			}, 10*time.Second, 20*time.Millisecond)
 
-			require.NoError(t, presenceManager.RemovePresence("chat:index", "client-1", "user-1"))
+			require.NoError(t, presenceManager.RemovePresence("example:index", "client-1", "user-1"))
 			require.Eventually(t, func() bool {
-				return backend.hasEvent("chat:index", "vacated")
+				return backend.hasEvent("example:index", "vacated")
 			}, 10*time.Second, 20*time.Millisecond)
 
-			require.NoError(t, presenceManager.AddPresence("news:index", "client-2", &centrifuge.ClientInfo{
+			require.NoError(t, presenceManager.AddPresence("sample:index", "client-2", &centrifuge.ClientInfo{
 				ClientID: "client-2",
 				UserID:   "user-2",
 			}))
@@ -171,7 +171,7 @@ func TestChannelStateRedisDelivery(t *testing.T) {
 				UserID:   "user-3",
 			}))
 			require.Never(t, func() bool {
-				return backend.hasEvent("news:index", "occupied") || backend.hasEvent("index", "occupied")
+				return backend.hasEvent("sample:index", "occupied") || backend.hasEvent("index", "occupied")
 			}, time.Second, 50*time.Millisecond)
 		})
 	}

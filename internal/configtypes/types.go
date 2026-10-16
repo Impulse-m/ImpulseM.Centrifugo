@@ -447,7 +447,7 @@ type Client struct {
 	// PresenceUpdateInterval is a period of time how often to update presence info for subscriptions of connected client.
 	PresenceUpdateInterval Duration `mapstructure:"presence_update_interval" json:"presence_update_interval" envconfig:"presence_update_interval" default:"27s" yaml:"presence_update_interval" toml:"presence_update_interval" doc:"How often a client updates its presence information in subscribed channels. Default <<27s>>."`
 	// Concurrency is a maximum number of concurrent operations for client connection. If not set only one operation can be processed at a time.
-	Concurrency int `mapstructure:"concurrency" json:"concurrency" envconfig:"concurrency" yaml:"concurrency" toml:"concurrency" doc:"Maximum number of commands processed concurrently per client connection. Zero means one command at a time (sequential). Read at start: a reload does not change it."`
+	Concurrency int `mapstructure:"concurrency" json:"concurrency" envconfig:"concurrency" yaml:"concurrency" toml:"concurrency" doc:"Maximum number of commands processed concurrently per client connection. Zero means one command at a time (sequential)."`
 	// ChannelPositionCheckDelay is a delay between channel position checks for client subscriptions.
 	ChannelPositionCheckDelay Duration `mapstructure:"channel_position_check_delay" json:"channel_position_check_delay" envconfig:"channel_position_check_delay" default:"40s" yaml:"channel_position_check_delay" toml:"channel_position_check_delay" doc:"Interval between stream position checks for subscriptions with positioning enabled. Default <<40s>>."`
 	// ChannelPositionMaxTimeLag is a maximum allowed time lag for publications for subscribers with positioning on. When

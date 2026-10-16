@@ -26,6 +26,9 @@ func newNatsControllerFromConfig(node *centrifuge.Node, config configtypes.Contr
 // control traffic are separate.
 type NatsController struct {
 	broker *natsbroker.NatsBroker
+	// connected is set once RegisterControlEventHandler has connected to Nats. Until then the broker has no
+	// connection, so Close must not reach it.
+	connected bool
 }
 
 var _ centrifuge.Controller = (*NatsController)(nil)
@@ -41,7 +44,11 @@ func NewNatsController(node *centrifuge.Node, cfg configtypes.NatsController) (*
 
 // RegisterControlEventHandler connects to Nats and subscribes to the control channels.
 func (c *NatsController) RegisterControlEventHandler(h centrifuge.ControlEventHandler) error {
-	return c.broker.RegisterControlEventHandler(h)
+	if err := c.broker.RegisterControlEventHandler(h); err != nil {
+		return err
+	}
+	c.connected = true
+	return nil
 }
 
 // PublishControl publishes a control message to the node with nodeID, or to all nodes when nodeID is empty.
@@ -49,7 +56,11 @@ func (c *NatsController) PublishControl(data []byte, nodeID string, shardKey str
 	return c.broker.PublishControl(data, nodeID, shardKey)
 }
 
-// Close closes the Nats connection. It must be called after RegisterControlEventHandler.
+// Close closes the Nats connection. It does nothing when RegisterControlEventHandler has not connected, for
+// example when Close is called after a failed start: there is no connection to close then.
 func (c *NatsController) Close(ctx context.Context) error {
+	if !c.connected {
+		return nil
+	}
 	return c.broker.Close(ctx)
 }

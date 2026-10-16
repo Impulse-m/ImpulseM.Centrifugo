@@ -124,6 +124,9 @@ func validateNamespaceEngines(c Config) error {
 	if err := validateNamedPostgresTables(c); err != nil {
 		return err
 	}
+	if err := validateNamedNatsSubjects(c); err != nil {
+		return err
+	}
 
 	if c.Controller.Enabled && !slices.Contains(knownControllerTypes, c.Controller.Type) {
 		return fmt.Errorf("unknown controller type: %s", c.Controller.Type)
@@ -201,23 +204,42 @@ func validateNamedRedisPrefixes(c Config) error {
 			refs = append(refs, newRedisEngineRef(fmt.Sprintf("map_brokers %q", mb.Name), mb.Redis.Redis, mb.Redis.Prefix, false))
 		}
 	}
+	first, second, found := firstEngineConflict(
+		refs,
+		func(ref redisEngineRef) bool {
+			return ref.isDefault
+		},
+		func(a redisEngineRef, b redisEngineRef) bool {
+			return a.prefix == b.prefix && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
+		},
+	)
+	if found {
+		return fmt.Errorf(
+			"%s and %s use the same Redis and the same prefix; set a distinct prefix",
+			first.label, second.label,
+		)
+	}
+	return nil
+}
+
+// firstEngineConflict returns the first pair of references which conflicts, in list order. The pair of two default
+// references is never a conflict, since the defaults are accepted together. found is false when no pair conflicts.
+func firstEngineConflict[T any](
+	refs []T,
+	isDefault func(ref T) bool,
+	conflicts func(a T, b T) bool,
+) (first T, second T, found bool) {
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
-			if refs[i].isDefault && refs[j].isDefault {
+			if isDefault(refs[i]) && isDefault(refs[j]) {
 				continue
 			}
-			if refs[i].prefix != refs[j].prefix {
-				continue
-			}
-			if refs[i].cluster || refs[j].cluster || sharesHost(refs[i].hosts, refs[j].hosts) {
-				return fmt.Errorf(
-					"%s and %s use the same Redis and the same prefix; set a distinct prefix",
-					refs[i].label, refs[j].label,
-				)
+			if conflicts(refs[i], refs[j]) {
+				return refs[i], refs[j], true
 			}
 		}
 	}
-	return nil
+	return first, second, false
 }
 
 // newRedisEngineRef returns the reference of a Redis broker with the connection and the prefix which it uses.
@@ -227,6 +249,62 @@ func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, 
 		hosts:     redisHosts(redisCfg),
 		prefix:    redisPrefix(prefix),
 		cluster:   usesRedisCluster(redisCfg),
+		isDefault: isDefault,
+	}
+}
+
+// natsEngineRef is a NATS broker of the configuration: the default broker or a named broker. root is the subject prefix
+// which its channels are published and subscribed under, and wildcards marks a broker which subscribes wildcard
+// subjects. isDefault marks the default broker.
+type natsEngineRef struct {
+	label     string
+	root      string
+	wildcards bool
+	isDefault bool
+}
+
+// validateNamedNatsSubjects rejects two NATS brokers, default or named, which use the same subject prefix when one of
+// them allows wildcard subscriptions. A wildcard subscription of a broker receives the publications of the other
+// broker too, since they match the same subjects, so a node would deliver each publication twice.
+func validateNamedNatsSubjects(c Config) error {
+	var refs []natsEngineRef
+	if c.Broker.Enabled && c.Broker.Type == "nats" {
+		refs = append(refs, newNatsEngineRef("broker", c.Broker.Nats, true))
+	}
+	for _, b := range c.Brokers {
+		if b.Enabled && b.Type == "nats" {
+			refs = append(refs, newNatsEngineRef(fmt.Sprintf("brokers %q", b.Name), b.Nats, false))
+		}
+	}
+	first, second, found := firstEngineConflict(
+		refs,
+		func(ref natsEngineRef) bool {
+			return ref.isDefault
+		},
+		func(a natsEngineRef, b natsEngineRef) bool {
+			return a.root == b.root && (a.wildcards || b.wildcards)
+		},
+	)
+	if found {
+		return fmt.Errorf(
+			"%s and %s use the same NATS subject prefix and one of them allows wildcards; set a distinct prefix",
+			first.label, second.label,
+		)
+	}
+	return nil
+}
+
+// newNatsEngineRef returns the reference of a NATS broker with the subject prefix which it uses. In raw mode the
+// channels are prefixed with the raw mode prefix instead.
+func newNatsEngineRef(label string, natsCfg configtypes.NatsBroker, isDefault bool) natsEngineRef {
+	root := natsCfg.Prefix
+	if natsCfg.RawMode.Enabled {
+		root = natsCfg.RawMode.Prefix
+	}
+	return natsEngineRef{
+		label:     label,
+		root:      root,
+		wildcards: natsCfg.AllowWildcards,
 		isDefault: isDefault,
 	}
 }
@@ -253,18 +331,20 @@ func validateNamedPostgresTables(c Config) error {
 			refs = append(refs, newPostgresEngineRef(fmt.Sprintf("map_brokers %q", mb.Name), mb.Postgres.DSN, mb.Postgres.TablePrefix, false))
 		}
 	}
-	for i := range refs {
-		for j := i + 1; j < len(refs); j++ {
-			if refs[i].isDefault && refs[j].isDefault {
-				continue
-			}
-			if refs[i].database == refs[j].database && refs[i].tablePrefix == refs[j].tablePrefix {
-				return fmt.Errorf(
-					"%s and %s use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
-					refs[i].label, refs[j].label,
-				)
-			}
-		}
+	first, second, found := firstEngineConflict(
+		refs,
+		func(ref postgresEngineRef) bool {
+			return ref.isDefault
+		},
+		func(a postgresEngineRef, b postgresEngineRef) bool {
+			return a.database == b.database && a.tablePrefix == b.tablePrefix
+		},
+	)
+	if found {
+		return fmt.Errorf(
+			"%s and %s use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
+			first.label, second.label,
+		)
 	}
 	return nil
 }

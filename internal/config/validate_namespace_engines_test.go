@@ -572,6 +572,49 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "unknown controller type: foo",
 		},
 		{
+			name: "two named nats brokers with the same prefix and wildcards on one of them",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "shared"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "shared"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use the same NATS subject prefix`,
+		},
+		{
+			name: "two named nats brokers with the same prefix and no wildcards",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "shared"
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "shared"
+			},
+			wantErr: "",
+		},
+		{
+			name: "two named nats brokers with wildcards and distinct prefixes",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "one"
+				cfg.Brokers[0].Nats.AllowWildcards = true
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.Prefix = "two"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default nats broker with wildcards and a named nats broker with the same prefix",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "shared"
+				cfg.Broker.Nats.AllowWildcards = true
+				cfg.Brokers[1].Nats.Prefix = "shared"
+			},
+			wantErr: `broker and brokers "rates" use the same NATS subject prefix`,
+		},
+		{
 			name: "controller of unknown type while disabled",
 			modify: func(cfg *Config) {
 				cfg.Controller.Enabled = false

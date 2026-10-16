@@ -207,6 +207,28 @@ func (p *channelStateRejectingProxy) Timeout() time.Duration {
 	return time.Second
 }
 
+// channelStateNilProxy answers every batch with neither a result nor an error.
+type channelStateNilProxy struct{}
+
+func (p *channelStateNilProxy) ProxyNotifyChannelState(_ context.Context, _ *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
+	return nil, nil
+}
+
+func (p *channelStateNilProxy) Protocol() string {
+	return "test"
+}
+
+func (p *channelStateNilProxy) Timeout() time.Duration {
+	return time.Second
+}
+
+// TestChannelStateHandlerNilResponse checks that a response without a body is handled as delivered, without a panic.
+func TestChannelStateHandlerNilResponse(t *testing.T) {
+	handle := NewChannelStateHandler(&channelStateNilProxy{}).Handle()
+
+	require.NoError(t, handle(context.Background(), channelStateTestEvents()))
+}
+
 // TestChannelStateHandlerOldestFailingBatch checks the gauge of the batch that the proxy rejects for the longest
 // time: it is the time the oldest rejected batch was first sent, and it returns to 0 once every batch is delivered.
 func TestChannelStateHandlerOldestFailingBatch(t *testing.T) {

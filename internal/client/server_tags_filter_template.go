@@ -364,6 +364,20 @@ func (h *Handler) recordTemplatedChannel(c Client, channel string) {
 	release(storage)
 }
 
+// forgetTemplatedChannel removes channel from the record of recordTemplatedChannel when the connection unsubscribes it, so
+// the record holds only the channels which the connection still subscribes. With no templates in the config nothing is
+// recorded by a new subscribe, so the lock is not taken then. A channel recorded before a reload removed its template
+// stays in the record until the connection rebinds or closes.
+func (h *Handler) forgetTemplatedChannel(c Client, channel string) {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+		return
+	}
+	storage, release := c.AcquireStorage()
+	channels, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	delete(channels, channel)
+	release(storage)
+}
+
 // templatedChannelsOf returns the channels recorded by recordTemplatedChannel, as a copy.
 func templatedChannelsOf(c Client) []string {
 	storage, release := c.AcquireStorage()

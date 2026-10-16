@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -511,4 +512,26 @@ func TestServerTagsFilterTemplateConnectProxyReloadAddsTemplate(t *testing.T) {
 	require.NoError(t, err)
 	want := &protocol.FilterNode{Key: "owner", Cmp: "eq", Val: "42"}
 	require.True(t, proto.Equal(want, reply.Subscriptions["chat:srv"].ServerTagsFilter), "got %v", reply.Subscriptions["chat:srv"].ServerTagsFilter)
+}
+
+// TestServerTagsFilterTemplateUnsubscribeForgetsChannels checks that the record of templated channels keeps only the
+// channels the connection still subscribes: each channel is recorded by its subscribe and removed by its unsubscribe, so
+// the record is empty after all of them, and a long-lived connection does not grow it.
+func TestServerTagsFilterTemplateUnsubscribeForgetsChannels(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
+	const channelCount int = 50
+	for i := 0; i < channelCount; i++ {
+		channel := fmt.Sprintf("chat:room-%d", i)
+		subscribeID := uint32(2 + i)
+		unsubscribeID := uint32(2 + channelCount + i)
+		subscribeClient(t, client, transport, subscribeID, channel, "")
+		require.Contains(t, templatedChannelsOf(client), channel)
+		sendRateLimitCommand(client, &protocol.Command{Id: unsubscribeID, Unsubscribe: &protocol.UnsubscribeRequest{Channel: channel}})
+		reply := transport.waitReply(t, unsubscribeID)
+		require.Nil(t, reply.Error)
+	}
+	require.Eventually(t, func() bool {
+		return !hasTemplatedChannels(client) && len(templatedChannelsOf(client)) == 0
+	}, 5*time.Second, time.Millisecond)
 }

@@ -331,6 +331,7 @@ func (h *Handler) Setup() error {
 		})
 
 		client.OnUnsubscribe(func(e centrifuge.UnsubscribeEvent) {
+			h.forgetTemplatedChannel(client, e.Channel)
 			if len(h.proxyMap.SubscribeStreamProxies) > 0 {
 				storage, release := client.AcquireStorage()
 				streamCancelKey := "stream_cancel_" + e.Channel

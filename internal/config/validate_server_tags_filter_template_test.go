@@ -27,7 +27,7 @@ func tenantTemplate() configtypes.ServerTagsFilterTemplate {
 				map[string]any{"key": "audience", "cmp": "in", "vals": []any{"all", "user:{{user}}"}},
 			},
 		},
-		OnMissingValue: "skip",
+		OnMissingValue: "reject",
 	}
 }
 

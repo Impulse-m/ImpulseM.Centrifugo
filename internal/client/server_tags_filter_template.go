@@ -233,7 +233,7 @@ func (h *Handler) applyFilterTemplatesTo(
 	dropRefused bool,
 ) error {
 	for channel, opts := range subs {
-		filtered, err := h.applyFilterTemplate(channel, opts, values)
+		filter, err := h.filterWithValues(channel, values, opts.ServerTagsFilter)
 		if err != nil {
 			if dropRefused {
 				delete(subs, channel)
@@ -241,24 +241,10 @@ func (h *Handler) applyFilterTemplatesTo(
 			}
 			return err
 		}
-		subs[channel] = filtered
+		opts.ServerTagsFilter = filter
+		subs[channel] = opts
 	}
 	return nil
-}
-
-// applyFilterTemplate returns the subscription opts with the template of channel combined with its explicit filter. A
-// channel without a template keeps opts as they are.
-func (h *Handler) applyFilterTemplate(
-	channel string,
-	opts centrifuge.SubscribeOptions,
-	values filtertemplate.Values,
-) (centrifuge.SubscribeOptions, error) {
-	filter, err := h.filterWithValues(channel, values, opts.ServerTagsFilter)
-	if err != nil {
-		return centrifuge.SubscribeOptions{}, err
-	}
-	opts.ServerTagsFilter = filter
-	return opts, nil
 }
 
 // filterWithValues returns the server tags filter of a subscription to channel with explicit, rendered under the template

@@ -222,6 +222,20 @@ func TestServerTagsFilterTemplateRebindStoresTokenFilters(t *testing.T) {
 	require.True(t, proto.Equal(sessionFilter("s-1"), filters["lenient:srv"]), "got %v", filters)
 }
 
+// TestServerTagsFilterTemplateStoresValuesOnConnect checks a connection stores the values its templates are rendered with
+// at connect, whether or not it has subscriptions of its own, so later subscriptions render the values of its token.
+func TestServerTagsFilterTemplateStoresValuesOnConnect(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client, _ := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s1"}))
+
+	storage, release := client.AcquireStorage()
+	stored, ok := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
+	release(storage)
+	require.True(t, ok)
+	require.Equal(t, "12", stored.User)
+	require.Equal(t, "s1", stored.Claims.Value("sid"))
+}
+
 // TestServerTagsFilterTemplateRebindWhileTemplatesOff checks a connection which stored its template values keeps them on
 // a rebind made while the config has no templates. A later reload which adds the template renders the user the connection
 // has now, not the empty user it had when the templates were switched off.

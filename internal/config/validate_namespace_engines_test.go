@@ -421,6 +421,33 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: `brokers "orders" and brokers "ledger" use the same PostgreSQL and the same table_prefix`,
 		},
 		{
+			name: "two named postgres brokers whose DSNs reach the same database with other spelling",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/main"
+				cfg.Brokers[3].Postgres.DSN = "postgresql://Db:5432/main?sslmode=disable"
+			},
+			wantErr: `brokers "orders" and brokers "ledger" use the same PostgreSQL and the same table_prefix`,
+		},
+		{
+			name: "two named postgres brokers whose DSNs differ only in the database name case",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://db/Main"
+				cfg.Brokers[3].Postgres.DSN = "postgres://db/main"
+			},
+			wantErr: "",
+		},
+		{
+			name: "two named postgres brokers with the same database and other users",
+			modify: func(cfg *Config) {
+				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))
+				cfg.Brokers[2].Postgres.DSN = "postgres://alpha@db/main"
+				cfg.Brokers[3].Postgres.DSN = "postgres://beta@db/main"
+			},
+			wantErr: `brokers "orders" and brokers "ledger" use the same PostgreSQL and the same table_prefix`,
+		},
+		{
 			name: "two named postgres brokers with the same DSN and another table prefix",
 			modify: func(cfg *Config) {
 				cfg.Brokers = append(cfg.Brokers, namedPostgresBroker("ledger"))

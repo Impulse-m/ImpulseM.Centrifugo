@@ -5,9 +5,12 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var knownNamedBrokerTypes = []string{"memory", "redis", "nats", "postgres"}
@@ -44,8 +47,9 @@ type redisEngineRef struct {
 // postgresEngineRef is a Postgres broker of the configuration: the default broker, the default map broker, a named
 // broker or a named map broker. isDefault marks the default ones.
 type postgresEngineRef struct {
-	label       string
-	dsn         string
+	label string
+	// database identifies the database which the DSN reaches, see postgresDatabase.
+	database    string
 	tablePrefix string
 	isDefault   bool
 }
@@ -230,7 +234,7 @@ func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, 
 // validateNamedPostgresTables rejects two Postgres brokers, default or named, and named map brokers which use the
 // same DSN and the same table prefix. Each broker's outbox worker reads every row of its tables, so a node would
 // deliver each publication once per broker. The default broker and the default map broker are not compared with
-// each other, as for Redis. The DSNs are compared as written.
+// each other, as for Redis. Two DSNs reach the same database when their hosts, ports and database names are equal.
 func validateNamedPostgresTables(c Config) error {
 	var refs []postgresEngineRef
 	if c.Broker.Enabled && c.Broker.Type == "postgres" {
@@ -254,7 +258,7 @@ func validateNamedPostgresTables(c Config) error {
 			if refs[i].isDefault && refs[j].isDefault {
 				continue
 			}
-			if refs[i].dsn == refs[j].dsn && refs[i].tablePrefix == refs[j].tablePrefix {
+			if refs[i].database == refs[j].database && refs[i].tablePrefix == refs[j].tablePrefix {
 				return fmt.Errorf(
 					"%s and %s use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
 					refs[i].label, refs[j].label,
@@ -269,10 +273,34 @@ func validateNamedPostgresTables(c Config) error {
 func newPostgresEngineRef(label string, dsn string, tablePrefix string, isDefault bool) postgresEngineRef {
 	return postgresEngineRef{
 		label:       label,
-		dsn:         dsn,
+		database:    postgresDatabase(dsn),
 		tablePrefix: postgresBrokerPrefix(tablePrefix),
 		isDefault:   isDefault,
 	}
+}
+
+// postgresDatabase returns the identity of the database which a DSN reaches: its host and port, the fallback hosts
+// and the database name. The user and the other parameters do not change which rows the outbox reads, so they are
+// left out. A DSN which pgx cannot parse is compared as written, so it matches only the same text.
+func postgresDatabase(dsn string) string {
+	conf, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return dsn
+	}
+	hosts := []string{hostPortKey(conf.Host, conf.Port)}
+	for _, fallback := range conf.Fallbacks {
+		hosts = append(hosts, hostPortKey(fallback.Host, fallback.Port))
+	}
+	// pgx adds a fallback to the same host for sslmode=prefer, so the hosts are sorted and deduplicated.
+	slices.Sort(hosts)
+	hosts = slices.Compact(hosts)
+	// Host names are case-insensitive, database names are not.
+	return strings.Join(hosts, ",") + "/" + conf.Database
+}
+
+// hostPortKey returns a host and a port in the form postgresDatabase compares. Host names are lowercased.
+func hostPortKey(host string, port uint16) string {
+	return net.JoinHostPort(strings.ToLower(host), strconv.Itoa(int(port)))
 }
 
 // usesRedisCluster reports whether a Redis configuration connects in cluster mode: it has cluster addresses, or

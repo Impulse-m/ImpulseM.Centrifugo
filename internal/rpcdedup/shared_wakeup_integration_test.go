@@ -148,7 +148,7 @@ func TestSharedTwoNodesWakeupLostWakeIsChecked(t *testing.T) {
 	prefix := uniqueRedisPrefix()
 	// The owner has the wakeup off, so it writes no wake: the waiter is answered at its check.
 	nodeA := newIntegrationNode(t, prefix, "node-a")
-	nodeB := newIntegrationWakeupNode(t, prefix, "node-b", 20*time.Millisecond, time.Hour)
+	nodeB := newIntegrationWakeupNode(t, prefix, "node-b", 500*time.Millisecond, time.Hour)
 	key := integrationRecordKey(31)
 	fingerprint := Fingerprint("users.get", []byte("x"))
 
@@ -351,7 +351,8 @@ func measureLiveOwner(t *testing.T, wakeup bool, keys int) (int, map[string]int)
 	nodeA := newIntegrationWakeupNode(t, prefix, "node-a", time.Hour, time.Hour)
 	var nodeB *integrationNode
 	if wakeup {
-		nodeB = newIntegrationWakeupNode(t, prefix, "node-b", 2*time.Second, time.Hour)
+		// The check is an hour away: the completions of the keys take their own time, and the measure is the wakes alone.
+		nodeB = newIntegrationWakeupNode(t, prefix, "node-b", time.Hour, time.Hour)
 	} else {
 		nodeB = newIntegrationNode(t, prefix, "node-b")
 		nodeB.shared.observer = nodeB.waits
@@ -372,7 +373,9 @@ func measureLiveOwner(t *testing.T, wakeup bool, keys int) (int, map[string]int)
 		require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
 		waiting[i] = lookup.Flight
 	}
-	time.Sleep(time.Second)
+	// The owner completes one second after the first wait started, so that no check of an early wait comes before its
+	// answer, however long the begins of the loop took.
+	time.Sleep(time.Until(start.Add(time.Second)))
 	for i := range keys {
 		key := integrationRecordKey(uint64(1000 + i))
 		require.NoError(t, nodeA.shared.Complete(key, owners[i], Record{Reply: []byte("answer")}))

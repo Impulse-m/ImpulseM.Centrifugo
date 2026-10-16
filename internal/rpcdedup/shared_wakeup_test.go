@@ -103,7 +103,7 @@ func TestSharedWakeupCompletesWithoutReading(t *testing.T) {
 
 func TestSharedWakeupLostWakeIsAnsweredAtCheck(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
-	fx.shared.checkDelay = 20 * time.Millisecond
+	fx.shared.checkDelay = 200 * time.Millisecond
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)

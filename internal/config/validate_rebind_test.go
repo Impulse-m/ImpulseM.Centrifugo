@@ -22,6 +22,7 @@ func TestValidateRebind(t *testing.T) {
 		{name: "downgrade with one command at a time", rebind: true, downgrade: true, concurrency: 1, wantErr: false},
 		{name: "downgrade with concurrency", rebind: true, downgrade: true, concurrency: 2, wantErr: true},
 		{name: "downgrade off with concurrency", rebind: true, downgrade: false, concurrency: 4, wantErr: false},
+		{name: "downgrade with concurrency and rebind off", rebind: false, downgrade: true, concurrency: 4, wantErr: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

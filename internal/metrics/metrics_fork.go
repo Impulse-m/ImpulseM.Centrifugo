@@ -49,6 +49,9 @@ type forkRegistry struct {
 	rpcRegistryDedupRemotePolls   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
+
+	// Channel state metrics
+	channelStateOldestFailingBatch prometheus.Gauge
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -334,6 +337,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
 	}
 
+	m.channelStateOldestFailingBatch = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "channel_state",
+		Name:        "oldest_failing_batch_timestamp_seconds",
+		Help:        "Unix time when the oldest channel state batch that the proxy still rejects was first sent, 0 when no batch fails. A batch that stays rejected blocks the events behind it in its partition. The age is time() minus this value.",
+		ConstLabels: constLabels,
+	})
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -368,6 +379,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRemotePolls,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
+		m.channelStateOldestFailingBatch,
 	}
 }
 
@@ -461,6 +473,8 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRemotePollsTotal = m.rpcRegistryDedupRemotePolls
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications
+
+	ChannelStateOldestFailingBatch = m.channelStateOldestFailingBatch
 }
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.

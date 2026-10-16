@@ -38,11 +38,6 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectPermissionDenied
 	}
 	rec := connStateOf(c)
-	// A connection with no user which refreshes to a token with a session gets its record now, so the session index holds it
-	// from here on, see recordAtRefresh.
-	if rec == nil && c.UserID() == "" && h.storeNeedsConnState(token.UserID, tokenIdentityOf(token)) {
-		rec = h.recordAtRefresh(c)
-	}
 	if rec == nil {
 		return h.refreshWithoutRecord(c, token, class)
 	}
@@ -185,9 +180,8 @@ func (h *Handler) onRefreshRebind(
 	}
 	prev := rec.identity.Load()
 	// A connection made through a connect proxy never changes its identity: the channels the proxy granted were granted
-	// under the proxy's terms, and no token proves a transition from them. A connection of unknown origin, which had no
-	// record at connect, is refused the same way: its origin was never observed, so nothing proves a transition from it.
-	if prev.origin == originProxy || prev.origin == originUnknown {
+	// under the proxy's terms, and no token proves a transition from them.
+	if prev.origin == originProxy {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
 	// A downgrade is refused while the handler runs with a concurrency above one: client.concurrency is read at start, so a

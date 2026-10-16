@@ -23,8 +23,6 @@ type rebindableClient interface {
 	Client
 	Disconnect(disconnect ...centrifuge.Disconnect)
 	ExtState() any
-	SetExtState(v any)
-	OnDisconnect(h centrifuge.DisconnectHandler)
 	Rebind(opts centrifuge.RebindOptions) error
 	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error
 	ChannelsWithContext() map[string]centrifuge.ChannelContext
@@ -66,9 +64,6 @@ const (
 	originToken
 	// originProxy is a connection made through a connect proxy.
 	originProxy
-	// originUnknown is a connection which had no record at connect, so its origin was not observed. It gets a record at
-	// a refresh which gives it a session, and never rebinds: any identity change is refused, as for a connect proxy one.
-	originUnknown
 )
 
 // connStateOf returns the record of the connection, nil when the connection has none.
@@ -96,26 +91,19 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 	return id.tokenUser, id.identity
 }
 
-// needsConnState reports whether a connection with userID and identity gets a record. A feature which reads the record
-// needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one only for
-// a connection with no user and a token session, the connections its session index holds. OnClientConnecting decides
-// with it, from the credentials of the connection. OnConnect decides with clientNeedsConnState, from the same user and
-// identity as Core holds them, so a record made at connect is the one OnConnect adopts.
-func (h *Handler) needsConnState(cfg *config.Config, userID string, identity centrifuge.TokenIdentity) bool {
-	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID, identity)
+// needsConnState reports whether a connection with userID gets a record. A feature which reads the record needs one:
+// rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one for every
+// connection with no user, so its session index can hold the connection from connect on, when its token has a session,
+// or from the refresh which gives it one. OnClientConnecting decides with it, from the credentials of the connection.
+// OnConnect decides with clientNeedsConnState, from the user Core holds, so a record made at connect is the one OnConnect
+// adopts.
+func (h *Handler) needsConnState(cfg *config.Config, userID string) bool {
+	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID)
 }
 
-// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. The
-// identity of the client is read only when the access store is set and the client has no user, since reading it takes
-// the lock of the client.
+// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect.
 func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
-	if h.configNeedsConnState(cfg) {
-		return true
-	}
-	if h.accessStore == nil || client.UserID() != "" {
-		return false
-	}
-	return h.storeNeedsConnState("", client.TokenIdentity())
+	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(client.UserID())
 }
 
 // configNeedsConnState reports whether a feature of the configuration needs a record for every connection.
@@ -127,10 +115,10 @@ func (h *Handler) configNeedsConnState(cfg *config.Config) bool {
 		h.clientLimiter != nil
 }
 
-// storeNeedsConnState reports whether the access store needs a record for a connection with userID and identity: a
-// connection with no user and a token session, which its session index holds.
-func (h *Handler) storeNeedsConnState(userID string, identity centrifuge.TokenIdentity) bool {
-	return h.accessStore != nil && userID == "" && identity.Session != [16]byte{}
+// storeNeedsConnState reports whether the access store needs a record for a connection with userID: every connection
+// with no user, whether or not its token has a session, so the record is there when a refresh gives it one.
+func (h *Handler) storeNeedsConnState(userID string) bool {
+	return h.accessStore != nil && userID == ""
 }
 
 // keptToken returns the token a connection keeps for the RPC method registry. The token is kept only when the registry
@@ -205,12 +193,10 @@ func (h *Handler) connectRecord(
 	credentials *centrifuge.Credentials,
 ) *connState {
 	var userID string
-	var identity centrifuge.TokenIdentity
 	if credentials != nil {
 		userID = credentials.UserID
-		identity = credentials.TokenIdentity
 	}
-	if !h.needsConnState(cfg, userID, identity) {
+	if !h.needsConnState(cfg, userID) {
 		return nil
 	}
 	rec := &connState{}

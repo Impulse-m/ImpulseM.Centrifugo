@@ -12,13 +12,11 @@ import (
 // behave as a connection with nothing to change.
 type rebindClientMock struct {
 	tools.TestClientMock
-	ExtStateFunc     func() any
-	SetExtStateFunc  func(v any)
-	OnDisconnectFunc func(h centrifuge.DisconnectHandler)
-	RebindFunc       func(opts centrifuge.RebindOptions) error
-	SubscribeFunc    func(channel string, opts ...centrifuge.SubscribeOption) error
-	ChannelsFunc     func() map[string]centrifuge.ChannelContext
-	UnsubscribeFunc  func(ch string, unsubscribe ...centrifuge.Unsubscribe)
+	ExtStateFunc    func() any
+	RebindFunc      func(opts centrifuge.RebindOptions) error
+	SubscribeFunc   func(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsFunc    func() map[string]centrifuge.ChannelContext
+	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
 }
 
 func (m *rebindClientMock) ExtState() any {
@@ -26,18 +24,6 @@ func (m *rebindClientMock) ExtState() any {
 		return nil
 	}
 	return m.ExtStateFunc()
-}
-
-func (m *rebindClientMock) SetExtState(v any) {
-	if m.SetExtStateFunc != nil {
-		m.SetExtStateFunc(v)
-	}
-}
-
-func (m *rebindClientMock) OnDisconnect(h centrifuge.DisconnectHandler) {
-	if m.OnDisconnectFunc != nil {
-		m.OnDisconnectFunc(h)
-	}
 }
 
 func (m *rebindClientMock) Rebind(opts centrifuge.RebindOptions) error {

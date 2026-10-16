@@ -85,17 +85,19 @@ func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 }
 
 // TestConnStateOnlyWithFeatures checks that each condition of needsConnState creates a record on its own, and that
-// no feature creates none. The access store alone creates one only for a connection with no user and a session.
+// no feature creates none. The access store alone creates one for a connection with no user, with or without a session.
 func TestConnStateOnlyWithFeatures(t *testing.T) {
 	tests := []struct {
 		name      string
 		feature   string
 		anonymous bool
+		noSession bool
 		wantRec   bool
 	}{
 		{name: "no feature", feature: "", wantRec: false},
 		{name: "access revocation, user token", feature: "revoke", wantRec: false},
 		{name: "access revocation, anonymous token with session", feature: "revoke", anonymous: true, wantRec: true},
+		{name: "access revocation, anonymous token without session", feature: "revoke", anonymous: true, noSession: true, wantRec: true},
 		{name: "client command limit", feature: "client_command", wantRec: true},
 		{name: "user command limit", feature: "user_command", wantRec: true},
 		{name: "registry", feature: "registry", wantRec: true},
@@ -108,6 +110,9 @@ func TestConnStateOnlyWithFeatures(t *testing.T) {
 			claims := map[string]any{"sub": "42", "jti": revokeTestUUID}
 			if tt.anonymous {
 				delete(claims, "sub")
+			}
+			if tt.noSession {
+				delete(claims, "jti")
 			}
 			rec := connectRecordOf(t, h, getConnTokenWithClaims(t, claims))
 			require.Equal(t, tt.wantRec, rec != nil)
@@ -136,7 +141,7 @@ func TestDefaultConnectWithUserHoldsNothing(t *testing.T) {
 	}, nil, false)
 	require.NoError(t, err)
 	require.NotContains(t, reply.Storage, storageKeyConnState)
-	require.False(t, h.needsConnState(cfgContainer.ConfigRef(), reply.Credentials.UserID, reply.Credentials.TokenIdentity))
+	require.False(t, h.needsConnState(cfgContainer.ConfigRef(), reply.Credentials.UserID))
 }
 
 // newFeatureTestHandler returns a handler with the one feature of TestConnStateOnlyWithFeatures switched on.

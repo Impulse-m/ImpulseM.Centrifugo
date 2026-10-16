@@ -121,37 +121,15 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 		rec = adoptConnState(client)
 	}
 	if rec != nil && (h.accessStore != nil || h.userLimiter != nil) {
-		h.installDisconnect(client, rec)
+		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
+			h.onClientDisconnect(client, rec)
+		})
 	}
 	if rec != nil && h.accessStore != nil && client.UserID() == "" {
 		h.trackSession(client, rec, rec.identity.Load().identity.Session)
 	}
 	runTestHook(&testHookConnectTracked, client)
 	return h.recheckConnection(client)
-}
-
-// recordAtRefresh returns the record of a connection which has none, and attaches a new one to it. It is called for a
-// connection with no user which refreshes to a token with a session, and the index needs the record to hold the session,
-// so that a revocation of it reaches the connection at once. The record is attached under the storage lock of the
-// connection, so two refreshes which overlap attach one record between them. The disconnect handler is installed after
-// the record is attached, so a close from here on releases it. A close which lands before the install is not seen by the
-// handler, see the known gaps of the README.
-//
-// The origin of such a connection is not known: it has no record, so it may be a connect proxy connection, made before a
-// reload enabled the record for every connection. It takes the origin unknown, which never rebinds, so a reload can not
-// let it move to a user it did not connect as.
-func (h *Handler) recordAtRefresh(c rebindableClient) *connState {
-	storage, release := c.AcquireStorage()
-	if rec := connStateOf(c); rec != nil {
-		release(storage)
-		return rec
-	}
-	rec := &connState{}
-	rec.identity.Store(nextIdentity(nil, originUnknown, 0, "", "", jwtverify.ConnectToken{}))
-	c.SetExtState(rec)
-	release(storage)
-	h.installDisconnect(c, rec)
-	return rec
 }
 
 // syncSessionConnection keeps the session index of access revocation up to date for a refreshed or rebound
@@ -188,14 +166,6 @@ func (h *Handler) onClientDisconnect(c rebindableClient, rec *connState) {
 	if h.accessStore != nil {
 		h.accessStore.SessionConnections().Close(c, &rec.track)
 	}
-}
-
-// installDisconnect installs the disconnect handler which releases the record of a connection when it closes. It is
-// installed by trackConnect and recordAtRefresh, the two paths which attach a record.
-func (h *Handler) installDisconnect(c rebindableClient, rec *connState) {
-	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
-		h.onClientDisconnect(c, rec)
-	})
 }
 
 // connectTokenIdentity returns the identity of a connection token, checked against the access revocation

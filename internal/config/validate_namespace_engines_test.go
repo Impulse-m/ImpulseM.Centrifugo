@@ -270,6 +270,51 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "two named redis brokers on one host whose prefix nests at a dot boundary of the stream keys",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "cf"
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "cf.stream")
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "two named redis brokers on one host whose prefix nests at a dot boundary of the client channels",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "cf"
+				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "cf.client")
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "named redis broker and named redis map broker on one host whose prefix nests at a colon boundary",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "cf:stream:x"
+				cfg.MapBrokers = configtypes.NamedMapBrokers{namedRedisMapBroker("cursors", "redis://10.0.0.2:6379", "cf")}
+			},
+			wantErr: `brokers "broadcast" and map_brokers "cursors" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "named redis presence managers on one host whose prefix nests at a dot boundary",
+			modify: func(cfg *Config) {
+				first := namedRedisPresenceManager("presence", "redis://10.0.0.4:6379")
+				first.Redis.Prefix = "cf"
+				second := namedRedisPresenceManager("presence-nested", "redis://10.0.0.4:6379")
+				second.Redis.Prefix = "cf.presence"
+				cfg.PresenceManagers = configtypes.NamedPresenceManagers{first, second}
+			},
+			wantErr: `presence_managers "presence" and presence_managers "presence-nested" use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "standalone redis presence manager on the host of a named redis broker with a prefix under its prefix",
+			modify: func(cfg *Config) {
+				cfg.PresenceManager.Enabled = true
+				cfg.PresenceManager.Type = "redis"
+				cfg.PresenceManager.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.PresenceManager.Redis.Prefix = "centrifugo-broadcast.presence"
+			},
+			wantErr: `presence_manager and brokers "broadcast" use the same Redis and overlapping prefixes`,
+		},
+		{
 			name: "two named redis brokers with the same address and prefix",
 			modify: func(cfg *Config) {
 				cfg.Brokers[1] = namedRedisBroker("rates", "redis://10.0.0.2:6379", "centrifugo-broadcast")
@@ -657,7 +702,7 @@ func TestValidateNamespaceEngines(t *testing.T) {
 				cfg.Broker.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
 				cfg.Broker.Redis.Prefix = "centrifugo"
 			},
-			wantErr: `brokers "broadcast" and broker control use the same Redis and overlapping prefixes`,
+			wantErr: `broker and brokers "broadcast" use the same Redis and overlapping prefixes`,
 		},
 		{
 			name: "default redis broker which is the controller on another host than a named redis broker with the same prefix",

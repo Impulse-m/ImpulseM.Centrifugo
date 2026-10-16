@@ -646,23 +646,98 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "two named nats brokers with the same prefix and wildcards on one of them",
-			modify: func(cfg *Config) {
-				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
-				cfg.Brokers[0].Nats.Prefix = "shared"
-				cfg.Brokers[0].Nats.AllowWildcards = true
-				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
-				cfg.Brokers[1].Nats.Prefix = "shared"
-			},
-			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
-		},
-		{
 			name: "two named nats brokers with the same prefix and no wildcards",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
 				cfg.Brokers[0].Nats.Prefix = "shared"
 				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
 				cfg.Brokers[1].Nats.Prefix = "shared"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with an empty root and a non-raw broker",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "foobar"
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = ""
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode whose root is a string prefix of a non-raw prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+				cfg.Brokers[0].Nats.Prefix = "foobar"
+				cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "foo"
+			},
+			wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode under the subjects of a nats controller",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo."
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: `brokers "rates" and controller use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode under the node subjects of a nats controller",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.node."
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: `brokers "rates" and controller use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with a root inside the control subject of a nats controller",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.con"
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: `brokers "rates" and controller use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with a root which only starts like the control subject",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.controlx"
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: "",
+		},
+		{
+			name: "named nats broker in raw mode under the channel space of a nats controller prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.client."
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: "",
+		},
+		{
+			name: "named nats broker with the prefix of a nats controller",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.Prefix = "centrifugo"
+				cfg.Controller = natsControllerConfig("centrifugo")
+			},
+			wantErr: "",
+		},
+		{
+			name: "default nats broker with the prefix of a nats controller",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "centrifugo"
+				cfg.Brokers[1].Nats.Prefix = "rates"
+				cfg.Controller = natsControllerConfig("centrifugo")
 			},
 			wantErr: "",
 		},
@@ -678,12 +753,11 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "default nats broker with wildcards and a named nats broker with the same prefix",
+			name: "default nats broker and a named nats broker with the same prefix",
 			modify: func(cfg *Config) {
 				cfg.Broker.Enabled = true
 				cfg.Broker.Type = "nats"
 				cfg.Broker.Nats.Prefix = "shared"
-				cfg.Broker.Nats.AllowWildcards = true
 				cfg.Brokers[1].Nats.Prefix = "shared"
 			},
 			wantErr: `broker and brokers "rates" use overlapping NATS subjects`,

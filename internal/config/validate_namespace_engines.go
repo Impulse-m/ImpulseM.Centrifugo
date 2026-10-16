@@ -257,51 +257,53 @@ func (ref redisEngineRef) channelSpace() string {
 	return ref.prefix + ".client."
 }
 
-// natsEngineRef is a NATS broker of the configuration: the default broker or a named broker. space is the subject
-// space which its channels are published and subscribed under, see newNatsEngineRef, and wildcards marks a broker
-// which subscribes wildcard subjects. isDefault marks the default broker.
+// natsEngineRef is a NATS subject of the configuration: the subject space of the default broker or of a named
+// broker, or a subject which the NATS controller subscribes. space is the subject prefix, and exact marks a subject
+// which is subscribed as it is. isDefault marks the default broker.
 type natsEngineRef struct {
 	label     string
 	space     string
-	wildcards bool
+	exact     bool
 	isDefault bool
 }
 
-// validateNamedNatsSubjects rejects two NATS brokers, default or named, whose subject spaces overlap when one of them
-// allows wildcard subscriptions. A wildcard subscription of a broker receives the publications of the other broker
-// too, since they match the same subjects, so a node would deliver each publication twice.
+// validateNamedNatsSubjects rejects two NATS subjects of the configuration which overlap, see natsSpacesConflict:
+// the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes.
+// A publication to one of them reaches the subscription of the other, so a node would deliver it twice. A wildcard
+// subscription does not change this, since it stays inside the subject space of its broker.
 func validateNamedNatsSubjects(c Config) error {
 	var refs []natsEngineRef
-	if c.Broker.Enabled && c.Broker.Type == "nats" {
-		refs = append(refs, newNatsEngineRef("broker", c.Broker.Nats, true))
+	if c.Broker.Enabled && (c.Broker.Type == "nats" || c.Broker.Type == "redisnats") {
+		refs = append(refs, newNatsBrokerRef("broker", c.Broker.Nats, true))
 	}
 	for _, b := range c.Brokers {
 		if b.Enabled && b.Type == "nats" {
-			refs = append(refs, newNatsEngineRef(fmt.Sprintf("brokers %q", b.Name), b.Nats, false))
+			refs = append(refs, newNatsBrokerRef(fmt.Sprintf("brokers %q", b.Name), b.Nats, false))
 		}
+	}
+	if c.Controller.Enabled && c.Controller.Type == "nats" {
+		refs = append(refs, newNatsControllerRefs(c.Controller.Nats)...)
 	}
 	first, second, found := firstEngineConflict(
 		refs,
 		func(ref natsEngineRef) bool {
 			return ref.isDefault
 		},
-		func(a natsEngineRef, b natsEngineRef) bool {
-			return subjectSpacesOverlap(a.space, b.space) && (a.wildcards || b.wildcards)
-		},
+		natsSpacesConflict,
 	)
 	if found {
 		return fmt.Errorf(
-			"%s and %s use overlapping NATS subjects and one of them allows wildcards; set a distinct prefix",
+			"%s and %s use overlapping NATS subjects; set a distinct prefix",
 			first.label, second.label,
 		)
 	}
 	return nil
 }
 
-// newNatsEngineRef returns the reference of a NATS broker with the subject space which its channels use. A broker
+// newNatsBrokerRef returns the reference of a NATS broker with the subject space which its channels use. A broker
 // in raw mode uses the raw mode prefix as its space, since its subjects are the prefix followed by the channel.
 // Any other broker uses its prefix followed by .client., as in natsbroker.
-func newNatsEngineRef(label string, natsCfg configtypes.NatsBroker, isDefault bool) natsEngineRef {
+func newNatsBrokerRef(label string, natsCfg configtypes.NatsBroker, isDefault bool) natsEngineRef {
 	space := natsCfg.Prefix + ".client."
 	if natsCfg.RawMode.Enabled {
 		space = natsCfg.RawMode.Prefix
@@ -309,25 +311,46 @@ func newNatsEngineRef(label string, natsCfg configtypes.NatsBroker, isDefault bo
 	return natsEngineRef{
 		label:     label,
 		space:     space,
-		wildcards: natsCfg.AllowWildcards,
 		isDefault: isDefault,
 	}
 }
 
-// subjectSpacesOverlap reports whether two subject spaces can match the same subject: they are equal, or one
-// continues the other at a token boundary. "a.client." and "a.client.x" overlap, since a channel may add "x";
-// "a.client." and "a.clientx" do not.
-func subjectSpacesOverlap(a string, b string) bool {
-	return subjectSpaceWithin(a, b) || subjectSpaceWithin(b, a)
+// newNatsControllerRefs returns the subjects which a NATS controller subscribes, as natsbroker does: the control
+// subject prefix.control, and the node subjects prefix.node.<id>, whose space is prefix.node. since node IDs are
+// appended to it.
+func newNatsControllerRefs(natsCfg configtypes.NatsController) []natsEngineRef {
+	return []natsEngineRef{
+		{
+			label: "controller",
+			space: natsCfg.Prefix + ".control",
+			exact: true,
+		},
+		{
+			label: "controller",
+			space: natsCfg.Prefix + ".node.",
+		},
+	}
 }
 
-// subjectSpaceWithin reports whether space is outer or lies inside it at a token boundary. A space which ends with
-// a dot is a boundary by itself.
-func subjectSpaceWithin(space string, outer string) bool {
-	if !strings.HasPrefix(space, outer) {
-		return false
+// natsSpacesConflict reports whether two NATS references can match the same subject. An exact subject conflicts with
+// a reference whose space is its prefix. Otherwise the two spaces conflict when one is a prefix of the other, see
+// subjectSpacesOverlap. Two references of the same controller never conflict.
+func natsSpacesConflict(a natsEngineRef, b natsEngineRef) bool {
+	if a.exact {
+		return strings.HasPrefix(a.space, b.space)
 	}
-	return len(space) == len(outer) || space[len(outer)] == '.' || strings.HasSuffix(outer, ".")
+	if b.exact {
+		return strings.HasPrefix(b.space, a.space)
+	}
+	return subjectSpacesOverlap(a.space, b.space)
+}
+
+// subjectSpacesOverlap reports whether two subject spaces can match the same subject: one of them is a prefix of the
+// other. A space of a broker which is not in raw mode ends with .client., so the prefix test is a token test there.
+// A raw mode root is concatenated with the channel, so it is a plain string: the root "a" and the space "ab.client."
+// share the subject "ab.client.x" of the channel "b.client.x".
+func subjectSpacesOverlap(a string, b string) bool {
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }
 
 // validateNamedPostgresTables rejects two Postgres brokers, default or named, and named map brokers which use the

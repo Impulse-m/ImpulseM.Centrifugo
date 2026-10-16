@@ -8,6 +8,8 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
+	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
@@ -83,6 +85,25 @@ func TestRecordAtRefreshAttachesOnce(t *testing.T) {
 	require.NotNil(t, first)
 	require.Same(t, first, second)
 	require.Same(t, first, attached)
+}
+
+// TestRecordAtRefreshIsNotRebindable checks that the record of a connection which had none is not rebindable, even with
+// rebind enabled by a reload: its origin is not known, so it is taken as a connect proxy one, which never rebinds.
+func TestRecordAtRefreshIsNotRebindable(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Client.Rebind.Enabled = true
+	h, _, _ := newAuthClassTestHandler(t, cfg)
+	var attached any
+	client := &rebindClientMock{}
+	client.ExtStateFunc = func() any { return attached }
+	client.SetExtStateFunc = func(v any) { attached = v }
+	client.OnDisconnectFunc = func(centrifuge.DisconnectHandler) {}
+
+	rec := h.recordAtRefresh(client)
+	require.Equal(t, originProxy, rec.identity.Load().origin)
+	reply, _, err := h.onRefreshRebind(client, rec, "", jwtverify.ConnectToken{UserID: "42"}, rpcregistry.AuthClassAuthenticated)
+	require.Equal(t, centrifuge.RefreshReply{}, reply)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
 }
 
 // TestDefaultConnectAllocatesNothing checks that the connect of a connection with a user, under the defaults, makes no

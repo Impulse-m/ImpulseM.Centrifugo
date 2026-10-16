@@ -239,7 +239,7 @@ var rpcRegistryRefusedReasons = [...]string{
 	RPCRegistryRefusedMemory,
 }
 
-// RPCRegistryInflightBytes is the bytes of registry calls in flight on the node, by the cost of admission. It is set by
+// RPCRegistryInflightBytes is the bytes of registry calls in flight on the node, by the cost of admission. It is changed by
 // the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryInflightBytes prometheus.Gauge
 
@@ -267,12 +267,13 @@ func NewRPCRegistryAdmissionMetrics() *RPCRegistryAdmissionMetrics {
 	return m
 }
 
-// SetInflight sets the bytes of calls in flight.
-func (m *RPCRegistryAdmissionMetrics) SetInflight(bytes int64) {
+// AddInflight changes the bytes of calls in flight by delta. A delta is order-independent, so concurrent charges and
+// releases leave the gauge at the sum of the calls in flight.
+func (m *RPCRegistryAdmissionMetrics) AddInflight(delta int64) {
 	if m == nil {
 		return
 	}
-	m.inflightBytes.Set(float64(bytes))
+	m.inflightBytes.Add(float64(delta))
 }
 
 // RefusedInflight counts one call which the in-flight budget refused.

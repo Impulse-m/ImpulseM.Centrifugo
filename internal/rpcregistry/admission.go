@@ -91,7 +91,8 @@ func (a *Admission) Release(cost int64) {
 	if a.maxInflight <= 0 {
 		return
 	}
-	a.counters.SetInflight(a.inflight.Add(-cost))
+	a.inflight.Add(-cost)
+	a.counters.AddInflight(-cost)
 }
 
 // charge adds cost to the bytes in flight when the sum stays within the budget. It is a CAS loop, so a sum which is
@@ -103,7 +104,7 @@ func (a *Admission) charge(cost int64) bool {
 			return false
 		}
 		if a.inflight.CompareAndSwap(current, current+cost) {
-			a.counters.SetInflight(current + cost)
+			a.counters.AddInflight(cost)
 			return true
 		}
 	}

@@ -126,7 +126,7 @@ func TestServerTagsFilterTemplateRefusedConnectKeepsSingleConnection(t *testing.
 	env := newTemplateEnv(t, cfg)
 	_, firstTransport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
 
-	// The second token has no sid, which the template of chat needs under reject, so its connect is refused with 3503.
+	// The second token has no sid, which the template of chat needs under reject, so its connect is refused with 3507.
 	secondTransport := newRecordingTransport()
 	secondClient, closeFn, err := centrifuge.NewClient(context.Background(), env.node, secondTransport)
 	require.NoError(t, err)

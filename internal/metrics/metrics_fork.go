@@ -47,6 +47,8 @@ type forkRegistry struct {
 	rpcRegistryDedupRemotePolls   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
+	rpcRegistryInflightBytes      prometheus.Gauge
+	rpcRegistryAdmissionRefusals  *prometheus.CounterVec
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -332,6 +334,25 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
 	}
 
+	m.rpcRegistryInflightBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "inflight_bytes",
+		Help:        "Bytes of RPC method registry calls in flight on the node, by the cost of admission. Set only when rpc.registry.max_inflight_bytes is set.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryAdmissionRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "admission_refusals_total",
+		Help:        "Number of RPC method registry calls refused by admission, by reason: inflight when the in-flight budget refused the call, memory when the memory watermark did.",
+		ConstLabels: constLabels,
+	}, []string{"reason"})
+	for _, reason := range rpcRegistryRefusedReasons {
+		m.rpcRegistryAdmissionRefusals.WithLabelValues(reason)
+	}
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -366,6 +387,8 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRemotePolls,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
+		m.rpcRegistryInflightBytes,
+		m.rpcRegistryAdmissionRefusals,
 	}
 }
 
@@ -431,6 +454,8 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRemotePollsTotal = m.rpcRegistryDedupRemotePolls
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications
+	RPCRegistryInflightBytes = m.rpcRegistryInflightBytes
+	RPCRegistryAdmissionRefusalsTotal = m.rpcRegistryAdmissionRefusals
 }
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.

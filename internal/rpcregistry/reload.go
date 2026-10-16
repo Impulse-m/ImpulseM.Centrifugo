@@ -25,6 +25,10 @@ type DialFunc func(target *Target) (io.Closer, error)
 type Registry struct {
 	current atomic.Pointer[table]
 	dial    DialFunc
+	// admission is the admission of the calls, nil when its keys are off. It is built once, by the first Prepare, so
+	// its budget and watermark are read at start, as the other keys of the dedup.
+	admission     atomic.Pointer[Admission]
+	admissionInit atomic.Bool
 	// reloadMu serializes reloads. The fields below it are read and written only while it is held.
 	reloadMu sync.Mutex
 	// cfg is the registry config the running table was built from.
@@ -61,8 +65,26 @@ func (r *Registry) Prepare(cfg configtypes.RPCRegistry) (func(), error) {
 		r.reloadMu.Unlock()
 		return nil, err
 	}
+	r.initAdmission(cfg)
 	apply, _ := r.stage(p, nil)
 	return apply, nil
+}
+
+// initAdmission builds the admission from cfg, on the first call only. A nil admission is kept when both its keys are
+// off, so the admission path of such a registry is one nil check.
+func (r *Registry) initAdmission(cfg configtypes.RPCRegistry) {
+	if r.admissionInit.Swap(true) {
+		return
+	}
+	r.admission.Store(NewAdmission(cfg, metrics.NewRPCRegistryAdmissionMetrics()))
+}
+
+// Admission returns the admission of the calls, or nil when both its keys are off. A nil registry has none.
+func (r *Registry) Admission() *Admission {
+	if r == nil {
+		return nil
+	}
+	return r.admission.Load()
 }
 
 // PrepareReload is Prepare which also returns discard, for a reload on SIGHUP. Discard closes the

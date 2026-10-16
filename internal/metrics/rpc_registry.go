@@ -25,12 +25,13 @@ const rpcRegistryNoAppType = "none"
 
 // Results of a RPC method registry call, the values of the result label.
 const (
-	RPCRegistryResultOK        = "ok"
-	RPCRegistryResultError     = "error"
-	RPCRegistryResultCancelled = "cancelled"
-	RPCRegistryResultTimeout   = "timeout"
-	RPCRegistryResultDenied    = "denied"
-	RPCRegistryResultUnknown   = "unknown"
+	RPCRegistryResultOK         = "ok"
+	RPCRegistryResultError      = "error"
+	RPCRegistryResultCancelled  = "cancelled"
+	RPCRegistryResultTimeout    = "timeout"
+	RPCRegistryResultDenied     = "denied"
+	RPCRegistryResultUnknown    = "unknown"
+	RPCRegistryResultOverloaded = "overloaded"
 )
 
 // RPCRegistryMethodMetrics holds the calls_total children of one registry method, one per result.
@@ -86,6 +87,7 @@ var rpcRegistryResults = [...]string{
 	RPCRegistryResultTimeout,
 	RPCRegistryResultDenied,
 	RPCRegistryResultUnknown,
+	RPCRegistryResultOverloaded,
 }
 
 // Triggers of a RPC method registry reload, the values of the trigger label.
@@ -223,6 +225,71 @@ func (s *rpcRegistryAppTypeSet) label(value string) string {
 // RPCRegistryDedupTotal counts the calls of exactly-once RPC by outcome. It is set by the fork metrics
 // setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupTotal *prometheus.CounterVec
+
+// The values of the reason label of RPCRegistryAdmissionRefusalsTotal: the in-flight budget and the memory watermark.
+const (
+	RPCRegistryRefusedInflight = "inflight"
+	RPCRegistryRefusedMemory   = "memory"
+)
+
+// rpcRegistryRefusedReasons are the values of the reason label of RPCRegistryAdmissionRefusalsTotal, which has a series
+// for each of them from the start.
+var rpcRegistryRefusedReasons = [...]string{
+	RPCRegistryRefusedInflight,
+	RPCRegistryRefusedMemory,
+}
+
+// RPCRegistryInflightBytes is the bytes of registry calls in flight on the node, by the cost of admission. It is set by
+// the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryInflightBytes prometheus.Gauge
+
+// RPCRegistryAdmissionRefusalsTotal counts the registry calls which admission refused, by reason. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryAdmissionRefusalsTotal *prometheus.CounterVec
+
+// RPCRegistryAdmissionMetrics holds the admission metrics, resolved once. A nil value does nothing.
+type RPCRegistryAdmissionMetrics struct {
+	inflightBytes prometheus.Gauge
+	refused       [len(rpcRegistryRefusedReasons)]prometheus.Counter
+}
+
+// NewRPCRegistryAdmissionMetrics resolves the admission metrics. It returns nil when the metrics are not initialised.
+func NewRPCRegistryAdmissionMetrics() *RPCRegistryAdmissionMetrics {
+	if RPCRegistryAdmissionRefusalsTotal == nil || RPCRegistryInflightBytes == nil {
+		return nil
+	}
+	m := &RPCRegistryAdmissionMetrics{
+		inflightBytes: RPCRegistryInflightBytes,
+	}
+	for i, reason := range rpcRegistryRefusedReasons {
+		m.refused[i] = RPCRegistryAdmissionRefusalsTotal.WithLabelValues(reason)
+	}
+	return m
+}
+
+// SetInflight sets the bytes of calls in flight.
+func (m *RPCRegistryAdmissionMetrics) SetInflight(bytes int64) {
+	if m == nil {
+		return
+	}
+	m.inflightBytes.Set(float64(bytes))
+}
+
+// RefusedInflight counts one call which the in-flight budget refused.
+func (m *RPCRegistryAdmissionMetrics) RefusedInflight() {
+	if m == nil {
+		return
+	}
+	m.refused[0].Inc()
+}
+
+// RefusedMemory counts one call which the memory watermark refused.
+func (m *RPCRegistryAdmissionMetrics) RefusedMemory() {
+	if m == nil {
+		return
+	}
+	m.refused[1].Inc()
+}
 
 // RPCRegistryDedupWaitSeconds is the time duplicates wait for the call they joined. It is set by the fork
 // metrics setup, and is nil when the metrics are not initialised.

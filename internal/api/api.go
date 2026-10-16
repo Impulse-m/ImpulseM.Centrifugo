@@ -444,7 +444,7 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 		return resp
 	}
 
-	if refusesAPISubscribe(chOpts) {
+	if refusesAPISubscribe(&chOpts) {
 		resp.Error = ErrorNotAvailable
 		return resp
 	}

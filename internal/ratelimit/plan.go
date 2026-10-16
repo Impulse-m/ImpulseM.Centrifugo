@@ -125,9 +125,15 @@ type slotAllocator struct {
 	maxInterval time.Duration
 }
 
+// HasBuckets reports whether a limit is enabled and has at least one bucket. Only such a limit is compiled,
+// so code which describes compiled limits uses this check too.
+func HasBuckets(enabled bool, buckets configtypes.RateLimitBucketList) bool {
+	return enabled && len(buckets) > 0
+}
+
 // compileScope compiles enabled buckets into a scope named name. Returns nil when there is nothing to limit.
 func (a *slotAllocator) compileScope(name string, enabled bool, buckets configtypes.RateLimitBucketList) *scope {
-	if !enabled || len(buckets) == 0 {
+	if !HasBuckets(enabled, buckets) {
 		return nil
 	}
 	s := &scope{name: name, buckets: make([]slotBucket, 0, len(buckets))}

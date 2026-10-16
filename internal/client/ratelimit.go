@@ -91,16 +91,16 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 // previous operation (publish or sub_refresh) has buckets, and default has none. Such an operation is not
 // limited after an upgrade: it used to count as publish or sub_refresh and now falls back to default only.
 func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
-	if bucketsSet(ops.Default.Enabled, ops.Default.Buckets) {
+	if ratelimit.HasBuckets(ops.Default.Enabled, ops.Default.Buckets) {
 		return
 	}
 	if channelLimitSet(ops.Publish) {
-		warnUnlimitedOperation(section, ratelimit.OperationMapPublish.String(), bucketsSet(ops.MapPublish.Enabled, ops.MapPublish.Buckets))
-		warnUnlimitedOperation(section, ratelimit.OperationMapRemove.String(), bucketsSet(ops.MapRemove.Enabled, ops.MapRemove.Buckets))
+		warnUnlimitedOperation(section, ratelimit.OperationMapPublish.String(), ratelimit.HasBuckets(ops.MapPublish.Enabled, ops.MapPublish.Buckets))
+		warnUnlimitedOperation(section, ratelimit.OperationMapRemove.String(), ratelimit.HasBuckets(ops.MapRemove.Enabled, ops.MapRemove.Buckets))
 	}
 	if channelLimitSet(ops.SubRefresh) {
-		warnUnlimitedOperation(section, ratelimit.OperationTrack.String(), bucketsSet(ops.Track.Enabled, ops.Track.Buckets))
-		warnUnlimitedOperation(section, ratelimit.OperationUntrack.String(), bucketsSet(ops.Untrack.Enabled, ops.Untrack.Buckets))
+		warnUnlimitedOperation(section, ratelimit.OperationTrack.String(), ratelimit.HasBuckets(ops.Track.Enabled, ops.Track.Buckets))
+		warnUnlimitedOperation(section, ratelimit.OperationUntrack.String(), ratelimit.HasBuckets(ops.Untrack.Enabled, ops.Untrack.Buckets))
 	}
 }
 
@@ -116,19 +116,14 @@ func warnUnlimitedOperation(section string, operation string, set bool) {
 		Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
 }
 
-// bucketsSet reports whether buckets are enabled and have at least one bucket.
-func bucketsSet(enabled bool, buckets configtypes.RateLimitBucketList) bool {
-	return enabled && len(buckets) > 0
-}
-
 // channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
 // Such an operation is limited for some channels, so it is not left to the fallback after an upgrade.
 func channelLimitSet(buckets configtypes.RateLimitChannelBuckets) bool {
-	if bucketsSet(buckets.Enabled, buckets.Buckets) {
+	if ratelimit.HasBuckets(buckets.Enabled, buckets.Buckets) {
 		return true
 	}
 	for _, override := range buckets.NamespaceOverrides {
-		if bucketsSet(override.Enabled, override.Buckets) {
+		if ratelimit.HasBuckets(override.Enabled, override.Buckets) {
 			return true
 		}
 	}

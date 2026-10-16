@@ -196,6 +196,28 @@ func TestValidateServerTagsFilterTemplateRefusesPresence(t *testing.T) {
 	require.NoError(t, validateServerTagsFilterTemplate("chat", configtypes.ChannelOptions{Presence: true, JoinLeave: true}))
 }
 
+func TestValidateServerTagsFilterTemplateRefusesSharedPoll(t *testing.T) {
+	options := configtypes.ChannelOptions{SubscriptionType: "shared_poll", ServerTagsFilterTemplate: sessionTemplate()}
+	require.ErrorContains(t, validateServerTagsFilterTemplate("feed", options), `namespace "feed": server_tags_filter_template is not supported with subscription_type shared_poll`)
+	// Without a template the subscription type is not refused here.
+	require.NoError(t, validateServerTagsFilterTemplate("feed", configtypes.ChannelOptions{SubscriptionType: "shared_poll"}))
+	for _, subscriptionType := range []string{"", "stream", "map", "map_clients", "map_users"} {
+		options.SubscriptionType = subscriptionType
+		require.NoError(t, validateServerTagsFilterTemplate("feed", options), subscriptionType)
+	}
+}
+
+func TestConfigValidateRefusesSharedPollOfTemplatedNamespace(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SharedPoll.HMACSecretKey = "secret"
+	cfg.Channel.Proxy.SharedPollRefresh.Endpoint = "http://127.0.0.1/shared_poll"
+	ns := namespaceWithTemplate("feed", sessionTemplate())
+	ns.SubscriptionType = "shared_poll"
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{ns}
+	err := cfg.Validate()
+	require.ErrorContains(t, err, `namespace "feed": server_tags_filter_template is not supported with subscription_type shared_poll`)
+}
+
 func TestConfigValidateRefusesPresenceOfTemplatedNamespace(t *testing.T) {
 	cfg := DefaultConfig()
 	ns := namespaceWithTemplate("tenant", sessionTemplate())

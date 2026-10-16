@@ -75,8 +75,9 @@ func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {
 }
 
 // TestServerTagsFilterTemplateRefreshWithoutClaims checks a refresh of a connection without a token keeps its
-// connection when the refresh token has no value for the template claims, and disconnects it when the token has one,
-// since the values changed.
+// connection, also when the refresh token has values for the template claims: such a connection, like one made
+// through the connect proxy, has no claims bound, so its claims stay missing for its life. Disconnecting it would only
+// reconnect it through the proxy with the same missing claims, which loops on every refresh.
 func TestServerTagsFilterTemplateRefreshWithoutClaims(t *testing.T) {
 	cfg := templateTestConfig()
 	cfg.Client.AllowAnonymousConnectWithoutToken = true
@@ -96,13 +97,18 @@ func TestServerTagsFilterTemplateRefreshWithoutClaims(t *testing.T) {
 	require.Nil(t, transport.waitReply(t, 2).Error)
 	require.False(t, transport.disconnected())
 
-	// A value where there was none changes the values, so the connection is disconnected.
+	// A value where there was none is not bound to the connection: it is kept, and its claims stay missing.
 	sendRateLimitCommand(client, &protocol.Command{
 		Id:      3,
 		Refresh: &protocol.RefreshRequest{Token: getConnTokenWithClaims(t, map[string]any{"sid": "s-1"})},
 	})
-	disconnect := transport.waitDisconnect(t)
-	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
+	require.Nil(t, transport.waitReply(t, 3).Error)
+	require.False(t, transport.disconnected())
+
+	storage, release := client.AcquireStorage()
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	require.True(t, unbound)
 }
 
 // TestServerTagsFilterTemplateReloadChangesClaimPaths checks a refresh after a reload which changes the union of the

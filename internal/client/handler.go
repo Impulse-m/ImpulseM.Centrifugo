@@ -276,9 +276,7 @@ func (h *Handler) Setup() error {
 		client.OnSubRefresh(func(event centrifuge.SubRefreshEvent, cb centrifuge.SubRefreshCallback) {
 			h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubRefresh(client, subRefreshProxyHandler, event)
-				if err == nil && reply.ServerTagsFilter != nil {
-					reply.ServerTagsFilter, err = h.refreshFilterTemplate(client, event.Channel, reply.ServerTagsFilter)
-				}
+				reply, err = h.refreshFilterTemplate(client, event.Channel, reply, err)
 				cb(reply, err)
 			})
 		})
@@ -599,7 +597,7 @@ func (h *Handler) OnClientConnecting(
 
 	// A template which refuses the connection is checked before the single connection of the user is enforced, so a
 	// refused connect does not disconnect the other connection of the user.
-	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, subscriptions, storage); err != nil {
+	if err := h.connectFilterTemplates(cfg, e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
 	// Handle single connection enforcement before establishing connection.
@@ -1356,6 +1354,9 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 	}
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.HistoryReply{}, err
+	}
+	if refusesHistory(chOpts) {
+		return centrifuge.HistoryReply{}, centrifuge.ErrorPermissionDenied
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {
 		return centrifuge.HistoryReply{}, centrifuge.ErrorNotAvailable

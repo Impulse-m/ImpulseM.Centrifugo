@@ -5,6 +5,7 @@ import (
 	"maps"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -25,6 +26,11 @@ const serverTagsFilterValuesKey = "server_tags_filter_template_values"
 // subscribes them again, since the connection keeps them and their filters are rendered with the new values.
 const serverTagsFilterServerSideKey = "server_tags_filter_template_server_side"
 
+// serverTagsFilterUnboundKey is a client storage key set to true when the connection has no token claims bound to its
+// stored values: it connected through the connect proxy, which has no token. Its claims stay missing until it
+// reconnects with a token, so a token refresh does not compare them. A rebind with a token binds claims and removes it.
+const serverTagsFilterUnboundKey = "server_tags_filter_template_unbound"
+
 // unsubscribeInsufficientState is the unsubscribe of a channel whose filter was rendered with values which the
 // connection no longer has. The client resubscribes it.
 var unsubscribeInsufficientState = centrifuge.Unsubscribe{Code: centrifuge.UnsubscribeCodeInsufficient, Reason: "insufficient state"}
@@ -32,14 +38,15 @@ var unsubscribeInsufficientState = centrifuge.Unsubscribe{Code: centrifuge.Unsub
 // connectFilterTemplates applies the server tags filter templates to the subscriptions of a connection. The
 // values of the connection are stored, so that later subscriptions and refreshes render the same filters. They are
 // stored even when all of them are missing, so a refresh compares them with the values of its token.
-// A missing value of a template under reject refuses the connection. The subscriptions are the map of the verified token,
-// owned by the call: the templates are applied to it in place, and storeConnectionTokenFilters stores the combined filters
-// from it.
+// A missing value of a template under reject refuses the connection. A tokenless connection (connect proxy) is marked
+// unbound, see serverTagsFilterUnboundKey. The subscriptions are the map of the verified token, owned by the call: the
+// templates are applied to it in place, and storeConnectionTokenFilters stores the combined filters from it.
 func (h *Handler) connectFilterTemplates(
 	cfg *config.Config,
 	clientID string,
 	credentials *centrifuge.Credentials,
 	verified jwtverify.ConnectToken,
+	tokenless bool,
 	subscriptions map[string]centrifuge.SubscribeOptions,
 	storage map[string]any,
 ) error {
@@ -51,6 +58,9 @@ func (h *Handler) connectFilterTemplates(
 		values.User = credentials.UserID
 	}
 	storage[serverTagsFilterValuesKey] = storedValuesOf(values)
+	if tokenless {
+		storage[serverTagsFilterUnboundKey] = true
+	}
 	if serverSide := h.serverSideSubscriptions(subscriptions); serverSide != nil {
 		storage[serverTagsFilterServerSideKey] = serverSide
 	}
@@ -114,17 +124,24 @@ func (h *Handler) answerSubscribe(
 	}
 }
 
-// refreshFilterTemplate returns the server tags filter of a subscription refresh which sets explicit. It is the
-// template of the channel combined with explicit, so a refresh with a new explicit filter keeps the template.
-func (h *Handler) refreshFilterTemplate(client Client, channel string, explicit *protocol.FilterNode) (*protocol.FilterNode, error) {
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
-		return explicit, nil
+// refreshFilterTemplate applies the template of the channel to the reply of a subscription refresh with err, the result
+// of OnSubRefresh. A refresh with a new explicit filter keeps the template, so the filter is combined with it. A refresh
+// without a filter keeps the current filter of the subscription, see Core, and an error is returned as it is.
+func (h *Handler) refreshFilterTemplate(
+	client Client,
+	channel string,
+	reply centrifuge.SubRefreshReply,
+	err error,
+) (centrifuge.SubRefreshReply, error) {
+	if err != nil || reply.ServerTagsFilter == nil || !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+		return reply, err
 	}
-	filter, err := h.channelFilter(client, channel, explicit)
+	filter, err := h.channelFilter(client, channel, reply.ServerTagsFilter)
 	if err != nil {
-		return nil, centrifuge.ErrorPermissionDenied
+		return centrifuge.SubRefreshReply{}, centrifuge.ErrorPermissionDenied
 	}
-	return filter, nil
+	reply.ServerTagsFilter = filter
+	return reply, nil
 }
 
 // tokenSubscriptionsChanged reports whether the server-side subscriptions of a connection changed on refresh.
@@ -134,13 +151,15 @@ func (h *Handler) refreshFilterTemplate(client Client, channel string, explicit 
 // A template which refuses a token subscription is not an error of the refresh: the connection is disconnected with
 // insufficient state, the client reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a
 // refused server-side subscription. extra.Subs is the map of the refresh, owned by the call, and the templates are
-// applied to it in place.
+// applied to it in place. An unbound connection (connect proxy) keeps its missing claims, so its refresh does not
+// compare them: a disconnect would only reconnect it through the proxy with the same missing claims.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
 	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		storage, release := client.AcquireStorage()
 		stored, _ := storedFilterValues(storage)
+		unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
 		release(storage)
-		if !stored.Claims.Equal(extra.FilterTemplateClaims) {
+		if !unbound && !stored.Claims.Equal(extra.FilterTemplateClaims) {
 			return true
 		}
 		if err := h.templateSubscriptions(client, extra.Subs); err != nil {
@@ -175,10 +194,11 @@ func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate
 }
 
 // storeFilterValues stores the values as the values the templates of a connection are rendered with, after its user
-// moved to the values.
+// moved to the values. The values come from a token, so the connection is no longer unbound.
 func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 	storage, release := c.AcquireStorage()
 	storage[serverTagsFilterValuesKey] = storedValuesOf(values)
+	delete(storage, serverTagsFilterUnboundKey)
 	release(storage)
 }
 
@@ -322,6 +342,14 @@ func (h *Handler) channelFilter(client Client, channel string, explicit *protoco
 func (h *Handler) templateOf(channel string) *filtertemplate.Template {
 	chOpts, _, _ := h.cfgContainer.ChannelOptionsRef(channel)
 	return chOpts.Compiled.ServerTagsFilterTemplate
+}
+
+// refusesHistory reports whether history is refused on a channel of a namespace with a template. The template filters
+// the publications of a subscription, and history reads publications without the subscription, so it would read the
+// publications of every tenant or session the template keeps apart. Recovery is not refused: it is the catch-up of
+// a filtered subscription and applies the filter.
+func refusesHistory(chOpts configtypes.ChannelOptions) bool {
+	return chOpts.Compiled.ServerTagsFilterTemplate != nil
 }
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an

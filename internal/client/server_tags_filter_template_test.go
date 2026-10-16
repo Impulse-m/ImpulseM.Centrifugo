@@ -436,7 +436,7 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 	subs := map[string]centrifuge.SubscribeOptions{"room": {}}
 	storageMap := map[string]any{}
 	connectAllocs := testing.AllocsPerRun(1000, func() {
-		_ = env.h.connectFilterTemplates(cfg, "c1", nil, jwtverify.ConnectToken{}, subs, storageMap)
+		_ = env.h.connectFilterTemplates(cfg, "c1", nil, jwtverify.ConnectToken{}, false, subs, storageMap)
 	})
 	require.Zero(t, connectAllocs)
 	require.NotContains(t, storageMap, serverTagsFilterValuesKey)
@@ -453,7 +453,7 @@ func TestServerTagsFilterTemplateOffByDefault(t *testing.T) {
 
 	explicit := testServerTagsFilter()
 	refreshAllocs := testing.AllocsPerRun(1000, func() {
-		_, _ = env.h.refreshFilterTemplate(mock, "chat:room", explicit)
+		_, _ = env.h.refreshFilterTemplate(mock, "chat:room", centrifuge.SubRefreshReply{ServerTagsFilter: explicit}, nil)
 	})
 	require.Zero(t, refreshAllocs)
 }

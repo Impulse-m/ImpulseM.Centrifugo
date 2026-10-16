@@ -101,10 +101,8 @@ func (h *Handler) checkFilterTemplates(
 	values filtertemplate.Values,
 	subs map[string]centrifuge.SubscribeOptions,
 ) error {
-	for channel, opts := range subs {
-		if _, err := h.applyFilterTemplate(channel, opts, values); err != nil {
-			return centrifuge.ErrorPermissionDenied
-		}
+	if err := h.applyFilterTemplates(maps.Clone(subs), values); err != nil {
+		return centrifuge.ErrorPermissionDenied
 	}
 	return nil
 }

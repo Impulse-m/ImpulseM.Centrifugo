@@ -34,6 +34,7 @@ func newRedisControllerFromConfig(node *centrifuge.Node, config configtypes.Cont
 type RedisController struct {
 	broker *centrifuge.RedisBroker
 	shards []*centrifuge.RedisShard
+	node   *centrifuge.Node
 }
 
 var _ centrifuge.Controller = (*RedisController)(nil)
@@ -52,7 +53,7 @@ func NewRedisController(node *centrifuge.Node, shards []*centrifuge.RedisShard, 
 	if err != nil {
 		return nil, fmt.Errorf("error creating Redis controller: %w", err)
 	}
-	return &RedisController{broker: broker, shards: shards}, nil
+	return &RedisController{broker: broker, shards: shards, node: node}, nil
 }
 
 // RegisterControlEventHandler starts the control PUB/SUB of every shard. It returns once Core has finished the first
@@ -63,8 +64,8 @@ func (c *RedisController) RegisterControlEventHandler(h centrifuge.ControlEventH
 		return err
 	}
 	// Core waits for the first control subscription of each shard only in RegisterBrokerEventHandler. The controller has
-	// SkipPubSub set, so Core starts no channel subscriptions and returns after that wait, without calling the handler.
-	return c.broker.RegisterBrokerEventHandler(noopBrokerEventHandler{})
+	// SkipPubSub set, so Core starts no channel subscriptions and returns after that wait, without calling the node.
+	return c.broker.RegisterBrokerEventHandler(c.node)
 }
 
 // PublishControl publishes a control message to the node with nodeID, or to all nodes when nodeID is empty.
@@ -79,29 +80,4 @@ func (c *RedisController) Close(ctx context.Context) error {
 		shard.Close()
 	}
 	return err
-}
-
-// noopBrokerEventHandler is the broker event handler of the Redis controller. The controller subscribes to no
-// channels, so Core never calls it.
-type noopBrokerEventHandler struct{}
-
-// HandlePublication ignores the publication.
-func (noopBrokerEventHandler) HandlePublication(
-	_ string,
-	_ *centrifuge.Publication,
-	_ centrifuge.StreamPosition,
-	_ bool,
-	_ *centrifuge.Publication,
-) error {
-	return nil
-}
-
-// HandleJoin ignores the join.
-func (noopBrokerEventHandler) HandleJoin(_ string, _ *centrifuge.ClientInfo) error {
-	return nil
-}
-
-// HandleLeave ignores the leave.
-func (noopBrokerEventHandler) HandleLeave(_ string, _ *centrifuge.ClientInfo) error {
-	return nil
 }

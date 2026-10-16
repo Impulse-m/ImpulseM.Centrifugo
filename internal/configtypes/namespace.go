@@ -216,7 +216,7 @@ type ChannelOptions struct {
 
 	// PresenceManagerName selects an extra presence manager from the presence_managers list for the
 	// channels of the namespace. Empty means the default presence manager.
-	PresenceManagerName string `mapstructure:"presence_manager_name" json:"presence_manager_name" envconfig:"presence_manager_name" yaml:"presence_manager_name" toml:"presence_manager_name" doc:"Name of an entry from the <<presence_managers>> list used for the channels of this namespace. Empty means the default presence manager."`
+	PresenceManagerName string `mapstructure:"presence_manager_name" json:"presence_manager_name" envconfig:"presence_manager_name" yaml:"presence_manager_name" toml:"presence_manager_name" expose:"full" doc:"Name of an entry from the <<presence_managers>> list used for the channels of this namespace. Empty means the default presence manager."`
 
 	// Map contains configuration for map subscription types (map, map_clients, map_users).
 	Map MapConfig `mapstructure:"map" json:"map" envconfig:"map" yaml:"map" toml:"map" doc:"Configuration for the map subscription types (<<map>>, <<map_clients>>, <<map_users>>)."`

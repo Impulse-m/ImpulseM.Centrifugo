@@ -40,6 +40,9 @@ func (p *HTTPCacheEmptyProxy) ProxyNotifyCacheEmpty(ctx context.Context, req *pr
 	if err != nil {
 		return nil, err
 	}
+	if isChannelEventsNullAnswer(respData) {
+		return nil, errChannelEventsNullAnswer
+	}
 	var envelope cacheEmptyEnvelope
 	err = json.Unmarshal(respData, &envelope)
 	if err != nil {

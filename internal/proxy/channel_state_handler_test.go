@@ -18,11 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const channelStateTestBody = `{"events":[{"time_ms":1697206286533,"channel":"chat:index","type":"occupied"}]}`
+const channelStateTestBody = `{"events":[{"time_ms":1697206286533,"channel":"example:index","type":"occupied"}]}`
 
 func channelStateTestEvents() []*proxyproto.ChannelEvent {
 	return []*proxyproto.ChannelEvent{
-		{TimeMs: 1697206286533, Channel: "chat:index", Type: "occupied"},
+		{TimeMs: 1697206286533, Channel: "example:index", Type: "occupied"},
 	}
 }
 
@@ -54,6 +54,12 @@ func TestChannelStateHandlerHTTP(t *testing.T) {
 			name:     "empty body",
 			status:   http.StatusOK,
 			response: ``,
+			wantErr:  true,
+		},
+		{
+			name:     "null body",
+			status:   http.StatusOK,
+			response: `null`,
 			wantErr:  true,
 		},
 		{
@@ -176,7 +182,7 @@ func TestChannelStateHandlerGRPC(t *testing.T) {
 
 			events := <-received
 			require.Len(t, events, 1)
-			require.Equal(t, "chat:index", events[0].Channel)
+			require.Equal(t, "example:index", events[0].Channel)
 			require.Equal(t, "occupied", events[0].Type)
 			if !tt.wantErr {
 				require.NoError(t, err)

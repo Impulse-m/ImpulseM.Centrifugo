@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"time"
 
@@ -8,6 +10,15 @@ import (
 
 	"google.golang.org/grpc"
 )
+
+// errChannelEventsNullAnswer is returned when a channel events proxy answers the JSON null value. A null answer
+// carries no result, so it is not taken as delivered.
+var errChannelEventsNullAnswer = errors.New("channel events proxy answered null")
+
+// isChannelEventsNullAnswer reports whether the body of an HTTP answer is the JSON null value.
+func isChannelEventsNullAnswer(body []byte) bool {
+	return bytes.Equal(bytes.TrimSpace(body), []byte("null"))
+}
 
 // channelEventsHTTP is the HTTP transport shared by the channel events proxies: channel state and cache empty.
 // The map remove proxies keep their own copy of this setup, so the upstream files stay unchanged.

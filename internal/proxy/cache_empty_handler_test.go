@@ -23,7 +23,7 @@ import (
 )
 
 // newCacheEmptyTestContainer returns the config container with the options set on the without_namespace
-// channels, or on the chat namespace when namespaced is true. Named proxies are declared for the names
+// channels, or on the example namespace when namespaced is true. Named proxies are declared for the names
 // given, so the options can refer to them.
 func newCacheEmptyTestContainer(t *testing.T, opts configtypes.ChannelOptions, namespaced bool, proxyNames ...string) *config.Container {
 	cfg := config.DefaultConfig()
@@ -42,7 +42,7 @@ func newCacheEmptyTestContainer(t *testing.T, opts configtypes.ChannelOptions, n
 	}
 	if namespaced {
 		cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-			{Name: "chat", ChannelOptions: opts},
+			{Name: "example", ChannelOptions: opts},
 		}
 	} else {
 		cfg.Channel.WithoutNamespace = opts
@@ -82,6 +82,12 @@ func TestCacheEmptyHandlerHTTP(t *testing.T) {
 			name:     "empty body",
 			status:   http.StatusOK,
 			response: ``,
+			wantErr:  true,
+		},
+		{
+			name:     "null body",
+			status:   http.StatusOK,
+			response: `null`,
 			wantErr:  true,
 		},
 		{
@@ -262,7 +268,7 @@ func TestCacheEmptyHandlerDisabled(t *testing.T) {
 		CacheEmptyProxyName:    "default",
 	}
 	cfgContainer := newCacheEmptyTestContainer(t, opts, true)
-	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "example:index"})
 
 	require.NoError(t, err)
 	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
@@ -295,7 +301,7 @@ func TestCacheEmptyHandlerNilResponse(t *testing.T) {
 		ForceRecoveryMode:      "cache",
 	}
 	cfgContainer := newCacheEmptyTestContainer(t, opts, true)
-	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "example:index"})
 
 	require.ErrorIs(t, err, centrifuge.ErrorInternal)
 	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
@@ -330,7 +336,7 @@ func TestCacheEmptyHandlerNamedProxy(t *testing.T) {
 		ForceRecoveryMode:      "cache",
 	}
 	cfgContainer := newCacheEmptyTestContainer(t, opts, true, "other")
-	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "example:index"})
 
 	require.NoError(t, err)
 	require.True(t, reply.Populated)
@@ -350,7 +356,7 @@ func TestCacheEmptyHandlerOwnsProxies(t *testing.T) {
 		ForceRecoveryMode:      "cache",
 	}
 	cfgContainer := newCacheEmptyTestContainer(t, opts, true, "late")
-	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "chat:index"})
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "example:index"})
 
 	require.ErrorIs(t, err, centrifuge.ErrorInternal)
 	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)

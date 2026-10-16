@@ -9,7 +9,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/redis/rueidis"
-	"github.com/rs/zerolog/log"
 )
 
 // The wake streams of a node. A stream is trimmed to about wakeStreamMaxLen entries, and it expires wakeStreamTTL after
@@ -115,7 +114,7 @@ func (r *Redis) watchShard(ctx context.Context, index int, stream string, wake f
 			return
 		case err != nil:
 			r.countError()
-			r.logWatchError(err)
+			logErrorWith(r.errorLog, "exactly-once RPC: a wake watcher failed to read its wakes, it reads again after a backoff", err)
 			cursor = "0-0"
 			if idle() {
 				return
@@ -193,11 +192,4 @@ func (r *Redis) watchedShard(index int) (*redisshard.RedisShard, error) {
 		return nil, redisshard.ErrNotConnected
 	}
 	return shards[index], nil
-}
-
-// logWatchError logs a failed read of a wake watcher at most once per redisshard.ErrorLogInterval.
-func (r *Redis) logWatchError(err error) {
-	if r.errorLog.Allow() {
-		log.Error().Err(err).Msg("exactly-once RPC: a wake watcher failed to read its wakes, it reads again after a backoff")
-	}
 }

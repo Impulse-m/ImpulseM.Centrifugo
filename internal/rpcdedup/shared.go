@@ -776,7 +776,13 @@ func newRetryBackOff(initial time.Duration, maxDelay time.Duration) *backoff.Exp
 
 // logError logs an error of the shared tier at most once per redisshard.ErrorLogInterval.
 func (s *Shared) logError(msg string, err error) {
-	if s.errorLog.Allow() {
+	logErrorWith(s.errorLog, msg, err)
+}
+
+// logErrorWith logs err with msg when limiter allows it, which keeps each limiter to one line per
+// redisshard.ErrorLogInterval.
+func logErrorWith(limiter *tools.IntervalLimiter, msg string, err error) {
+	if limiter.Allow() {
 		log.Error().Err(err).Msg(msg)
 	}
 }

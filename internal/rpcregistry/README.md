@@ -365,7 +365,7 @@ Admission decides whether a registry call may run, before its dedup and its back
 
 A refused call is answered with `errors.overloaded`, temporary, with `x-centrifugo-retry: later`: the call was not executed, so the client sends it again later, with the same `msg_id` if it has one. A refused call is not recorded for exactly-once RPC. Both keys are read at start, and a config reload does not change them.
 
-Config validation refuses a budget below the cost of any method, a negative budget or watermark, since such a method could never run. The rules which depend on bandwidth or latency are documented in [Large-payload fleets](#large-payload-fleets).
+Config validation refuses a budget below the cost of any method, a negative budget or watermark, since such a method could never run. The rules which depend on bandwidth or latency are documented in [Large-payload fleets](#large-payload-fleets). A registry file reload runs the same budget, affinity and size hint rules: a file which fails them is refused, and the current registry stays active.
 
 Refusals are counted in `centrifugo_rpc_registry_admission_refusals_total{reason}`, with reason `inflight` or `memory`, and in `calls_total` with result `overloaded`. The budget in use is `centrifugo_rpc_registry_inflight_bytes`.
 
@@ -393,8 +393,8 @@ A large-payload fleet is an ordinary Centrifugo deployment whose registry is con
 
 Rules, with their reasons:
 
-* `websocket.message_size_limit` is at least the largest `max_request_bytes` plus 1 KiB of envelope. 1114112 is 1 MiB plus 64 KiB.
-* `client.queue_max_size` is at least `client.concurrency` times the largest `max_response_bytes`, plus 64 KiB. A reply over the queue disconnects the client as slow, and the queue holds at most one reply per call in flight.
+* `websocket.message_size_limit` is at least the largest `max_request_bytes` plus 1 KiB of envelope. 1114112 is 1 MiB plus 64 KiB. The server logs a warning at start, on a configuration reload and in `checkconfig` when a method's `max_request_bytes` is over this limit, and keeps loading: the method still serves every request under the transport limit. A registry file shared by fleets with different limits is the expected case of that warning.
+* `client.queue_max_size` is at least `client.concurrency` times the largest `max_response_bytes`, plus 64 KiB. A reply over the queue disconnects the client as slow, and the queue holds at most one reply per call in flight. The server logs a warning in the same cases, at start, on a configuration reload and in `checkconfig`, when a method's `max_response_bytes` is over this size, and keeps loading: the method still serves every reply under the queue size.
 * `client.concurrency` is at least the window of the client's pool plus one. At the default `0`, calls run one at a time on the read loop, so a window of one is what a socket carries without blocking it. A larger window needs the concurrency raised, or the read loop blocks on the semaphore and reads no pongs, and the connection is closed when a call outlives the pong timeout.
 * `websocket.write_timeout` is at least the largest response over the slowest client link: 1 MiB at 1 Mbit/s takes 8 s.
 * The registry file lists only the large-payload methods, each with `idempotent: true`, an explicit `timeout`, `max_request_bytes` and `max_response_bytes`, `response_size_hint` on reads, the affinity header in `headers` and the moves and redirects in `error_metadata`. Targets which keep state per object on a replica use `ring_hash`.

@@ -44,6 +44,9 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisErrors   prometheus.Counter
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
+	rpcRegistryDedupRemotePolls   prometheus.Counter
+	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
+	rpcRegistryDedupNotifications *prometheus.CounterVec
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -298,6 +301,37 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.rpcRegistryDedupRemotePolls = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_remote_polls_total",
+		Help:        "Number of polls of the shared exactly-once RPC tier made by the waits for calls which run on other nodes.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupRemoteWaits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_remote_waits_total",
+		Help:        "Number of waits for calls which run on other nodes, by how they ended: notified by the node which runs the call, polled, or ended at the in-flight deadline. With the wakeup on, polled while the nodes are alive means lost notifications.",
+		ConstLabels: constLabels,
+	}, []string{"end"})
+	for _, end := range rpcRegistryDedupWaitEnds {
+		m.rpcRegistryDedupRemoteWaits.WithLabelValues(end)
+	}
+
+	m.rpcRegistryDedupNotifications = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_notifications_total",
+		Help:        "Number of node notifications of exactly-once RPC which this node sent, by op and result. The cancel op asks the node which runs a call to cancel it; the done op tells a node which waits for a call that its record is written.",
+		ConstLabels: constLabels,
+	}, []string{"op", "result"})
+	for _, op := range rpcRegistryDedupNotifyOps {
+		m.rpcRegistryDedupNotifications.WithLabelValues(op, "ok")
+		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
+	}
+
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -329,6 +363,9 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisErrors,
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
+		m.rpcRegistryDedupRemotePolls,
+		m.rpcRegistryDedupRemoteWaits,
+		m.rpcRegistryDedupNotifications,
 	}
 }
 
@@ -391,6 +428,9 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+	RPCRegistryDedupRemotePollsTotal = m.rpcRegistryDedupRemotePolls
+	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
+	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications
 }
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.

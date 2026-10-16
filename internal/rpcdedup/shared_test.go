@@ -19,6 +19,21 @@ type fakeEntry struct {
 	fingerprint [32]byte
 	owner       string
 	rec         Record
+	// waiters are the node ids which registered as waiters of the in-flight record, as the field w does.
+	waiters []string
+}
+
+// addWaiter lists nodeID as a waiter of the in-flight record, once and up to maxWaiters, as beginScript does.
+func (e *fakeEntry) addWaiter(nodeID string) {
+	if len(e.waiters) >= maxWaiters {
+		return
+	}
+	for _, waiter := range e.waiters {
+		if waiter == nodeID {
+			return
+		}
+	}
+	e.waiters = append(e.waiters, nodeID)
 }
 
 // fakeBackend is the shared tier in memory. Its scripts follow the semantics of redis_scripts.go, and it counts and
@@ -45,6 +60,9 @@ type fakeBackend struct {
 	onComplete func()
 	onCancel   func()
 	onAck      func()
+	// afterBegin runs once a begin call has answered, outside the lock: a call which lands after the script does, such
+	// as the owner's completion of a call which the begin found in flight.
+	afterBegin func()
 }
 
 // newFakeBackend returns a connected backend without records.
@@ -102,6 +120,7 @@ func (f *fakeBackend) finish(key Key, rec Record) {
 	e := f.entries[key]
 	e.state = 'd'
 	e.owner = ""
+	e.waiters = nil
 	e.rec = rec
 }
 
@@ -124,7 +143,16 @@ func (f *fakeBackend) entry(key Key) (fakeEntry, bool) {
 }
 
 // Begin implements Backend with the semantics of beginScript.
-func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration, _ bool) (BeginResult, error) {
+func (f *fakeBackend) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error) {
+	res, err := f.begin(ctx, key, fingerprint, nodeID, inflightTTL, register)
+	if err == nil && f.afterBegin != nil {
+		f.afterBegin()
+	}
+	return res, err
+}
+
+// begin is Begin without the afterBegin hook, which runs once the script has answered.
+func (f *fakeBackend) begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration, register bool) (BeginResult, error) {
 	if err := f.enter("begin"); err != nil {
 		return BeginResult{}, err
 	}
@@ -145,6 +173,9 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 		return BeginResult{State: BeginMismatch}, nil
 	}
 	if e.state == 'i' {
+		if register {
+			e.addWaiter(nodeID)
+		}
 		return BeginResult{State: BeginInFlight, Owner: e.owner}, nil
 	}
 	return BeginResult{State: BeginDone, Record: e.rec}, nil
@@ -152,54 +183,51 @@ func (f *fakeBackend) Begin(_ context.Context, key Key, fingerprint [32]byte, no
 
 // Complete implements Backend with the semantics of completeScript: only the owner completes its record.
 func (f *fakeBackend) Complete(ctx context.Context, key Key, nodeID string, rec Record, _ string, _ time.Duration) (CompleteResult, error) {
-	owned, err := f.complete(ctx, key, nodeID, rec)
-	return CompleteResult{Owned: owned}, err
-}
-
-// complete is Complete with the owned flag as its result.
-func (f *fakeBackend) complete(ctx context.Context, key Key, nodeID string, rec Record) (bool, error) {
 	if err := f.enter("complete"); err != nil {
-		return false, err
+		return CompleteResult{}, err
 	}
 	if f.onComplete != nil {
 		f.onComplete()
 	}
 	if f.blockComplete {
 		<-ctx.Done()
-		return false, ctx.Err()
+		return CompleteResult{}, ctx.Err()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.completeFailures > 0 {
 		f.completeFailures--
-		return false, errors.New("write timed out")
+		return CompleteResult{}, errors.New("write timed out")
 	}
-	owned := f.applyComplete(key, nodeID, rec)
+	result := f.applyComplete(key, nodeID, rec)
 	if f.lostReplies > 0 {
 		f.lostReplies--
-		return false, errors.New("reply lost")
+		return CompleteResult{}, errors.New("reply lost")
 	}
-	return owned, nil
+	return result, nil
 }
 
-// applyComplete writes rec for key when nodeID owns the in-flight record of key. Caller holds mu.
-func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) bool {
+// applyComplete writes rec for key when nodeID owns the in-flight record of key, and returns the waiters of that
+// record, as completeScript does. Caller holds mu.
+func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) CompleteResult {
 	e := f.entries[key]
 	if e == nil || e.state != 'i' || e.owner != nodeID {
-		return false
+		return CompleteResult{}
 	}
+	waiters := e.waiters
 	if rec.Abandoned {
 		delete(f.entries, key)
-		return true
+		return CompleteResult{Owned: true, Waiters: waiters}
 	}
 	e.state = 'd'
 	e.owner = ""
+	e.waiters = nil
 	if rec.Uncached {
 		e.rec = Record{Uncached: true}
 	} else {
 		e.rec = rec
 	}
-	return true
+	return CompleteResult{Owned: true, Waiters: waiters}
 }
 
 // Cancel implements Backend with the semantics of cancelScript.
@@ -292,8 +320,15 @@ type sharedFixture struct {
 	backend  *fakeBackend
 	shared   *Shared
 	notified []notifyCall
-	dropped  int
-	lost     int
+	// doneNotified are the done notifications of the fixture, see SharedOptions.DoneNotifier.
+	doneNotified []notifyCall
+	dropped      int
+	lost         int
+	// mu guards polls and ends, which the watchers of the fixture count.
+	mu sync.Mutex
+	// polls is the number of polls which the waits of the fixture made, and ends the number of waits by how they ended.
+	polls int
+	ends  map[string]int
 }
 
 // AckDropped implements SharedObserver.
@@ -306,12 +341,56 @@ func (fx *sharedFixture) LostOwnership() {
 	fx.lost++
 }
 
+// WatchPolled implements SharedObserver.
+func (fx *sharedFixture) WatchPolled() {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	fx.polls++
+}
+
+// WatchEnded implements SharedObserver.
+func (fx *sharedFixture) WatchEnded(end string) {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	if fx.ends == nil {
+		fx.ends = make(map[string]int)
+	}
+	fx.ends[end]++
+}
+
+// pollCount returns the polls which the waits made so far.
+func (fx *sharedFixture) pollCount() int {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return fx.polls
+}
+
+// endCount returns the waits which ended as end so far.
+func (fx *sharedFixture) endCount(end string) int {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return fx.ends[end]
+}
+
 // newSharedFixture returns a shared store of node-a with the given failure mode.
 func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
 	t.Helper()
+	return newSharedFixtureWith(t, failOpen, false, 0)
+}
+
+// newSharedFixtureWakeup returns a shared store of node-a with the wakeup by notification on, and pollInterval as the
+// fallback poll interval of its waits.
+func newSharedFixtureWakeup(t *testing.T, pollInterval time.Duration) *sharedFixture {
+	t.Helper()
+	return newSharedFixtureWith(t, false, true, pollInterval)
+}
+
+// newSharedFixtureWith returns a shared store of node-a. With wakeup set, its waiters are registered and notified.
+func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool, pollInterval time.Duration) *sharedFixture {
+	t.Helper()
 	local, _ := newTestMemory(1024)
 	fx := &sharedFixture{local: local, backend: newFakeBackend()}
-	fx.shared = NewShared(SharedOptions{
+	opts := SharedOptions{
 		Local:         local,
 		Backend:       fx.backend,
 		NodeID:        "node-a",
@@ -325,7 +404,14 @@ func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
 		PollInitial:   time.Millisecond,
 		PollMax:       2 * time.Millisecond,
 		AckFlushEvery: time.Hour,
-	})
+	}
+	if wakeup {
+		opts.DoneNotifier = func(nodeID string, key Key) {
+			fx.doneNotified = append(fx.doneNotified, notifyCall{nodeID: nodeID, key: key})
+		}
+		opts.WakeupPollInterval = pollInterval
+	}
+	fx.shared = NewShared(opts)
 	return fx
 }
 
@@ -1198,6 +1284,14 @@ func (o *droppedAckObserver) AckDropped() {
 
 // LostOwnership implements SharedObserver.
 func (o *droppedAckObserver) LostOwnership() {
+}
+
+// WatchPolled implements SharedObserver.
+func (o *droppedAckObserver) WatchPolled() {
+}
+
+// WatchEnded implements SharedObserver.
+func (o *droppedAckObserver) WatchEnded(string) {
 }
 
 func TestSharedAckQueueFullDropsAndCounts(t *testing.T) {

@@ -13,9 +13,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// errStillInFlight is the result of a poll of a call which still runs on another node. The watcher retries on it.
-var errStillInFlight = errors.New("the call still runs on another node")
-
 // errNilCancelFailure is the result of a cancel without the error which the cancelled call answers with. Such a cancel
 // would be kept as a success with an empty reply, so it is refused.
 var errNilCancelFailure = errors.New("a cancel needs the error which the cancelled call answers with")
@@ -25,6 +22,8 @@ const (
 	// another node.
 	sharedDefaultPollInitial = 50 * time.Millisecond
 	sharedDefaultPollMax     = 500 * time.Millisecond
+	// sharedDefaultWakeupPollInterval is the fallback poll interval of a wait while the wakeup by notification is on.
+	sharedDefaultWakeupPollInterval = 2 * time.Second
 	// sharedDefaultAckQueueSize is the number of acks which wait for a flush. Acks beyond it are dropped.
 	sharedDefaultAckQueueSize = 65536
 	// sharedDefaultAckFlushEvery is the interval of the ack flush, and sharedDefaultAckBatch the number of queued
@@ -47,7 +46,22 @@ type SharedObserver interface {
 	// LostOwnership is called once for a call whose first write of its answer finds no in-flight record of this node,
 	// so the answer is kept on this node only.
 	LostOwnership()
+	// WatchPolled is called for every poll of the shared tier which a wait for a call on another node makes.
+	WatchPolled()
+	// WatchEnded is called once per wait for a call on another node, with how it ended: WatchEndNotified,
+	// WatchEndPolled or WatchEndDeadline.
+	WatchEnded(end string)
 }
+
+// How a wait for a call on another node ended, the values of SharedObserver.WatchEnded.
+const (
+	// WatchEndNotified means a wakeup came, and the poll which followed it found the answer, or the key gone.
+	WatchEndNotified = "notified"
+	// WatchEndPolled means a poll found the answer, or the key gone, without a wakeup before it.
+	WatchEndPolled = "polled"
+	// WatchEndDeadline means the in-flight TTL passed with the call still in flight, or with the polls failing.
+	WatchEndDeadline = "deadline"
+)
 
 // SharedOptions configure a Shared store.
 type SharedOptions struct {
@@ -65,12 +79,18 @@ type SharedOptions struct {
 	FailOpen bool
 	// Notifier asks the node which runs a call to cancel it. Nil means no cross-node cancel.
 	Notifier func(nodeID string, key Key)
+	// DoneNotifier tells a node which waits for a call of this node that its record is written. Nil means waiters are
+	// not registered and not notified: they poll.
+	DoneNotifier func(nodeID string, key Key)
 	// Observer observes the ack queue. Nil means no observation.
 	Observer SharedObserver
 	// PollInitial and PollMax bound the delay between two polls of a call which runs on another node. Zero
 	// means the defaults.
 	PollInitial time.Duration
 	PollMax     time.Duration
+	// WakeupPollInterval is the fallback poll interval of a wait while DoneNotifier is set. Zero means 2s. Without
+	// DoneNotifier the wait polls at PollInitial doubling to PollMax.
+	WakeupPollInterval time.Duration
 	// AckQueueSize, AckFlushEvery and AckBatch configure the batched acks to the shared tier. Zero means the
 	// defaults.
 	AckQueueSize  int
@@ -92,9 +112,12 @@ type Shared struct {
 	maxReplyBytes int
 	failOpen      bool
 	notifier      func(nodeID string, key Key)
+	doneNotifier  func(nodeID string, key Key)
 	observer      SharedObserver
 	pollInitial   time.Duration
 	pollMax       time.Duration
+	// wakeupPollInterval is the fallback poll interval of a wait while doneNotifier is set.
+	wakeupPollInterval time.Duration
 	// inflightGrace is the time an in-flight record outlives the method timeout of its call. It is InflightGrace,
 	// and a test shortens it.
 	inflightGrace time.Duration
@@ -126,23 +149,28 @@ func NewShared(opts SharedOptions) *Shared {
 	if opts.IOTimeout <= 0 {
 		opts.IOTimeout = redisshard.DefaultIOTimeout
 	}
+	if opts.WakeupPollInterval <= 0 {
+		opts.WakeupPollInterval = sharedDefaultWakeupPollInterval
+	}
 	return &Shared{
-		local:         opts.Local,
-		backend:       opts.Backend,
-		nodeID:        opts.NodeID,
-		ttl:           opts.TTL,
-		maxReplyBytes: opts.MaxReplyBytes,
-		failOpen:      opts.FailOpen,
-		notifier:      opts.Notifier,
-		observer:      opts.Observer,
-		pollInitial:   opts.PollInitial,
-		pollMax:       opts.PollMax,
-		inflightGrace: InflightGrace,
-		ackFlushEvery: opts.AckFlushEvery,
-		ackBatch:      opts.AckBatch,
-		ioTimeout:     opts.IOTimeout,
-		acks:          make(chan Key, opts.AckQueueSize),
-		errorLog:      tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
+		local:              opts.Local,
+		backend:            opts.Backend,
+		nodeID:             opts.NodeID,
+		ttl:                opts.TTL,
+		maxReplyBytes:      opts.MaxReplyBytes,
+		failOpen:           opts.FailOpen,
+		notifier:           opts.Notifier,
+		doneNotifier:       opts.DoneNotifier,
+		observer:           opts.Observer,
+		pollInitial:        opts.PollInitial,
+		pollMax:            opts.PollMax,
+		wakeupPollInterval: opts.WakeupPollInterval,
+		inflightGrace:      InflightGrace,
+		ackFlushEvery:      opts.AckFlushEvery,
+		ackBatch:           opts.AckBatch,
+		ioTimeout:          opts.IOTimeout,
+		acks:               make(chan Key, opts.AckQueueSize),
+		errorLog:           tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
 }
 
@@ -188,7 +216,7 @@ func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 // the call with fail-closed.
 func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	flight.begun = time.Now().UnixNano()
-	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace, false)
+	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace, s.doneNotifier != nil)
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to begin a call", err)
 		if s.failOpen {
@@ -212,7 +240,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	case BeginInFlight:
 		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now. The
 		// notifier is called before the answer, so a slow notifier delays the duplicate by one publish.
-		if flight.markRemote() && res.Owner != s.nodeID && s.notifier != nil {
+		if flight.markRemote(s.doneNotifier != nil) && res.Owner != s.nodeID && s.notifier != nil {
 			s.notifier(res.Owner, key)
 		}
 		go s.watch(key, flight)
@@ -230,24 +258,63 @@ func (s *Shared) watch(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
-	res, err := backoff.Retry(ctx, func() (PollResult, error) {
+	// Without the wakeup the first poll is at once, and the delays ramp up. With it, the first poll waits one fallback
+	// interval, or a wakeup which came before the watch started, and the polls are at the fallback interval.
+	schedule := newRetryBackOff(s.pollInitial, s.pollMax)
+	first := time.Duration(0)
+	if s.doneNotifier != nil {
+		schedule = newRetryBackOff(s.wakeupPollInterval, s.wakeupPollInterval)
+		first = schedule.NextBackOff()
+	}
+	timer := time.NewTimer(first)
+	defer timer.Stop()
+	for {
+		notified := false
+		select {
+		case <-ctx.Done():
+			s.endWatch(key, flight, PollResult{}, WatchEndDeadline)
+			return
+		case <-flight.wake:
+			notified = true
+		case <-timer.C:
+		}
+		s.watchPolled()
 		res, err := s.backend.Poll(ctx, key)
-		if err != nil {
-			return PollResult{}, err
+		if err == nil && res.State != PollInFlight {
+			end := WatchEndPolled
+			if notified {
+				end = WatchEndNotified
+			}
+			s.endWatch(key, flight, res, end)
+			return
 		}
-		switch res.State {
-		case PollDone, PollCancelled, PollMissing:
-			return res, nil
-		}
-		return PollResult{}, errStillInFlight
-	}, backoff.WithBackOff(newRetryBackOff(s.pollInitial, s.pollMax)), backoff.WithMaxElapsedTime(deadline))
+		// A failed poll is counted by the backend and retried at the schedule, as today.
+		timer.Stop()
+		timer.Reset(schedule.NextBackOff())
+	}
+}
+
+// endWatch completes the local flight of a wait which ended as end, and reports the end to the observer. A missing key
+// or the deadline abandons the flight without NotRun, as a poll which fails does; a tombstone completes it without a
+// fingerprint, as BeginCancelled does; a done record is kept.
+func (s *Shared) endWatch(key Key, flight *Flight, res PollResult, end string) {
 	switch {
-	case err != nil || res.State == PollMissing:
+	case end == WatchEndDeadline || res.State == PollMissing:
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
 	case res.State == PollCancelled:
 		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
 	default:
 		_ = s.local.Complete(key, flight, res.Record)
+	}
+	if s.observer != nil {
+		s.observer.WatchEnded(end)
+	}
+}
+
+// watchPolled counts a poll of the shared tier made by a wait for a call on another node.
+func (s *Shared) watchPolled() {
+	if s.observer != nil {
+		s.observer.WatchPolled()
 	}
 }
 
@@ -257,11 +324,34 @@ func (s *Shared) watch(key Key, flight *Flight) {
 func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	// The error is encoded once, and the encoded form is passed on to both tiers.
 	errJSON := encodeError(rec.Err)
+	var waiters []string
 	if !flight.localOnly {
-		s.completeShared(key, flight, rec, errJSON)
+		waiters = s.completeShared(key, flight, rec, errJSON)
 	}
 	s.local.complete(key, flight, rec, errJSON)
+	s.notifyDone(key, waiters)
 	return nil
+}
+
+// notifyDone tells every waiter node of key but this node that the record is written. Nothing is sent without a
+// DoneNotifier, or without waiters. It runs after the local flight is done, so the local duplicates are answered first.
+func (s *Shared) notifyDone(key Key, waiters []string) {
+	if s.doneNotifier == nil {
+		return
+	}
+	for _, nodeID := range waiters {
+		if nodeID != s.nodeID {
+			s.doneNotifier(nodeID, key)
+		}
+	}
+}
+
+// Wake tells the wait for the call of key, when there is one on this node, that its record may be written. It is the
+// receiver of the done notification. A key without a wait, and a key whose call runs on this node, are ignored.
+func (s *Shared) Wake(key Key) {
+	if flight := s.local.flightOf(key); flight != nil {
+		flight.nudge()
+	}
 }
 
 // completeShared writes the record of a call which this node owns to the shared tier, with errJSON, the encoded form of
@@ -269,8 +359,9 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 // check makes a retry idempotent. All the writes of the call stay within one IO timeout, and within the in-flight TTL
 // of the call, which is counted from its begin, so the reply of the call is not held longer than that. When the writes
 // fail, the record is still kept locally, and a retransmit on another node runs the call again once the in-flight
-// record expires. A write which reports that this node does not own the in-flight record is not retried.
-func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON string) {
+// record expires. A write which reports that this node does not own the in-flight record is not retried. It returns the
+// waiters of the write which took effect, and nil when none did.
+func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON string) []string {
 	stored := rec
 	if overReplyLimit(rec, errJSON, s.maxReplyBytes) {
 		stored = Record{Uncached: true, Abandoned: rec.Abandoned}
@@ -291,11 +382,15 @@ func (s *Shared) completeShared(key Key, flight *Flight, rec Record, errJSON str
 	}, backoff.WithBackOff(newRetryBackOff(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
-		return
+		return nil
 	}
-	if !res.Owned && attempts == 1 {
-		s.lostOwnership()
+	if !res.Owned {
+		if attempts == 1 {
+			s.lostOwnership()
+		}
+		return nil
 	}
+	return res.Waiters
 }
 
 // Cancel implements Store. A call which runs on this node is cancelled here, and its owner keeps the record. Otherwise

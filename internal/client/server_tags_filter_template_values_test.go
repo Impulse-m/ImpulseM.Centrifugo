@@ -13,6 +13,7 @@ import (
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestServerTagsFilterTemplateRebindUserChangeUnsubscribes checks a rebind which gives a connection without a user a
@@ -191,4 +192,31 @@ func TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide(t *testing.T) 
 	require.Equal(t, "42", state.user)
 	require.NotContains(t, state.unsubscribed, "lenient:uni")
 	require.Contains(t, state.channels, "lenient:uni")
+}
+
+// TestServerTagsFilterTemplateRebindStoresTokenFilters checks a rebind with other values stores the filters of the
+// connection token subscriptions it subscribes, so that a refresh with the same claims compares them with the filters
+// the channels have, and keeps the connection.
+func TestServerTagsFilterTemplateRebindStoresTokenFilters(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"sid":  "s-1",
+			"subs": map[string]any{"lenient:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(sessionFilter("s-1"), state.subscribed["lenient:srv"].ServerTagsFilter))
+
+	storage, release := client.AcquireStorage()
+	filters, _ := storage[connectionTokenFiltersKey].(map[string]*protocol.FilterNode)
+	release(storage)
+	require.True(t, proto.Equal(sessionFilter("s-1"), filters["lenient:srv"]), "got %v", filters)
 }

@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"maps"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
@@ -201,6 +202,47 @@ func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters)
 		}
 		c.Unsubscribe(channel, unsubscribeInsufficientState)
 	}
+}
+
+// storeReboundTokenFilters updates the stored filters of the connection token subscriptions which a rebind subscribes
+// with the filters they are subscribed with, so that a refresh with the same claims compares them with the filters of
+// their channels. Only the channels which are not subscribed yet are updated: a channel the connection keeps keeps the
+// filter it has, as it did before. It must run after the templates are applied to toSubscribe, and before the channels
+// are subscribed. It does nothing when no config has templates.
+func (h *Handler) storeReboundTokenFilters(c rebindableClient, toSubscribe map[string]centrifuge.SubscribeOptions) {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
+		return
+	}
+	var fresh []string
+	for channel, opts := range toSubscribe {
+		if opts.Source == subsource.ConnectionToken && !c.IsSubscribed(channel) {
+			fresh = append(fresh, channel)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	storage, release := c.AcquireStorage()
+	// The stored map is read without the lock by the comparison of tokenChannelsChanged, so it is copied, not changed.
+	stored, _ := storage[connectionTokenFiltersKey].(map[string]*protocol.FilterNode)
+	filters := maps.Clone(stored)
+	for _, channel := range fresh {
+		filter := toSubscribe[channel].ServerTagsFilter
+		if filter == nil {
+			delete(filters, channel)
+			continue
+		}
+		if filters == nil {
+			filters = make(map[string]*protocol.FilterNode)
+		}
+		filters[channel] = filter
+	}
+	if len(filters) == 0 {
+		delete(storage, connectionTokenFiltersKey)
+	} else {
+		storage[connectionTokenFiltersKey] = filters
+	}
+	release(storage)
 }
 
 // reboundTemplateSubscriptions completes toSubscribe, the subscriptions of a rebind to userID, with the server-side

@@ -284,6 +284,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
+	h.storeReboundTokenFilters(c, toSubscribe)
 	if err := h.subscribeRebound(c, newUser, toSubscribe); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}

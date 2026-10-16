@@ -3,12 +3,12 @@ package config
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -558,11 +558,8 @@ func redisHosts(redisCfg configtypes.Redis) []string {
 	}
 	for _, address := range addresses {
 		for _, part := range strings.Split(address, ",") {
-			hosts = appendRedisHost(hosts, part)
-			if u, err := url.Parse(part); err == nil {
-				for _, addr := range u.Query()["addr"] {
-					hosts = appendRedisHost(hosts, addr)
-				}
+			for _, host := range redisshard.InitAddresses(part) {
+				hosts = appendRedisHost(hosts, host)
 			}
 		}
 	}
@@ -572,12 +569,8 @@ func redisHosts(redisCfg configtypes.Redis) []string {
 	return hosts
 }
 
-// appendRedisHost appends the host of an address, or of an address URL, in the form redisHosts compares.
-func appendRedisHost(hosts []string, address string) []string {
-	host := address
-	if u, err := url.Parse(address); err == nil && u.Host != "" {
-		host = u.Host
-	}
+// appendRedisHost appends a host, as redisshard.InitAddresses returns it, in the form redisHosts compares.
+func appendRedisHost(hosts []string, host string) []string {
 	if host == "" {
 		return hosts
 	}

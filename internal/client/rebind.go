@@ -37,6 +37,11 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectPermissionDenied
 	}
 	rec := connStateOf(c)
+	// A connection with no user which refreshes to a token with a session gets its record now, so the session index holds it
+	// from here on, see recordAtRefresh.
+	if rec == nil && c.UserID() == "" && h.storeNeedsConnState(token.UserID, tokenIdentityOf(token)) {
+		rec = h.recordAtRefresh(c)
+	}
 	if rec == nil {
 		return h.refreshWithoutRecord(c, token, class)
 	}

@@ -23,6 +23,8 @@ type rebindableClient interface {
 	Client
 	Disconnect(disconnect ...centrifuge.Disconnect)
 	ExtState() any
+	SetExtState(v any)
+	OnDisconnect(h centrifuge.DisconnectHandler)
 	Rebind(opts centrifuge.RebindOptions) error
 	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error
 	ChannelsWithContext() map[string]centrifuge.ChannelContext

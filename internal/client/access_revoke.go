@@ -132,6 +132,28 @@ func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect
 	return h.recheckConnection(client)
 }
 
+// recordAtRefresh returns the record of a connection which has none, and attaches a new one to it. It is called for a
+// connection with no user which refreshes to a token with a session, and the index needs the record to hold the session,
+// so that a revocation of it reaches the connection at once. The record is attached under the storage lock of the
+// connection, so two refreshes which overlap attach one record between them. The disconnect handler is installed after
+// the record is attached, so a close from here on releases it. A close which lands before the install is not seen by the
+// handler, see the known gaps of the README.
+func (h *Handler) recordAtRefresh(c rebindableClient) *connState {
+	storage, release := c.AcquireStorage()
+	if rec := connStateOf(c); rec != nil {
+		release(storage)
+		return rec
+	}
+	rec := &connState{}
+	rec.identity.Store(nextIdentity(nil, originAnonymous, 0, "", "", jwtverify.ConnectToken{}))
+	c.SetExtState(rec)
+	release(storage)
+	c.OnDisconnect(func(centrifuge.DisconnectEvent) {
+		h.onClientDisconnect(c, rec)
+	})
+	return rec
+}
+
 // syncSessionConnection keeps the session index of access revocation up to date for a refreshed or rebound
 // connection. A connection with a user is not indexed, a connection without a user is indexed by the session of its
 // token.

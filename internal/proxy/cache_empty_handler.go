@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
@@ -18,6 +20,8 @@ type CacheEmptyHandler struct {
 	calls   map[string]*metrics.ProxyCallChildren
 	// groups shares the in-flight call of each proxy between the subscribers of one channel.
 	groups map[string]*singleflight.Group
+	// logLimiter lets a failed call be logged at most once a minute.
+	logLimiter *tools.IntervalLimiter
 }
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
@@ -29,9 +33,10 @@ func NewCacheEmptyHandler(proxies map[string]CacheEmptyProxy) *CacheEmptyHandler
 		groups[name] = &singleflight.Group{}
 	}
 	return &CacheEmptyHandler{
-		proxies: proxies,
-		calls:   calls,
-		groups:  groups,
+		proxies:    proxies,
+		calls:      calls,
+		groups:     groups,
+		logLimiter: tools.NewIntervalLimiter(time.Minute),
 	}
 }
 
@@ -58,7 +63,7 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 		// is logged once for all of them. groups has the same keys as proxies, so the lookup always succeeds.
 		result, err, _ := h.groups[name].Do(e.Channel, func() (any, error) {
 			populated, err := h.call(name, p, e.Channel)
-			if err != nil {
+			if err != nil && h.logLimiter.Allow() {
 				log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			}
 			return populated, err

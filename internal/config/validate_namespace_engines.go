@@ -30,16 +30,29 @@ const defaultRedisAddress = "127.0.0.1:6379"
 // defaultRedisPort is the port which a Redis host gets when its address has none.
 const defaultRedisPort = "6379"
 
-// redisEngineRef is a Redis subject of the configuration: the channels of the default broker or engine, the default
-// map broker, a named broker or a named map broker, or a control channel which a Redis controller subscribes. space
-// and exact are compared as in spacesConflict. isDefault marks the default ones.
+// The channel names which Core derives from a Redis prefix, see newRedisEngineRef and newRedisControlRefs.
+const (
+	redisClientChannelSuffix  = ".client."
+	redisShardChannelSuffix   = ".shard"
+	redisControlChannelSuffix = ".control"
+	redisNodeChannelPrefix    = ".node."
+)
+
+// redisEngineRef is a Redis subject of the configuration: the keys and channels of the default broker or engine, the
+// default map broker, a named broker or a named map broker, or a control channel which a Redis controller or the
+// default broker subscribes. space and exact are compared as in spacesConflict. isDefault marks the default ones.
+// control marks a control channel, which redisRefsConflict compares with the channels of brokers. channelSpace and
+// shardChannel are the channels which a broker subscribes; they are empty for a reference without channels.
 type redisEngineRef struct {
-	label     string
-	hosts     []string
-	space     string
-	exact     bool
-	cluster   bool
-	isDefault bool
+	label        string
+	hosts        []string
+	space        string
+	exact        bool
+	cluster      bool
+	isDefault    bool
+	control      bool
+	channelSpace string
+	shardChannel string
 }
 
 // postgresEngineRef is a Postgres broker of the configuration: the default broker, the default map broker, a named
@@ -175,17 +188,17 @@ func validateNamespaceEngineRef(
 	return nil
 }
 
-// validateNamedRedisPrefixes rejects two Redis brokers, default or named, two Redis presence managers and named map
-// brokers which use the same Redis and prefixes whose key spaces overlap, see newRedisEngineRef. The default broker
-// and the default map broker are not compared with each other: they have always been accepted together. Core
-// subscribes a channel only on the broker which routes it, so in standalone mode such brokers do not duplicate
-// publications. Core turns on sharded PUB/SUB only with NumShardedPubSubPartitions, which the server does not set; then
-// brokers with one prefix subscribe the same partition channels and deliver each publication twice. The rule keeps
-// that mode safe. Two brokers with nested prefixes share no channel but may share keys, so the rule covers the keys
-// too. A cluster broker conflicts with any broker of the same prefix, since the cluster hosts are not resolved when the
-// configuration is validated. The control channels of a Redis controller are compared too, and so are the control
-// channels of the default broker or engine when Core makes it the controller, since a channel of another broker may be
-// one of them.
+// validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same Redis
+// and prefixes whose key spaces overlap, see newRedisEngineRef. Presence managers are not compared: their keys are per
+// channel, and a channel has one presence manager. The default broker and the default map broker are not compared with
+// each other: they have always been accepted together. Core subscribes a channel only on the broker which routes it, so
+// in standalone mode such brokers do not duplicate publications. Core turns on sharded PUB/SUB only with
+// NumShardedPubSubPartitions, which the server does not set; then brokers with one prefix subscribe the same partition
+// channels and deliver each publication twice. The rule keeps that mode safe. Two brokers with nested prefixes share no
+// channel but may share keys, so the rule covers the keys too. A cluster broker conflicts with any broker of the same
+// prefix, since the cluster hosts are not resolved when the configuration is validated. The control channels of a Redis
+// controller are compared with the channels of the brokers, and so are the control channels of the default broker or
+// engine when Core makes it the controller, since a channel of another broker may be one of them.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
@@ -197,17 +210,9 @@ func validateNamedRedisPrefixes(c Config) error {
 	if c.MapBroker.Type == "redis" {
 		refs = append(refs, newRedisMapEngineRefs("map_broker", c.MapBroker.Redis.Redis, c.MapBroker.Redis.Prefix, true)...)
 	}
-	if c.PresenceManager.Enabled && c.PresenceManager.Type == "redis" {
-		refs = append(refs, newRedisEngineRef("presence_manager", c.PresenceManager.Redis.Redis, c.PresenceManager.Redis.Prefix, true))
-	}
 	for _, b := range c.Brokers {
 		if b.Enabled && b.Type == "redis" {
 			refs = append(refs, newRedisEngineRef(fmt.Sprintf("brokers %q", b.Name), b.Redis.Redis, b.Redis.Prefix, false))
-		}
-	}
-	for _, pm := range c.PresenceManagers {
-		if pm.Enabled && pm.Type == "redis" {
-			refs = append(refs, newRedisEngineRef(fmt.Sprintf("presence_managers %q", pm.Name), pm.Redis.Redis, pm.Redis.Prefix, false))
 		}
 	}
 	for _, mb := range c.MapBrokers {
@@ -233,7 +238,7 @@ func validateNamedRedisPrefixes(c Config) error {
 			return ref.isDefault
 		},
 		func(a redisEngineRef, b redisEngineRef) bool {
-			return spacesConflict(a.space, a.exact, b.space, b.exact) && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
+			return redisRefsConflict(a, b) && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
 		},
 	)
 	if found {
@@ -265,27 +270,34 @@ func firstEngineConflict[T any](
 	return first, second, false
 }
 
-// newRedisEngineRef returns the reference of a Redis broker or presence manager with the connection and the prefix
-// which it uses. Core derives every key of it from its prefix followed by a dot: the PUB/SUB channels prefix.client.
-// and prefix.shard, the history keys prefix.stream., prefix.list. and prefix.result., and the presence keys
-// prefix.presence. The space is therefore the prefix followed by a dot. Two prefixes whose spaces overlap, such as "a"
-// and "a.client", or "cf" and "cf.stream", can name the same channel or the same key.
+// newRedisEngineRef returns the reference of a Redis broker with the connection and the prefix which it uses. Core
+// derives every key of it from its prefix followed by a dot: the history keys prefix.stream., prefix.list. and
+// prefix.result., and the PUB/SUB channels prefix.client. and prefix.shard. The space is therefore the prefix followed
+// by a dot, which brokers are compared by. Two prefixes whose spaces overlap, such as "a" and "a.client", or "cf" and
+// "cf.stream", can name the same channel or the same key. The channels are compared with control channels, see
+// redisRefsConflict.
 func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, isDefault bool) redisEngineRef {
+	prefix = redisPrefix(prefix)
 	return redisEngineRef{
-		label:     label,
-		hosts:     redisHosts(redisCfg),
-		space:     redisPrefix(prefix) + ".",
-		cluster:   usesRedisCluster(redisCfg),
-		isDefault: isDefault,
+		label:        label,
+		hosts:        redisHosts(redisCfg),
+		space:        prefix + ".",
+		cluster:      usesRedisCluster(redisCfg),
+		isDefault:    isDefault,
+		channelSpace: prefix + redisClientChannelSuffix,
+		shardChannel: prefix + redisShardChannelSuffix,
 	}
 }
 
 // newRedisMapEngineRefs returns the references of a Redis map broker. Its channels and results use the prefix
 // followed by a dot, as above, and its state keys use the prefix followed by a colon, such as prefix:stream:<channel>.
+// The state keys are not channels, so the state reference has none.
 func newRedisMapEngineRefs(label string, redisCfg configtypes.Redis, prefix string, isDefault bool) []redisEngineRef {
 	ref := newRedisEngineRef(label, redisCfg, prefix, isDefault)
 	stateRef := ref
 	stateRef.space = redisPrefix(prefix) + ":"
+	stateRef.channelSpace = ""
+	stateRef.shardChannel = ""
 	return []redisEngineRef{ref, stateRef}
 }
 
@@ -300,19 +312,45 @@ func newRedisControlRefs(label string, redisCfg configtypes.Redis, prefix string
 		{
 			label:     label,
 			hosts:     hosts,
-			space:     prefix + ".control",
+			space:     prefix + redisControlChannelSuffix,
 			exact:     true,
 			cluster:   cluster,
 			isDefault: isDefault,
+			control:   true,
 		},
 		{
 			label:     label,
 			hosts:     hosts,
-			space:     prefix + ".node.",
+			space:     prefix + redisNodeChannelPrefix,
 			cluster:   cluster,
 			isDefault: isDefault,
+			control:   true,
 		},
 	}
+}
+
+// redisRefsConflict reports whether two Redis references can match the same channel or key, see spacesConflict. Two
+// brokers are compared by their spaces, which cover the keys too. A control channel is compared with the channels of
+// a broker only, not with its space: client channels are always below prefix.client., and the shard channel is exact,
+// so the space of a broker would conflict with every control channel of its prefix, which no channel can match.
+func redisRefsConflict(a redisEngineRef, b redisEngineRef) bool {
+	if a.control && !b.control {
+		return redisControlConflict(a, b)
+	}
+	if b.control && !a.control {
+		return redisControlConflict(b, a)
+	}
+	return spacesConflict(a.space, a.exact, b.space, b.exact)
+}
+
+// redisControlConflict reports whether a control channel can match a channel which the broker subscribes. A reference
+// without channels, such as the state keys of a map broker, never conflicts.
+func redisControlConflict(control redisEngineRef, broker redisEngineRef) bool {
+	if broker.channelSpace == "" {
+		return false
+	}
+	return spacesConflict(control.space, control.exact, broker.channelSpace, false) ||
+		spacesConflict(control.space, control.exact, broker.shardChannel, true)
 }
 
 // natsEngineRef is a NATS subject of the configuration: the subject space of the default broker or of a named

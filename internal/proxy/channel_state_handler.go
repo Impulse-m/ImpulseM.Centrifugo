@@ -75,9 +75,10 @@ func (h *ChannelStateHandler) Handle() func(ctx context.Context, events []*proxy
 	}
 }
 
-// Forget removes the rejected batch of events from the gauge. The partition consumer calls it when it stops
-// delivering the batch, for example when another node takes over the partition, so the gauge does not show a
-// batch which this node no longer retries.
+// Forget removes the rejected batch of events from the gauge. The caller calls it when a delivery of the batch
+// is cut short by a cancelled context, for example when this node loses the partition during the delivery.
+// A partition which is stopped during the backoff between two attempts is not reported here, so its batch
+// stays in the map until this node delivers the batch again or the process restarts.
 func (h *ChannelStateHandler) Forget(events []*proxyproto.ChannelEvent) {
 	if len(events) == 0 {
 		return

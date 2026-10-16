@@ -71,7 +71,9 @@ func (h *Heap[T]) Push(deadline time.Time, value T) *Item[T] {
 	return item
 }
 
-// Remove drops an entry which has not fired yet. It reports false when the entry is not in this heap any more.
+// Remove drops an entry which has not fired yet and reports true. It reports false when the entry is not in this heap
+// any more, which includes an entry that a firing has popped: the callbacks of that firing run after the lock is
+// released, so the entry may still fire although Remove reports false for it.
 func (h *Heap[T]) Remove(item *Item[T]) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -207,6 +207,27 @@ func TestHeapRemoveReportsAbsentEntries(t *testing.T) {
 	require.False(t, other.Remove(h.Push(start.Add(time.Second), 2)))
 }
 
+func TestHeapRemoveReportsFalseForASiblingPoppedByTheSameFiring(t *testing.T) {
+	clock := newFakeClock()
+	var h *Heap[string]
+	var sibling *Item[string]
+	var removed bool
+	var fired []string
+	h = New[string](clock, func(value string) {
+		fired = append(fired, value)
+		if value == "first" {
+			removed = h.Remove(sibling)
+		}
+	})
+	start := clock.Now()
+	h.Push(start.Add(time.Second), "first")
+	sibling = h.Push(start.Add(2*time.Second), "sibling")
+
+	clock.Advance(2 * time.Second)
+	require.False(t, removed)
+	require.Equal(t, []string{"first", "sibling"}, fired)
+}
+
 func TestHeapPeekReturnsTheEarliestEntry(t *testing.T) {
 	clock := newFakeClock()
 	h := New[string](clock, func(string) {})

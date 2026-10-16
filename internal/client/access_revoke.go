@@ -113,11 +113,12 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 // needs to release it, so a close from here on releases what the connection holds. A connection without a user is
 // indexed by the session of its token before the recheck, so a revocation applied from then on reaches it through the
 // index. Core runs the disconnect handler of a connection closed while it connects after the connect completes, so the
-// connection closed here is released then. A connection which clientNeedsConnState does not ask for has no record: nothing
-// is adopted, its storage is not read, and the connect path allocates nothing.
+// connection closed here is released then. The stored record decides whether a connection has one. The config is read
+// only to skip AcquireStorage on the default path, where no feature needs a record, so a connection there reads no
+// storage and allocates nothing.
 func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
 	var rec *connState
-	if h.clientNeedsConnState(h.cfgContainer.ConfigRef(), client) {
+	if h.accessStore != nil || h.configNeedsConnState(h.cfgContainer.ConfigRef()) {
 		rec = adoptConnState(client)
 	}
 	if rec != nil && (h.accessStore != nil || h.userLimiter != nil) {

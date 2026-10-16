@@ -95,15 +95,9 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 // rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one for every
 // connection with no user, so its session index can hold the connection from connect on, when its token has a session,
 // or from the refresh which gives it one. OnClientConnecting decides with it, from the credentials of the connection.
-// OnConnect decides with clientNeedsConnState, from the user Core holds, so a record made at connect is the one OnConnect
-// adopts.
+// OnConnect adopts the record which OnClientConnecting stored, see trackConnect, so no second decision is made there.
 func (h *Handler) needsConnState(cfg *config.Config, userID string) bool {
 	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID)
-}
-
-// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect.
-func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
-	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(client.UserID())
 }
 
 // configNeedsConnState reports whether a feature of the configuration needs a record for every connection.

@@ -14,7 +14,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * Differences from Centrifugo PRO:
     * `revoke_token` without `user` triggers a full sweep of local connections, coalesced and run in the background. Pass `user` for a targeted, cheap disconnect.
     * `expire_at` in the past is rejected with bad request.
-    * Extensions: `user` and `revoked_at` on `revoke_token`; `generation` and `revoked_at` on `invalidate_user_tokens`; `token_revoke.uid_claim` and `user_tokens_invalidate.generation_claim` config; disconnect code 4500 for blocked users; loop guard disconnects with 3500.
+    * Extensions: `user` and `revoked_at` on `revoke_token`; `disconnect` on `revoke_token`, a code in 4000-4999 and a reason of at most 123 bytes that every close of the revocation uses instead of 3005; `generation` and `revoked_at` on `invalidate_user_tokens`; `token_revoke.uid_claim` and `user_tokens_invalidate.generation_claim` config; disconnect code 4500 for blocked users; loop guard disconnects with 3500.
   * Not implemented:
     * subscription tokens are not covered by revocation, only connection tokens;
     * `invalidate_user_tokens.channel` is not available;

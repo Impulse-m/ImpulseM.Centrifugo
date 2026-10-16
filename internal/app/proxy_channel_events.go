@@ -40,6 +40,20 @@ func buildChannelStateProxy(cfg config.Config) (proxy.ChannelStateProxy, error) 
 	return csp, nil
 }
 
+// cacheEmptyProxyConfig returns the config of the cache empty proxy named by name: the default one, or the named
+// proxy. The bool is false when no proxy has that name.
+func cacheEmptyProxyConfig(
+	cfg config.Config,
+	namedProxies map[string]configtypes.Proxy,
+	name string,
+) (configtypes.Proxy, bool) {
+	if name == config.DefaultProxyName {
+		return cfg.Channel.Proxy.CacheEmpty, true
+	}
+	p, found := namedProxies[name]
+	return p, found
+}
+
 // resolveCacheEmptyProxy returns the config of the cache empty proxy named by name, the default one or
 // one of the named proxies, and creates the cache empty proxy in proxyMap unless it exists already.
 func resolveCacheEmptyProxy(
@@ -48,15 +62,9 @@ func resolveCacheEmptyProxy(
 	namedProxies map[string]configtypes.Proxy,
 	name string,
 ) (configtypes.Proxy, error) {
-	var p configtypes.Proxy
-	if name == config.DefaultProxyName {
-		p = cfg.Channel.Proxy.CacheEmpty
-	} else {
-		var found bool
-		p, found = namedProxies[name]
-		if !found {
-			return p, fmt.Errorf("cache empty proxy not found: %s", name)
-		}
+	p, found := cacheEmptyProxyConfig(cfg, namedProxies, name)
+	if !found {
+		return p, fmt.Errorf("cache empty proxy not found: %s", name)
 	}
 	if _, ok := proxyMap.CacheEmptyProxies[name]; !ok {
 		cep, err := proxy.GetCacheEmptyProxy(name, p)
@@ -138,7 +146,7 @@ func checkCacheEmptyReload(startup map[string]string, newCfg config.Config) erro
 	if maps.Equal(startup, cacheEmptyLayout(newCfg)) {
 		return nil
 	}
-	return errors.New("cache empty proxies changed by reload: enabling, disabling, adding, removing or renaming one needs a restart")
+	return errors.New("cache empty proxies changed by reload: enabling, disabling, adding, removing or renaming one needs a restart, and the whole reload is refused until then")
 }
 
 // cacheEmptyTarget is the endpoint and the timeout of a cache empty proxy, as the config sets them.
@@ -157,10 +165,7 @@ func cacheEmptyTargets(cfg config.Config) map[string]cacheEmptyTarget {
 	targets := map[string]cacheEmptyTarget{}
 	// The callback never fails, so the error of forEachCacheEmptyGroup is always nil.
 	_ = forEachCacheEmptyGroup(cfg, func(name string, _ string) error {
-		p := cfg.Channel.Proxy.CacheEmpty
-		if name != config.DefaultProxyName {
-			p = named[name]
-		}
+		p, _ := cacheEmptyProxyConfig(cfg, named, name)
 		targets[name] = cacheEmptyTarget{endpoint: p.Endpoint, timeout: p.Timeout}
 		return nil
 	})
@@ -179,6 +184,31 @@ func warnCacheEmptyTargetsReload(startup map[string]cacheEmptyTarget, newCfg con
 			Str("proxy_name", name).
 			Msg("cache empty proxy endpoint or timeout changed on reload, the change takes effect after a restart")
 	}
+}
+
+// cacheEmptyReloadGuard holds the cache empty layout and targets of the startup config, and checks each
+// reloaded config against them.
+type cacheEmptyReloadGuard struct {
+	layout  map[string]string
+	targets map[string]cacheEmptyTarget
+}
+
+// newCacheEmptyReloadGuard takes the cache empty layout and targets of the startup config.
+func newCacheEmptyReloadGuard(cfg config.Config) *cacheEmptyReloadGuard {
+	return &cacheEmptyReloadGuard{
+		layout:  cacheEmptyLayout(cfg),
+		targets: cacheEmptyTargets(cfg),
+	}
+}
+
+// check rejects newCfg when it changes the cache empty layout of the startup config.
+func (g *cacheEmptyReloadGuard) check(newCfg config.Config) error {
+	return checkCacheEmptyReload(g.layout, newCfg)
+}
+
+// warn logs each cache empty proxy whose endpoint or timeout changed in newCfg.
+func (g *cacheEmptyReloadGuard) warn(newCfg config.Config) {
+	warnCacheEmptyTargetsReload(g.targets, newCfg)
 }
 
 // enableCacheEmptyProxy resolves the cache empty proxy named by name and logs it. An empty namespace

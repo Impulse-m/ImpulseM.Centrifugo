@@ -179,6 +179,15 @@ func validateNamespaceEngineRef(
 	if opts.BrokerName != "" && !slices.Contains(enabledBrokers, opts.BrokerName) {
 		return fmt.Errorf("%s: broker_name %q is not an enabled entry of brokers", label, opts.BrokerName)
 	}
+	// Join and leave messages go through the broker of the channel, but a map channel is subscribed on the map
+	// broker, so a named stream broker would never deliver them to its subscribers. Refused until Core routes
+	// them through the map broker.
+	if opts.BrokerName != "" && opts.JoinLeave && isMapSubscriptionType(opts.SubscriptionType) {
+		return fmt.Errorf(
+			"%s: broker_name %q with join_leave is not supported for subscription_type %q, join and leave messages of a map channel do not reach the named broker",
+			label, opts.BrokerName, opts.SubscriptionType,
+		)
+	}
 	if opts.PresenceManagerName != "" && !slices.Contains(enabledPresenceManagers, opts.PresenceManagerName) {
 		return fmt.Errorf("%s: presence_manager_name %q is not an enabled entry of presence_managers", label, opts.PresenceManagerName)
 	}
@@ -186,6 +195,11 @@ func validateNamespaceEngineRef(
 		return fmt.Errorf("%s: map.broker_name %q is not an enabled entry of map_brokers", label, opts.Map.BrokerName)
 	}
 	return nil
+}
+
+// isMapSubscriptionType reports whether the subscription type subscribes channels on the map broker.
+func isMapSubscriptionType(subscriptionType string) bool {
+	return slices.Contains([]string{"map", "map_clients", "map_users"}, subscriptionType)
 }
 
 // validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same Redis

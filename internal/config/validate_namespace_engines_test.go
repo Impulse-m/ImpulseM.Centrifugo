@@ -227,6 +227,45 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "broker_name with join_leave on a map namespace is refused",
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces[1].SubscriptionType = "map"
+				cfg.Channel.Namespaces[1].JoinLeave = true
+			},
+			wantErr: `namespace "rates": broker_name "rates" with join_leave is not supported for subscription_type "map"`,
+		},
+		{
+			name: "broker_name with join_leave on a map_clients namespace is refused",
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces[1].SubscriptionType = "map_clients"
+				cfg.Channel.Namespaces[1].JoinLeave = true
+			},
+			wantErr: `namespace "rates": broker_name "rates" with join_leave is not supported for subscription_type "map_clients"`,
+		},
+		{
+			name: "broker_name with join_leave on channel.without_namespace of a map_users subscription is refused",
+			modify: func(cfg *Config) {
+				cfg.Channel.WithoutNamespace.BrokerName = "rates"
+				cfg.Channel.WithoutNamespace.SubscriptionType = "map_users"
+				cfg.Channel.WithoutNamespace.JoinLeave = true
+			},
+			wantErr: `channel.without_namespace: broker_name "rates" with join_leave is not supported for subscription_type "map_users"`,
+		},
+		{
+			name: "broker_name on a map namespace without join_leave is accepted",
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces[1].SubscriptionType = "map"
+			},
+			wantErr: "",
+		},
+		{
+			name: "broker_name with join_leave on a stream namespace is accepted",
+			modify: func(cfg *Config) {
+				cfg.Channel.Namespaces[1].JoinLeave = true
+			},
+			wantErr: "",
+		},
+		{
 			name: "engine redis and named redis broker with the same address and prefix",
 			modify: func(cfg *Config) {
 				cfg.Engine.Type = "redis"

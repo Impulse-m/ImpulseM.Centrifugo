@@ -250,33 +250,20 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 		if def.Idempotent != nil {
 			idempotent = *def.Idempotent
 		}
+		limits := configtypes.ResolveRPCMethodLimits(def, target.Config, defaults)
 		next.methods[def.Method] = &Method{
-			Name:       def.Method,
-			GRPCMethod: def.GRPCMethod,
-			Target:     target,
-			Metrics:    metrics.NewRPCRegistryMethodMetrics(def.Method),
-			AuthClass:  authClass,
-			Timeout: firstNonZero(
-				def.Timeout.ToDuration(),
-				target.Config.Timeout.ToDuration(),
-				defaults.Timeout.ToDuration(),
-				DefaultTimeout,
-			),
-			MaxRequestBytes: firstNonZero(
-				def.MaxRequestBytes,
-				target.Config.MaxRequestBytes,
-				defaults.MaxRequestBytes,
-				DefaultMaxRequestBytes,
-			),
-			MaxResponseBytes: firstNonZero(
-				def.MaxResponseBytes,
-				target.Config.MaxResponseBytes,
-				defaults.MaxResponseBytes,
-				DefaultMaxResponseBytes,
-			),
-			Idempotent:    idempotent,
-			Headers:       sortedCopy(def.Headers),
-			ErrorMetadata: sortedCopy(def.ErrorMetadata),
+			Name:             def.Method,
+			GRPCMethod:       def.GRPCMethod,
+			Target:           target,
+			Metrics:          metrics.NewRPCRegistryMethodMetrics(def.Method),
+			AuthClass:        authClass,
+			Timeout:          limits.Timeout,
+			MaxRequestBytes:  limits.MaxRequestBytes,
+			MaxResponseBytes: limits.MaxResponseBytes,
+			ResponseSizeHint: resolveResponseSizeHint(def.ResponseSizeHint),
+			Idempotent:       idempotent,
+			Headers:          sortedCopy(def.Headers),
+			ErrorMetadata:    sortedCopy(def.ErrorMetadata),
 		}
 	}
 

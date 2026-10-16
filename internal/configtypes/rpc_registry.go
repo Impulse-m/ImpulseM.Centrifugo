@@ -44,12 +44,14 @@ var RPCAuthClasses = []string{
 const (
 	RPCLoadBalancingRoundRobin = "round_robin"
 	RPCLoadBalancingPickFirst  = "pick_first"
+	RPCLoadBalancingRingHash   = "ring_hash"
 )
 
 // RPCLoadBalancingPolicies lists every load balancing policy name.
 var RPCLoadBalancingPolicies = []string{
 	RPCLoadBalancingRoundRobin,
 	RPCLoadBalancingPickFirst,
+	RPCLoadBalancingRingHash,
 }
 
 // RPCRegistry configures the RPC method registry: a table which maps client RPC method
@@ -76,6 +78,10 @@ type RPCRegistry struct {
 	GRPCStatusToCodeTransforms RPCGRPCStatusToCodeTransforms `mapstructure:"grpc_status_to_code_transforms" json:"grpc_status_to_code_transforms" envconfig:"grpc_status_to_code_transforms" yaml:"grpc_status_to_code_transforms" toml:"grpc_status_to_code_transforms" doc:"Rules overriding the default mapping of gRPC status codes from backend targets to protocol errors or disconnects."`
 	// Dedup configures exactly-once RPC: the records of non-idempotent calls with a msg_id.
 	Dedup RPCDedup `mapstructure:"dedup" json:"dedup" envconfig:"dedup" yaml:"dedup" toml:"dedup" doc:"Exactly-once RPC: a retransmitted call of a non-idempotent method is answered from the record of its first call. Off by default."`
+	// MaxInflightBytes is the node-wide budget of registry calls in flight, in bytes.
+	MaxInflightBytes int64 `mapstructure:"max_inflight_bytes" json:"max_inflight_bytes" envconfig:"max_inflight_bytes" yaml:"max_inflight_bytes" toml:"max_inflight_bytes" expose:"full" doc:"Node-wide budget in bytes of registry calls in flight. A call costs its request bytes plus its response bound, and a call which would take the budget over the limit is refused with the overloaded error and the retry signal later. Zero means no budget. Read at start: a change takes effect after a restart."`
+	// MemoryWatermarkBytes is the resident memory above which new registry calls are refused.
+	MemoryWatermarkBytes int64 `mapstructure:"memory_watermark_bytes" json:"memory_watermark_bytes" envconfig:"memory_watermark_bytes" yaml:"memory_watermark_bytes" toml:"memory_watermark_bytes" expose:"full" doc:"Resident memory of the process in bytes above which new registry calls are refused with the overloaded error and the retry signal later. Refusals stop when the memory is under 90% of the watermark. Zero means off. Set it below GOMEMLIMIT or the container limit. Read at start: a change takes effect after a restart."`
 
 	// Defaults are applied to every method which does not set the field itself.
 	Defaults RPCMethodDefaults `mapstructure:"defaults" json:"defaults" envconfig:"defaults" yaml:"defaults" toml:"defaults" doc:"Defaults applied to methods and targets which do not set the field themselves. Set <<auth_class>> here, or every method must state its own class."`
@@ -101,6 +107,8 @@ type RPCRegistryErrors struct {
 	MsgIDReused RPCRegistryError `mapstructure:"msg_id_reused" json:"msg_id_reused" envconfig:"msg_id_reused" yaml:"msg_id_reused" toml:"msg_id_reused" doc:"Error returned when a msg_id is sent again with another method or data than its first call. The first call is neither joined nor answered."`
 	// ResultEvicted is returned to a retransmit whose answer was not kept, because the reply was over the size limit.
 	ResultEvicted RPCRegistryError `mapstructure:"result_evicted" json:"result_evicted" envconfig:"result_evicted" yaml:"result_evicted" toml:"result_evicted" doc:"Error returned to a retransmit whose call ran, but whose reply was not kept: the reply was over the dedup size limit. The call is not run again."`
+	// Overloaded is returned to a call refused by admission: the in-flight budget or the memory watermark.
+	Overloaded RPCRegistryError `mapstructure:"overloaded" json:"overloaded" envconfig:"overloaded" yaml:"overloaded" toml:"overloaded" doc:"Temporary error returned to a call which admission refused, because the in-flight budget or the memory watermark is reached. The call was not executed, so the error metadata has <<x-centrifugo-retry>> set to <<later>>."`
 	// DedupUnavailable is returned to a tracked call when the dedup store fails. It is sent as temporary.
 	DedupUnavailable RPCRegistryError `mapstructure:"dedup_unavailable" json:"dedup_unavailable" envconfig:"dedup_unavailable" yaml:"dedup_unavailable" toml:"dedup_unavailable" doc:"Temporary error returned to a tracked call when the dedup store fails, with on_store_error fail_closed, or when the call it joined times out. Clients retry it later. In these cases the error metadata has <<x-centrifugo-retry>> set to <<later>>: the call was not executed, and the client sends it again later with the same msg_id. Under fail_open, a call whose msg_id already runs on its connection gets this error without the key, and the client must not send it again. A call it joined whose owner panicked gets this error without the key, and so does a retransmit of its msg_id: the call may have run, so it is not run again."`
 }
@@ -159,7 +167,9 @@ type RPCTarget struct {
 	// Endpoint is the gRPC address of the target, for example dns:///service.example:9000.
 	Endpoint string `mapstructure:"endpoint" json:"endpoint" envconfig:"endpoint" yaml:"endpoint" toml:"endpoint" expose:"full" doc:"gRPC address of the target, for example <<dns:///service.example:9000>>."`
 	// LoadBalancing is the gRPC load balancing policy.
-	LoadBalancing string `mapstructure:"load_balancing" default:"round_robin" json:"load_balancing" envconfig:"load_balancing" yaml:"load_balancing" toml:"load_balancing" expose:"full" doc:"gRPC load balancing policy: <<round_robin>> (default) or <<pick_first>>."`
+	LoadBalancing string `mapstructure:"load_balancing" default:"round_robin" json:"load_balancing" envconfig:"load_balancing" yaml:"load_balancing" toml:"load_balancing" expose:"full" doc:"gRPC load balancing policy: <<round_robin>> (default), <<pick_first>> or <<ring_hash>>. The ring_hash policy picks the replica by a consistent hash of the affinity_header value, and needs affinity_header."`
+	// AffinityHeader is the name of the per-call header whose value picks the replica under ring_hash.
+	AffinityHeader string `mapstructure:"affinity_header" json:"affinity_header" envconfig:"affinity_header" yaml:"affinity_header" toml:"affinity_header" expose:"full" doc:"Lower-case name of the per-call header whose value picks the replica under the ring_hash policy. Required with ring_hash, refused with other policies. The method must list it in headers to forward it. The server does not parse the value."`
 	// Timeout is the call timeout for methods of this target which do not set one.
 	Timeout Duration `mapstructure:"timeout" json:"timeout" envconfig:"timeout" yaml:"timeout" toml:"timeout" doc:"Call timeout for methods of this target which do not set one. Zero means the defaults apply."`
 	// MaxRequestBytes is the request size limit for methods of this target which do not set one.
@@ -194,6 +204,16 @@ type RPCMethod struct {
 	Headers []string `mapstructure:"headers" json:"headers" envconfig:"headers" yaml:"headers" toml:"headers" expose:"full" doc:"Names of per-call client headers forwarded to the target. Lower-case. Reserved names are rejected."`
 	// ErrorMetadata lists backend trailer keys copied into the protocol error metadata.
 	ErrorMetadata []string `mapstructure:"error_metadata" json:"error_metadata" envconfig:"error_metadata" yaml:"error_metadata" toml:"error_metadata" expose:"full" doc:"Backend trailer keys copied into the protocol error metadata. Lower-case."`
+	// ResponseSizeHint bounds the reply of a call by a size the request names. Nil means every call is bounded by MaxResponseBytes.
+	ResponseSizeHint *RPCResponseSizeHint `mapstructure:"response_size_hint" json:"response_size_hint" envconfig:"response_size_hint" yaml:"response_size_hint" toml:"response_size_hint" doc:"Bounds the reply of a call by the payload size its request names, so a small read reserves a small budget. Unset means every call reserves max_response_bytes."`
+}
+
+// RPCResponseSizeHint names the request field which holds the payload size a call asks for.
+type RPCResponseSizeHint struct {
+	// RequestField is the field number of a varint field of the request message, which holds the payload bytes asked for.
+	RequestField int `mapstructure:"request_field" json:"request_field" envconfig:"request_field" yaml:"request_field" toml:"request_field" expose:"full" doc:"Field number of a varint field (int32, int64, uint32 or uint64) of the request message, which holds the number of payload bytes the call asks for. From 1 to 536870911."`
+	// OverheadBytes is added to the hint for the envelope of the reply. Zero means the default.
+	OverheadBytes int `mapstructure:"overhead_bytes" json:"overhead_bytes" envconfig:"overhead_bytes" yaml:"overhead_bytes" toml:"overhead_bytes" expose:"full" doc:"Bytes added to the hinted size for the envelope of the reply. Zero means the default of 1024."`
 }
 
 // RPCRegistryFile is the content of the registry file.

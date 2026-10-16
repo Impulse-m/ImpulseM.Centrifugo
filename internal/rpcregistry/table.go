@@ -68,13 +68,6 @@ func ConnectionAuthClass(claim string, userID string) (AuthClass, bool) {
 	return class, true
 }
 
-// Built-in limits. They apply when neither the method, its target nor the defaults set a value.
-const (
-	DefaultTimeout          = 5 * time.Second
-	DefaultMaxRequestBytes  = 64 << 10
-	DefaultMaxResponseBytes = 1 << 20
-)
-
 // ParseAuthClass converts an auth class name from the config. It reports false for unknown names.
 func ParseAuthClass(name string) (AuthClass, bool) {
 	for _, entry := range authClassNames {
@@ -108,6 +101,9 @@ type Method struct {
 	// MaxRequestBytes and MaxResponseBytes are the size limits of the call.
 	MaxRequestBytes  int
 	MaxResponseBytes int
+	// ResponseSizeHint bounds the reply by a size the request names, nil when the method has none. Its overhead is
+	// never zero: the default is applied at build.
+	ResponseSizeHint *configtypes.RPCResponseSizeHint
 	Idempotent       bool
 	// Headers are per-call client headers forwarded to the target, sorted and lower-case.
 	Headers []string
@@ -174,15 +170,4 @@ func sortedCopy(names []string) []string {
 	out := slices.Clone(names)
 	slices.Sort(out)
 	return out
-}
-
-// firstNonZero returns the first value which is not the zero value of its type.
-func firstNonZero[T comparable](values ...T) T {
-	var zero T
-	for _, value := range values {
-		if value != zero {
-			return value
-		}
-	}
-	return zero
 }

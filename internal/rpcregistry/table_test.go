@@ -112,9 +112,9 @@ func TestBuiltInDefaultsApplyWhenNothingIsSet(t *testing.T) {
 
 	method := r.Lookup("bots.answer")
 	require.Equal(t, AuthClassBot, method.AuthClass)
-	require.Equal(t, DefaultTimeout, method.Timeout)
-	require.Equal(t, DefaultMaxRequestBytes, method.MaxRequestBytes)
-	require.Equal(t, DefaultMaxResponseBytes, method.MaxResponseBytes)
+	require.Equal(t, configtypes.DefaultTimeout, method.Timeout)
+	require.Equal(t, configtypes.DefaultMaxRequestBytes, method.MaxRequestBytes)
+	require.Equal(t, configtypes.DefaultMaxResponseBytes, method.MaxResponseBytes)
 }
 
 func TestLookupDoesNotAllocate(t *testing.T) {

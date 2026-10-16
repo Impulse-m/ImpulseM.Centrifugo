@@ -386,6 +386,10 @@ func createRedisPresenceManagerFrom(
 	return presenceManager, redisShards, mode, nil
 }
 
+func createMemoryMapBroker(n *centrifuge.Node) (centrifuge.MapBroker, error) {
+	return centrifuge.NewMemoryMapBroker(n, centrifuge.MemoryMapBrokerConfig{})
+}
+
 // createMapBroker creates a map broker by its type, the default one or a named one. It returns the Redis shards it
 // created, which the caller closes or keeps, and the connection mode for logging.
 func createMapBroker(

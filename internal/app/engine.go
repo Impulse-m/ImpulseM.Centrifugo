@@ -182,10 +182,6 @@ func createMemoryPresenceManager(n *centrifuge.Node) (centrifuge.PresenceManager
 	return centrifuge.NewMemoryPresenceManager(n, *presenceManagerConf)
 }
 
-func createMemoryMapBroker(n *centrifuge.Node) (centrifuge.MapBroker, error) {
-	return centrifuge.NewMemoryMapBroker(n, centrifuge.MemoryMapBrokerConfig{})
-}
-
 func createMemoryEngine(n *centrifuge.Node) (centrifuge.Broker, centrifuge.PresenceManager, error) {
 	broker, err := createMemoryBroker(n)
 	if err != nil {

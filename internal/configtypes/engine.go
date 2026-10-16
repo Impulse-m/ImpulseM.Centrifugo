@@ -30,7 +30,7 @@ type RedisPresenceManagerCommon struct {
 	// PresenceUserMapping enables optimization for presence stats keeping a separate hash of subscribed users in Redis.
 	PresenceUserMapping bool `mapstructure:"presence_user_mapping" json:"presence_user_mapping" envconfig:"presence_user_mapping" yaml:"presence_user_mapping" toml:"presence_user_mapping" doc:"Optimize presence stats by keeping a separate Redis hash of subscribed users."`
 	// ChannelState configures channel state events (occupied, vacated) of the presence manager.
-	ChannelState RedisChannelState `mapstructure:"channel_state" json:"channel_state" envconfig:"channel_state" yaml:"channel_state" toml:"channel_state" doc:"Channel state events (occupied, vacated) settings of the Redis presence manager."`
+	ChannelState RedisChannelState `mapstructure:"channel_state" json:"channel_state" envconfig:"channel_state" yaml:"channel_state" toml:"channel_state" doc:"Channel state events (occupied, vacated) settings of the Redis presence manager. Not sent by this build yet."`
 }
 
 type EngineRedisPresenceManager struct {

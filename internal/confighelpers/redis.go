@@ -19,12 +19,19 @@ func CentrifugeRedisBroker(n *centrifuge.Node, prefix string, shards []*centrifu
 	})
 }
 
-func CentrifugeRedisPresenceManager(n *centrifuge.Node, prefix string, shards []*centrifuge.RedisShard, cfg configtypes.RedisPresenceManagerCommon) (*centrifuge.RedisPresenceManager, error) {
+func CentrifugeRedisPresenceManager(
+	n *centrifuge.Node,
+	prefix string,
+	shards []*centrifuge.RedisShard,
+	cfg configtypes.RedisPresenceManagerCommon,
+	channelState *centrifuge.RedisChannelStateConfig,
+) (*centrifuge.RedisPresenceManager, error) {
 	presenceManagerConfig := centrifuge.RedisPresenceManagerConfig{
 		Shards:          shards,
 		Prefix:          prefix,
 		PresenceTTL:     cfg.PresenceTTL.ToDuration(),
 		UseHashFieldTTL: cfg.PresenceHashFieldTTL,
+		ChannelState:    channelState,
 	}
 	if cfg.PresenceUserMapping {
 		presenceManagerConfig.EnableUserMapping = func(_ string) bool {

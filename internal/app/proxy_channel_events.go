@@ -29,14 +29,12 @@ func channelStateProxyEnabled(cfg config.Config) bool {
 }
 
 // buildChannelStateProxy creates the channel state proxy of channel.proxy.state. The proxy is shared by
-// all namespaces: one endpoint receives the events of all of them. The presence manager does not feed
-// this proxy in this build yet, so no channel state event is sent.
+// all namespaces: one endpoint receives the events of all of them.
 func buildChannelStateProxy(cfg config.Config) (proxy.ChannelStateProxy, error) {
 	csp, err := proxy.GetChannelStateProxy("state", cfg.Channel.Proxy.State)
 	if err != nil {
 		return nil, fmt.Errorf("error creating channel state proxy: %w", err)
 	}
-	log.Warn().Msg("no channel state events are sent: the presence manager is not wired to the channel state proxy")
 	return csp, nil
 }
 

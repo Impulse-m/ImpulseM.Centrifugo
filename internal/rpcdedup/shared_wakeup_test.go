@@ -3,6 +3,7 @@ package rpcdedup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,8 +23,24 @@ func flightOpen(flight *Flight) bool {
 	}
 }
 
+// watcherRunning reports whether the wake watcher of the fixture's node runs, or is starting.
+func watcherRunning(fx *sharedFixture) bool {
+	fx.shared.watchMu.Lock()
+	defer fx.shared.watchMu.Unlock()
+	return fx.shared.watching
+}
+
+// fillWaiters lists count other nodes as waiters of the in-flight record of key, as their begins would.
+func fillWaiters(t *testing.T, fx *sharedFixture, key Key, fingerprint [32]byte, count int) {
+	t.Helper()
+	for i := range count {
+		_, err := fx.backend.begin(context.Background(), key, fingerprint, fmt.Sprintf("waiter-%d", i), time.Second, 64)
+		require.NoError(t, err)
+	}
+}
+
 func TestSharedWakeupRegistersWaiterOnRemoteInFlight(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
@@ -35,13 +52,13 @@ func TestSharedWakeupRegistersWaiterOnRemoteInFlight(t *testing.T) {
 	require.Equal(t, []string{"node-a"}, entry.waiters)
 
 	// The same node begins again: it is listed once.
-	_, err = fx.backend.Begin(context.Background(), sharedKey, sharedFingerprintA, "node-a", time.Second, true)
+	_, err = fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-a", time.Second, 64)
 	require.NoError(t, err)
 	entry, _ = fx.backend.entry(sharedKey)
 	require.Equal(t, []string{"node-a"}, entry.waiters)
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
-	fx.shared.Wake(sharedKey)
+	fx.backend.deliverWake(sharedKey)
 	waitDone(t, owner)
 }
 
@@ -59,11 +76,11 @@ func TestSharedWithoutWakeupDoesNotRegister(t *testing.T) {
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Empty(t, fx.doneNotified)
+	require.Equal(t, 1, fx.endCount(WatchEndPolled))
 }
 
-func TestSharedWakeupCompletesWithoutPolling(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+func TestSharedWakeupCompletesWithoutReading(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
@@ -71,33 +88,50 @@ func TestSharedWakeupCompletesWithoutPolling(t *testing.T) {
 	require.NoError(t, err)
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
-	fx.shared.Wake(sharedKey)
+	fx.backend.deliverWake(sharedKey)
 	waitDone(t, owner)
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
 	require.Equal(t, 1, fx.pollCount())
-	require.Equal(t, 1, fx.endCount(WatchEndNotified))
+	require.Equal(t, 1, fx.endCount(WatchEndWoken))
 }
 
-func TestSharedWakeupLostNotificationFallsBackToPoll(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, 20*time.Millisecond)
+func TestSharedWakeupLostWakeIsAnsweredAtCheck(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.checkDelay = 20 * time.Millisecond
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 
-	// The notification is lost: the answer is found by the fallback poll.
+	// The wake is lost: the check finds the answer.
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndPolled))
-	require.GreaterOrEqual(t, fx.pollCount(), 1)
-	require.LessOrEqual(t, fx.pollCount(), 5)
+	require.Equal(t, 1, fx.endCount(WatchEndChecked))
+	require.Equal(t, 1, fx.pollCount())
+}
+
+func TestSharedWakeupCheckIsJittered(t *testing.T) {
+	const samples = 1000
+	distinct := make(map[time.Duration]struct{})
+	for range samples {
+		delay := newRetryBackOff(time.Second, time.Second).NextBackOff()
+		require.GreaterOrEqual(t, delay, 800*time.Millisecond)
+		require.LessOrEqual(t, delay, 1200*time.Millisecond)
+		distinct[delay] = struct{}{}
+	}
+	require.Greater(t, len(distinct), 1, "the checks of a wave are not all at one time")
+}
+
+func TestWakeCheckDelayBelowInflightGrace(t *testing.T) {
+	// The check, at most a fifth later than wakeCheckDelay, comes well before the deadline of the wait.
+	require.Less(t, wakeCheckDelay*6/5, InflightGrace)
 }
 
 func TestSharedWakeupBeforeRemoteMarkIsKept(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
-	// The owner completes and notifies between the answer of the begin script and the marking of the flight.
+	// The owner completes and wakes between the answer of the begin script and the marking of the flight.
 	fx.backend.afterBegin = func() {
 		fx.backend.finish(sharedKey, sharedWakeupRecord)
 		fx.shared.Wake(sharedKey)
@@ -110,195 +144,305 @@ func TestSharedWakeupBeforeRemoteMarkIsKept(t *testing.T) {
 	waitDone(t, owner)
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
 	require.Equal(t, 1, fx.pollCount())
-	require.Equal(t, 1, fx.endCount(WatchEndNotified))
+	require.Equal(t, 1, fx.endCount(WatchEndWoken))
 }
 
-func TestSharedWakeupManyNotificationsDoNotBlock(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+func TestSharedWakeupManyWakesCoalesce(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 
-	// The record is still in flight: the notifications coalesce, and the call keeps waiting.
-	for range 100 {
+	for range 5 {
 		fx.shared.Wake(sharedKey)
 	}
 	require.Eventually(t, func() bool {
 		return fx.pollCount() >= 1
 	}, 5*time.Second, time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	require.LessOrEqual(t, fx.pollCount(), 2)
 	require.True(t, flightOpen(owner))
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	fx.shared.Wake(sharedKey)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndNotified))
 }
 
-func TestSharedWakeupStaleNotificationKeepsWaiting(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+func TestSharedWakeupStaleWakeKeepsWaiting(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 
-	// A notification of an earlier record: the poll finds the record in flight, and the wait goes on.
 	fx.shared.Wake(sharedKey)
 	require.Eventually(t, func() bool {
 		return fx.pollCount() == 1
 	}, 5*time.Second, time.Millisecond)
-	require.Never(t, func() bool {
-		return !flightOpen(owner)
-	}, 50*time.Millisecond, time.Millisecond)
-	require.Equal(t, 0, fx.endCount(WatchEndNotified))
+	require.True(t, flightOpen(owner), "the record is still in flight, so the wait goes on")
+	require.Equal(t, 0, fx.endCount(WatchEndWoken))
 
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	fx.shared.Wake(sharedKey)
 	waitDone(t, owner)
-	require.Equal(t, 1, fx.endCount(WatchEndNotified))
+	require.Equal(t, 1, fx.endCount(WatchEndWoken))
 }
 
-func TestSharedWakeupOwnerCrashEndsAtExpiry(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, 20*time.Millisecond)
+func TestSharedWakeupOwnerCrashReadsOnceThenDeadline(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.checkDelay = 20 * time.Millisecond
+	fx.shared.inflightGrace = 50 * time.Millisecond
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
-	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	owner := NewCallFlight(sharedFingerprintA, 10*time.Millisecond)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 
-	// The owner died: its record expires, and no notification comes.
-	fx.backend.remove(sharedKey)
-	waitDone(t, owner)
-	require.True(t, owner.Record().Abandoned)
-	require.False(t, owner.Record().NotRun)
-	require.Equal(t, 1, fx.endCount(WatchEndPolled))
-}
-
-func TestSharedWakeupDeadlineWithoutAnswer(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	fx.shared.inflightGrace = 20 * time.Millisecond
-	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
-
-	owner := NewCallFlight(sharedFingerprintA, 0)
-	_, err := fx.shared.Begin(sharedKey, owner)
-	require.NoError(t, err)
-
+	// The owner died: the record stays in flight, and the deadline abandons the wait without a read.
 	waitDone(t, owner)
 	require.True(t, owner.Record().Abandoned)
 	require.Equal(t, 1, fx.endCount(WatchEndDeadline))
-	require.Equal(t, 0, fx.pollCount())
+	require.Equal(t, 1, fx.pollCount())
 }
 
-func TestSharedWakeUnknownKeyIsIgnored(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	require.NotPanics(t, func() {
-		fx.shared.Wake(Key{Scope: testScope("u9", "b"), MsgID: 99})
-	})
+func TestSharedWakeupRecordMissingAfterWake(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+
+	fx.backend.remove(sharedKey)
+	fx.shared.Wake(sharedKey)
+	waitDone(t, owner)
+	require.True(t, owner.Record().Abandoned)
+	require.Equal(t, 1, fx.endCount(WatchEndWoken))
 }
 
-func TestSharedWakeOwnerFlightIsIgnored(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
+func TestSharedWakeupFullRefusesWait(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	fillWaiters(t, fx, sharedKey, sharedFingerprintA, 64)
 
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	lookup, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	require.Equal(t, OutcomeMiss, lookup.Outcome)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+	require.False(t, flightOpen(owner), "a refused duplicate is answered at once")
+	require.True(t, owner.Record().Abandoned)
+	require.True(t, owner.Record().NotRun)
+	require.Equal(t, 1, fx.endCount(WatchEndRefused))
+	require.Equal(t, 0, fx.pollCount())
+	require.Equal(t, 0, fx.backend.watchStartCount())
+	entry, _ := fx.backend.entry(sharedKey)
+	require.Len(t, entry.waiters, 64)
+	require.NotContains(t, entry.waiters, "node-a")
+}
 
-	fx.shared.Wake(sharedKey)
-	require.True(t, flightOpen(owner), "a notification does not complete a call which runs on this node")
-	require.Empty(t, fx.doneNotified)
+func TestSharedWakeupFullForwardsEarlierCancel(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	fillWaiters(t, fx, sharedKey, sharedFingerprintA, 64)
+	// The duplicate is cancelled while its flight has no call to cancel: the cancel is forwarded to the owner.
+	fx.backend.onBegin = func() {
+		require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	}
 
-	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	lookup, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
+	requireNotifiedEventually(t, fx, []notifyCall{{nodeID: "node-b", key: sharedKey}})
+	require.Equal(t, 1, fx.endCount(WatchEndRefused))
+}
+
+func TestSharedWakeupWatcherStartsOnFirstRemoteWait(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	otherKey := Key{Scope: sharedKey.Scope, MsgID: 8}
+	fx.backend.put(otherKey, 'i', sharedFingerprintA, "node-b", Record{})
+	require.Equal(t, 0, fx.backend.watchStartCount(), "no watcher before a remote wait")
+
+	first := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, first)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return fx.backend.watchStartCount() == 1
+	}, 5*time.Second, time.Millisecond)
+
+	second := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err = fx.shared.Begin(otherKey, second)
+	require.NoError(t, err)
+	require.Equal(t, 1, fx.backend.watchStartCount(), "a running watcher is not started again")
+
+	fx.backend.finish(sharedKey, sharedWakeupRecord)
+	fx.backend.finish(otherKey, sharedWakeupRecord)
+	fx.backend.deliverWake(sharedKey)
+	fx.backend.deliverWake(otherKey)
+	waitDone(t, first)
+	waitDone(t, second)
+}
+
+func TestSharedWakeupWatcherStopsWhenIdle(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.watchIdleAfter = 200 * time.Millisecond
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.finish(sharedKey, sharedWakeupRecord)
+	fx.backend.deliverWake(sharedKey)
+	waitDone(t, owner)
+
+	// Inside the idle time the empty read keeps the watcher.
+	fx.backend.emptyRead()
+	require.True(t, watcherRunning(fx))
+
+	// Once the idle time has passed, an empty read stops it.
+	require.Eventually(t, func() bool {
+		fx.backend.emptyRead()
+		return !watcherRunning(fx)
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, 1, fx.backend.watchStartCount())
+}
+
+func TestSharedWakeupWatcherRestartsAfterIdle(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.watchIdleAfter = 20 * time.Millisecond
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	first := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, first)
+	require.NoError(t, err)
+	fx.backend.finish(sharedKey, sharedWakeupRecord)
+	fx.backend.deliverWake(sharedKey)
+	waitDone(t, first)
+	require.Eventually(t, func() bool {
+		fx.backend.emptyRead()
+		return !watcherRunning(fx)
+	}, 5*time.Second, 10*time.Millisecond)
+
+	otherKey := Key{Scope: sharedKey.Scope, MsgID: 8}
+	fx.backend.put(otherKey, 'i', sharedFingerprintA, "node-b", Record{})
+	second := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err = fx.shared.Begin(otherKey, second)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return fx.backend.watchStartCount() == 2
+	}, 5*time.Second, time.Millisecond)
+
+	fx.backend.finish(otherKey, sharedWakeupRecord)
+	fx.backend.deliverWake(otherKey)
+	waitDone(t, second)
+	require.Equal(t, 2, fx.endCount(WatchEndWoken), "both waits were woken, one before the idle stop and one after the restart")
+}
+
+func TestSharedWakeupWatcherNotStoppedWhileWaiting(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.watchIdleAfter = time.Millisecond
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+
+	// The wait is open, so the watcher is not idle, however long ago the last wait ended.
+	time.Sleep(5 * time.Millisecond)
+	for range 3 {
+		fx.backend.emptyRead()
+	}
+	require.True(t, watcherRunning(fx))
+
+	fx.backend.finish(sharedKey, sharedWakeupRecord)
+	fx.backend.deliverWake(sharedKey)
 	waitDone(t, owner)
 }
 
-// ownerFlight returns a flight which runs on node-a: its begin registered the call in the fake backend.
-func ownerFlight(t *testing.T, fx *sharedFixture) *Flight {
-	t.Helper()
+func TestSharedCompleteWakesWaiters(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
-	lookup, err := fx.shared.Begin(sharedKey, owner)
+	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-	require.Equal(t, OutcomeMiss, lookup.Outcome)
-	return owner
-}
-
-// setWaiters sets the waiters of the in-flight record of sharedKey in the fake backend.
-func setWaiters(fx *sharedFixture, waiters ...string) {
-	fx.backend.mu.Lock()
-	defer fx.backend.mu.Unlock()
-	fx.backend.entries[sharedKey].waiters = waiters
-}
-
-func TestSharedCompleteNotifiesWaiters(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b", "node-c", "node-a")
-
-	// The notifier runs after the local flight is done, so the duplicates are answered before any waiter is told.
-	var doneAtNotify []bool
-	fx.shared.doneNotifier = func(nodeID string, key Key) {
-		doneAtNotify = append(doneAtNotify, !flightOpen(owner))
-		fx.doneNotified = append(fx.doneNotified, notifyCall{nodeID: nodeID, key: key})
-	}
-	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}, {nodeID: "node-c", key: sharedKey}}, fx.doneNotified)
-	require.Equal(t, []bool{true, true}, doneAtNotify)
-}
-
-func TestSharedCompleteAbandonedNotifiesWaiters(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
-
-	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Abandoned: true}))
-	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}}, fx.doneNotified)
-	_, found := fx.backend.entry(sharedKey)
-	require.False(t, found)
-}
-
-func TestSharedCompleteNotOwnedNotifiesNobody(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
-	fx.backend.mu.Lock()
-	fx.backend.entries[sharedKey].owner = "node-z"
-	fx.backend.mu.Unlock()
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Empty(t, fx.doneNotified)
+	require.False(t, flightOpen(owner))
+	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}}, fx.backend.wakeCalls())
+	require.Equal(t, [2]int{2, 0}, fx.woke)
 }
 
-func TestSharedCompleteLocalOnlyNotifiesNobody(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
+func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
+	fx.backend.wakeErr = errors.New("wake failed")
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
+	require.Equal(t, [2]int{0, 2}, fx.woke)
+	require.False(t, flightOpen(owner))
+	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply, "the local record is kept")
+}
+
+func TestSharedCompleteAbandonedWakesWaiters(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Abandoned: true, NotRun: true}))
+	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}}, fx.backend.wakeCalls())
+}
+
+func TestSharedCompleteNotOwnedWakesNobody(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-c", time.Second, 64)
+	// The flight was never begun here: the record belongs to node-b, so this write does not take effect.
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
+	require.Empty(t, fx.backend.wakeCalls())
+}
+
+func TestSharedCompleteLocalOnlyWakesNobody(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	owner.localOnly = true
-
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Empty(t, fx.doneNotified)
+	require.Empty(t, fx.backend.wakeCalls())
+	require.Empty(t, fx.backend.callLog())
 }
 
-func TestSharedCompleteFailedWriteNotifiesNobody(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
-	fx.backend.mu.Lock()
-	fx.backend.completeFailures = sharedCompleteAttempts
-	fx.backend.mu.Unlock()
+func TestSharedCompleteFailedWriteWakesNobody(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
+	fx.backend.setFail(errors.New("redis is down"))
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Empty(t, fx.doneNotified)
+	require.Empty(t, fx.backend.wakeCalls())
 }
 
-func TestSharedCompleteWithoutWakeupNotifiesNobody(t *testing.T) {
+func TestSharedCompleteWithoutWakeupWakesNobody(t *testing.T) {
 	fx := newSharedFixture(t, false)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
+	owner := NewCallFlight(sharedFingerprintA, time.Second)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	fx.backend.begin(context.Background(), sharedKey, sharedFingerprintA, "node-b", time.Second, 64)
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Empty(t, fx.doneNotified)
+	require.Empty(t, fx.backend.wakeCalls())
 }
 
 func TestSharedWithoutWakeupPollsAsBefore(t *testing.T) {
@@ -308,49 +452,53 @@ func TestSharedWithoutWakeupPollsAsBefore(t *testing.T) {
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
 	require.Equal(t, 1, fx.endCount(WatchEndPolled))
-	require.Equal(t, 0, fx.endCount(WatchEndNotified))
+	require.Equal(t, 0, fx.endCount(WatchEndWoken))
+	require.Equal(t, 0, fx.endCount(WatchEndChecked))
 }
 
-// The owner's reply waits for the done notifier when a remote waiter exists: Complete returns once the local flight is
-// done and the notifier ran.
-func TestSharedCompleteReturnsAfterSlowNotifier(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, time.Hour)
-	owner := ownerFlight(t, fx)
-	setWaiters(fx, "node-b")
-	var notifiedAt time.Time
-	fx.shared.doneNotifier = func(string, Key) {
-		time.Sleep(5 * time.Millisecond)
-		notifiedAt = time.Now()
-	}
-
-	start := time.Now()
-	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	elapsed := time.Since(start)
-	require.False(t, notifiedAt.IsZero(), "the notifier ran before Complete returned")
-	require.False(t, flightOpen(owner))
-	require.GreaterOrEqual(t, elapsed, 5*time.Millisecond)
-	t.Logf("owner reply with one remote waiter and a notifier of 5ms: %s", elapsed)
-}
-
-func TestSharedWakeupEndsWithErrorKept(t *testing.T) {
-	fx := newSharedFixtureWakeup(t, 20*time.Millisecond)
+func TestSharedRunWithoutWakeupStartsNoWatcher(t *testing.T) {
+	fx := newSharedFixture(t, false)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- fx.shared.Run(ctx)
+	}()
+
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
-
-	// Failing polls are retried at the fallback interval, and the wait goes on: the answer is found once the poll works.
-	fx.backend.setFail(errors.New("redis is down"))
-	require.Eventually(t, func() bool {
-		return fx.pollCount() >= 2
-	}, 5*time.Second, time.Millisecond)
-	require.True(t, flightOpen(owner))
-	fx.backend.setFail(nil)
 	fx.backend.finish(sharedKey, sharedWakeupRecord)
 	waitDone(t, owner)
-	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
-	require.Equal(t, 1, fx.endCount(WatchEndPolled))
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, 0, fx.backend.watchStartCount())
+}
+
+func TestSharedRunStopsWatcher(t *testing.T) {
+	fx := newSharedFixtureWith(t, false, true)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- fx.shared.Run(ctx)
+	}()
+
+	owner := NewCallFlight(sharedFingerprintA, 5*time.Millisecond)
+	fx.shared.inflightGrace = 5 * time.Millisecond
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return watcherRunning(fx)
+	}, 5*time.Second, time.Millisecond)
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.False(t, watcherRunning(fx), "Run returns after the watcher returned")
+	waitDone(t, owner)
 }

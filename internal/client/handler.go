@@ -505,10 +505,8 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	// Handle single connection enforcement before establishing connection.
-	if !cfg.HasServerTagsFilterTemplates() && singleConnectionApplies(cfg, credentials) {
-		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
-			return centrifuge.ConnectReply{}, err
-		}
+	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, false); err != nil {
+		return centrifuge.ConnectReply{}, err
 	}
 
 	// Automatically subscribe on personal server-side channel.
@@ -602,15 +600,11 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
-	// With templates, a template which refuses the connection is checked before the single connection of the user is
-	// enforced, so a refused connect does not disconnect the other connection of the user.
 	if err := h.connectFilterTemplates(e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
-	if cfg.HasServerTagsFilterTemplates() && singleConnectionApplies(cfg, credentials) {
-		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
-			return centrifuge.ConnectReply{}, err
-		}
+	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, true); err != nil {
+		return centrifuge.ConnectReply{}, err
 	}
 	storeConnectionTokenFilters(storage, subscriptions)
 	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)
@@ -1361,10 +1355,7 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
-	// The template filters the publications of a subscription, and history reads publications without the subscription,
-	// so it would read the publications of every tenant or session the template keeps apart. Recovery is not refused: it
-	// is the catch-up of a filtered subscription and applies the filter.
-	if chOpts.HasServerTagsFilterTemplate() {
+	if refusesHistory(&chOpts) {
 		return centrifuge.HistoryReply{}, centrifuge.ErrorPermissionDenied
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

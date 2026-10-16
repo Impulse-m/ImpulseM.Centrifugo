@@ -19,13 +19,7 @@ func CentrifugeRedisBroker(n *centrifuge.Node, prefix string, shards []*centrifu
 	})
 }
 
-func CentrifugeRedisPresenceManager(
-	n *centrifuge.Node,
-	prefix string,
-	shards []*centrifuge.RedisShard,
-	cfg configtypes.RedisPresenceManagerCommon,
-	channelState *centrifuge.RedisChannelStateConfig,
-) (*centrifuge.RedisPresenceManager, error) {
+func CentrifugeRedisPresenceManager(n *centrifuge.Node, prefix string, shards []*centrifuge.RedisShard, cfg configtypes.RedisPresenceManagerCommon, channelState *centrifuge.RedisChannelStateConfig) (*centrifuge.RedisPresenceManager, error) {
 	presenceManagerConfig := centrifuge.RedisPresenceManagerConfig{
 		Shards:          shards,
 		Prefix:          prefix,

@@ -231,11 +231,7 @@ func rawModeDataCheck(cfgContainer *config.Container) func(channel string, data 
 	}
 }
 
-func createRedisEngine(
-	n *centrifuge.Node,
-	cfgContainer *config.Container,
-	proxyMap *client.ProxyMap,
-) (*centrifuge.RedisBroker, centrifuge.PresenceManager, string, error) {
+func createRedisEngine(n *centrifuge.Node, cfgContainer *config.Container, proxyMap *client.ProxyMap) (*centrifuge.RedisBroker, centrifuge.PresenceManager, string, error) {
 	cfg := cfgContainer.Config()
 	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.Engine.Redis.Redis)
 	if err != nil {
@@ -276,11 +272,7 @@ func createRedisBroker(n *centrifuge.Node, cfgContainer *config.Container) (*cen
 	return broker, mode, nil
 }
 
-func createRedisPresenceManager(
-	n *centrifuge.Node,
-	cfgContainer *config.Container,
-	proxyMap *client.ProxyMap,
-) (centrifuge.PresenceManager, string, error) {
+func createRedisPresenceManager(n *centrifuge.Node, cfgContainer *config.Container, proxyMap *client.ProxyMap) (centrifuge.PresenceManager, string, error) {
 	cfg := cfgContainer.Config()
 	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.PresenceManager.Redis.Redis)
 	if err != nil {

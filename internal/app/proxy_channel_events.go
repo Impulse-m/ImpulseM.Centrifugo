@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/centrifugal/centrifugo/v6/internal/client"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -90,10 +92,18 @@ func enableCacheEmptyProxies(
 	cfg config.Config,
 	namedProxies map[string]configtypes.Proxy,
 ) error {
+	return forEachCacheEmptyUser(cfg, func(name string, namespace string) error {
+		return enableCacheEmptyProxy(proxyMap, cfg, namedProxies, name, namespace)
+	})
+}
+
+// forEachCacheEmptyUser calls fn with the cache empty proxy name and the namespace of each channel group that
+// has a cache empty proxy enabled. The group of channels without namespace has the empty namespace. It stops at
+// the first error fn returns.
+func forEachCacheEmptyUser(cfg config.Config, fn func(name string, namespace string) error) error {
 	withoutNamespace := cfg.Channel.WithoutNamespace
 	if withoutNamespace.CacheEmptyProxyEnabled {
-		err := enableCacheEmptyProxy(proxyMap, cfg, namedProxies, withoutNamespace.CacheEmptyProxyName, "")
-		if err != nil {
+		if err := fn(withoutNamespace.CacheEmptyProxyName, ""); err != nil {
 			return err
 		}
 	}
@@ -101,34 +111,34 @@ func enableCacheEmptyProxies(
 		if !ns.CacheEmptyProxyEnabled {
 			continue
 		}
-		err := enableCacheEmptyProxy(proxyMap, cfg, namedProxies, ns.CacheEmptyProxyName, ns.Name)
-		if err != nil {
+		if err := fn(ns.CacheEmptyProxyName, ns.Name); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkCacheEmptyReload rejects a reloaded config which enables a cache empty proxy that was not created at
-// startup. The cache empty proxies and their hook are created once, at startup, so a reload can use only the
-// proxies created then.
-func checkCacheEmptyReload(proxyMap *client.ProxyMap, cfg config.Config) error {
-	withoutNamespace := cfg.Channel.WithoutNamespace
-	if withoutNamespace.CacheEmptyProxyEnabled {
-		name := withoutNamespace.CacheEmptyProxyName
-		if _, ok := proxyMap.CacheEmptyProxies[name]; !ok {
-			return fmt.Errorf("cache empty proxy %s of channels without namespace was not created at startup, restart to use it", name)
-		}
+// cacheEmptyLayout returns the cache empty proxy name of each enabled channel group, keyed by namespace. Channels
+// without namespace are keyed by the empty string.
+func cacheEmptyLayout(cfg config.Config) map[string]string {
+	layout := map[string]string{}
+	// The callback never fails, so the error of forEachCacheEmptyUser is always nil.
+	_ = forEachCacheEmptyUser(cfg, func(name string, namespace string) error {
+		layout[namespace] = name
+		return nil
+	})
+	return layout
+}
+
+// checkCacheEmptyReload rejects a reloaded config which changes the cache empty layout of the startup config: a
+// cache empty proxy enabled or disabled, added, removed or renamed. The cache empty proxies and their hook are
+// created once, at startup, so only the options of the proxies can change on reload. The endpoint and timeout of
+// a cache empty proxy do not change on reload either.
+func checkCacheEmptyReload(startup map[string]string, newCfg config.Config) error {
+	if maps.Equal(startup, cacheEmptyLayout(newCfg)) {
+		return nil
 	}
-	for _, ns := range cfg.Channel.Namespaces {
-		if !ns.CacheEmptyProxyEnabled {
-			continue
-		}
-		if _, ok := proxyMap.CacheEmptyProxies[ns.CacheEmptyProxyName]; !ok {
-			return fmt.Errorf("cache empty proxy %s of namespace %s was not created at startup, restart to use it", ns.CacheEmptyProxyName, ns.Name)
-		}
-	}
-	return nil
+	return errors.New("cache empty proxies changed by reload: enabling, disabling, adding, removing or renaming one needs a restart")
 }
 
 // enableCacheEmptyProxy resolves the cache empty proxy named by name and logs it. An empty namespace

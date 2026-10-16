@@ -145,7 +145,7 @@ Answer `{"result": {}}`; an `error` object or a non-200 status makes the batch b
 * Redis must not evict these keys: set `maxmemory-policy noeviction`. Eviction loses events.
 * Use a separate Redis presence manager (`presence_manager.redis.channel_state`) when the engine is shared with other data, as PRO recommends.
 * Do not change `num_partitions`, or the number of Redis shards, while channels are occupied: their state is orphaned and a `vacated` event can be missed.
-* Startup rules: `state_proxy_enabled` requires `presence` and a Redis presence manager (`engine.type: redis`, or `presence_manager.type: redis`); `cache_empty_proxy_enabled` requires `force_recovery_mode: cache`. Other options are checked on startup too. A reload (SIGHUP) that enables a cache empty proxy, or names one, which was not created at startup is rejected, and the old config stays: restart to use it.
+* Startup rules: `state_proxy_enabled` requires `presence` and a Redis presence manager (`engine.type: redis`, or `presence_manager.type: redis`); `cache_empty_proxy_enabled` requires `force_recovery_mode: cache`. Other options are checked on startup too. A reload (SIGHUP) that enables or disables a cache empty proxy, adds, removes or renames one, is rejected, and the old config stays: restart to change it. A reload does not change the endpoint or timeout of a cache empty proxy either: restart for that.
 * Differences from PRO: there is no `state_proxy_name`, a single `channel.proxy.state` endpoint serves all namespaces; the stream cap of 8192 events per partition is fixed.
 
 ### Not implemented (yet)

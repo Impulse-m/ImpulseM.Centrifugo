@@ -331,7 +331,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	logStartWarnings(cfg, cfgMeta)
 
 	handleSignals(
-		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry, proxyMap,
+		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry,
 		httpServers, grpcAPIServer, grpcUniServer,
 		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
@@ -357,13 +357,10 @@ func runServices(ctx context.Context, manager *service.Manager) chan struct{} {
 // Everything which can fail is done before any verifier changes, so the new
 // config is applied either fully or not at all.
 func reloadConfig(
-	newCfg config.Config, cfgContainer *config.Container, proxyMap *client.ProxyMap,
+	newCfg config.Config, cfgContainer *config.Container,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT,
 	rpcRegistry *rpcregistry.Registry,
 ) error {
-	if err := checkCacheEmptyReload(proxyMap, newCfg); err != nil {
-		return err
-	}
 	verifierConfig, err := confighelpers.MakeVerifierConfig(newCfg.Client.Token)
 	if err != nil {
 		return err
@@ -402,12 +399,13 @@ func reloadConfig(
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, rpcRegistry *rpcregistry.Registry,
-	proxyMap *client.ProxyMap,
 	httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
 	serviceCancel context.CancelFunc, ingestDone chan struct{}, ingestCancel context.CancelFunc,
 ) {
 	cfg := cfgContainer.Config()
+	// The cache empty proxies were created from the config at startup, so a reload must keep their layout.
+	cacheEmptyStartup := cacheEmptyLayout(cfg)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, os.Interrupt, syscall.SIGTERM)
 	for {
@@ -428,7 +426,11 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			if err = reloadConfig(newCfg, cfgContainer, proxyMap, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
+			if err = checkCacheEmptyReload(cacheEmptyStartup, newCfg); err != nil {
+				log.Error().Msgf("error reloading: %v", err)
+				continue
+			}
+			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}

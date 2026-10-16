@@ -149,10 +149,24 @@ func TestEnableCacheEmptyProxies(t *testing.T) {
 	}
 }
 
-// TestCheckCacheEmptyReload checks that a reload may use only the cache empty proxies created at startup.
+// newCacheEmptyStartupConfig returns the config at startup for TestCheckCacheEmptyReload: the chat namespace
+// has its cache empty proxy enabled, under the name other.
+func newCacheEmptyStartupConfig() config.Config {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Proxy.CacheEmpty = newChannelEventsTestProxy("http://localhost:8000/default")
+	cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
+		{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
+			CacheEmptyProxyEnabled: true,
+			CacheEmptyProxyName:    "other",
+		}},
+	}
+	return cfg
+}
+
+// TestCheckCacheEmptyReload checks that a reload keeps the cache empty layout of the startup config: the proxy
+// of each enabled channel group, and which groups are enabled. Options of a proxy may change on reload.
 func TestCheckCacheEmptyReload(t *testing.T) {
-	proxyMap := newChannelEventsTestProxyMap()
-	proxyMap.CacheEmptyProxies["other"] = nil
+	startup := cacheEmptyLayout(newCacheEmptyStartupConfig())
 
 	testCases := []struct {
 		name    string
@@ -160,44 +174,62 @@ func TestCheckCacheEmptyReload(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:   "nothing enabled",
+			name:   "unchanged",
 			modify: func(cfg *config.Config) {},
 		},
 		{
-			name: "enabled namespace with a proxy created at startup",
+			name: "endpoint of a cache empty proxy changed",
 			modify: func(cfg *config.Config) {
-				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
-						CacheEmptyProxyEnabled: true,
-						CacheEmptyProxyName:    "other",
-					}},
-				}
+				cfg.Channel.Proxy.CacheEmpty = newChannelEventsTestProxy("http://localhost:9000/default")
 			},
 		},
 		{
-			name: "disabled namespace with a missing proxy",
+			name: "namespace disabled",
 			modify: func(cfg *config.Config) {
-				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
-						CacheEmptyProxyName: "missing",
-					}},
-				}
-			},
-		},
-		{
-			name: "enabled namespace with a proxy not created at startup",
-			modify: func(cfg *config.Config) {
-				cfg.Channel.Namespaces = []configtypes.ChannelNamespace{
-					{Name: "chat", ChannelOptions: configtypes.ChannelOptions{
-						CacheEmptyProxyEnabled: true,
-						CacheEmptyProxyName:    "missing",
-					}},
-				}
+				cfg.Channel.Namespaces[0].CacheEmptyProxyEnabled = false
 			},
 			wantErr: true,
 		},
 		{
-			name: "enabled without namespace with the default proxy not created at startup",
+			name: "proxy of namespace renamed",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces[0].CacheEmptyProxyName = config.DefaultProxyName
+			},
+			wantErr: true,
+		},
+		{
+			name: "namespace removed",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = nil
+			},
+			wantErr: true,
+		},
+		{
+			name: "namespace enabled",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
+					Name: "news",
+					ChannelOptions: configtypes.ChannelOptions{
+						CacheEmptyProxyEnabled: true,
+						CacheEmptyProxyName:    "other",
+					},
+				})
+			},
+			wantErr: true,
+		},
+		{
+			name: "disabled namespace added",
+			modify: func(cfg *config.Config) {
+				cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
+					Name: "news",
+					ChannelOptions: configtypes.ChannelOptions{
+						CacheEmptyProxyName: "missing",
+					},
+				})
+			},
+		},
+		{
+			name: "without namespace enabled",
 			modify: func(cfg *config.Config) {
 				cfg.Channel.WithoutNamespace.CacheEmptyProxyEnabled = true
 				cfg.Channel.WithoutNamespace.CacheEmptyProxyName = config.DefaultProxyName
@@ -208,9 +240,9 @@ func TestCheckCacheEmptyReload(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config.DefaultConfig()
+			cfg := newCacheEmptyStartupConfig()
 			tc.modify(&cfg)
-			err := checkCacheEmptyReload(proxyMap, cfg)
+			err := checkCacheEmptyReload(startup, cfg)
 			if tc.wantErr {
 				require.Error(t, err)
 				return

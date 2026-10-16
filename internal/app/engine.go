@@ -270,13 +270,10 @@ func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) e
 	case "memory":
 		mapBroker, err = centrifuge.NewMemoryMapBroker(node, centrifuge.MemoryMapBrokerConfig{})
 	case "redis":
-		var redisShards []*centrifuge.RedisShard
-		redisShards, mapBrokerMode, err = confighelpers.CentrifugeRedisShards(node, cfg.MapBroker.Redis.Redis)
+		mapBroker, _, mapBrokerMode, err = createRedisMapBroker(node, cfg.MapBroker.Redis)
 		if err != nil {
-			return fmt.Errorf("error creating Redis shards for map broker: %w", err)
+			return err
 		}
-		mapBroker, err = confighelpers.CentrifugeRedisMapBroker(
-			node, cfg.MapBroker.Redis.Prefix, redisShards, cfg.MapBroker.Redis.RedisMapBrokerCommon)
 	case "postgres":
 		mapBroker, err = createPostgresMapBroker(node, cfg.MapBroker.Postgres)
 		if err != nil {

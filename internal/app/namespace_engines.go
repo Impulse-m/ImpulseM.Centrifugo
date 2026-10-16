@@ -417,16 +417,7 @@ func createNamedMapBroker(
 		}
 		return mapBroker, nil, "", nil
 	case "redis":
-		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-		}
-		mapBroker, err := confighelpers.CentrifugeRedisMapBroker(
-			node, entry.Redis.Prefix, redisShards, entry.Redis.RedisMapBrokerCommon)
-		if err != nil {
-			return nil, redisShards, mode, fmt.Errorf("error creating Redis map broker: %w", err)
-		}
-		return mapBroker, redisShards, mode, nil
+		return createRedisMapBroker(node, entry.Redis)
 	case "postgres":
 		mapBroker, err := createPostgresMapBroker(node, entry.Postgres)
 		if err != nil {
@@ -436,6 +427,24 @@ func createNamedMapBroker(
 	default:
 		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", entry.Type)
 	}
+}
+
+// createRedisMapBroker creates a Redis map broker on its own Redis shards. It returns the shards, which the caller
+// closes or keeps, and the connection mode for logging. The default map broker and the named map brokers use it.
+func createRedisMapBroker(
+	node *centrifuge.Node,
+	redisCfg configtypes.RedisMapBroker,
+) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
+	redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, redisCfg.Redis)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("error creating Redis shards for map broker: %w", err)
+	}
+	mapBroker, err := confighelpers.CentrifugeRedisMapBroker(
+		node, redisCfg.Prefix, redisShards, redisCfg.RedisMapBrokerCommon)
+	if err != nil {
+		return nil, redisShards, mode, fmt.Errorf("error creating Redis map broker: %w", err)
+	}
+	return mapBroker, redisShards, mode, nil
 }
 
 // createPostgresMapBroker creates a Postgres map broker with the settings of a map_broker section. It initializes

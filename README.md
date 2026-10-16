@@ -94,7 +94,7 @@ Off by default, and then the auth throttle and the request log keep their previo
 
 ### Per-namespace engines and custom controller
 
-A namespace can use its own broker and presence manager, so a namespace with heavy fan-out does not share a Redis instance, its PUB/SUB connections or its history keys with latency-sensitive channels. Control traffic (node pings, disconnects, subscribe and unsubscribe commands, revocations) can move off the broker to a `controller` of type `redis` or `nats`. The keys and semantics follow Centrifugo PRO (`brokers`, `presence_managers`, `map_brokers`, `broker_name`, `presence_manager_name`, `map.broker_name`, `controller`). Off by default: without enabled `brokers`, `presence_managers` or `map_brokers` entries and without these channel options, nothing is created and no routing hook is set.
+A namespace can use its own broker and presence manager, so a namespace with heavy fan-out does not share a Redis instance, its PUB/SUB connections or its history keys with latency-sensitive channels. Control traffic (node pings, disconnects, subscribe and unsubscribe commands, revocations) can move off the broker to a `controller` of type `redis` or `nats`. The settings are the `brokers`, `presence_managers` and `map_brokers` lists, the `broker_name`, `presence_manager_name` and `map.broker_name` channel options, and the `controller` section. Off by default: without enabled `brokers`, `presence_managers` or `map_brokers` entries and without these channel options, nothing is created and no routing hook is set.
 
 ```json
 {

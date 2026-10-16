@@ -2,29 +2,24 @@ package proxy
 
 import (
 	"context"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
 
 // HTTPCacheEmptyProxy sends cache empty requests to the application backend over HTTP.
 type HTTPCacheEmptyProxy struct {
-	config     Config
-	httpCaller HTTPCaller
+	channelEventsHTTP
 }
 
 var _ CacheEmptyProxy = (*HTTPCacheEmptyProxy)(nil)
 
 // NewHTTPCacheEmptyProxy creates a cache empty proxy which uses HTTP.
-func NewHTTPCacheEmptyProxy(p Config) (*HTTPCacheEmptyProxy, error) {
-	httpCaller, err := newHTTPProxyCaller(p, "cache_empty_proxy")
+func NewHTTPCacheEmptyProxy(p Config) (CacheEmptyProxy, error) {
+	transport, err := newChannelEventsHTTP(p, "cache_empty_proxy")
 	if err != nil {
 		return nil, err
 	}
-	return &HTTPCacheEmptyProxy{
-		httpCaller: httpCaller,
-		config:     p,
-	}, nil
+	return &HTTPCacheEmptyProxy{channelEventsHTTP: transport}, nil
 }
 
 // ProxyNotifyCacheEmpty sends a cache empty request to application backend.
@@ -38,14 +33,4 @@ func (p *HTTPCacheEmptyProxy) ProxyNotifyCacheEmpty(ctx context.Context, req *pr
 		return nil, err
 	}
 	return httpDecoder.DecodeNotifyCacheEmptyResponse(respData)
-}
-
-// Protocol ...
-func (p *HTTPCacheEmptyProxy) Protocol() string {
-	return "http"
-}
-
-// Timeout ...
-func (p *HTTPCacheEmptyProxy) Timeout() time.Duration {
-	return p.config.Timeout.ToDuration()
 }

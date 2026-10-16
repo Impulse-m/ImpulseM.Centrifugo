@@ -18,9 +18,5 @@ type CacheEmptyProxy interface {
 
 // GetCacheEmptyProxy creates the cache empty proxy for the endpoint of p, HTTP or gRPC.
 func GetCacheEmptyProxy(name string, p Config) (CacheEmptyProxy, error) {
-	normalizeProxyHeaderNames(&p)
-	if isHttpEndpoint(p.Endpoint) {
-		return NewHTTPCacheEmptyProxy(p)
-	}
-	return NewGRPCCacheEmptyProxy(name, p)
+	return getChannelEventsProxy[CacheEmptyProxy](name, p, NewHTTPCacheEmptyProxy, NewGRPCCacheEmptyProxy)
 }

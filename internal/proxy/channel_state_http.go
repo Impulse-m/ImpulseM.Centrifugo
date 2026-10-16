@@ -2,29 +2,24 @@ package proxy
 
 import (
 	"context"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 )
 
 // HTTPChannelStateProxy sends channel state events to the application backend over HTTP.
 type HTTPChannelStateProxy struct {
-	config     Config
-	httpCaller HTTPCaller
+	channelEventsHTTP
 }
 
 var _ ChannelStateProxy = (*HTTPChannelStateProxy)(nil)
 
 // NewHTTPChannelStateProxy creates a channel state proxy which uses HTTP.
-func NewHTTPChannelStateProxy(p Config) (*HTTPChannelStateProxy, error) {
-	httpCaller, err := newHTTPProxyCaller(p, "channel_state_proxy")
+func NewHTTPChannelStateProxy(p Config) (ChannelStateProxy, error) {
+	transport, err := newChannelEventsHTTP(p, "channel_state_proxy")
 	if err != nil {
 		return nil, err
 	}
-	return &HTTPChannelStateProxy{
-		httpCaller: httpCaller,
-		config:     p,
-	}, nil
+	return &HTTPChannelStateProxy{channelEventsHTTP: transport}, nil
 }
 
 // ProxyNotifyChannelState sends a batch of channel state events to application backend.
@@ -41,14 +36,4 @@ func (p *HTTPChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req
 		return nil, err
 	}
 	return httpDecoder.DecodeNotifyChannelStateResponse(respData)
-}
-
-// Protocol ...
-func (p *HTTPChannelStateProxy) Protocol() string {
-	return "http"
-}
-
-// Timeout ...
-func (p *HTTPChannelStateProxy) Timeout() time.Duration {
-	return p.config.Timeout.ToDuration()
 }

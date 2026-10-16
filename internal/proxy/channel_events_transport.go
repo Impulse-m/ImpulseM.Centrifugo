@@ -2,36 +2,90 @@ package proxy
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 
 	"google.golang.org/grpc"
 )
 
-// newHTTPProxyCaller creates the HTTP caller of a channel events proxy. logEntity names the proxy in
-// the trace log. The map remove constructors keep their own copy of this setup, so the upstream files stay
-// unchanged.
-func newHTTPProxyCaller(p Config, logEntity string) (HTTPCaller, error) {
-	httpClient, err := proxyHTTPClient(p, logEntity)
-	if err != nil {
-		return nil, fmt.Errorf("error creating HTTP client: %w", err)
-	}
-	return NewHTTPCaller(httpClient), nil
+// channelEventsHTTP is the HTTP transport shared by the channel events proxies: channel state and cache empty.
+// The map remove proxies keep their own copy of this setup, so the upstream files stay unchanged.
+type channelEventsHTTP struct {
+	config     Config
+	httpCaller HTTPCaller
 }
 
-// newGRPCProxyClient dials the gRPC endpoint of p and returns the proxy client of a channel events proxy.
-func newGRPCProxyClient(name string, p Config) (proxyproto.CentrifugoProxyClient, error) {
+// newChannelEventsHTTP creates the HTTP transport of a channel events proxy. logEntity names the proxy in
+// the trace log.
+func newChannelEventsHTTP(p Config, logEntity string) (channelEventsHTTP, error) {
+	httpClient, err := proxyHTTPClient(p, logEntity)
+	if err != nil {
+		return channelEventsHTTP{}, fmt.Errorf("error creating HTTP client: %w", err)
+	}
+	return channelEventsHTTP{
+		config:     p,
+		httpCaller: NewHTTPCaller(httpClient),
+	}, nil
+}
+
+// Protocol ...
+func (t channelEventsHTTP) Protocol() string {
+	return "http"
+}
+
+// Timeout ...
+func (t channelEventsHTTP) Timeout() time.Duration {
+	return t.config.Timeout.ToDuration()
+}
+
+// channelEventsGRPC is the gRPC transport shared by the channel events proxies: channel state and cache empty.
+type channelEventsGRPC struct {
+	config Config
+	client proxyproto.CentrifugoProxyClient
+}
+
+// newChannelEventsGRPC dials the gRPC endpoint of p and returns the transport of a channel events proxy.
+func newChannelEventsGRPC(name string, p Config) (channelEventsGRPC, error) {
 	host, err := getGrpcHost(p.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("error getting grpc host: %v", err)
+		return channelEventsGRPC{}, fmt.Errorf("error getting grpc host: %v", err)
 	}
 	dialOpts, err := getDialOpts(name, p)
 	if err != nil {
-		return nil, fmt.Errorf("error creating GRPC dial options: %v", err)
+		return channelEventsGRPC{}, fmt.Errorf("error creating GRPC dial options: %v", err)
 	}
 	conn, err := grpc.NewClient(host, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to GRPC proxy server: %v", err)
+		return channelEventsGRPC{}, fmt.Errorf("error connecting to GRPC proxy server: %v", err)
 	}
-	return proxyproto.NewCentrifugoProxyClient(conn), nil
+	return channelEventsGRPC{
+		config: p,
+		client: proxyproto.NewCentrifugoProxyClient(conn),
+	}, nil
+}
+
+// Protocol ...
+func (t channelEventsGRPC) Protocol() string {
+	return "grpc"
+}
+
+// Timeout ...
+func (t channelEventsGRPC) Timeout() time.Duration {
+	return t.config.Timeout.ToDuration()
+}
+
+// getChannelEventsProxy returns the HTTP proxy built by newHTTP or the gRPC proxy built by newGRPC, by the
+// endpoint of p.
+func getChannelEventsProxy[T any](
+	name string,
+	p Config,
+	newHTTP func(Config) (T, error),
+	newGRPC func(string, Config) (T, error),
+) (T, error) {
+	normalizeProxyHeaderNames(&p)
+	if isHttpEndpoint(p.Endpoint) {
+		return newHTTP(p)
+	}
+	return newGRPC(name, p)
 }

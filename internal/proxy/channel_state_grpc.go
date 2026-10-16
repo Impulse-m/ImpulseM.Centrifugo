@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 
@@ -11,22 +10,18 @@ import (
 
 // GRPCChannelStateProxy sends channel state events to the application backend over gRPC.
 type GRPCChannelStateProxy struct {
-	config Config
-	client proxyproto.CentrifugoProxyClient
+	channelEventsGRPC
 }
 
 var _ ChannelStateProxy = (*GRPCChannelStateProxy)(nil)
 
 // NewGRPCChannelStateProxy creates a channel state proxy which uses gRPC.
-func NewGRPCChannelStateProxy(name string, p Config) (*GRPCChannelStateProxy, error) {
-	proxyClient, err := newGRPCProxyClient(name, p)
+func NewGRPCChannelStateProxy(name string, p Config) (ChannelStateProxy, error) {
+	transport, err := newChannelEventsGRPC(name, p)
 	if err != nil {
 		return nil, err
 	}
-	return &GRPCChannelStateProxy{
-		config: p,
-		client: proxyClient,
-	}, nil
+	return &GRPCChannelStateProxy{channelEventsGRPC: transport}, nil
 }
 
 // ProxyNotifyChannelState sends a batch of channel state events to application backend.
@@ -34,14 +29,4 @@ func NewGRPCChannelStateProxy(name string, p Config) (*GRPCChannelStateProxy, er
 func (p *GRPCChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
 	md, _ := metadata.FromOutgoingContext(grpcRequestContext(context.Background(), p.config))
 	return p.client.NotifyChannelState(metadata.NewOutgoingContext(ctx, md), req)
-}
-
-// Protocol ...
-func (p *GRPCChannelStateProxy) Protocol() string {
-	return "grpc"
-}
-
-// Timeout ...
-func (p *GRPCChannelStateProxy) Timeout() time.Duration {
-	return p.config.Timeout.ToDuration()
 }

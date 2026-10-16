@@ -18,9 +18,5 @@ type ChannelStateProxy interface {
 
 // GetChannelStateProxy creates the channel state proxy for the endpoint of p, HTTP or gRPC.
 func GetChannelStateProxy(name string, p Config) (ChannelStateProxy, error) {
-	normalizeProxyHeaderNames(&p)
-	if isHttpEndpoint(p.Endpoint) {
-		return NewHTTPChannelStateProxy(p)
-	}
-	return NewGRPCChannelStateProxy(name, p)
+	return getChannelEventsProxy[ChannelStateProxy](name, p, NewHTTPChannelStateProxy, NewGRPCChannelStateProxy)
 }

@@ -19,6 +19,26 @@ func TestExponentialSetsFields(t *testing.T) {
 	require.Equal(t, 0.2, b.RandomizationFactor)
 }
 
+func TestExponentialScheduleIsExactWithoutRandomization(t *testing.T) {
+	b := Exponential(10*time.Second, 10*time.Minute)
+	b.RandomizationFactor = 0
+
+	// The interval doubles on every attempt and stops at the maximum; without randomization each delay is the interval.
+	schedule := []time.Duration{
+		10 * time.Second,
+		20 * time.Second,
+		40 * time.Second,
+		80 * time.Second,
+		160 * time.Second,
+		320 * time.Second,
+		10 * time.Minute,
+		10 * time.Minute,
+	}
+	for attempt, expected := range schedule {
+		require.Equal(t, expected, b.NextBackOff(), "attempt %d", attempt)
+	}
+}
+
 func TestExponentialScheduleDoublesUpToMax(t *testing.T) {
 	initial := 10 * time.Second
 	maxInterval := 10 * time.Minute

@@ -148,7 +148,7 @@ The transitions of the auth class of a connection on refresh, when the user of t
 | `authenticated`, `bot` | `anonymous` | with `allow_downgrade`: rebind to anonymous; otherwise disconnect |
 | any other | | refresh error `permission denied`, the class is kept |
 
-A connection made through a connect proxy never rebinds, with or without a user: any change of its identity gets the permission error. Transitions and the account of a connection are proven by tokens, and the channels a proxy granted were granted under the proxy's terms. The origin of a connection does not change: a refresh with a token of the same user does not make a proxy connection a token connection. A connection made without a token and without a proxy, which is anonymous, may rebind to a user. A connection whose origin was not observed at connect, see the known gaps, never rebinds.
+A connection made through a connect proxy never rebinds, with or without a user: any change of its identity gets the permission error. Transitions and the account of a connection are proven by tokens, and the channels a proxy granted were granted under the proxy's terms. The origin of a connection does not change: a refresh with a token of the same user does not make a proxy connection a token connection. A connection made without a token and without a proxy, which is anonymous, may rebind to a user.
 
 A refresh whose token user is the user the connection already has, and which keeps the user Core sees, takes the refresh path as before. Any other change of the token user takes the rebind path: with rebind off it disconnects, as it did before, and with rebind on the table decides. So `anonymous` to `pending_2fa` of a user, and `pending_2fa` of one user to `pending_2fa` of another, are routed by the table even though Core sees no user change.
 
@@ -173,7 +173,7 @@ When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the conn
 
 ### Cost of the record
 
-A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, a connection which has no user and a token session also gets one, anonymous ones included, and is indexed by its session, at connect or at the first refresh which gives it a session. Its connect then reads the token identity of the client under the client lock. The store is set whenever access revocation is in use, so this is the cost of that feature, and a connection with every feature off allocates nothing for the record.
+A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, every connection which has no user gets one at connect, anonymous ones included, and is indexed by its session from connect when its token has one, or from the refresh which gives it one. The store is set whenever access revocation is in use, so this is the cost of that feature, and a connection with every feature off allocates nothing for the record.
 
 ### Token exchange over the connection
 
@@ -209,9 +209,7 @@ The rotation of the refresh token and the grace the issuer keeps for the previou
 * A server API subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left. A client command cannot do this with one command at a time per connection, but a server API subscription does not go through that queue.
 * A token whose expiration passes in the milliseconds between the check of the refresh and the rebind of the core gets the refresh error `token expired` after the user channels have gone. The refresh checks the expiration before the channels move, so this needs the token to expire in that window. Its personal channel comes back on the next refresh with the same user. The channels the client subscribed itself stay unsubscribed until the client subscribes them again or reconnects.
 * A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
-* A connection which had no record at connect, such as one made before a reload enabled rebind, gets a record at its first refresh to a token with a session, and its origin is then unknown. Such a connection is revocable by session, but it cannot change its identity without a reconnect: any identity change is refused, as for a connect proxy connection.
 * An upgrade of a pending or anonymous connection to a user, at `client.channel_limit`, is disconnected with a server error and not refused: the rebind moves the identity before the personal channel is subscribed, and the limit error of that subscribe ends the connection. The token of an upgrade should leave one channel of the limit free for the personal channel.
-* A connection with no user which closes while it refreshes to its first token session may stay in the session index. Its record is attached at that refresh, and its disconnect handler is installed then; Core does not call a handler installed after the close, so the close is not seen. The index then holds the closed connection until the node restarts. A revocation of the session still finds it, and disconnects nothing more.
 
 ## Error mapping
 

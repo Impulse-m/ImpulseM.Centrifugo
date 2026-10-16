@@ -29,8 +29,6 @@ func NewGRPCCacheEmptyProxy(name string, p Config) (*GRPCCacheEmptyProxy, error)
 
 // ProxyNotifyCacheEmpty sends a cache empty request to application backend.
 func (p *GRPCCacheEmptyProxy) ProxyNotifyCacheEmpty(ctx context.Context, req *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, p.config.Timeout.ToDuration())
-	defer cancel()
 	return p.client.NotifyCacheEmpty(grpcRequestContext(ctx, p.config), req)
 }
 

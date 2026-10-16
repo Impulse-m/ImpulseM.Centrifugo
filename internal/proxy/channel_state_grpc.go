@@ -29,8 +29,6 @@ func NewGRPCChannelStateProxy(name string, p Config) (*GRPCChannelStateProxy, er
 
 // ProxyNotifyChannelState sends a batch of channel state events to application backend.
 func (p *GRPCChannelStateProxy) ProxyNotifyChannelState(ctx context.Context, req *proxyproto.NotifyChannelStateRequest) (*proxyproto.NotifyChannelStateResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, p.config.Timeout.ToDuration())
-	defer cancel()
 	return p.client.NotifyChannelState(grpcRequestContext(ctx, p.config), req)
 }
 

@@ -178,7 +178,10 @@ func TestRPCDedupRedisRemoteJoinWakesThroughStream(t *testing.T) {
 	waiters, found := integrationWaiters(t, prefix, key)
 	require.True(t, found)
 	require.Equal(t, nodeB.node.ID(), waiters)
-	require.Equal(t, 1.0, testutil.ToFloat64(m.watchers))
+	// The watcher goroutine counts itself once it starts.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.watchers) == 1.0
+	}, 2*time.Second, 5*time.Millisecond, "the wake watcher of node-b runs")
 
 	released := time.Now()
 	backend.releaseGate()

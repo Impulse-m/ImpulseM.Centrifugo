@@ -36,12 +36,12 @@ func (h *Handler) setupRPCDedupRedis() error {
 	_ = connector.Connect()
 
 	opts := rpcdedup.SharedOptions{
-		Local:         h.rpcDedup.memory,
-		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
-		NodeID:        h.node.ID(),
-		TTL:           rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes: dedup.ReplyLimit(),
-		FailOpen:      failOpen,
+		Local:          h.rpcDedup.memory,
+		Backend:        rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
+		NodeID:         h.node.ID(),
+		TTL:            rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
+		MaxReplyBytes:  dedup.ReplyLimit(),
+		FailOpen:       failOpen,
 		Notifier:       h.notifyRPCDedupCancel,
 		Observer:       h.rpcDedup.metrics,
 		IOTimeout:      redisConf.IOTimeout.ToDuration(),

@@ -400,9 +400,9 @@ type notifyCall struct {
 
 // sharedFixture is a Shared store over a node-local Memory and a fake backend, as node-a.
 type sharedFixture struct {
-	local    *Memory
-	backend  *fakeBackend
-	shared   *Shared
+	local   *Memory
+	backend *fakeBackend
+	shared  *Shared
 	// notified are the cancel notifications of the fixture. The notifier runs in a goroutine of its own, so they are
 	// read through notifiedCalls.
 	notified   []notifyCall

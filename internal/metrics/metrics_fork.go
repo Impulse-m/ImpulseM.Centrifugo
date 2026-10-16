@@ -433,14 +433,7 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
-
-	ChannelStateOldestFailingBatchTimestamp = m.channelStateOldestFailingBatch
 }
-
-// ChannelStateOldestFailingBatchTimestamp is the Unix time, in seconds, when the oldest channel state batch that
-// the proxy still rejects was first sent. It is set by the fork metrics setup, and is nil when the metrics are not
-// initialised.
-var ChannelStateOldestFailingBatchTimestamp prometheus.Gauge
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.
 var redisDurationBuckets = []float64{

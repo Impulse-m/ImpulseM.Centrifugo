@@ -53,9 +53,15 @@ func NewRedisController(node *centrifuge.Node, shards []*centrifuge.RedisShard, 
 	return &RedisController{broker: broker, shards: shards}, nil
 }
 
-// RegisterControlEventHandler starts the control PUB/SUB of every shard.
+// RegisterControlEventHandler starts the control PUB/SUB of every shard and returns once each one has subscribed,
+// so the node does not serve clients before it receives the control messages of the other nodes.
 func (c *RedisController) RegisterControlEventHandler(h centrifuge.ControlEventHandler) error {
-	return c.broker.RegisterControlEventHandler(h)
+	if err := c.broker.RegisterControlEventHandler(h); err != nil {
+		return err
+	}
+	// Core waits for the control subscription only in RegisterBrokerEventHandler. The controller has SkipPubSub set,
+	// so Core starts no channel subscriptions and returns after that wait, without calling the handler.
+	return c.broker.RegisterBrokerEventHandler(noopBrokerEventHandler{})
 }
 
 // PublishControl publishes a control message to the node with nodeID, or to all nodes when nodeID is empty.
@@ -70,4 +76,23 @@ func (c *RedisController) Close(ctx context.Context) error {
 		shard.Close()
 	}
 	return err
+}
+
+// noopBrokerEventHandler is the broker event handler of the Redis controller. The controller subscribes to no
+// channels, so Core never calls it.
+type noopBrokerEventHandler struct{}
+
+// HandlePublication ignores the publication.
+func (noopBrokerEventHandler) HandlePublication(_ string, _ *centrifuge.Publication, _ centrifuge.StreamPosition, _ bool, _ *centrifuge.Publication) error {
+	return nil
+}
+
+// HandleJoin ignores the join.
+func (noopBrokerEventHandler) HandleJoin(_ string, _ *centrifuge.ClientInfo) error {
+	return nil
+}
+
+// HandleLeave ignores the leave.
+func (noopBrokerEventHandler) HandleLeave(_ string, _ *centrifuge.ClientInfo) error {
+	return nil
 }

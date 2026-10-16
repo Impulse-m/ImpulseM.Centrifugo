@@ -33,13 +33,20 @@ type rebindFilters struct {
 // values, see commitRebindFilters.
 func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
 	values := filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()}
-	previous, stored := connectionFilterValuesStored(c)
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !stored && !hasTemplatedChannels(c) {
+	storage, release := c.AcquireStorage()
+	stored, ok := storedFilterValues(storage)
+	recorded, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	release(storage)
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !ok && len(recorded) == 0 {
 		return rebindFilters{values: values}
+	}
+	previous := filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}
+	if !ok {
+		previous.User = c.UserID()
 	}
 	return rebindFilters{
 		enabled:  true,
-		unstored: !stored,
+		unstored: !ok,
 		previous: previous,
 		values:   values,
 	}

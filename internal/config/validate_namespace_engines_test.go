@@ -778,7 +778,28 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
-			name: "named nats broker in raw mode with an empty root and a non-raw broker",
+			name: "two named nats brokers with the same prefix and wildcards on one of them",
+				modify: func(cfg *Config) {
+					cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+					cfg.Brokers[0].Nats.Prefix = "shared"
+					cfg.Brokers[0].Nats.AllowWildcards = true
+					cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+					cfg.Brokers[1].Nats.Prefix = "shared"
+				},
+				wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+			},
+			{
+				name: "two named nats brokers whose prefixes nest at a token boundary without wildcards",
+				modify: func(cfg *Config) {
+					cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
+					cfg.Brokers[0].Nats.Prefix = "a"
+					cfg.Brokers[1] = namedNatsBroker("rates", "nats://localhost:4222")
+					cfg.Brokers[1].Nats.Prefix = "a.client"
+				},
+				wantErr: `brokers "broadcast" and brokers "rates" use overlapping NATS subjects`,
+			},
+			{
+				name: "named nats broker in raw mode with an empty root and a non-raw broker",
 			modify: func(cfg *Config) {
 				cfg.Brokers[0] = namedNatsBroker("broadcast", "nats://localhost:4222")
 				cfg.Brokers[0].Nats.Prefix = "foobar"

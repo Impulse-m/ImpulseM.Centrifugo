@@ -311,7 +311,8 @@ type natsEngineRef struct {
 // validateNamedNatsSubjects rejects two NATS subjects of the configuration which overlap, see natsSpacesConflict:
 // the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes,
 // including the ones of the default NATS broker when Core makes it the controller. A channel is subscribed only on
-// the broker which routes it, so the channel spaces of two brokers conflict only through a wildcard subscription. A
+// the broker which routes it, so the channel spaces of two brokers conflict only when one is nested in the other, or
+// through a wildcard subscription. A
 // raw mode root is concatenated with the channel, and a control subject is subscribed as it is, so they conflict
 // with any subject they can match, since a publication would reach the other subscription.
 func validateNamedNatsSubjects(c Config) error {
@@ -413,10 +414,12 @@ func newNatsControllerRefs(label string, natsCfg configtypes.NatsPrefixed, isDef
 }
 
 // natsSpacesConflict reports whether two NATS references can match the same subject, see spacesConflict. Two channel
-// spaces which are not in raw mode conflict only when a broker allows wildcard subscriptions: each channel is
-// subscribed only on the broker which routes it, so an exact channel subject reaches one broker.
+// spaces which are not in raw mode with equal spaces never conflict without wildcard subscriptions: a channel name
+// maps to one subject, and its namespace routes it to one broker. Nested channel spaces do conflict, since a channel
+// of one broker can map to the subject of a channel of the other one, such as "client.ns:x" under "a" and "ns:x"
+// under "a.client".
 func natsSpacesConflict(a natsEngineRef, b natsEngineRef) bool {
-	if a.channel && b.channel && !a.wildcards && !b.wildcards {
+	if a.channel && b.channel && !a.wildcards && !b.wildcards && a.space == b.space {
 		return false
 	}
 	return spacesConflict(a.space, a.exact, b.space, b.exact)

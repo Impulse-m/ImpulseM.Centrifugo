@@ -116,14 +116,17 @@ func (a *Admission) charge(cost int64) bool {
 func (a *Admission) overWatermark(now int64) bool {
 	a.refreshSample(now)
 	sample := a.sample.Load()
-	tripped := a.tripped.Load()
+	was := a.tripped.Load()
+	tripped := was
 	switch {
 	case sample >= a.watermark:
 		tripped = true
 	case sample < a.watermark/10*9:
 		tripped = false
 	}
-	a.tripped.Store(tripped)
+	if tripped != was {
+		a.tripped.Store(tripped)
+	}
 	return tripped
 }
 

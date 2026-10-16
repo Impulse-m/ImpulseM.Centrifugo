@@ -29,7 +29,8 @@ var (
 
 // pushRegistry holds the metrics of the push notification subsystem. It is embedded into forkRegistry, so the metrics
 // are created by initPushMetrics and assigned by setPushMetrics. The vectors have no children until a push feature
-// records into them, so with push notifications disabled they export no series.
+// records into them, so with push notifications disabled they export no series. The counters without labels are
+// created at zero, as the other fork counters are, and export a zero value until a push feature records into them.
 type pushRegistry struct {
 	pushNotificationCount     *prometheus.CounterVec
 	pushQueueConsumingLag     *prometheus.GaugeVec

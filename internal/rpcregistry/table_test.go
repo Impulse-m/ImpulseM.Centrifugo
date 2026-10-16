@@ -2,6 +2,8 @@ package rpcregistry
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -224,6 +226,23 @@ func TestReloadWithPendingClassNeedsClaimAndKeepsOldTable(t *testing.T) {
 	_, _, err := r.PrepareReload(reg)
 	require.ErrorContains(t, err, `method "users.getUser": auth_class: "pending_2fa" requires rpc.registry.auth_class_claim to be set`)
 	require.Equal(t, AuthClassAuthenticated, r.Lookup(testGetUserMethod).AuthClass)
+}
+
+func TestReloadWithRingHashWithoutAffinityHeaderKeepsOldTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(registryContent("user.get")), 0o600))
+	r := New()
+	reloadWith(t, r, configtypes.RPCRegistry{Enabled: true, File: path})
+	require.NotNil(t, r.Lookup("user.get"))
+
+	ringHashContent := "version: 1\ntargets:\n  - name: users\n    endpoint: dns:///users.example:9000\n" +
+		"    load_balancing: ring_hash\nmethods:\n  - method: user.get\n    grpc_method: /example.v1.UserService/Get\n" +
+		"    target: users\n    auth_class: anonymous\n"
+	require.NoError(t, os.WriteFile(path, []byte(ringHashContent), 0o600))
+	_, _, err := r.PrepareReload(configtypes.RPCRegistry{Enabled: true, File: path})
+	require.ErrorContains(t, err, `rpc registry target "users": ring_hash needs affinity_header`)
+	require.True(t, isContentError(err))
+	require.NotNil(t, r.Lookup("user.get"))
 }
 
 func TestConnectionAuthClass(t *testing.T) {

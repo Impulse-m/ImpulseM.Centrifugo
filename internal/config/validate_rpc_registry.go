@@ -42,11 +42,8 @@ func validateRPCRegistry(c Config) error {
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
 	}
-	file, err := ResolveRPCRegistry(c.RPC.Registry)
-	if err != nil {
-		return err
-	}
-	return validateRPCRegistryLimits(c, file)
+	_, err = ResolveRPCRegistry(c.RPC.Registry)
+	return err
 }
 
 // validateRPCDedup checks the exactly-once RPC config. A disabled dedup is not checked. Dedup needs the

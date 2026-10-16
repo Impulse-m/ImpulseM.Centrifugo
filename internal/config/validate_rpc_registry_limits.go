@@ -22,14 +22,14 @@ var rpcAffinityHeaderRe = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
 // validateRPCRegistryLimits checks the limits of an enabled registry which can never work: an admission cost over the
 // budget, an affinity routing which cannot pick a replica, and a response size hint which bounds nothing. Limits which
 // depend on bandwidth, latency or the window of an SDK are documented, not checked.
-func validateRPCRegistryLimits(c Config, file configtypes.RPCRegistryFile) error {
-	checks := []func(Config, configtypes.RPCRegistryFile) error{
+func validateRPCRegistryLimits(reg configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
+	checks := []func(configtypes.RPCRegistry, configtypes.RPCRegistryFile) error{
 		validateRPCAdmissionBudget,
 		validateRPCAffinity,
 		validateRPCResponseSizeHints,
 	}
 	for _, check := range checks {
-		err := check(c, file)
+		err := check(reg, file)
 		if err != nil {
 			return err
 		}
@@ -48,8 +48,7 @@ func rpcTargetsByName(file configtypes.RPCRegistryFile) map[string]configtypes.R
 
 // validateRPCAdmissionBudget checks the admission keys. The budget must not be negative, and a method whose cost, its
 // request limit plus its response limit, is over the budget could never run.
-func validateRPCAdmissionBudget(c Config, file configtypes.RPCRegistryFile) error {
-	reg := c.RPC.Registry
+func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
 	if reg.MaxInflightBytes < 0 {
 		return fmt.Errorf("rpc.registry.max_inflight_bytes: must not be negative, got %d", reg.MaxInflightBytes)
 	}
@@ -72,7 +71,7 @@ func validateRPCAdmissionBudget(c Config, file configtypes.RPCRegistryFile) erro
 
 // validateRPCAffinity checks the affinity routing of the targets: ring_hash and affinity_header come together, the
 // header name is a valid one which a method forwards, and gRPC does not disable the hash key of the balancer.
-func validateRPCAffinity(_ Config, file configtypes.RPCRegistryFile) error {
+func validateRPCAffinity(_ configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
 	usesRingHash := false
 	for _, target := range file.Targets {
 		if target.LoadBalancing != configtypes.RPCLoadBalancingRingHash {
@@ -116,7 +115,7 @@ func validateRPCAffinityTarget(target configtypes.RPCTarget, methods []configtyp
 
 // validateRPCResponseSizeHints checks the response size hints of the methods: the field must be a valid field number,
 // and the overhead must leave room under the response limit, so a hint can never bound a reply to nothing.
-func validateRPCResponseSizeHints(_ Config, file configtypes.RPCRegistryFile) error {
+func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
 	targets := rpcTargetsByName(file)
 	for _, method := range file.Methods {
 		hint := method.ResponseSizeHint

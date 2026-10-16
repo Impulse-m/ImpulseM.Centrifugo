@@ -142,5 +142,9 @@ func resolveRPCRegistry(
 	if err != nil {
 		return file, err
 	}
+	err = validateRPCRegistryLimits(reg, file)
+	if err != nil {
+		return file, err
+	}
 	return file, nil
 }

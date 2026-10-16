@@ -195,3 +195,98 @@ func TestValidateRPCRegistryLimitsDisabledRegistryIsNotChecked(t *testing.T) {
 	cfg.RPC.Registry.Targets[0].AffinityHeader = ""
 	require.NoError(t, validateRPCRegistry(cfg))
 }
+
+func TestRPCRegistryLimitWarnings(t *testing.T) {
+	testCases := []struct {
+		name         string
+		modify       func(cfg *Config)
+		wantWarnings []string
+	}{
+		{
+			name:   "defaults give no warning",
+			modify: func(cfg *Config) {},
+		},
+		{
+			name: "websocket limit under a method request limit warns",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+			},
+			wantWarnings: []string{`method "users.getUser": max_request_bytes 131072 exceeds websocket.message_size_limit (65536)`},
+		},
+		{
+			name: "disabled websocket names the webtransport limit only",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.Disabled = true
+				cfg.WebTransport.Enabled = true
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+			},
+			wantWarnings: []string{`exceeds webtransport.message_size_limit (65536)`},
+		},
+		{
+			name: "http stream names the emulation limit once",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.Disabled = true
+				cfg.HTTPStream.Enabled = true
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+			},
+			wantWarnings: []string{`exceeds emulation.max_request_body_size (65536)`},
+		},
+		{
+			name: "sse names the emulation limit once",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.Disabled = true
+				cfg.SSE.Enabled = true
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+			},
+			wantWarnings: []string{`exceeds emulation.max_request_body_size (65536)`},
+		},
+		{
+			name: "http stream and sse together name the emulation limit once",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.Disabled = true
+				cfg.HTTPStream.Enabled = true
+				cfg.SSE.Enabled = true
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+			},
+			wantWarnings: []string{`exceeds emulation.max_request_body_size (65536)`},
+		},
+		{
+			name: "queue_max_size under the response limit warns for each method",
+			modify: func(cfg *Config) {
+				cfg.Client.QueueMaxSize = 1000
+			},
+			wantWarnings: []string{
+				`method "users.getUser": max_response_bytes 1048576 exceeds client.queue_max_size (1000)`,
+				`method "help.getConfig": max_response_bytes 1048576 exceeds client.queue_max_size (1000)`,
+			},
+		},
+		{
+			name: "queue_max_size zero gives no queue warning",
+			modify: func(cfg *Config) {
+				cfg.Client.QueueMaxSize = 0
+			},
+		},
+		{
+			name: "limits equal to the bounds give nothing",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.MessageSizeLimit = 131072
+				cfg.Client.QueueMaxSize = 1048576
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 131072
+				cfg.RPC.Registry.Methods[0].MaxResponseBytes = 1048576
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := configWithRegistry(validInlineRegistry())
+			tc.modify(&cfg)
+			file, err := ResolveRPCRegistry(cfg.RPC.Registry)
+			require.NoError(t, err)
+			warnings := rpcRegistryLimitWarnings(cfg, file)
+			require.Len(t, warnings, len(tc.wantWarnings))
+			for i, want := range tc.wantWarnings {
+				require.Contains(t, warnings[i], want)
+			}
+		})
+	}
+}

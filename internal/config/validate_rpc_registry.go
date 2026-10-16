@@ -13,6 +13,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
+	"github.com/rs/zerolog/log"
 
 	"google.golang.org/grpc/codes"
 )
@@ -42,8 +43,14 @@ func validateRPCRegistry(c Config) error {
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
 	}
-	_, err = ResolveRPCRegistry(c.RPC.Registry)
-	return err
+	file, err := ResolveRPCRegistry(c.RPC.Registry)
+	if err != nil {
+		return err
+	}
+	for _, warning := range rpcRegistryLimitWarnings(c, file) {
+		log.Warn().Msg(warning)
+	}
+	return nil
 }
 
 // validateRPCDedup checks the exactly-once RPC config. A disabled dedup is not checked. Dedup needs the

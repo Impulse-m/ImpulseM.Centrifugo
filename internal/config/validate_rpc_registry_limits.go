@@ -139,3 +139,42 @@ func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RP
 	}
 	return nil
 }
+
+// rpcRegistryLimitWarnings returns a warning for each method limit which the transports or the reply queue of the node
+// cannot carry. The method still serves every request under the transport limit and every reply under the queue limit,
+// and only its own bound is out of reach, so these are warnings and not errors: one registry file shared by fleets with
+// different transports is the expected case. The node limits come from the whole config, so this is not a file check.
+func rpcRegistryLimitWarnings(c Config, file configtypes.RPCRegistryFile) []string {
+	var warnings []string
+	targets := rpcTargetsByName(file)
+	for _, method := range file.Methods {
+		limits := configtypes.ResolveRPCMethodLimits(method, targets[method.Target], file.Defaults)
+		warnings = append(warnings, rpcRequestLimitWarnings(c, method.Method, limits.MaxRequestBytes)...)
+		if c.Client.QueueMaxSize > 0 && limits.MaxResponseBytes > c.Client.QueueMaxSize {
+			warnings = append(warnings, fmt.Sprintf("rpc registry method %q: max_response_bytes %d exceeds client.queue_max_size (%d): a reply of that size would disconnect the client as slow", method.Method, limits.MaxResponseBytes, c.Client.QueueMaxSize))
+		}
+	}
+	return warnings
+}
+
+// rpcRequestLimitWarnings returns the warnings of one method request limit over the message limit of each bidirectional
+// transport the node serves. The emulation transports share the request bound of the emulation endpoint.
+func rpcRequestLimitWarnings(c Config, method string, maxRequestBytes int) []string {
+	var warnings []string
+	if !c.WebSocket.Disabled && maxRequestBytes > c.WebSocket.MessageSizeLimit {
+		warnings = append(warnings, rpcRequestLimitWarning(method, maxRequestBytes, "websocket.message_size_limit", c.WebSocket.MessageSizeLimit))
+	}
+	if c.WebTransport.Enabled && maxRequestBytes > c.WebTransport.MessageSizeLimit {
+		warnings = append(warnings, rpcRequestLimitWarning(method, maxRequestBytes, "webtransport.message_size_limit", c.WebTransport.MessageSizeLimit))
+	}
+	emulation := c.HTTPStream.Enabled || c.SSE.Enabled
+	if emulation && maxRequestBytes > c.Emulation.MaxRequestBodySize {
+		warnings = append(warnings, rpcRequestLimitWarning(method, maxRequestBytes, "emulation.max_request_body_size", c.Emulation.MaxRequestBodySize))
+	}
+	return warnings
+}
+
+// rpcRequestLimitWarning returns the warning of a method request limit which is over the limit of a transport, named by its config key.
+func rpcRequestLimitWarning(method string, maxRequestBytes int, key string, limit int) string {
+	return fmt.Sprintf("rpc registry method %q: max_request_bytes %d exceeds %s (%d): a request of that size cannot arrive over this transport", method, maxRequestBytes, key, limit)
+}

@@ -358,7 +358,14 @@ func TestValidateRPCRegistryDisabledIsNotChecked(t *testing.T) {
 
 func TestValidateRPCRegistryChecksFileWhenEnabled(t *testing.T) {
 	reg := configtypes.RPCRegistry{Enabled: true, File: "testdata/rpc_registry.yaml", AuthClassClaim: "auth_class"}
-	require.NoError(t, configWithRegistry(reg).Validate())
+	cfg := configWithRegistry(reg)
+	require.NoError(t, cfg.Validate())
+	file, err := ResolveRPCRegistry(reg)
+	require.NoError(t, err)
+	warnings := rpcRegistryLimitWarnings(cfg, file)
+	require.Len(t, warnings, 1)
+	require.Contains(t, warnings[0], `method "files.saveFilePart"`)
+	require.Contains(t, warnings[0], "websocket.message_size_limit")
 }
 
 func TestValidateRPCRegistryFileVersion(t *testing.T) {

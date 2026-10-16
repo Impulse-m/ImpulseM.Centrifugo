@@ -23,13 +23,12 @@ type rateLimitChannelEntry struct {
 // rateLimitSection is a view over a rate limit section used for validation. Fields which
 // are not supported by a section are left nil or empty.
 type rateLimitSection struct {
-	name        string
-	total       *configtypes.RateLimitBuckets
-	defaults    *configtypes.RateLimitBuckets
-	plain       []rateLimitBucketsEntry
-	channels    []rateLimitChannelEntry
-	unsupported []rateLimitChannelEntry
-	rpc         *configtypes.RateLimitRPCBuckets
+	name     string
+	total    *configtypes.RateLimitBuckets
+	defaults *configtypes.RateLimitBuckets
+	plain    []rateLimitBucketsEntry
+	channels []rateLimitChannelEntry
+	rpc      *configtypes.RateLimitRPCBuckets
 }
 
 // rateLimitOperationsSection returns the validation view of a section with the shared operation buckets.
@@ -53,8 +52,6 @@ func rateLimitOperationsSection(
 			{name: "presence", buckets: &ops.Presence},
 			{name: "presence_stats", buckets: &ops.PresenceStats},
 			{name: "sub_refresh", buckets: &ops.SubRefresh},
-		},
-		unsupported: []rateLimitChannelEntry{
 			{name: "map_publish", buckets: &ops.MapPublish},
 			{name: "map_remove", buckets: &ops.MapRemove},
 			{name: "track", buckets: &ops.Track},
@@ -131,11 +128,6 @@ func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 		}
 		if err := validateRateLimitNamespaceOverrides(entry.buckets.NamespaceOverrides, nsNames); err != nil {
 			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
-		}
-	}
-	for _, entry := range s.unsupported {
-		if entry.buckets.Enabled || len(entry.buckets.Buckets) > 0 || len(entry.buckets.NamespaceOverrides) > 0 {
-			return fmt.Errorf("%s.%s: not supported in this build", s.name, entry.name)
 		}
 	}
 	if s.rpc != nil {

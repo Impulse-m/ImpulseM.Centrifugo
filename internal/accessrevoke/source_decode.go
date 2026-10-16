@@ -35,16 +35,17 @@ func decodeOperation(method string, body []byte) (Operation, error) {
 			User: req.User,
 		}, nil
 	case KindRevokeToken:
-		req, err := decoder.DecodeRevokeToken(body)
+		req, err := decoder.DecodeRevokeToken(SanitizeRevokeTokenBody(body))
 		if err != nil {
 			return Operation{}, err
 		}
 		return Operation{
-			Kind:      KindRevokeToken,
-			User:      req.User,
-			Session:   req.Uid,
-			RevokedAt: req.RevokedAt,
-			ExpireAt:  req.ExpireAt,
+			Kind:       KindRevokeToken,
+			User:       req.User,
+			Session:    req.Uid,
+			RevokedAt:  req.RevokedAt,
+			ExpireAt:   req.ExpireAt,
+			Disconnect: FromAPIDisconnect(req.Disconnect),
 		}, nil
 	case KindInvalidateUserTokens:
 		req, err := decoder.DecodeInvalidateUserTokens(body)

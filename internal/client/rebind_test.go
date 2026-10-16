@@ -500,7 +500,7 @@ func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {
 		{
 			name: "session",
 			revoke: func(store *accessrevoke.Store) {
-				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0, nil))
 			},
 			wantErr: centrifuge.DisconnectExpired,
 		},
@@ -556,4 +556,53 @@ func TestRebindUpgradeRealConnectionLeavesSessionIndex(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(store.SessionConnections().Connections(pendingKey)) == 0
 	}, 5*time.Second, 5*time.Millisecond)
+}
+
+// TestAnonymousConnectExchangeAndRefreshUpgrades checks the flow of an SDK which obtains its connection token over the
+// connection: it connects with no token, calls the exchange method, an anonymous method whose call carries no token, and
+// refreshes with the access token the exchange returned, which upgrades the connection to the user of the token.
+func TestAnonymousConnectExchangeAndRefreshUpgrades(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	cfg.Client.Rebind.Enabled = true
+	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	regCfg := registryTestRegistryConfig()
+	regCfg.Methods = []configtypes.RPCMethod{
+		{
+			Method:     "exchange",
+			GRPCMethod: registryTestBackendMethod,
+			Target:     "backend",
+			AuthClass:  configtypes.RPCAuthClassAnonymous,
+		},
+	}
+	cfg.RPC.Registry = regCfg
+	h, _, node := newAuthClassTestHandler(t, cfg)
+	// Setup wires the RPC handler of the node only when a registry is already set, so the registry is set after it and
+	// the call goes to OnRPC directly, as the registry tests do.
+	backend := newRegistryTestBackend(t)
+	h.SetRPCRegistry(startRegistryTestRegistry(t, regCfg, backend))
+
+	client := connectRevokeTestClient(t, node, "")
+	require.Len(t, node.Hub().Connections(), 1)
+	require.Empty(t, client.UserID())
+	// A connection with no token stores no class; the class it has is anonymous.
+	require.Equal(t, rpcregistry.AuthClassAnonymous, effectiveClass(connStateOf(client).identity.Load(), "", ""))
+
+	request := []byte("exchange-request")
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "exchange", Data: request}, nil)
+	require.NoError(t, err)
+	// The backend answers with the bytes of the request.
+	require.Equal(t, request, reply.Data)
+	calls := backend.Calls()
+	require.Len(t, calls, 1)
+	require.Equal(t, registryTestBackendMethod, calls[0].Method)
+	require.Empty(t, calls[0].Metadata.Get("authorization"))
+
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", client.UserID())
+	require.Equal(t, registryTestClass("authenticated"), connStateOf(client).identity.Load().class)
+	require.True(t, client.IsSubscribed(h.cfgContainer.PersonalChannel("42")))
 }

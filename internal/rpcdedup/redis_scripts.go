@@ -7,10 +7,14 @@ import (
 // beginScript looks a key up and starts a call in it. KEYS[1] is the key of the call. ARGV[1] is the fingerprint,
 // ARGV[2] the node id of the owner and ARGV[3] the in-flight TTL in milliseconds. It returns {'miss'} when it started
 // the call, {'cancelled', error} for a tombstone, which answers any fingerprint, {'done', reply, error, uncached} for a
-// kept answer, {'mismatch'} for another fingerprint, and {'inflight', owner} for a call which runs. Scripts read before
-// they write and never call TIME, so they replicate and run on Redis 6 and later.
+// kept answer, {'mismatch'} for another fingerprint, and {'inflight', owner} for a call which runs. ARGV[4] is the cap
+// of the waiter list, max_waiter_nodes, and zero registers nothing. Above zero, a caller which is not the owner is
+// registered as a waiter in field w, the node ids of the waiters, space-separated, and a node is listed once. A caller
+// which would be listed beyond the cap is not listed, and the reply is {'inflight', owner, 'full'}: its duplicates must
+// not wait. The owner notifies the listed waiters when it writes the record. Scripts read before they write and never
+// call TIME, so they replicate and run on Redis 6 and later.
 var beginScript = rueidis.NewLuaScript(`
-local r = redis.call('HMGET', KEYS[1], 's', 'f', 'n', 'r', 'e', 'u')
+local r = redis.call('HMGET', KEYS[1], 's', 'f', 'n', 'r', 'e', 'u', 'w')
 if r[1] == false then
 	redis.call('HSET', KEYS[1], 's', 'i', 'f', ARGV[1], 'n', ARGV[2])
 	redis.call('PEXPIRE', KEYS[1], ARGV[3])
@@ -23,6 +27,18 @@ if r[2] ~= ARGV[1] then
 	return {'mismatch'}
 end
 if r[1] == 'i' then
+	if tonumber(ARGV[4]) >= 1 and r[3] ~= ARGV[2] then
+		local w = r[7]
+		if w == false or w == '' then
+			redis.call('HSET', KEYS[1], 'w', ARGV[2])
+		elseif not string.find(' ' .. w .. ' ', ' ' .. ARGV[2] .. ' ', 1, true) then
+			local _, n = string.gsub(w, ' ', '')
+			if n + 1 >= tonumber(ARGV[4]) then
+				return {'inflight', r[3], 'full'}
+			end
+			redis.call('HSET', KEYS[1], 'w', w .. ' ' .. ARGV[2])
+		end
+	end
 	return {'inflight', r[3]}
 end
 return {'done', r[4] or '', r[5] or '', r[6] or ''}
@@ -31,24 +47,27 @@ return {'done', r[4] or '', r[5] or '', r[6] or ''}
 // completeScript keeps the answer of an in-flight call. KEYS[1] is the key of the call. ARGV[1] is the node id of
 // the owner, ARGV[2] the reply, ARGV[3] the error JSON, ARGV[4] uncached ("1" or "0"), ARGV[5] the record TTL in
 // milliseconds and ARGV[6] abandoned ("1" or "0"). Only the owner completes the record it began, and it returns 0
-// otherwise. An abandoned call deletes its record, so a duplicate runs at once.
+// otherwise. An abandoned call deletes its record, so a duplicate runs at once. It returns {owned, waiters}: owned is
+// "1" when the owner wrote the record, and waiters are the node ids of its waiters, which the caller wakes. A
+// record which turns done drops its waiters.
 var completeScript = rueidis.NewLuaScript(`
-local r = redis.call('HMGET', KEYS[1], 's', 'n')
+local r = redis.call('HMGET', KEYS[1], 's', 'n', 'w')
 if r[1] ~= 'i' or r[2] ~= ARGV[1] then
-	return 0
+	return {'0', ''}
 end
+local w = r[3] or ''
 if ARGV[6] == '1' then
 	redis.call('DEL', KEYS[1])
-	return 1
+	return {'1', w}
 end
-redis.call('HDEL', KEYS[1], 'n')
+redis.call('HDEL', KEYS[1], 'n', 'w')
 if ARGV[4] == '1' then
 	redis.call('HSET', KEYS[1], 's', 'd', 'u', '1')
 else
 	redis.call('HSET', KEYS[1], 's', 'd', 'r', ARGV[2], 'e', ARGV[3])
 end
 redis.call('PEXPIRE', KEYS[1], ARGV[5])
-return 1
+return {'1', w}
 `)
 
 // cancelScript cancels a call of KEYS[1]. ARGV[1] is the error JSON of the cancelled error and ARGV[2] the record TTL

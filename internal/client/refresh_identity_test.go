@@ -140,7 +140,7 @@ func TestProxyRefreshMovesTheRecordIdentity(t *testing.T) {
 	require.Equal(t, "42", userID)
 	require.Equal(t, moved, identity)
 
-	require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+	require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0, nil))
 	result := store.Check(userID, identity, accessrevoke.CheckOptions{Session: true})
 	require.Equal(t, accessrevoke.Revoked, result.Verdict)
 }

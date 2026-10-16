@@ -229,6 +229,69 @@ func TestClientConnectNoCredentialsNoTokenAnonymous(t *testing.T) {
 	require.Equal(t, "", reply.Credentials.UserID)
 }
 
+// Channels a client asks for on connect are not subscribed in a namespace with
+// a subscribe stream proxy, even when allow_subscribe_for_client is on: only the
+// subscribe stream proxy decides on them.
+func TestClientConnectingChannelsSubscribeStreamProxy(t *testing.T) {
+	node := tools.NodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	cfg.Channel.WithoutNamespace.SubscribeForClient = true
+	cfg.Channel.WithoutNamespace.SubscribeForAnonymous = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, emptyJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	connect := func() centrifuge.ConnectReply {
+		reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+			Channels: []string{"room"},
+		}, nil, false)
+		require.NoError(t, err)
+		return reply
+	}
+
+	require.Contains(t, connect().Subscriptions, "room")
+
+	cfg.Channel.Proxy.SubscribeStream.Endpoint = "grpc://localhost:12000"
+	cfg.Channel.WithoutNamespace.SubscribeStreamProxyEnabled = true
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.NotContains(t, connect().Subscriptions, "room")
+}
+
+// Channels a client asks for on connect get stream subscriptions, so they are
+// not subscribed in a namespace with another subscription type, like a client
+// subscribe of a stream type is refused there.
+func TestClientConnectingChannelsSubscriptionType(t *testing.T) {
+	node := tools.NodeWithMemoryEngine()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	cfg.Channel.WithoutNamespace.SubscribeForClient = true
+	cfg.Channel.WithoutNamespace.SubscribeForAnonymous = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, emptyJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	connect := func() centrifuge.ConnectReply {
+		reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+			Channels: []string{"room"},
+		}, nil, false)
+		require.NoError(t, err)
+		return reply
+	}
+
+	require.Contains(t, connect().Subscriptions, "room")
+
+	cfg.Channel.WithoutNamespace.SubscriptionType = "map"
+	cfg.Channel.WithoutNamespace.Map.Mode = "ephemeral"
+	cfg.Channel.WithoutNamespace.Map.KeyTTL = configtypes.Duration(time.Minute)
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.NotContains(t, connect().Subscriptions, "room")
+}
+
 func TestClientConnectWithMalformedToken(t *testing.T) {
 	node := tools.NodeWithMemoryEngine()
 	defer func() { _ = node.Shutdown(context.Background()) }()
@@ -987,6 +1050,36 @@ func TestClientPublishAllowed(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// A client publish goes into a stream, so it's refused in a namespace with
+// another subscription type: map channels are published into with a map publish.
+func TestClientPublishSubscriptionType(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.WithoutNamespace.PublishForClient = true
+	cfg.Channel.WithoutNamespace.PublishForAnonymous = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	publish := func() error {
+		_, err := h.OnPublish(&centrifuge.Client{}, centrifuge.PublishEvent{
+			Channel: "test1",
+			Data:    []byte(`{}`),
+		}, nil)
+		return err
+	}
+
+	require.NoError(t, publish())
+
+	cfg.Channel.WithoutNamespace.SubscriptionType = "map"
+	cfg.Channel.WithoutNamespace.Map.Mode = "ephemeral"
+	cfg.Channel.WithoutNamespace.Map.KeyTTL = configtypes.Duration(time.Minute)
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.ErrorIs(t, publish(), centrifuge.ErrorPermissionDenied)
+}
+
 func TestClientPublishForSubscriber(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
@@ -1234,6 +1327,34 @@ func TestClientOnSubscribe_UserLimitedChannelDoesNotCallProxy(t *testing.T) {
 	require.Equal(t, 1, numProxyCalls)
 }
 
+// An anonymous connection is not allowed to subscribe to a user-limited
+// channel which lists an empty user.
+func TestClientOnSubscribe_UserLimitedChannelNotAllowedForAnonymous(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.WithoutNamespace.UserLimitedChannels = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+
+	for _, ch := range []string{"user#", "user#42,"} {
+		_, _, err = h.OnSubscribe(&tools.TestClientMock{
+			IDFunc: func() string {
+				return "1"
+			},
+			UserIDFunc: func() string {
+				return ""
+			},
+		}, centrifuge.SubscribeEvent{
+			Channel: ch,
+		}, nil, nil)
+		require.ErrorIs(t, err, centrifuge.ErrorPermissionDenied, ch)
+	}
+}
+
 func TestClientOnSubscribe_UserLimitedChannelNotAllowedForAnotherUser(t *testing.T) {
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	defer func() { _ = node.Shutdown(context.Background()) }()
@@ -1324,6 +1445,205 @@ func TestClientOnSubscribe_SubRefreshProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, numProxyCalls)
 	require.False(t, reply.ClientSideRefresh)
+}
+
+func TestClientOnSubscribe_SubscribeProxyJoinLeave(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Proxy.Subscribe.Endpoint = "http://localhost:8080"
+	cfg.Channel.WithoutNamespace.SubscribeProxyEnabled = true
+	cfg.Channel.WithoutNamespace.Presence = true
+	cfg.Channel.WithoutNamespace.JoinLeave = true
+	cfg.Channel.WithoutNamespace.PresenceForSubscriber = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+
+	emitJoinLeave := true
+	proxyFunc := func(c proxy.Client, e centrifuge.SubscribeEvent, chOpts configtypes.ChannelOptions, pcd proxy.PerCallData) (centrifuge.SubscribeReply, proxy.SubscribeExtra, error) {
+		return centrifuge.SubscribeReply{
+			Options: centrifuge.SubscribeOptions{EmitPresence: true, EmitJoinLeave: emitJoinLeave},
+		}, proxy.SubscribeExtra{}, nil
+	}
+	subscribe := func(joinLeave bool) centrifuge.SubscribeReply {
+		reply, _, err := h.OnSubscribe(&tools.TestClientMock{
+			UserIDFunc: func() string {
+				return "42"
+			},
+		}, centrifuge.SubscribeEvent{
+			Channel:   "room",
+			JoinLeave: joinLeave,
+		}, proxyFunc, nil)
+		require.NoError(t, err)
+		return reply
+	}
+
+	require.True(t, subscribe(true).Options.PushJoinLeave)
+	require.False(t, subscribe(false).Options.PushJoinLeave)
+
+	emitJoinLeave = false
+	require.False(t, subscribe(true).Options.PushJoinLeave)
+
+	// Join/leave emitted by proxy override in a namespace where it's off.
+	emitJoinLeave = true
+	cfg.Channel.WithoutNamespace.JoinLeave = false
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.True(t, subscribe(true).Options.PushJoinLeave)
+
+	cfg.Channel.WithoutNamespace.PresenceForSubscriber = false
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.False(t, subscribe(true).Options.PushJoinLeave)
+}
+
+func TestClientOnSubscribe_SubscribeProxyPositioningRecovery(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Proxy.Subscribe.Endpoint = "http://localhost:8080"
+	cfg.Channel.WithoutNamespace.SubscribeProxyEnabled = true
+	cfg.Channel.WithoutNamespace.HistorySize = 10
+	cfg.Channel.WithoutNamespace.HistoryTTL = configtypes.Duration(time.Hour)
+	cfg.Channel.WithoutNamespace.AllowPositioning = true
+	cfg.Channel.WithoutNamespace.AllowRecovery = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+
+	proxyFunc := func(c proxy.Client, e centrifuge.SubscribeEvent, chOpts configtypes.ChannelOptions, pcd proxy.PerCallData) (centrifuge.SubscribeReply, proxy.SubscribeExtra, error) {
+		return centrifuge.SubscribeReply{}, proxy.SubscribeExtra{}, nil
+	}
+	subscribe := func(positioned bool, recoverable bool) centrifuge.SubscribeOptions {
+		reply, _, err := h.OnSubscribe(&tools.TestClientMock{
+			UserIDFunc: func() string {
+				return "42"
+			},
+		}, centrifuge.SubscribeEvent{
+			Channel:     "room",
+			Positioned:  positioned,
+			Recoverable: recoverable,
+		}, proxyFunc, nil)
+		require.NoError(t, err)
+		return reply.Options
+	}
+
+	require.True(t, subscribe(true, false).EnablePositioning)
+	require.False(t, subscribe(true, false).EnableRecovery)
+	require.True(t, subscribe(false, true).EnableRecovery)
+	require.False(t, subscribe(false, true).EnablePositioning)
+
+	cfg.Channel.WithoutNamespace.AllowPositioning = false
+	cfg.Channel.WithoutNamespace.AllowRecovery = false
+	require.NoError(t, cfgContainer.Reload(cfg))
+	require.False(t, subscribe(true, true).EnablePositioning)
+	require.False(t, subscribe(true, true).EnableRecovery)
+}
+
+// A client asking for join/leave gets it when a subscription token override
+// emits join/leave in a namespace where it's off.
+func TestClientOnSubscribe_TokenJoinLeaveOverride(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.WithoutNamespace.Presence = true
+	cfg.Channel.WithoutNamespace.PresenceForSubscriber = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, hmacJWTVerifier(t, cfgContainer), nil, &ProxyMap{})
+
+	getToken := func(joinLeave bool) string {
+		claims := &jwtverify.SubscribeTokenClaims{
+			SubscribeOptions: jwtverify.SubscribeOptions{
+				Override: &jwtverify.SubscribeOptionOverride{
+					JoinLeave: &jwtverify.BoolValue{Value: joinLeave},
+				},
+			},
+			Channel: "$room",
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject: "42",
+			},
+		}
+		token, err := getTokenBuilder(nil, "secret").Build(claims)
+		require.NoError(t, err)
+		return token.String()
+	}
+	subscribe := func(token string, joinLeave bool) centrifuge.SubscribeOptions {
+		reply, _, err := h.OnSubscribe(&tools.TestClientMock{
+			UserIDFunc: func() string {
+				return "42"
+			},
+		}, centrifuge.SubscribeEvent{
+			Channel:   "$room",
+			Token:     token,
+			JoinLeave: joinLeave,
+		}, nil, nil)
+		require.NoError(t, err)
+		return reply.Options
+	}
+
+	options := subscribe(getToken(true), true)
+	require.True(t, options.EmitJoinLeave)
+	require.True(t, options.PushJoinLeave)
+	require.False(t, subscribe(getToken(true), false).PushJoinLeave)
+
+	cfg.Channel.WithoutNamespace.JoinLeave = true
+	require.NoError(t, cfgContainer.Reload(cfg))
+	options = subscribe(getToken(false), true)
+	require.False(t, options.EmitJoinLeave)
+	require.False(t, options.PushJoinLeave)
+}
+
+// A subscribe stream proxy subscription gets join/leave a client asked for,
+// but never positioning and recovery, which are not used for it.
+func TestClientOnSubscribe_StreamProxyRequestedOptions(t *testing.T) {
+	node := tools.NodeWithMemoryEngineNoHandlers()
+	defer func() { _ = node.Shutdown(context.Background()) }()
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Proxy.SubscribeStream.Endpoint = "grpc://localhost:12000"
+	cfg.Channel.WithoutNamespace.SubscribeStreamProxyEnabled = true
+	cfg.Channel.WithoutNamespace.Presence = true
+	cfg.Channel.WithoutNamespace.JoinLeave = true
+	cfg.Channel.WithoutNamespace.PresenceForSubscriber = true
+	cfg.Channel.WithoutNamespace.HistorySize = 10
+	cfg.Channel.WithoutNamespace.HistoryTTL = configtypes.Duration(time.Hour)
+	cfg.Channel.WithoutNamespace.AllowPositioning = true
+	cfg.Channel.WithoutNamespace.AllowRecovery = true
+	cfg.Channel.WithoutNamespace.HistoryForSubscriber = true
+	cfgContainer, err := config.NewContainer(cfg)
+	require.NoError(t, err)
+
+	h := NewHandler(node, cfgContainer, nil, nil, &ProxyMap{})
+
+	streamHandlerFunc := func(
+		c proxy.Client, bidi bool, e centrifuge.SubscribeEvent,
+		chOpts configtypes.ChannelOptions, pcd proxy.PerCallData,
+	) (centrifuge.SubscribeReply, proxy.StreamPublishFunc, func(), error) {
+		return centrifuge.SubscribeReply{
+			Options: centrifuge.SubscribeOptions{EmitPresence: true, EmitJoinLeave: true},
+		}, nil, nil, nil
+	}
+
+	reply, _, err := h.OnSubscribe(&tools.TestClientMock{
+		UserIDFunc: func() string {
+			return "42"
+		},
+	}, centrifuge.SubscribeEvent{
+		Channel:     "room",
+		JoinLeave:   true,
+		Positioned:  true,
+		Recoverable: true,
+	}, nil, streamHandlerFunc)
+	require.NoError(t, err)
+	require.True(t, reply.Options.PushJoinLeave)
+	require.False(t, reply.Options.EnablePositioning)
+	require.False(t, reply.Options.EnableRecovery)
 }
 
 // TestClientOnSubscribe_StreamProxyStoresCancelFunc is a regression test for

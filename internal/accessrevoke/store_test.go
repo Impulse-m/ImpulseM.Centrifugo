@@ -30,7 +30,7 @@ func blockUser(userID string, expireAt int64) func(*testing.T, *Store) {
 
 func revokeSession(sessionID string, revokedAt int64, expireAt int64) func(*testing.T, *Store) {
 	return func(t *testing.T, store *Store) {
-		require.NoError(t, store.RevokeSession(sessionID, revokedAt, expireAt))
+		require.NoError(t, store.RevokeSession(sessionID, revokedAt, expireAt, nil))
 	}
 }
 
@@ -100,8 +100,8 @@ func TestStoreUnblockUser(t *testing.T) {
 func TestStoreRevokeSessionKeepsMaximum(t *testing.T) {
 	clock := testNow
 	store := newClockStore(&clock)
-	require.NoError(t, store.RevokeSession(testUUID, 950, 2000))
-	require.NoError(t, store.RevokeSession(testUUID, 900, 1500))
+	require.NoError(t, store.RevokeSession(testUUID, 950, 2000, nil))
+	require.NoError(t, store.RevokeSession(testUUID, 900, 1500, nil))
 
 	// Revoked at 950 is kept, so a token issued at 920 is still revoked.
 	result := store.Check("user-1", Identity(testUUID, 0, 920), CheckOptions{Session: true})
@@ -133,7 +133,7 @@ func TestStoreApplyIsIdempotent(t *testing.T) {
 	store := newClockStore(&clock)
 	for range 3 {
 		require.NoError(t, store.BlockUser("user-1", 1500))
-		require.NoError(t, store.RevokeSession(testUUID, 950, 1500))
+		require.NoError(t, store.RevokeSession(testUUID, 950, 1500, nil))
 		require.NoError(t, store.InvalidateUser("user-1", 5, 900, 950, 1500))
 	}
 	require.Equal(t, Sizes{Blocked: 1, Sessions: 1, Users: 1}, store.Sizes())
@@ -145,7 +145,7 @@ func TestStoreApplyIsIdempotent(t *testing.T) {
 func TestStoreRevokeSessionExpires(t *testing.T) {
 	clock := testNow
 	store := newClockStore(&clock)
-	require.NoError(t, store.RevokeSession(testUUID, 950, 1100))
+	require.NoError(t, store.RevokeSession(testUUID, 950, 1100, nil))
 
 	clock = 1099
 	require.Equal(t, Revoked, store.Check("user-1", Identity(testUUID, 0, 900), CheckOptions{Session: true}).Verdict)
@@ -312,7 +312,7 @@ func TestStoreSweepRemovesExpiredEntries(t *testing.T) {
 	store := newClockStore(&clock)
 	require.NoError(t, store.BlockUser("user-1", 1100))
 	require.NoError(t, store.BlockUser("user-2", 1300))
-	require.NoError(t, store.RevokeSession(testUUID, 0, 1100))
+	require.NoError(t, store.RevokeSession(testUUID, 0, 1100, nil))
 	require.NoError(t, store.InvalidateUser("user-1", 1, 0, 0, 1100))
 	require.Equal(t, Sizes{Blocked: 2, Sessions: 1, Users: 1}, store.Sizes())
 
@@ -327,7 +327,7 @@ func TestStoreEmptyIdentifierIsError(t *testing.T) {
 	store := newClockStore(&clock)
 	require.ErrorIs(t, store.BlockUser("", 0), ErrEmptyID)
 	require.ErrorIs(t, store.UnblockUser(""), ErrEmptyID)
-	require.ErrorIs(t, store.RevokeSession("", 0, 0), ErrEmptyID)
+	require.ErrorIs(t, store.RevokeSession("", 0, 0, nil), ErrEmptyID)
 	require.ErrorIs(t, store.InvalidateUser("", 1, 0, 0, 0), ErrEmptyID)
 	require.Equal(t, Sizes{}, store.Sizes())
 }
@@ -341,7 +341,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for range 200 {
 				_ = store.BlockUser("user-1", 0)
-				_ = store.RevokeSession(testUUID, 0, 0)
+				_ = store.RevokeSession(testUUID, 0, 0, nil)
 				_ = store.InvalidateUser("user-1", 1, 0, 0, 0)
 				_ = store.Check("user-1", Identity(testUUID, 0, 1), CheckOptions{Block: true, Session: true, UserTokens: true})
 				store.Sweep()

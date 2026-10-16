@@ -535,6 +535,6 @@ func TestServerTagsFilterTemplateUnsubscribeForgetsChannels(t *testing.T) {
 		require.Nil(t, reply.Error)
 	}
 	require.Eventually(t, func() bool {
-		return !hasTemplatedChannels(client) && len(templatedChannelsOf(client)) == 0
+		return len(templatedChannelsOf(client)) == 0
 	}, 5*time.Second, time.Millisecond)
 }

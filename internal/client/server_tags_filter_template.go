@@ -139,7 +139,7 @@ func (h *Handler) refreshFilterTemplate(
 	if err != nil || reply.ServerTagsFilter == nil || !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return reply, err
 	}
-	filter, err := h.channelFilter(client, channel, reply.ServerTagsFilter)
+	filter, err := h.filterWithValues(channel, connectionFilterValues(client), reply.ServerTagsFilter)
 	if err != nil {
 		return centrifuge.SubRefreshReply{}, centrifuge.ErrorPermissionDenied
 	}
@@ -244,12 +244,6 @@ func (h *Handler) applyFilterTemplate(
 	return opts, nil
 }
 
-// channelFilter returns the server tags filter of a client subscription to channel which sets explicit, under the
-// template of the channel's namespace. A channel without a template keeps explicit.
-func (h *Handler) channelFilter(client Client, channel string, explicit *protocol.FilterNode) (*protocol.FilterNode, error) {
-	return h.filterWithValues(channel, connectionFilterValues(client), explicit)
-}
-
 // filterWithValues returns the server tags filter of a subscription to channel with explicit, rendered under the template
 // of the channel's namespace with values. A channel without a template keeps explicit.
 func (h *Handler) filterWithValues(
@@ -351,7 +345,7 @@ func (h *Handler) templatedSubscriptionChannels(subs map[string]centrifuge.Subsc
 }
 
 // recordTemplatedChannel records that channel is subscribed with a template of its namespace, when it has one. The set
-// is changed under the storage lock, and it is read by templatedChannelsOf and hasTemplatedChannels under the same lock.
+// is changed under the storage lock, and it is read by templatedChannelsOf under the same lock.
 func (h *Handler) recordTemplatedChannel(c Client, channel string) {
 	if h.templateOf(channel) == nil {
 		return
@@ -390,14 +384,6 @@ func templatedChannelsOf(c Client) []string {
 	}
 	release(storage)
 	return out
-}
-
-// hasTemplatedChannels reports whether a channel is recorded by recordTemplatedChannel.
-func hasTemplatedChannels(c Client) bool {
-	storage, release := c.AcquireStorage()
-	channels, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
-	release(storage)
-	return len(channels) > 0
 }
 
 // clearTemplatedChannels removes the record of recordTemplatedChannel.

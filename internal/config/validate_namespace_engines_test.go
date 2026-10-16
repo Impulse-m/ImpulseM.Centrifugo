@@ -589,6 +589,118 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "redis controller prefix under the channel space of a named redis broker on the same host",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Brokers[0].Redis.Prefix = "centrifugo"
+				cfg.Controller.Enabled = true
+				cfg.Controller.Type = "redis"
+				cfg.Controller.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Controller.Redis.Prefix = "centrifugo.client.x"
+			},
+			wantErr: `brokers "broadcast" and controller use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "redis controller prefix under the node channel space of a named redis broker on the same host",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Brokers[0].Redis.Prefix = "centrifugo.node.x"
+				cfg.Controller.Enabled = true
+				cfg.Controller.Type = "redis"
+				cfg.Controller.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Controller.Redis.Prefix = "centrifugo"
+			},
+			wantErr: `brokers "broadcast" and controller use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "redis controller prefix under the channel space of a named redis broker on another host",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Prefix = "centrifugo"
+				cfg.Controller.Enabled = true
+				cfg.Controller.Type = "redis"
+				cfg.Controller.Redis.Redis.Address = []string{"redis://10.0.0.9:6379"}
+				cfg.Controller.Redis.Prefix = "centrifugo.client.x"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default redis broker which is the controller under the node channel space of a named redis broker",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Brokers[0].Redis.Prefix = "centrifugo.node.x"
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "redis"
+				cfg.Broker.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Broker.Redis.Prefix = "centrifugo"
+			},
+			wantErr: `brokers "broadcast" and broker control use the same Redis and overlapping prefixes`,
+		},
+		{
+			name: "default redis broker which is the controller on another host than a named redis broker with the same prefix",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].Redis.Redis.Address = []string{"redis://10.0.0.9:6379"}
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "redis"
+				cfg.Broker.Redis.Redis.Address = []string{"redis://10.0.0.2:6379"}
+				cfg.Broker.Redis.Prefix = "centrifugo"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default nats broker in raw mode which is the controller with the control subject under its root",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.RawMode.Enabled = true
+				cfg.Broker.Nats.RawMode.Prefix = "centrifugo.co"
+				cfg.Brokers[1].Nats.Prefix = "rates"
+			},
+			wantErr: `broker and broker control use overlapping NATS subjects`,
+		},
+		{
+			name: "default nats broker in raw mode which is the controller with a root under its node subjects",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.RawMode.Enabled = true
+				cfg.Broker.Nats.RawMode.Prefix = "centrifugo.node.x"
+				cfg.Brokers[1].Nats.Prefix = "rates"
+			},
+			wantErr: `broker and broker control use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode under the control subject of the default nats broker which is the controller",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "centrifugo"
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.co"
+			},
+			wantErr: `brokers "rates" and broker control use overlapping NATS subjects`,
+		},
+		{
+			name: "named nats broker in raw mode with a root which only starts like the control subject of the default nats broker",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "centrifugo"
+				cfg.Brokers[1].Nats.RawMode.Enabled = true
+				cfg.Brokers[1].Nats.RawMode.Prefix = "centrifugo.controlx"
+			},
+			wantErr: "",
+		},
+		{
+			name: "default nats broker which is the controller with a non-raw prefix ending in node is not compared with itself",
+			modify: func(cfg *Config) {
+				cfg.Broker.Enabled = true
+				cfg.Broker.Type = "nats"
+				cfg.Broker.Nats.Prefix = "centrifugo.node"
+				cfg.Brokers[1].Nats.Prefix = "rates"
+			},
+			wantErr: "",
+		},
+		{
 			name: "controller of unknown type",
 			modify: func(cfg *Config) {
 				cfg.Controller.Enabled = true

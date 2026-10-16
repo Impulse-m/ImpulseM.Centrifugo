@@ -30,12 +30,14 @@ const defaultRedisAddress = "127.0.0.1:6379"
 // defaultRedisPort is the port which a Redis host gets when its address has none.
 const defaultRedisPort = "6379"
 
-// redisEngineRef is a Redis broker of the configuration: the default broker or engine, the default map broker,
-// a named broker or a named map broker. isDefault marks the default ones.
+// redisEngineRef is a Redis subject of the configuration: the channels of the default broker or engine, the default
+// map broker, a named broker or a named map broker, or a control channel which a Redis controller subscribes. space
+// and exact are compared as in spacesConflict. isDefault marks the default ones.
 type redisEngineRef struct {
 	label     string
 	hosts     []string
-	prefix    string
+	space     string
+	exact     bool
 	cluster   bool
 	isDefault bool
 }
@@ -174,13 +176,14 @@ func validateNamespaceEngineRef(
 }
 
 // validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same
-// Redis and prefixes whose channel spaces overlap, see channelSpace. The default broker and the default map broker
+// Redis and prefixes whose channel spaces overlap, see newRedisEngineRef. The default broker and the default map broker
 // are not compared with each other: they have always been accepted together. Core subscribes a channel only on the
 // broker which routes it, so in standalone mode such brokers do not duplicate publications. Core turns on sharded
 // PUB/SUB only with NumShardedPubSubPartitions, which the server does not set; then brokers with one prefix subscribe
 // the same partition channels and deliver each publication twice. The rule keeps that mode safe. A cluster broker
 // conflicts with any broker of the same prefix, since the cluster hosts are not resolved when the configuration is
-// validated.
+// validated. The control channels of a Redis controller are compared too, and so are the control channels of the
+// default broker or engine when Core makes it the controller, since a channel of another broker may be one of them.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
@@ -202,13 +205,25 @@ func validateNamedRedisPrefixes(c Config) error {
 			refs = append(refs, newRedisEngineRef(fmt.Sprintf("map_brokers %q", mb.Name), mb.Redis.Redis, mb.Redis.Prefix, false))
 		}
 	}
+	if c.Controller.Enabled && c.Controller.Type == "redis" {
+		refs = append(refs, newRedisControlRefs("controller", c.Controller.Redis.Redis, c.Controller.Redis.Prefix, false)...)
+	}
+	if !c.Controller.Enabled {
+		// The default broker or engine is the controller, see the NATS rule in validateNamedNatsSubjects. Its control
+		// channels are not compared with its own channels: they are never equal to them.
+		if c.Broker.Enabled && c.Broker.Type == "redis" {
+			refs = append(refs, newRedisControlRefs("broker control", c.Broker.Redis.Redis, c.Broker.Redis.Prefix, true)...)
+		} else if !c.Broker.Enabled && c.Engine.Type == "redis" {
+			refs = append(refs, newRedisControlRefs("engine control", c.Engine.Redis.Redis, c.Engine.Redis.Prefix, true)...)
+		}
+	}
 	first, second, found := firstEngineConflict(
 		refs,
 		func(ref redisEngineRef) bool {
 			return ref.isDefault
 		},
 		func(a redisEngineRef, b redisEngineRef) bool {
-			return subjectSpacesOverlap(a.channelSpace(), b.channelSpace()) && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
+			return spacesConflict(a.space, a.exact, b.space, b.exact) && (a.cluster || b.cluster || sharesHost(a.hosts, b.hosts))
 		},
 	)
 	if found {
@@ -240,27 +255,49 @@ func firstEngineConflict[T any](
 	return first, second, false
 }
 
-// newRedisEngineRef returns the reference of a Redis broker with the connection and the prefix which it uses.
+// newRedisEngineRef returns the reference of a Redis broker with the connection and the prefix which it uses. The
+// space of its channels is its prefix followed by .client., as in Core. Two prefixes whose spaces overlap, such as
+// "a" and "a.client", can name the same channel.
 func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, isDefault bool) redisEngineRef {
 	return redisEngineRef{
 		label:     label,
 		hosts:     redisHosts(redisCfg),
-		prefix:    redisPrefix(prefix),
+		space:     redisPrefix(prefix) + ".client.",
 		cluster:   usesRedisCluster(redisCfg),
 		isDefault: isDefault,
 	}
 }
 
-// channelSpace returns the space of the Redis channels which the broker publishes and subscribes: its prefix
-// followed by .client., as in Core. Two prefixes whose spaces overlap, such as "a" and "a.client", can name the
-// same channel.
-func (ref redisEngineRef) channelSpace() string {
-	return ref.prefix + ".client."
+// newRedisControlRefs returns the references of the control channels which a Redis broker with the given prefix
+// subscribes, as in Core: the control channel prefix.control, and the node channels prefix.node.<id>, whose space is
+// prefix.node. since node IDs are appended to it. The control channel is exact, since Core subscribes it as it is.
+func newRedisControlRefs(label string, redisCfg configtypes.Redis, prefix string, isDefault bool) []redisEngineRef {
+	hosts := redisHosts(redisCfg)
+	cluster := usesRedisCluster(redisCfg)
+	prefix = redisPrefix(prefix)
+	return []redisEngineRef{
+		{
+			label:     label,
+			hosts:     hosts,
+			space:     prefix + ".control",
+			exact:     true,
+			cluster:   cluster,
+			isDefault: isDefault,
+		},
+		{
+			label:     label,
+			hosts:     hosts,
+			space:     prefix + ".node.",
+			cluster:   cluster,
+			isDefault: isDefault,
+		},
+	}
 }
 
 // natsEngineRef is a NATS subject of the configuration: the subject space of the default broker or of a named
-// broker, or a subject which the NATS controller subscribes. space is the subject prefix, and exact marks a subject
-// which is subscribed as it is. isDefault marks the default broker.
+// broker, or a subject which a NATS controller subscribes. space is the subject prefix, and exact marks a subject
+// which is subscribed as it is. isDefault marks the default broker, and the subjects which the default broker
+// subscribes as the controller when it is not in raw mode.
 type natsEngineRef struct {
 	label     string
 	space     string
@@ -269,9 +306,10 @@ type natsEngineRef struct {
 }
 
 // validateNamedNatsSubjects rejects two NATS subjects of the configuration which overlap, see natsSpacesConflict:
-// the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes.
-// A publication to one of them reaches the subscription of the other, so a node would deliver it twice. A wildcard
-// subscription does not change this, since it stays inside the subject space of its broker.
+// the subject spaces of the default and named NATS brokers, and the subjects which a NATS controller subscribes,
+// including the ones of the default NATS broker when Core makes it the controller. A publication to one of them
+// reaches the subscription of the other, so a node would deliver it twice. A wildcard subscription does not change
+// this, since it stays inside the subject space of its broker.
 func validateNamedNatsSubjects(c Config) error {
 	var refs []natsEngineRef
 	if c.Broker.Enabled && (c.Broker.Type == "nats" || c.Broker.Type == "redisnats") {
@@ -283,7 +321,14 @@ func validateNamedNatsSubjects(c Config) error {
 		}
 	}
 	if c.Controller.Enabled && c.Controller.Type == "nats" {
-		refs = append(refs, newNatsControllerRefs(c.Controller.Nats)...)
+		refs = append(refs, newNatsControllerRefs("controller", c.Controller.Nats.NatsPrefixed, false)...)
+	}
+	if !c.Controller.Enabled && c.Broker.Enabled && (c.Broker.Type == "nats" || c.Broker.Type == "redisnats") {
+		// Without a controller, Core makes the default NATS broker the controller, so it subscribes the control subjects
+		// on its own connection. Its channels are below prefix.client., which the control subjects never match, unless
+		// it is in raw mode: a raw root is concatenated with the channel, so it can reach them. Only the raw mode
+		// subjects are compared with the broker's own subject space.
+		refs = append(refs, newNatsControllerRefs("broker control", c.Broker.Nats.NatsPrefixed, !c.Broker.Nats.RawMode.Enabled)...)
 	}
 	first, second, found := firstEngineConflict(
 		refs,
@@ -318,32 +363,40 @@ func newNatsBrokerRef(label string, natsCfg configtypes.NatsBroker, isDefault bo
 
 // newNatsControllerRefs returns the subjects which a NATS controller subscribes, as natsbroker does: the control
 // subject prefix.control, and the node subjects prefix.node.<id>, whose space is prefix.node. since node IDs are
-// appended to it.
-func newNatsControllerRefs(natsCfg configtypes.NatsController) []natsEngineRef {
+// appended to it. isDefault marks the references of the default broker which is the controller, see isDefault.
+func newNatsControllerRefs(label string, natsCfg configtypes.NatsPrefixed, isDefault bool) []natsEngineRef {
 	return []natsEngineRef{
 		{
-			label: "controller",
-			space: natsCfg.Prefix + ".control",
-			exact: true,
+			label:     label,
+			space:     natsCfg.Prefix + ".control",
+			exact:     true,
+			isDefault: isDefault,
 		},
 		{
-			label: "controller",
-			space: natsCfg.Prefix + ".node.",
+			label:     label,
+			space:     natsCfg.Prefix + ".node.",
+			isDefault: isDefault,
 		},
 	}
 }
 
-// natsSpacesConflict reports whether two NATS references can match the same subject. An exact subject conflicts with
-// a reference whose space is its prefix. Otherwise the two spaces conflict when one is a prefix of the other, see
-// subjectSpacesOverlap. Two references of the same controller never conflict.
+// natsSpacesConflict reports whether two NATS references can match the same subject, see spacesConflict.
 func natsSpacesConflict(a natsEngineRef, b natsEngineRef) bool {
-	if a.exact {
-		return strings.HasPrefix(a.space, b.space)
+	return spacesConflict(a.space, a.exact, b.space, b.exact)
+}
+
+// spacesConflict reports whether two subject spaces can match the same subject. An exact subject conflicts with a
+// space which is its prefix. Otherwise the two spaces conflict when one is a prefix of the other, see
+// subjectSpacesOverlap. Two exact subjects are compared as strings, which is conservative: they are never both
+// subscribed, since one controller runs at a time.
+func spacesConflict(aSpace string, aExact bool, bSpace string, bExact bool) bool {
+	if aExact {
+		return strings.HasPrefix(aSpace, bSpace)
 	}
-	if b.exact {
-		return strings.HasPrefix(b.space, a.space)
+	if bExact {
+		return strings.HasPrefix(bSpace, aSpace)
 	}
-	return subjectSpacesOverlap(a.space, b.space)
+	return subjectSpacesOverlap(aSpace, bSpace)
 }
 
 // subjectSpacesOverlap reports whether two subject spaces can match the same subject: one of them is a prefix of the

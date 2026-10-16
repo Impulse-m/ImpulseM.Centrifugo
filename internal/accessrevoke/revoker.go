@@ -67,17 +67,26 @@ func (r *Revoker) UnblockUser(userID string) error {
 }
 
 // RevokeSession revokes the session and disconnects local connections of userID which have this
-// session with centrifuge.DisconnectExpired. Connections without a user which have this session are
-// disconnected through the session index, with or without userID. Empty userID also runs a sweep of all
-// local connections in the background, which disconnects the connections with this session that the index
-// does not hold. The sweep is O(local connections), so passing userID is strongly preferred at scale.
-func (r *Revoker) RevokeSession(userID string, sessionID string, revokedAt int64, expireAt int64) error {
-	err := r.store.RevokeSession(sessionID, revokedAt, expireAt)
+// session. Connections without a user which have this session are disconnected through the session
+// index, with or without userID. Empty userID also runs a sweep of all local connections in the
+// background, which disconnects the connections with this session that the index does not hold. The
+// sweep is O(local connections), so passing userID is strongly preferred at scale. Every disconnect
+// closes with the disconnect the session is revoked with, see Store.RevokeSession, or with
+// centrifuge.DisconnectExpired when it has none.
+func (r *Revoker) RevokeSession(
+	userID string,
+	sessionID string,
+	revokedAt int64,
+	expireAt int64,
+	disconnect *Disconnect,
+) error {
+	err := r.store.RevokeSession(sessionID, revokedAt, expireAt, disconnect)
 	if err != nil {
 		return err
 	}
 	sessionKey, _ := Key(sessionID)
-	indexDropped := r.disconnectSessionConnections(sessionKey)
+	closeConn := closeWith(r.store.sessionDisconnect(sessionKey), centrifuge.DisconnectExpired)
+	indexDropped := r.disconnectSessionConnections(sessionKey, closeConn)
 	if userID == "" {
 		// The sweep also finds the indexed connections, and a disconnect is idempotent, so a connection hit by both is
 		// disconnected once in effect.
@@ -89,7 +98,7 @@ func (r *Revoker) RevokeSession(userID string, sessionID string, revokedAt int64
 			return ReasonSession
 		}
 		return ""
-	}, centrifuge.DisconnectExpired)
+	}, closeConn)
 	// A dropped disconnect of a session is not retried by the queue. The sweep checks the sessions of all local
 	// connections, so it disconnects the dropped ones.
 	if indexDropped || userDropped {
@@ -125,7 +134,13 @@ func (r *Revoker) Apply(notification Notification) error {
 	case KindUnblockUser:
 		return r.UnblockUser(notification.User)
 	case KindRevokeToken:
-		return r.RevokeSession(notification.User, notification.Session, notification.RevokedAt, notification.ExpireAt)
+		return r.RevokeSession(
+			notification.User,
+			notification.Session,
+			notification.RevokedAt,
+			notification.ExpireAt,
+			notification.Disconnect,
+		)
 	case KindInvalidateUserTokens:
 		return r.InvalidateUser(
 			notification.User,
@@ -162,10 +177,10 @@ func (r *Revoker) disconnectMatching(
 
 // disconnectSessionConnections enqueues disconnect of the indexed connections of session. Such connections
 // have no user, so disconnectMatching does not find them. It reports whether the queue dropped a disconnect.
-func (r *Revoker) disconnectSessionConnections(session [16]byte) bool {
+func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) bool {
 	dropped := false
 	for _, conn := range r.store.SessionConnections().Connections(session) {
-		if !r.queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession) {
+		if !r.queue.Enqueue(conn, disconnect, ReasonSession) {
 			dropped = true
 		}
 	}

@@ -207,7 +207,7 @@ func (h *Handler) storeReboundTokenFilters(c rebindableClient, toSubscribe map[s
 		return
 	}
 	storage, release := c.AcquireStorage()
-	// The stored map is read without the lock by the comparison of tokenChannelsChanged, so it is copied, not changed.
+	// The stored map is copied, not changed: tokenChannelsChanged reads the map it got from storage after the lock is released.
 	stored, _ := storage[connectionTokenFiltersKey].(map[string]*protocol.FilterNode)
 	filters := maps.Clone(stored)
 	for _, channel := range fresh {

@@ -15,6 +15,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/balancer/ringhash" // Registers ring_hash_experimental, the policy of the ring_hash targets.
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -42,6 +43,9 @@ type RegistryCall struct {
 	// WithoutUpdates is set when the client asks for the call without its updates, sent as
 	// x-centrifugo-without-updates.
 	WithoutUpdates bool
+	// MaxResponseBytes is the response bound of this call, when not zero. It replaces the method's limit, and is the
+	// bound the admission of the call reserved.
+	MaxResponseBytes int
 }
 
 // DialRegistryTarget makes the gRPC connection of a registry target. It is the dial hook of the
@@ -59,7 +63,7 @@ func DialRegistryTarget(target *rpcregistry.Target) (io.Closer, error) {
 	}
 	dialOpts = append(
 		dialOpts,
-		grpc.WithDefaultServiceConfig(registryServiceConfig(target.Config.LoadBalancing)),
+		grpc.WithDefaultServiceConfig(registryServiceConfig(target.Config)),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 	)
 	conn, err := grpc.NewClient(host, dialOpts...)
@@ -69,9 +73,13 @@ func DialRegistryTarget(target *rpcregistry.Target) (io.Closer, error) {
 	return conn, nil
 }
 
-// registryServiceConfig returns the gRPC service config which selects the load balancing policy.
-func registryServiceConfig(policy string) string {
-	return fmt.Sprintf(`{"loadBalancingConfig":[{%q:{}}]}`, policy)
+// registryServiceConfig returns the gRPC service config which selects the load balancing policy of target. A ring_hash
+// target hashes the value of its affinity header, which the config validation guarantees is set.
+func registryServiceConfig(target configtypes.RPCTarget) string {
+	if target.LoadBalancing == configtypes.RPCLoadBalancingRingHash {
+		return fmt.Sprintf(`{"loadBalancingConfig":[{"ring_hash_experimental":{"requestHashHeader":%q}}]}`, target.AffinityHeader)
+	}
+	return fmt.Sprintf(`{"loadBalancingConfig":[{%q:{}}]}`, target.LoadBalancing)
 }
 
 // CallRegistryMethod calls the gRPC method of m with the payload of call. The context carries the
@@ -87,6 +95,10 @@ func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call Registr
 	defer cancel()
 	ctx = metadata.NewOutgoingContext(ctx, registryRequestMetadata(ctx, m, call))
 
+	maxResponseBytes := m.MaxResponseBytes
+	if call.MaxResponseBytes > 0 {
+		maxResponseBytes = call.MaxResponseBytes
+	}
 	var out []byte
 	var trailer metadata.MD
 	err := conn.Invoke(
@@ -95,7 +107,7 @@ func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call Registr
 		call.Data,
 		&out,
 		grpc.ForceCodec(bytesCodec{}),
-		grpc.MaxCallRecvMsgSize(m.MaxResponseBytes),
+		grpc.MaxCallRecvMsgSize(maxResponseBytes),
 		grpc.Trailer(&trailer),
 	)
 	if err != nil {

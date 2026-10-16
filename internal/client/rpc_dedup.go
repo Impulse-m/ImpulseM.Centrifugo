@@ -226,7 +226,7 @@ func (h *Handler) cancelRPCRegistry(track *rpcTrack, msgID uint64) (centrifuge.R
 // be cancelled by a cancel command of its msg_id, on its connection or in its scope. A non-idempotent call in a
 // scope is recorded, and its context is not cancelled by a disconnect, so its backend commit runs on. Any other
 // call is cancelled by a disconnect, as it always was.
-func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack) (centrifuge.RPCReply, error) {
+func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, bound int) (centrifuge.RPCReply, error) {
 	msgID := e.Call.MsgID
 	if !rpcdedup.MsgIDInWindow(msgID, time.Now(), h.rpcDedup.window, h.rpcDedup.maxSkew) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupMsgIDInvalid)
@@ -248,23 +248,23 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 		defer cancel()
 		release := track.inflight.Add(msgID, cancel)
 		defer release()
-		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
+		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken, bound)
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(c.Context()))
 	defer cancel()
-	return h.callRPCRecorded(ctx, cancel, c, e, m, cfg, connToken, track)
+	return h.callRPCRecorded(ctx, cancel, c, e, m, cfg, connToken, track, bound)
 }
 
 // callRPCRecorded runs a non-idempotent call in a scope through the dedup store. The call is a miss, a duplicate
 // of a done call, or a duplicate of a call in flight on this node. A duplicate with another fingerprint is refused.
 // Only the owner of a miss is registered in the in-flight map of its connection: a duplicate joins the call of the
 // owner, and a cancel of the msg_id reaches the owner, which then answers the duplicate too.
-func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack) (centrifuge.RPCReply, error) {
+func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, bound int) (centrifuge.RPCReply, error) {
 	key := rpcdedup.Key{Scope: track.scope, MsgID: e.Call.MsgID}
 	flight := rpcdedup.NewCallFlight(rpcdedup.Fingerprint(e.Method, e.Data), m.Timeout)
 	lookup, err := h.rpcDedup.store.Begin(key, flight)
 	if err != nil {
-		return h.rpcStoreFailure(ctx, cancel, c, e, m, cfg, connToken, track, err)
+		return h.rpcStoreFailure(ctx, cancel, c, e, m, cfg, connToken, track, err, bound)
 	}
 	switch lookup.Outcome {
 	case rpcdedup.OutcomeDone:
@@ -295,7 +295,7 @@ func (h *Handler) callRPCRecorded(ctx context.Context, cancel context.CancelFunc
 			h.completeRPCRecord(key, flight, rpcdedup.Record{Err: failure})
 		}
 	}()
-	reply, callErr := h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
+	reply, callErr := h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken, bound)
 	if h.rpcDedup.afterBackend != nil {
 		h.rpcDedup.afterBackend()
 	}
@@ -327,7 +327,7 @@ func (h *Handler) completeRPCRecord(key rpcdedup.Key, flight *rpcdedup.Flight, r
 // map of its connection, so a cancel reaches it. A call with the msg_id of a call which runs on the connection is
 // not run again: it is answered with the temporary dedup_unavailable error, as the store would not know it. With
 // fail_closed the call is answered with the same error, which carries the later retry signal, and it is not run.
-func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, storeErr error) (centrifuge.RPCReply, error) {
+func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, track *rpcTrack, storeErr error, bound int) (centrifuge.RPCReply, error) {
 	var refused *rpcdedup.RefusedError
 	if errors.As(storeErr, &refused) {
 		h.countRefused(refused)
@@ -341,7 +341,7 @@ func (h *Handler) rpcStoreFailure(ctx context.Context, cancel context.CancelFunc
 			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryNoSignalDedupError(cfg))
 		}
 		defer release()
-		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken)
+		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken, bound)
 	}
 	return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, registryLaterError(cfg))
 }

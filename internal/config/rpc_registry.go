@@ -10,6 +10,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/spf13/viper"
 )
 
@@ -34,6 +35,8 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 	v.SetDefault(prefix+"result_evicted.message", "result expired")
 	v.SetDefault(prefix+"dedup_unavailable.code", 108)
 	v.SetDefault(prefix+"dedup_unavailable.message", "dedup unavailable")
+	v.SetDefault(prefix+"overloaded.code", centrifuge.ErrorTooManyRequests.Code)
+	v.SetDefault(prefix+"overloaded.message", centrifuge.ErrorTooManyRequests.Message)
 }
 
 // LoadRPCRegistryFile reads the RPC registry file at path. The format is chosen by the

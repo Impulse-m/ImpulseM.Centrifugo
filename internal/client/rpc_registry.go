@@ -113,18 +113,30 @@ func (h *Handler) callRPCRegistry(
 		sizeErr := registryError(cfg.Errors.RequestTooLarge)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, sizeErr)
 	}
+	// The response bound is read once, and is the cost of the call in admission and the limit of its reply.
+	bound := m.ResponseBound(e.Data)
+	if admission := h.rpcRegistry.Admission(); admission != nil {
+		cost := int64(len(e.Data)) + int64(bound)
+		if reason := admission.Admit(cost); reason != "" {
+			// The call was not executed, and its msg_id, if any, is still good: the client sends it again later.
+			overloaded := registryRetryError(cfg.Errors.Overloaded, true, rpcRetryLater)
+			return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultOverloaded, overloaded)
+		}
+		defer admission.Release(cost)
+	}
 	if e.Call.Retransmit {
 		m.Metrics.IncRetransmit()
 	}
 	if track != nil && e.Call.MsgID != 0 {
-		return h.callRPCTracked(c, e, m, cfg, caller.token, track)
+		return h.callRPCTracked(c, e, m, cfg, caller.token, track, bound)
 	}
-	return h.invokeRPCRegistry(c.Context(), c, e, m, cfg, caller.token)
+	return h.invokeRPCRegistry(c.Context(), c, e, m, cfg, caller.token, bound)
 }
 
 // invokeRPCRegistry calls the gRPC target of m for the client, on ctx, and maps a failure to the error the client
-// receives. The context of the call is the client context, unless a tracked call gave its own.
-func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string) (centrifuge.RPCReply, error) {
+// receives. The context of the call is the client context, unless a tracked call gave its own. bound is the response
+// bound of the call, see Method.ResponseBound.
+func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.RPCEvent, m *rpcregistry.Method, cfg configtypes.RPCRegistry, connToken string, bound int) (centrifuge.RPCReply, error) {
 	var token string
 	if m.AuthClass != rpcregistry.AuthClassAnonymous {
 		token = connToken
@@ -133,13 +145,14 @@ func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.
 	m.Target.Metrics.IncInflight()
 	defer m.Target.Metrics.DecInflight()
 	data, trailers, err := proxy.CallRegistryMethod(ctx, m, proxy.RegistryCall{
-		ClientID:       c.ID(),
-		Token:          token,
-		Data:           e.Data,
-		Headers:        e.Call.Headers,
-		MsgID:          e.Call.MsgID,
-		Retransmit:     e.Call.Retransmit,
-		WithoutUpdates: e.Call.WithoutUpdates,
+		ClientID:         c.ID(),
+		Token:            token,
+		Data:             e.Data,
+		Headers:          e.Call.Headers,
+		MsgID:            e.Call.MsgID,
+		Retransmit:       e.Call.Retransmit,
+		WithoutUpdates:   e.Call.WithoutUpdates,
+		MaxResponseBytes: bound,
 	})
 	// The context decides whether the call was cancelled. A CANCELLED status sent by the
 	// backend on a live connection is an ordinary failure of the target. A call cancelled by the

@@ -23,6 +23,11 @@ const serverTagsFilterValuesKey = "server_tags_filter_template_values"
 // subscribes them again, since the connection keeps them and their filters are rendered with the new values.
 const serverTagsFilterServerSideKey = "server_tags_filter_template_server_side"
 
+// serverTagsFilterTemplatedKey is a client storage key with the set of channels which the connection subscribed with a
+// server tags filter template, see recordTemplatedChannel. A rebind with other values unsubscribes them: a reload may have
+// removed their template, and the config does not tell which channels carry a template filter.
+const serverTagsFilterTemplatedKey = "server_tags_filter_template_channels"
+
 // serverTagsFilterUnboundKey is a client storage key set to true when the connection has no token claims bound to its
 // stored values: it connected through the connect proxy, which has no token. Its claims stay missing until it
 // reconnects with a token, so a token refresh does not compare them. A rebind with a token binds claims and removes it.
@@ -61,6 +66,9 @@ func (h *Handler) connectFilterTemplates(
 	}
 	if serverSide := h.serverSideSubscriptions(subscriptions); serverSide != nil {
 		storage[serverTagsFilterServerSideKey] = serverSide
+	}
+	if templated := h.templatedSubscriptionChannels(subscriptions); templated != nil {
+		storage[serverTagsFilterTemplatedKey] = templated
 	}
 	if err := h.applyFilterTemplates(subscriptions, values); err != nil {
 		return centrifuge.DisconnectPermissionDenied
@@ -111,6 +119,7 @@ func (h *Handler) answerSubscribe(
 		return
 	}
 	reply.Options.ServerTagsFilter = filter
+	h.recordTemplatedChannel(client, channel)
 	cb(reply, nil)
 	if !sameFilterValues(values, connectionFilterValues(client)) {
 		client.Unsubscribe(channel, unsubscribeInsufficientState)
@@ -134,6 +143,7 @@ func (h *Handler) refreshFilterTemplate(
 		return centrifuge.SubRefreshReply{}, centrifuge.ErrorPermissionDenied
 	}
 	reply.ServerTagsFilter = filter
+	h.recordTemplatedChannel(client, channel)
 	return reply, nil
 }
 
@@ -175,7 +185,13 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
-	return h.applyFilterTemplates(subs, connectionFilterValues(c))
+	if err := h.applyFilterTemplates(subs, connectionFilterValues(c)); err != nil {
+		return err
+	}
+	for channel := range subs {
+		h.recordTemplatedChannel(c, channel)
+	}
+	return nil
 }
 
 // applyFilterTemplates sets the server tags filter of every subscription whose namespace has a template to the
@@ -308,6 +324,64 @@ func storedFilterValues(storage map[string]any) (filtertemplate.Values, bool) {
 // storedValuesOf returns the part of values which is stored: the user and the claims. The client is not stored.
 func storedValuesOf(values filtertemplate.Values) filtertemplate.Values {
 	return filtertemplate.Values{Claims: values.Claims, User: values.User}
+}
+
+// templatedSubscriptionChannels returns the channels of subs whose namespace has a template, or nil when there are none.
+func (h *Handler) templatedSubscriptionChannels(subs map[string]centrifuge.SubscribeOptions) map[string]struct{} {
+	var channels map[string]struct{}
+	for channel := range subs {
+		if h.templateOf(channel) == nil {
+			continue
+		}
+		if channels == nil {
+			channels = make(map[string]struct{})
+		}
+		channels[channel] = struct{}{}
+	}
+	return channels
+}
+
+// recordTemplatedChannel records that channel is subscribed with a template of its namespace, when it has one. The set
+// is changed under the storage lock, and it is read by templatedChannelsOf and hasTemplatedChannels under the same lock.
+func (h *Handler) recordTemplatedChannel(c Client, channel string) {
+	if h.templateOf(channel) == nil {
+		return
+	}
+	storage, release := c.AcquireStorage()
+	channels, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	if channels == nil {
+		channels = make(map[string]struct{})
+		storage[serverTagsFilterTemplatedKey] = channels
+	}
+	channels[channel] = struct{}{}
+	release(storage)
+}
+
+// templatedChannelsOf returns the channels recorded by recordTemplatedChannel, as a copy.
+func templatedChannelsOf(c Client) []string {
+	storage, release := c.AcquireStorage()
+	channels, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	out := make([]string, 0, len(channels))
+	for channel := range channels {
+		out = append(out, channel)
+	}
+	release(storage)
+	return out
+}
+
+// hasTemplatedChannels reports whether a channel is recorded by recordTemplatedChannel.
+func hasTemplatedChannels(c Client) bool {
+	storage, release := c.AcquireStorage()
+	channels, _ := storage[serverTagsFilterTemplatedKey].(map[string]struct{})
+	release(storage)
+	return len(channels) > 0
+}
+
+// clearTemplatedChannels removes the record of recordTemplatedChannel.
+func clearTemplatedChannels(c Client) {
+	storage, release := c.AcquireStorage()
+	delete(storage, serverTagsFilterTemplatedKey)
+	release(storage)
 }
 
 // storedServerSideSubscriptions returns the server-side subscriptions with a template which a connection stored on connect.

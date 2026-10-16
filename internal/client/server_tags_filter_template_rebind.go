@@ -12,10 +12,10 @@ import (
 )
 
 // rebindFilters are the values of the server tags filter templates which a rebind moves a connection between: the values
-// of the new identity and the values the connection had. enabled is false when the config had no templates and the
-// connection stored no values when the rebind was checked; the rebind then reads the config again before it applies
-// them, see reboundTemplateSubscriptions and commitRebindFilters. unstored is true when enabled and the connection stored
-// no values: its previous values are unknown, see commitRebindFilters. subs are the subscriptions the rebind subscribes:
+// of the new identity and the values the connection had. enabled is false when the config had no templates, the
+// connection stored no values and no channel was recorded with a template when the rebind was checked; the rebind then
+// reads the config again before it applies them, see reboundTemplateSubscriptions and commitRebindFilters. unstored is
+// true when enabled and the connection stored no values: its previous values are unknown, see commitRebindFilters. subs are the subscriptions the rebind subscribes:
 // the token subscriptions, and the server-side channels with a template which the connection holds and the new identity
 // keeps. They are read before the rebind moves the connection.
 type rebindFilters struct {
@@ -34,7 +34,7 @@ type rebindFilters struct {
 func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
 	values := filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()}
 	previous, stored := connectionFilterValuesStored(c)
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !stored {
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !stored && !hasTemplatedChannels(c) {
 		return rebindFilters{values: values}
 	}
 	return rebindFilters{
@@ -162,13 +162,30 @@ func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters)
 	if filters.enabled && !filters.unstored && sameFilterValues(filters.previous, filters.values) {
 		return nil
 	}
-	for channel := range c.ChannelsWithContext() {
-		if h.templateOf(channel) == nil {
-			continue
-		}
-		c.Unsubscribe(channel, unsubscribeInsufficientState)
-	}
+	h.unsubscribeTemplated(c)
 	return nil
+}
+
+// unsubscribeTemplated unsubscribes the channels of c whose filter may be rendered with the values the connection had: the
+// channels recorded by recordTemplatedChannel, and the channels whose namespace has a template now. The record is needed
+// after a reload which removed the template of a channel, when the config no longer shows that the channel has a filter
+// from the template. The record is cleared, and the channels which the rebind subscribes again are recorded again.
+func (h *Handler) unsubscribeTemplated(c rebindableClient) {
+	channels := make(map[string]struct{})
+	for _, channel := range templatedChannelsOf(c) {
+		channels[channel] = struct{}{}
+	}
+	for channel := range c.ChannelsWithContext() {
+		if h.templateOf(channel) != nil {
+			channels[channel] = struct{}{}
+		}
+	}
+	for channel := range channels {
+		if c.IsSubscribed(channel) {
+			c.Unsubscribe(channel, unsubscribeInsufficientState)
+		}
+	}
+	clearTemplatedChannels(c)
 }
 
 // storeReboundTokenFilters updates the stored filters of the connection token subscriptions which a rebind subscribes

@@ -48,6 +48,43 @@ func TestServerTagsFilterTemplateRebindUserChangeUnsubscribes(t *testing.T) {
 	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
 }
 
+// TestServerTagsFilterTemplateRebindReloadRemovesTemplate checks a reload which removes the template of a channel that an
+// anonymous connection subscribed under it, followed by a rebind to another identity, unsubscribes the channel. The channel
+// holds a filter rendered with the claims of the anonymous identity, and the config no longer shows that it has one.
+func TestServerTagsFilterTemplateRebindReloadRemovesTemplate(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+	storeFilterValues(client, filtertemplate.Values{
+		Claims: filtertemplate.Claims{Paths: []string{"sid"}, Values: []string{"s-X"}},
+	})
+	h.recordTemplatedChannel(client, "lenient:room")
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "lenient",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:room"].Code)
+}
+
 // TestServerTagsFilterTemplateRebindRefusalKeepsIdentity checks a rebind whose token subscription a template refuses is
 // refused before the connection moves: the identity, the values and the channels stay as they were.
 func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {

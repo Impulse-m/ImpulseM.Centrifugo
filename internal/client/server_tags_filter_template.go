@@ -79,7 +79,9 @@ func (h *Handler) serverSideSubscriptions(subs map[string]centrifuge.SubscribeOp
 // The values are read once for the render. cb commits the subscription, and the values are compared again after it:
 // a rebind which stored other values in the meantime either finds the channel in the channel map, or the comparison
 // here does, so the channel never keeps a filter of values the connection no longer has. The commit of cb is complete
-// when it returns, so the unsubscribe does not wait for the subscribe.
+// when it returns, so the unsubscribe does not wait for the subscribe. The window between the commit and that
+// unsubscribe is accepted: the channel can deliver publications which the filter of the previous identity allowed,
+// and only until the unsubscribe.
 func (h *Handler) answerSubscribe(
 	client Client,
 	channel string,

@@ -214,14 +214,14 @@ func enabledBrokerKeys(cfg Config) []string {
 }
 
 // brokerKey returns the key of an enabled entry of brokers. Only the settings which the type of the entry uses are
-// part of the key: the Redis prefix and lists mode, the Nats prefix and raw mode, or the Postgres table prefix.
+// part of the key: the Redis prefix and lists mode, the Nats prefix, raw mode and wildcards, or the Postgres table prefix.
 func brokerKey(b configtypes.NamedBroker) string {
 	key := b.Name + "/" + b.Type
 	switch b.Type {
 	case "redis":
 		key += fmt.Sprintf("/%s/%t", redisPrefix(b.Redis.Prefix), b.Redis.UseLists)
 	case "nats":
-		key += fmt.Sprintf("/%s/%t", b.Nats.Prefix, b.Nats.RawMode.Enabled)
+		key += fmt.Sprintf("/%s/%t/%t", b.Nats.Prefix, b.Nats.RawMode.Enabled, b.Nats.AllowWildcards)
 		if b.Nats.RawMode.Enabled {
 			key += fmt.Sprintf("/%s/%v", b.Nats.RawMode.Prefix, b.Nats.RawMode.ChannelReplacements)
 		}
@@ -231,8 +231,8 @@ func brokerKey(b configtypes.NamedBroker) string {
 	return key
 }
 
-// enabledPresenceManagerKeys identifies the enabled entries by name, type and, for Redis, the prefix which the
-// running presence manager keeps from startup.
+// enabledPresenceManagerKeys identifies the enabled entries by name, type and, for Redis, the prefix and the presence
+// settings which the running presence manager keeps from startup.
 func enabledPresenceManagerKeys(cfg Config) []string {
 	return enabledKeys(
 		cfg.PresenceManagers,
@@ -242,7 +242,13 @@ func enabledPresenceManagerKeys(cfg Config) []string {
 		func(pm configtypes.NamedPresenceManager) string {
 			key := pm.Name + "/" + pm.Type
 			if pm.Type == "redis" {
-				key += "/" + redisPrefix(pm.Redis.Prefix)
+				key += fmt.Sprintf(
+					"/%s/%v/%t/%t",
+					redisPrefix(pm.Redis.Prefix),
+					pm.Redis.PresenceTTL.ToDuration(),
+					pm.Redis.PresenceHashFieldTTL,
+					pm.Redis.PresenceUserMapping,
+				)
 			}
 			return key
 		},

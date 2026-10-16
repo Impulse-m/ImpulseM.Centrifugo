@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -1197,6 +1198,20 @@ func TestCheckNamespaceEnginesReload(t *testing.T) {
 				cfg.PresenceManagers[0].Redis.Redis.Address = []string{"redis://10.0.0.8:6379"}
 			},
 			wantErr: "",
+		},
+		{
+			name: "allow_wildcards changed on a named nats entry",
+			modify: func(cfg *Config) {
+				cfg.Brokers[1].Nats.AllowWildcards = true
+			},
+			wantErr: "namespace engines: enabled entries of brokers changed, a restart is needed",
+		},
+		{
+			name: "presence_ttl changed on a named redis presence manager",
+			modify: func(cfg *Config) {
+				cfg.PresenceManagers[0].Redis.PresenceTTL = configtypes.Duration(30 * time.Second)
+			},
+			wantErr: "namespace engines: enabled entries of presence_managers changed, a restart is needed",
 		},
 		{
 			name: "controller type changed",

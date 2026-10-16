@@ -48,7 +48,7 @@ func validateChannelStateOptions(c configtypes.ChannelOptions, proxyNames []stri
 		}
 	}
 
-	if c.CacheEmptyProxyEnabled && !slices.Contains(proxyNames, c.CacheEmptyProxyName) {
+	if (c.CacheEmptyProxyEnabled || c.CacheEmptyProxyName != "") && !slices.Contains(proxyNames, c.CacheEmptyProxyName) {
 		return fmt.Errorf("cache empty proxy with name \"%s\" not found", c.CacheEmptyProxyName)
 	}
 	if c.CacheEmptyProxyEnabled && c.CacheEmptyProxyName == DefaultProxyName {

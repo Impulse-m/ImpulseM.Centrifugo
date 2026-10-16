@@ -29,15 +29,15 @@ func newFailingBeginBackend() *failingBeginBackend {
 }
 
 // Begin signals that it was entered, waits for the release, and fails.
-func (b *failingBeginBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+func (b *failingBeginBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration, _ bool) (rpcdedup.BeginResult, error) {
 	b.entered <- struct{}{}
 	<-b.release
 	return rpcdedup.BeginResult{}, errors.New("shared tier down")
 }
 
 // Complete fails: a call which failed to begin keeps no record.
-func (b *failingBeginBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
-	return false, errors.New("shared tier down")
+func (b *failingBeginBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (rpcdedup.CompleteResult, error) {
+	return rpcdedup.CompleteResult{}, errors.New("shared tier down")
 }
 
 // Cancel fails.
@@ -65,13 +65,13 @@ func (b *failingBeginBackend) Connected() bool {
 type remoteInFlightBackend struct{}
 
 // Begin reports that the call runs on another node.
-func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration, _ bool) (rpcdedup.BeginResult, error) {
 	return rpcdedup.BeginResult{State: rpcdedup.BeginInFlight, Owner: "node-x"}, nil
 }
 
 // Complete is not expected: the duplicate of a remote call keeps no record of it.
-func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
-	return false, errors.New("unexpected complete")
+func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (rpcdedup.CompleteResult, error) {
+	return rpcdedup.CompleteResult{}, errors.New("unexpected complete")
 }
 
 // Cancel is not expected.

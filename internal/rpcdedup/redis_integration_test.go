@@ -122,29 +122,29 @@ func TestRedisBackendBeginCompleteLifecycle(t *testing.T) {
 	fingerprint := Fingerprint("users.get", []byte("x"))
 	other := Fingerprint("users.get", []byte("y"))
 
-	begin, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	begin, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginMiss, begin.State)
 
-	begin, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL)
+	begin, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginInFlight, begin.State)
 	require.Equal(t, "node-a", begin.Owner)
 
-	begin, err = backend.Begin(ctx, key, other, "node-b", integrationTTL)
+	begin, err = backend.Begin(ctx, key, other, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginMismatch, begin.State)
 
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
+	result, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
-	require.True(t, kept)
+	require.True(t, result.Owned)
 
-	begin, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL)
+	begin, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginDone, begin.State)
 	require.Equal(t, []byte("ok"), begin.Record.Reply)
 
-	begin, err = backend.Begin(ctx, key, other, "node-b", integrationTTL)
+	begin, err = backend.Begin(ctx, key, other, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginMismatch, begin.State)
 }
@@ -159,7 +159,7 @@ func TestRedisBackendTombstoneAnswersAnyFingerprint(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, CancelTombstone, cancel.State)
 
-	begin, err := backend.Begin(ctx, key, Fingerprint("users.put", []byte("z")), "node-a", integrationTTL)
+	begin, err := backend.Begin(ctx, key, Fingerprint("users.put", []byte("z")), "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginCancelled, begin.State)
 	require.Equal(t, [32]byte{}, begin.Record.Fingerprint)
@@ -174,16 +174,16 @@ func TestRedisBackendCompleteByAnotherNodeIsRefused(t *testing.T) {
 	key := Key{Scope: testScope("u1", "a"), MsgID: 3}
 	fingerprint := Fingerprint("users.get", []byte("x"))
 
-	begin, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	begin, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginMiss, begin.State)
 
-	kept, err := backend.Complete(ctx, key, "node-b", Record{Reply: []byte("stolen")}, "", time.Minute)
+	result, err := backend.Complete(ctx, key, "node-b", Record{Reply: []byte("stolen")}, "", time.Minute)
 	require.NoError(t, err)
-	require.False(t, kept)
+	require.False(t, result.Owned)
 
 	// The in-flight record is untouched: the owner still runs the call.
-	begin, err = backend.Begin(ctx, key, fingerprint, "node-c", integrationTTL)
+	begin, err = backend.Begin(ctx, key, fingerprint, "node-c", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginInFlight, begin.State)
 	require.Equal(t, "node-a", begin.Owner)
@@ -196,17 +196,141 @@ func TestRedisBackendCompleteAbandonedDeletesRecord(t *testing.T) {
 	key := Key{Scope: testScope("u1", "a"), MsgID: 4}
 	fingerprint := Fingerprint("users.get", []byte("x"))
 
-	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Abandoned: true}, "", time.Minute)
+	result, err := backend.Complete(ctx, key, "node-a", Record{Abandoned: true}, "", time.Minute)
 	require.NoError(t, err)
-	require.True(t, kept)
+	require.True(t, result.Owned)
 	require.False(t, integrationExists(t, connector, RedisKey(prefix, key)))
 
 	// A duplicate runs at once: the key is free again.
-	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL)
+	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginMiss, begin.State)
+}
+
+func TestRedisBackendBeginRegistersWaiter(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 20}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+	redisKey := RedisKey(prefix, key)
+
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, true)
+	require.NoError(t, err)
+	_, found := integrationField(t, connector, redisKey, "w")
+	require.False(t, found, "the owner's own begin registers no waiter")
+
+	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
+	require.NoError(t, err)
+	require.Equal(t, BeginInFlight, begin.State)
+	waiters, _ := integrationField(t, connector, redisKey, "w")
+	require.Equal(t, "node-b", waiters)
+
+	_, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
+	require.NoError(t, err)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
+	require.Equal(t, "node-b", waiters, "a node is listed once")
+
+	_, err = backend.Begin(ctx, key, fingerprint, "node-c", integrationTTL, true)
+	require.NoError(t, err)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
+	require.Equal(t, "node-b node-c", waiters)
+
+	_, err = backend.Begin(ctx, key, fingerprint, "node-d", integrationTTL, false)
+	require.NoError(t, err)
+	waiters, _ = integrationField(t, connector, redisKey, "w")
+	require.Equal(t, "node-b node-c", waiters, "a begin without register does not register")
+}
+
+func TestRedisBackendBeginWithoutRegisterWritesNoWaiter(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 21}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+	redisKey := RedisKey(prefix, key)
+
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
+	require.NoError(t, err)
+	begin, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
+	require.NoError(t, err)
+	require.Equal(t, BeginInFlight, begin.State)
+	_, found := integrationField(t, connector, redisKey, "w")
+	require.False(t, found)
+}
+
+func TestRedisBackendBeginWaiterCap(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 22}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+	redisKey := RedisKey(prefix, key)
+
+	_, err := backend.Begin(ctx, key, fingerprint, "node-owner", integrationTTL, false)
+	require.NoError(t, err)
+	for i := range maxWaiters + 1 {
+		_, err = backend.Begin(ctx, key, fingerprint, fmt.Sprintf("node-%d", i), integrationTTL, true)
+		require.NoError(t, err)
+	}
+	waiters, _ := integrationField(t, connector, redisKey, "w")
+	listed := splitWaiters(waiters)
+	require.Len(t, listed, maxWaiters)
+	require.NotContains(t, listed, fmt.Sprintf("node-%d", maxWaiters))
+}
+
+func TestRedisBackendCompleteReturnsAndDropsWaiters(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 23}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+	redisKey := RedisKey(prefix, key)
+
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
+	require.NoError(t, err)
+	_, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
+	require.NoError(t, err)
+	_, err = backend.Begin(ctx, key, fingerprint, "node-c", integrationTTL, true)
+	require.NoError(t, err)
+
+	// Another node does not own the record: nothing is written, and the waiters stay.
+	result, err := backend.Complete(ctx, key, "node-b", Record{Reply: []byte("stolen")}, "", time.Minute)
+	require.NoError(t, err)
+	require.False(t, result.Owned)
+	require.Empty(t, result.Waiters)
+	_, found := integrationField(t, connector, redisKey, "w")
+	require.True(t, found)
+
+	result, err = backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
+	require.NoError(t, err)
+	require.True(t, result.Owned)
+	require.Equal(t, []string{"node-b", "node-c"}, result.Waiters)
+	_, found = integrationField(t, connector, redisKey, "w")
+	require.False(t, found, "a done record drops its waiters")
+	_, found = integrationField(t, connector, redisKey, "n")
+	require.False(t, found)
+}
+
+func TestRedisBackendCompleteAbandonedReturnsWaiters(t *testing.T) {
+	prefix := uniqueRedisPrefix()
+	backend, connector := newIntegrationBackend(t, prefix)
+	ctx := context.Background()
+	key := Key{Scope: testScope("u1", "a"), MsgID: 24}
+	fingerprint := Fingerprint("users.get", []byte("x"))
+
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
+	require.NoError(t, err)
+	_, err = backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, true)
+	require.NoError(t, err)
+
+	result, err := backend.Complete(ctx, key, "node-a", Record{Abandoned: true}, "", time.Minute)
+	require.NoError(t, err)
+	require.True(t, result.Owned)
+	require.Equal(t, []string{"node-b"}, result.Waiters)
+	require.False(t, integrationExists(t, connector, RedisKey(prefix, key)))
 }
 
 func TestRedisBackendCompleteKeepsDoneRecordWithTTL(t *testing.T) {
@@ -217,9 +341,9 @@ func TestRedisBackendCompleteKeepsDoneRecordWithTTL(t *testing.T) {
 	fingerprint := Fingerprint("users.get", []byte("x"))
 	redisKey := RedisKey(prefix, key)
 
-	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
-	duplicate, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL)
+	duplicate, err := backend.Begin(ctx, key, fingerprint, "node-b", integrationTTL, false)
 	require.NoError(t, err)
 	require.Equal(t, BeginInFlight, duplicate.State)
 	// The in-flight TTL is the method timeout plus the grace.
@@ -227,9 +351,9 @@ func TestRedisBackendCompleteKeepsDoneRecordWithTTL(t *testing.T) {
 	require.Greater(t, inflightPTTL, (5 * time.Second).Milliseconds())
 	require.LessOrEqual(t, inflightPTTL, (5*time.Second + InflightGrace).Milliseconds())
 
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
+	result, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
-	require.True(t, kept)
+	require.True(t, result.Owned)
 
 	state, found := integrationField(t, connector, redisKey, "s")
 	require.True(t, found)
@@ -248,11 +372,11 @@ func TestRedisBackendUncachedCompleteKeepsNoReply(t *testing.T) {
 	key := Key{Scope: testScope("u1", "a"), MsgID: 6}
 	redisKey := RedisKey(prefix, key)
 
-	_, err := backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL, false)
 	require.NoError(t, err)
-	kept, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("big"), Uncached: true}, "", time.Minute)
+	result, err := backend.Complete(ctx, key, "node-a", Record{Reply: []byte("big"), Uncached: true}, "", time.Minute)
 	require.NoError(t, err)
-	require.True(t, kept)
+	require.True(t, result.Owned)
 
 	uncached, found := integrationField(t, connector, redisKey, "u")
 	require.True(t, found)
@@ -280,7 +404,7 @@ func TestRedisBackendCancelResults(t *testing.T) {
 
 	// A call runs on node-a: the owner is returned, and nothing is written.
 	running := Key{Scope: testScope("u1", "a"), MsgID: 8}
-	_, err = backend.Begin(ctx, running, fingerprint, "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, running, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	res, err = backend.Cancel(ctx, running, testCancelled, time.Minute)
 	require.NoError(t, err)
@@ -289,7 +413,7 @@ func TestRedisBackendCancelResults(t *testing.T) {
 
 	// A done call is left as it is.
 	done := Key{Scope: testScope("u1", "a"), MsgID: 9}
-	_, err = backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
@@ -308,13 +432,13 @@ func TestRedisBackendAckDeletesDoneAndTombstonesOnly(t *testing.T) {
 	tombstone := Key{Scope: scope, MsgID: 11}
 	inflight := Key{Scope: scope, MsgID: 12}
 
-	_, err := backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, done, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	_, err = backend.Complete(ctx, done, "node-a", Record{Reply: []byte("ok")}, "", time.Minute)
 	require.NoError(t, err)
 	_, err = backend.Cancel(ctx, tombstone, testCancelled, time.Minute)
 	require.NoError(t, err)
-	_, err = backend.Begin(ctx, inflight, fingerprint, "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, inflight, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 
 	require.NoError(t, backend.Ack(ctx, []ScopeAcks{{Scope: scope, MsgIDs: []uint64{10, 11, 12}}}))
@@ -335,7 +459,7 @@ func TestRedisBackendCancelledWithoutErrorIsMalformed(t *testing.T) {
 	integrationDo(connector, func(c rueidis.Client) rueidis.Completed {
 		return c.B().Hset().Key(RedisKey(prefix, key)).FieldValue().FieldValue("s", "c").Build()
 	})
-	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.ErrorIs(t, err, errMalformedReply)
 	_, err = backend.Poll(ctx, key)
 	require.ErrorIs(t, err, errMalformedReply)
@@ -352,7 +476,7 @@ func TestRedisBackendPollStates(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PollMissing, poll.State)
 
-	_, err = backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, key, fingerprint, "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	poll, err = backend.Poll(ctx, key)
 	require.NoError(t, err)
@@ -376,14 +500,14 @@ func TestRedisBackendNotConnected(t *testing.T) {
 	key := Key{Scope: testScope("u1", "a"), MsgID: 14}
 
 	require.False(t, backend.Connected())
-	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL, false)
 	require.ErrorIs(t, err, redisshard.ErrNotConnected)
 
 	require.NoError(t, connector.Connect())
 	require.True(t, backend.Connected())
 	connector.Close()
 	require.False(t, backend.Connected())
-	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
+	_, err = backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL, false)
 	require.ErrorIs(t, err, redisshard.ErrNotConnected)
 }
 
@@ -393,7 +517,7 @@ func TestRedisBackendKeyFormatInRedis(t *testing.T) {
 	ctx := context.Background()
 	key := Key{Scope: testScope("u1", "a"), MsgID: 15}
 
-	_, err := backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL)
+	_, err := backend.Begin(ctx, key, Fingerprint("users.get", []byte("x")), "node-a", integrationTTL, false)
 	require.NoError(t, err)
 	// The key is the prefix, the hash tag of the scope and the decimal msg_id.
 	require.True(t, integrationExists(t, connector, prefix+".rpc.{"+key.Scope+"}."+strconv.FormatUint(key.MsgID, 10)))

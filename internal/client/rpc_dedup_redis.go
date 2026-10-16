@@ -5,6 +5,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -34,7 +35,7 @@ func (h *Handler) setupRPCDedupRedis() error {
 	// The error is logged by the connect log; the node runs on without Redis.
 	_ = connector.Connect()
 
-	shared := rpcdedup.NewShared(rpcdedup.SharedOptions{
+	opts := rpcdedup.SharedOptions{
 		Local:         h.rpcDedup.memory,
 		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
 		NodeID:        h.node.ID(),
@@ -44,7 +45,13 @@ func (h *Handler) setupRPCDedupRedis() error {
 		Notifier:      h.notifyRPCDedupCancel,
 		Observer:      h.rpcDedup.metrics,
 		IOTimeout:     redisConf.IOTimeout.ToDuration(),
-	})
+	}
+	if dedup.Redis.Notification.Enabled {
+		opts.DoneNotifier = h.notifyRPCDedupDone
+		opts.WakeupPollInterval = dedup.Redis.Notification.PollInterval.ToDuration()
+		h.rpcDedup.wakeup = true
+	}
+	shared := rpcdedup.NewShared(opts)
 	h.rpcDedup.store = shared
 	h.rpcDedup.shared = shared
 	h.rpcDedup.connector = connector
@@ -92,6 +99,7 @@ func rpcDedupConnectLog(failOpen bool) redisshard.ConnectLog {
 // once per interval. The scope of the key is not logged.
 func (h *Handler) notifyRPCDedupCancel(nodeID string, key rpcdedup.Key) {
 	err := h.node.Notify(rpcdedup.CancelNotificationOp, rpcdedup.EncodeCancel(key), nodeID)
+	h.rpcDedup.metrics.Notified(metrics.RPCRegistryDedupNotifyCancel, err == nil)
 	if err == nil {
 		return
 	}
@@ -100,15 +108,47 @@ func (h *Handler) notifyRPCDedupCancel(nodeID string, key rpcdedup.Key) {
 	}
 }
 
+// notifyRPCDedupDone tells the node nodeID, which waits for the call of key, that its record is written. A failure is
+// logged at most once per interval and counted; the fallback poll of the node covers it. The scope of the key is not
+// logged.
+func (h *Handler) notifyRPCDedupDone(nodeID string, key rpcdedup.Key) {
+	err := h.node.Notify(rpcdedup.DoneNotificationOp, rpcdedup.EncodeDone(key), nodeID)
+	h.rpcDedup.metrics.Notified(metrics.RPCRegistryDedupNotifyDone, err == nil)
+	if err == nil {
+		return
+	}
+	if h.rpcDedup.notifyLog.Allow() {
+		log.Error().Err(err).Str("node_id", nodeID).Msg("error notifying a node that an exactly-once RPC call is done")
+	}
+}
+
 // NotificationHandlers returns the node notification handlers of the client handler, which the node registers. It has
-// the cancel of exactly-once RPC when the shared tier is on, and is empty otherwise.
+// the cancel of exactly-once RPC when the shared tier is on, and the done notification too when its wakeup is on. It is
+// empty otherwise.
 func (h *Handler) NotificationHandlers() map[string]centrifuge.NotificationHandler {
 	handlers := map[string]centrifuge.NotificationHandler{}
 	if h.rpcDedup == nil || h.rpcDedup.shared == nil {
 		return handlers
 	}
 	handlers[rpcdedup.CancelNotificationOp] = h.onRPCDedupCancel
+	if h.rpcDedup.wakeup {
+		handlers[rpcdedup.DoneNotificationOp] = h.onRPCDedupDone
+	}
 	return handlers
+}
+
+// onRPCDedupDone wakes the wait for the call which a done notification names, when there is one on this node. A node
+// ignores the notifications it sends to itself.
+func (h *Handler) onRPCDedupDone(event centrifuge.NotificationEvent) {
+	if event.FromNodeID == h.node.ID() {
+		return
+	}
+	key, err := rpcdedup.DecodeDone(event.Data)
+	if err != nil {
+		log.Error().Err(err).Str("from_node_id", event.FromNodeID).Msg("error decoding exactly-once RPC done notification")
+		return
+	}
+	h.rpcDedup.shared.Wake(key)
 }
 
 // onRPCDedupCancel cancels the call which a cancel notification names, when it runs on this node. The sender cancels

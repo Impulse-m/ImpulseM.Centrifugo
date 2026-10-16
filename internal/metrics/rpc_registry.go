@@ -256,6 +256,38 @@ var RPCRegistryDedupRedisDuration prometheus.Histogram
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
 
+// RPCRegistryDedupRemotePollsTotal counts the polls of the shared tier which the waits for calls on other nodes make.
+// It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRemotePollsTotal prometheus.Counter
+
+// RPCRegistryDedupRemoteWaitsTotal counts the waits for calls on other nodes, by how they ended. It is set by the fork
+// metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupRemoteWaitsTotal *prometheus.CounterVec
+
+// RPCRegistryDedupNotificationsTotal counts the node notifications of exactly-once RPC which this node sends, by op and
+// result. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupNotificationsTotal *prometheus.CounterVec
+
+// The values of the op label of RPCRegistryDedupNotificationsTotal, one per notification op.
+const (
+	RPCRegistryDedupNotifyCancel = "cancel"
+	RPCRegistryDedupNotifyDone   = "done"
+)
+
+// rpcRegistryDedupWaitEnds are the values of the end label of RPCRegistryDedupRemoteWaitsTotal, which has a series for
+// each of them from the start.
+var rpcRegistryDedupWaitEnds = [...]string{
+	rpcdedup.WatchEndNotified,
+	rpcdedup.WatchEndPolled,
+	rpcdedup.WatchEndDeadline,
+}
+
+// rpcRegistryDedupNotifyOps are the values of the op label of RPCRegistryDedupNotificationsTotal.
+var rpcRegistryDedupNotifyOps = [...]string{
+	RPCRegistryDedupNotifyCancel,
+	RPCRegistryDedupNotifyDone,
+}
+
 // RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
 type RPCRegistryDedupOutcome int
 
@@ -323,6 +355,14 @@ type RPCRegistryDedupMetrics struct {
 	redisErrors      prometheus.Counter
 	redisDuration    prometheus.Histogram
 	ackDrops         prometheus.Counter
+	remotePolls      prometheus.Counter
+	waitNotified     prometheus.Counter
+	waitPolled       prometheus.Counter
+	waitDeadline     prometheus.Counter
+	notifyCancelOK   prometheus.Counter
+	notifyCancelErr  prometheus.Counter
+	notifyDoneOK     prometheus.Counter
+	notifyDoneErr    prometheus.Counter
 }
 
 // NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
@@ -354,7 +394,61 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 			m.bytes[i] = RPCRegistryDedupBytes.WithLabelValues(label)
 		}
 	}
+	m.remotePolls = RPCRegistryDedupRemotePollsTotal
+	if RPCRegistryDedupRemoteWaitsTotal != nil {
+		m.waitNotified = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndNotified)
+		m.waitPolled = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndPolled)
+		m.waitDeadline = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndDeadline)
+	}
+	if RPCRegistryDedupNotificationsTotal != nil {
+		m.notifyCancelOK = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyCancel, "ok")
+		m.notifyCancelErr = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyCancel, "error")
+		m.notifyDoneOK = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyDone, "ok")
+		m.notifyDoneErr = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyDone, "error")
+	}
 	return m
+}
+
+// WatchPolled counts a poll of the shared tier which a wait for a call on another node makes. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) WatchPolled() {
+	if m == nil {
+		return
+	}
+	incCounter(m.remotePolls)
+}
+
+// WatchEnded counts a wait for a call on another node by how it ended. It implements rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) WatchEnded(end string) {
+	if m == nil {
+		return
+	}
+	switch end {
+	case rpcdedup.WatchEndNotified:
+		incCounter(m.waitNotified)
+	case rpcdedup.WatchEndPolled:
+		incCounter(m.waitPolled)
+	case rpcdedup.WatchEndDeadline:
+		incCounter(m.waitDeadline)
+	}
+}
+
+// Notified counts a node notification of exactly-once RPC which this node sent, by its op, one of the
+// RPCRegistryDedupNotify values, and whether it was sent.
+func (m *RPCRegistryDedupMetrics) Notified(op string, ok bool) {
+	if m == nil {
+		return
+	}
+	switch {
+	case op == RPCRegistryDedupNotifyCancel && ok:
+		incCounter(m.notifyCancelOK)
+	case op == RPCRegistryDedupNotifyCancel:
+		incCounter(m.notifyCancelErr)
+	case op == RPCRegistryDedupNotifyDone && ok:
+		incCounter(m.notifyDoneOK)
+	case op == RPCRegistryDedupNotifyDone:
+		incCounter(m.notifyDoneErr)
+	}
 }
 
 // Evicted counts an answer which the dedup store evicted for reason. It implements rpcdedup.EvictionObserver.

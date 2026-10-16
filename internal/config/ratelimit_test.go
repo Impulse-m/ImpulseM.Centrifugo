@@ -309,19 +309,55 @@ func TestValidateRateLimit(t *testing.T) {
 			wantErr: "duplicate method in method_overrides: a",
 		},
 		{
-			name: "unsupported track operation",
+			name: "map and shared poll operations with namespace override",
 			mutate: func(cfg *Config) {
+				cfg.Channel.Namespaces = configtypes.ChannelNamespaces{{Name: "chat"}}
 				cfg.Client.RateLimit.ClientCommand.Enabled = true
-				cfg.Client.RateLimit.ClientCommand.Track.Enabled = true
+				cfg.Client.RateLimit.ClientCommand.MapPublish = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 5),
+					NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+						{NamespaceName: "chat", Enabled: true, Buckets: testRateLimitBuckets(time.Second, 1)},
+					},
+				}
+				cfg.Client.RateLimit.ClientCommand.MapRemove = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 5),
+				}
+				cfg.Client.RateLimit.ClientCommand.Track = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 5),
+				}
+				cfg.Client.RateLimit.ClientCommand.Untrack = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 5),
+				}
 			},
-			wantErr: "client_command.track: not supported in this build",
 		},
 		{
-			name: "unsupported map_publish operation in user command",
+			name: "map_publish unknown namespace override",
 			mutate: func(cfg *Config) {
-				cfg.Client.RateLimit.UserCommand.MapPublish.Buckets = testRateLimitBuckets(time.Second, 1)
+				cfg.Client.RateLimit.UserCommand.Enabled = true
+				cfg.Client.RateLimit.UserCommand.MapPublish = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 5),
+					NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+						{NamespaceName: "missing", Enabled: true, Buckets: testRateLimitBuckets(time.Second, 1)},
+					},
+				}
 			},
-			wantErr: "user_command.map_publish: not supported in this build",
+			wantErr: "user_command.map_publish: namespace_name missing in namespace_overrides not found",
+		},
+		{
+			name: "track invalid bucket rate",
+			mutate: func(cfg *Config) {
+				cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+				cfg.Client.RateLimit.RedisUserCommand.Track = configtypes.RateLimitChannelBuckets{
+					Enabled: true,
+					Buckets: testRateLimitBuckets(time.Second, 0),
+				}
+			},
+			wantErr: "redis_user_command.track: bucket rate must be greater than 0",
 		},
 		{
 			name: "redis user command total",

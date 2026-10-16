@@ -20,6 +20,9 @@ type integrationNode struct {
 	local     *Memory
 	connector *redisshard.Connector
 	notified  []notifyCall
+	// doneNotified are the done notifications of the node, and observer counts its waits, when the node has the wakeup.
+	doneNotified []notifyCall
+	observer     *waitObserver
 }
 
 // newIntegrationNode returns a node with id nodeID, over the Redis of prefix.

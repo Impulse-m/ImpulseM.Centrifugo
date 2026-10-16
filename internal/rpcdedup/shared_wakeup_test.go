@@ -314,6 +314,27 @@ func TestSharedWithoutWakeupPollsAsBefore(t *testing.T) {
 	require.Equal(t, 0, fx.endCount(WatchEndNotified))
 }
 
+// The owner's reply waits for the done notifier when a remote waiter exists: Complete returns once the local flight is
+// done and the notifier ran.
+func TestSharedCompleteReturnsAfterSlowNotifier(t *testing.T) {
+	fx := newSharedFixtureWakeup(t, time.Hour)
+	owner := ownerFlight(t, fx)
+	setWaiters(fx, "node-b")
+	var notifiedAt time.Time
+	fx.shared.doneNotifier = func(string, Key) {
+		time.Sleep(5 * time.Millisecond)
+		notifiedAt = time.Now()
+	}
+
+	start := time.Now()
+	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
+	elapsed := time.Since(start)
+	require.False(t, notifiedAt.IsZero(), "the notifier ran before Complete returned")
+	require.False(t, flightOpen(owner))
+	require.GreaterOrEqual(t, elapsed, 5*time.Millisecond)
+	t.Logf("owner reply with one remote waiter and a notifier of 5ms: %s", elapsed)
+}
+
 func TestSharedWakeupEndsWithErrorKept(t *testing.T) {
 	fx := newSharedFixtureWakeup(t, 20*time.Millisecond)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})

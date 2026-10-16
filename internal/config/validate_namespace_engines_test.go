@@ -368,7 +368,31 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
 		},
 		{
-			name: "engine redis cluster address and a named redis address on the same host",
+			name: "two named redis sentinel brokers on the same master with disjoint sentinel hosts",
+				modify: func(cfg *Config) {
+					cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+					cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379", "10.0.0.3:26379"}
+					cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
+					cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
+					cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379", "10.0.0.5:26379"}
+					cfg.Brokers[1].Redis.Redis.SentinelMasterName = "mymaster"
+				},
+				wantErr: `brokers "broadcast" and brokers "rates" use the same Redis and overlapping prefixes`,
+			},
+			{
+				name: "two named redis sentinel brokers on other masters with disjoint sentinel hosts",
+				modify: func(cfg *Config) {
+					cfg.Brokers[0] = namedRedisBroker("broadcast", "", "centrifugo-broadcast")
+					cfg.Brokers[0].Redis.Redis.SentinelAddress = []string{"10.0.0.2:26379"}
+					cfg.Brokers[0].Redis.Redis.SentinelMasterName = "mymaster"
+					cfg.Brokers[1] = namedRedisBroker("rates", "", "centrifugo-broadcast")
+					cfg.Brokers[1].Redis.Redis.SentinelAddress = []string{"10.0.0.4:26379"}
+					cfg.Brokers[1].Redis.Redis.SentinelMasterName = "othermaster"
+				},
+				wantErr: "",
+			},
+			{
+				name: "engine redis cluster address and a named redis address on the same host",
 			modify: func(cfg *Config) {
 				cfg.Engine.Type = "redis"
 				cfg.Engine.Redis.Redis.ClusterAddress = []string{"10.0.0.2:6379"}

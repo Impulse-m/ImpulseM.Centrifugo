@@ -541,16 +541,20 @@ func usesRedisCluster(redisCfg configtypes.Redis) bool {
 // addr query parameter of an address URL adds hosts, as in redisshard. The scheme, user information and path of
 // an address URL are dropped, and a host without a port gets the default Redis port, so "redis://h", "h" and
 // "h:6379" give the same host. The database is left out: PUB/SUB is global across databases, so brokers which
-// differ only in database still subscribe the same channels.
+// differ only in database still subscribe the same channels. A Sentinel configuration also gets the key of its
+// master, so brokers on one master conflict whatever Sentinel hosts they list.
 func redisHosts(redisCfg configtypes.Redis) []string {
+	var hosts []string
 	addresses := redisCfg.ClusterAddress
 	if len(addresses) == 0 {
 		addresses = redisCfg.SentinelAddress
+		if len(addresses) > 0 {
+			hosts = append(hosts, "sentinel-master:"+redisCfg.SentinelMasterName)
+		}
 	}
 	if len(addresses) == 0 {
 		addresses = redisCfg.Address
 	}
-	var hosts []string
 	for _, address := range addresses {
 		for _, part := range strings.Split(address, ",") {
 			hosts = appendRedisHost(hosts, part)

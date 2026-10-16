@@ -42,31 +42,6 @@ func TestServerTagsFilterTemplateConnectionUsesStoredUser(t *testing.T) {
 	require.Equal(t, "", values.Claims.Value("sid"))
 }
 
-// TestServerTagsFilterTemplateUnboundClaimRefusedUnderSkip checks a connection without a token, whose claims are never bound,
-// is refused a subscription whose template has a missing claim even under skip: the client chose the connect path, so the
-// subscription must not be delivered without the template. A bound connection with the same missing claim is subscribed
-// without the template, as skip says.
-func TestServerTagsFilterTemplateUnboundClaimRefusedUnderSkip(t *testing.T) {
-	env := newTemplateEnv(t, templateTestConfig())
-	var answeredErr error
-	answerCallback := func(_ centrifuge.SubscribeReply, err error) {
-		answeredErr = err
-	}
-
-	unbound := newRegistryTestClient("c1", "u1", nil, map[string]any{
-		serverTagsFilterValuesKey:  filtertemplate.Values{User: "u1"},
-		serverTagsFilterUnboundKey: true,
-	})
-	env.h.answerSubscribe(unbound, "lenient:room", centrifuge.SubscribeReply{}, nil, answerCallback)
-	require.Equal(t, centrifuge.ErrorPermissionDenied, answeredErr)
-
-	bound := newRegistryTestClient("c2", "u1", nil, map[string]any{
-		serverTagsFilterValuesKey: filtertemplate.Values{User: "u1"},
-	})
-	env.h.answerSubscribe(bound, "lenient:room", centrifuge.SubscribeReply{}, nil, answerCallback)
-	require.NoError(t, answeredErr)
-}
-
 // TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes checks a subscribe whose values are changed by a rebind
 // before the subscription is committed is unsubscribed, and one whose values stay the same is not.
 func TestServerTagsFilterTemplateSubscribeAfterRebindUnsubscribes(t *testing.T) {
@@ -164,4 +139,37 @@ func TestServerTagsFilterTemplateRefusedConnectKeepsSingleConnection(t *testing.
 	})
 	require.Equal(t, centrifuge.DisconnectPermissionDenied.Code, secondTransport.waitDisconnect(t).Code)
 	require.False(t, firstTransport.disconnected())
+}
+
+// TestServerTagsFilterTemplateTokenlessSkipSubscribesWithoutTemplate checks a connection without a token, which has no
+// claims bound: under skip its subscription is made without the template, as skip says, and under reject it is refused.
+func TestServerTagsFilterTemplateTokenlessSkipSubscribesWithoutTemplate(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	for i := range cfg.Channel.Namespaces {
+		cfg.Channel.Namespaces[i].ChannelOptions.SubscribeForAnonymous = true
+	}
+	env := newTemplateEnv(t, cfg)
+	transport := newRecordingTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), env.node, transport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
+	require.Nil(t, transport.waitReply(t, 1).Error)
+
+	subscribeClient(t, client, transport, 2, "lenient:room", "")
+	publishTagged(t, env.node, "lenient:room", `{"n":1}`, map[string]string{"session": "s-1"})
+	waitPushed(t, transport, `{"n":1}`)
+
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, Subscribe: &protocol.SubscribeRequest{Channel: "topic:room"}})
+	reply := transport.waitReply(t, 3)
+	require.NotNil(t, reply.Error)
+	require.Equal(t, centrifuge.ErrorPermissionDenied.Code, reply.Error.Code)
+	require.False(t, client.IsSubscribed("topic:room"))
+	require.False(t, transport.disconnected())
+
+	storage, release := client.AcquireStorage()
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	require.True(t, unbound)
 }

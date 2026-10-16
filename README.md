@@ -9,6 +9,8 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
+  * An entry is kept until the request's `expire_at`. Without it `access_revoke.default_ttl` (20 minutes) applies, so a revocation that must hold until the token expires sets `expire_at` to that expiration.
+  * API calls reach the other nodes over the broker at most once: a node that misses the message (a dropped PUB/SUB message, a restart) does not apply it. The opt-in [revocation source](#access-revocation-event-source) is the durable delivery path.
   * Differences from Centrifugo PRO:
     * `revoke_token` without `user` triggers a full sweep of local connections, coalesced and run in the background. Pass `user` for a targeted, cheap disconnect.
     * `expire_at` in the past is rejected with bad request.

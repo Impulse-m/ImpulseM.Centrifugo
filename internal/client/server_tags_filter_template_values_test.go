@@ -85,6 +85,41 @@ func TestServerTagsFilterTemplateRebindReloadRemovesTemplate(t *testing.T) {
 	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:room"].Code)
 }
 
+// TestServerTagsFilterTemplateRefreshAfterTemplatesRemoved checks a connection which stored its values while the config had
+// templates is disconnected by its next refresh after a reload removed them: its channels keep the filters rendered with
+// the claims it had, and the refresh carries no claims to render them again. A connection made after the reload stores
+// no values, so its refresh is answered.
+func TestServerTagsFilterTemplateRefreshAfterTemplatesRemoved(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
+	require.NotNil(t, client)
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "chat",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	require.NoError(t, env.cfgContainer.Reload(cfg))
+
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"sid": "s-1"})},
+	})
+	disconnect := transport.waitDisconnect(t)
+	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
+
+	fresh, freshTransport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
+	require.NotNil(t, fresh)
+	sendRateLimitCommand(fresh, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"sid": "s-1"})},
+	})
+	require.Nil(t, freshTransport.waitReply(t, 2).Error)
+	require.False(t, freshTransport.disconnected())
+}
+
 // TestServerTagsFilterTemplateRebindRefusalKeepsIdentity checks a rebind whose token subscription a template refuses is
 // refused before the connection moves: the identity, the values and the channels stay as they were.
 func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {

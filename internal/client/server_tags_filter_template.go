@@ -149,7 +149,10 @@ func (h *Handler) refreshFilterTemplate(
 
 // tokenSubscriptionsChanged reports whether the server-side subscriptions of a connection changed on refresh.
 // A connection whose template claims changed is changed: its filters are fixed for its life, so it is
-// disconnected. Otherwise the templates are applied to the subscriptions of the token before they are compared.
+// disconnected. A connection which stored values is compared while the config has no templates too: a reload which
+// removed them leaves its channels filtered with the claims it had, and the refresh carries no claims to render them
+// again, so a stored connection is disconnected then, once, and its reconnect stores no values. Otherwise the templates
+// are applied to the subscriptions of the token before they are compared.
 // The claim check is the primary rule, and the comparison of the filters in tokenChannelsChanged is the second.
 // A bound connection whose template refuses a token subscription is disconnected with insufficient state: the client
 // reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a refused server-side
@@ -160,20 +163,24 @@ func (h *Handler) refreshFilterTemplate(
 // the channel without the template. extra.Subs is the map of the refresh, owned by the call, and the templates are
 // applied to it in place.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
-	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
-		storage, release := client.AcquireStorage()
-		stored, _ := storedFilterValues(storage)
-		unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
-		release(storage)
-		switch {
-		case unbound:
-			h.dropRefusedFilterTemplates(extra.Subs, connectionFilterValues(client))
-		case !stored.Claims.Equal(extra.FilterTemplateClaims):
+	templated := h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates()
+	storage, release := client.AcquireStorage()
+	stored, stores := storedFilterValues(storage)
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	if !templated && !stores {
+		return tokenChannelsChanged(client, extra.Subs)
+	}
+	if unbound {
+		h.dropRefusedFilterTemplates(extra.Subs, connectionFilterValues(client))
+		return tokenChannelsChanged(client, extra.Subs)
+	}
+	if !stored.Claims.Equal(extra.FilterTemplateClaims) {
+		return true
+	}
+	if templated {
+		if err := h.templateSubscriptions(client, extra.Subs); err != nil {
 			return true
-		default:
-			if err := h.templateSubscriptions(client, extra.Subs); err != nil {
-				return true
-			}
 		}
 	}
 	return tokenChannelsChanged(client, extra.Subs)

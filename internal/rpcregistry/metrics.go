@@ -24,11 +24,7 @@ func (m *TargetMetrics) ObserveCall(seconds float64, failed bool) {
 	if m == nil {
 		return
 	}
-	m.children.Duration.Observe(seconds)
-	m.children.Summary.Observe(seconds)
-	if failed {
-		m.children.Errors.Inc()
-	}
+	m.children.Observe(seconds, failed)
 }
 
 // IncInflight counts a call to the target which started.

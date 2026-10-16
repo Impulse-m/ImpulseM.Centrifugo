@@ -631,4 +631,17 @@ func TestAnonymousConnectExchangeAndRefreshUpgrades(t *testing.T) {
 	release(storage)
 	require.True(t, ok)
 	require.Equal(t, json.RawMessage(`{"installation":"x"}`), meta)
+
+	// A later refresh whose token carries another meta claim replaces the attribution of the connection.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"meta": map[string]any{"installation": "y"},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	storage, release = client.AcquireStorage()
+	meta, ok = storage[clientstorage.KeyMeta].(json.RawMessage)
+	release(storage)
+	require.True(t, ok)
+	require.Equal(t, json.RawMessage(`{"installation":"y"}`), meta)
 }

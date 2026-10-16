@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"runtime"
@@ -103,6 +104,80 @@ func TestCacheEmptyHandlerHTTP(t *testing.T) {
 			reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "c"})
 
 			require.JSONEq(t, `{"channel":"c"}`, <-requestBodies)
+			if tt.wantErr {
+				require.Equal(t, centrifuge.ErrorInternal, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantPopulated, reply.Populated)
+		})
+	}
+}
+
+// cacheEmptyGRPCTestServer answers NotifyCacheEmpty with the result of respond.
+type cacheEmptyGRPCTestServer struct {
+	proxyproto.UnimplementedCentrifugoProxyServer
+	respond func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error)
+}
+
+func (s cacheEmptyGRPCTestServer) NotifyCacheEmpty(_ context.Context, req *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+	return s.respond(req)
+}
+
+// TestCacheEmptyHandlerGRPC checks the gRPC call and the handling of its results.
+func TestCacheEmptyHandlerGRPC(t *testing.T) {
+	tests := []struct {
+		name          string
+		respond       func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error)
+		wantPopulated bool
+		wantErr       bool
+	}{
+		{
+			name: "populated",
+			respond: func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+				return &proxyproto.NotifyCacheEmptyResponse{Result: &proxyproto.NotifyCacheEmptyResult{Populated: true}}, nil
+			},
+			wantPopulated: true,
+		},
+		{
+			name: "not populated",
+			respond: func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+				return &proxyproto.NotifyCacheEmptyResponse{Result: &proxyproto.NotifyCacheEmptyResult{}}, nil
+			},
+		},
+		{
+			name: "backend error",
+			respond: func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+				return nil, errors.New("backend failed")
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			received := make(chan string, 1)
+			server := cacheEmptyGRPCTestServer{
+				respond: func(req *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+					received <- req.Channel
+					return tt.respond(req)
+				},
+			}
+			testCase := tools.NewCommonGRPCProxyTestCase(context.Background(), server)
+			defer testCase.Teardown()
+
+			proxy, err := NewGRPCCacheEmptyProxy("default", getTestGrpcProxy(testCase))
+			require.NoError(t, err)
+			handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": proxy})
+
+			opts := configtypes.ChannelOptions{
+				CacheEmptyProxyEnabled: true,
+				CacheEmptyProxyName:    "default",
+				ForceRecoveryMode:      "cache",
+			}
+			cfgContainer := newCacheEmptyTestContainer(t, opts, false)
+			reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "c"})
+
+			require.Equal(t, "c", <-received)
 			if tt.wantErr {
 				require.Equal(t, centrifuge.ErrorInternal, err)
 				return

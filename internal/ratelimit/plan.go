@@ -22,6 +22,10 @@ const (
 	OperationSubRefresh
 	OperationRefresh
 	OperationRPC
+	OperationMapPublish
+	OperationMapRemove
+	OperationTrack
+	OperationUntrack
 	// OperationConnect is checked only by user_command limits, on connect, without total.
 	OperationConnect
 	operationCount
@@ -37,6 +41,10 @@ var operationNames = [operationCount]string{
 	OperationSubRefresh:    "sub_refresh",
 	OperationRefresh:       "refresh",
 	OperationRPC:           "rpc",
+	OperationMapPublish:    "map_publish",
+	OperationMapRemove:     "map_remove",
+	OperationTrack:         "track",
+	OperationUntrack:       "untrack",
 	OperationConnect:       "connect",
 }
 
@@ -117,9 +125,56 @@ type slotAllocator struct {
 	maxInterval time.Duration
 }
 
+// HasBuckets reports whether a limit is enabled and has at least one bucket. Only such a limit is compiled,
+// so code which describes compiled limits uses this check too.
+func HasBuckets(enabled bool, buckets configtypes.RateLimitBucketList) bool {
+	return enabled && len(buckets) > 0
+}
+
+// UnlimitedFallbacks returns the map and track operations which have no base buckets while their previous
+// operation (publish or sub_refresh) has buckets, and default has none. Before the map operations existed such
+// a command counted as the previous operation, so after an upgrade it is not limited for namespaces without an
+// override: it falls back to default only. A namespace override of the previous operation counts as buckets.
+func UnlimitedFallbacks(cfg *configtypes.RateLimitOperations) []Operation {
+	if HasBuckets(cfg.Default.Enabled, cfg.Default.Buckets) {
+		return nil
+	}
+	var ops []Operation
+	if channelLimitSet(cfg.Publish) {
+		if !HasBuckets(cfg.MapPublish.Enabled, cfg.MapPublish.Buckets) {
+			ops = append(ops, OperationMapPublish)
+		}
+		if !HasBuckets(cfg.MapRemove.Enabled, cfg.MapRemove.Buckets) {
+			ops = append(ops, OperationMapRemove)
+		}
+	}
+	if channelLimitSet(cfg.SubRefresh) {
+		if !HasBuckets(cfg.Track.Enabled, cfg.Track.Buckets) {
+			ops = append(ops, OperationTrack)
+		}
+		if !HasBuckets(cfg.Untrack.Enabled, cfg.Untrack.Buckets) {
+			ops = append(ops, OperationUntrack)
+		}
+	}
+	return ops
+}
+
+// channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
+func channelLimitSet(cfg configtypes.RateLimitChannelBuckets) bool {
+	if HasBuckets(cfg.Enabled, cfg.Buckets) {
+		return true
+	}
+	for _, override := range cfg.NamespaceOverrides {
+		if HasBuckets(override.Enabled, override.Buckets) {
+			return true
+		}
+	}
+	return false
+}
+
 // compileScope compiles enabled buckets into a scope named name. Returns nil when there is nothing to limit.
 func (a *slotAllocator) compileScope(name string, enabled bool, buckets configtypes.RateLimitBucketList) *scope {
-	if !enabled || len(buckets) == 0 {
+	if !HasBuckets(enabled, buckets) {
 		return nil
 	}
 	s := &scope{name: name, buckets: make([]slotBucket, 0, len(buckets))}
@@ -157,7 +212,7 @@ func (a *slotAllocator) channelLimit(op Operation, cfg configtypes.RateLimitChan
 	name := op.String()
 	limit := opLimit{base: a.baseScope(name, cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.NamespaceOverrides {
-		if !override.Enabled || len(override.Buckets) == 0 {
+		if !HasBuckets(override.Enabled, override.Buckets) {
 			continue
 		}
 		if limit.overrides == nil {
@@ -172,7 +227,7 @@ func (a *slotAllocator) channelLimit(op Operation, cfg configtypes.RateLimitChan
 func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope) opLimit {
 	limit := opLimit{base: a.baseScope(OperationRPC.String(), cfg.Enabled, cfg.Buckets, def)}
 	for _, override := range cfg.MethodOverrides {
-		if !override.Enabled || len(override.Buckets) == 0 {
+		if !HasBuckets(override.Enabled, override.Buckets) {
 			continue
 		}
 		if limit.overrides == nil {
@@ -216,6 +271,10 @@ func wireOperations(
 	ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
 	ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
 	ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
+	ops[OperationMapPublish] = alloc.channelLimit(OperationMapPublish, cfg.MapPublish, def)
+	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
+	ops[OperationTrack] = alloc.channelLimit(OperationTrack, cfg.Track, def)
+	ops[OperationUntrack] = alloc.channelLimit(OperationUntrack, cfg.Untrack, def)
 }
 
 // newUserPlan compiles user command rate limits. Resolution is the same as for client commands,

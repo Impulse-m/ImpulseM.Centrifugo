@@ -11,11 +11,15 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newCacheEmptyTestContainer returns the config container with the options set on the without_namespace
@@ -69,6 +73,12 @@ func TestCacheEmptyHandlerHTTP(t *testing.T) {
 			response: `{"result": {"populated": false}}`,
 		},
 		{
+			name:          "null error member",
+			status:        http.StatusOK,
+			response:      `{"error": null, "result": {"populated": true}}`,
+			wantPopulated: true,
+		},
+		{
 			name:     "empty body",
 			status:   http.StatusOK,
 			response: ``,
@@ -117,6 +127,39 @@ func TestCacheEmptyHandlerHTTP(t *testing.T) {
 	}
 }
 
+// TestCacheEmptyHandlerHTTPErrorBody checks that an error member of a 200 answer fails the call: the subscription
+// is rejected with the internal error, the backend is called once and the proxy error counter moves.
+func TestCacheEmptyHandlerHTTPErrorBody(t *testing.T) {
+	testCase := tools.NewCommonHTTPProxyTestCase(context.Background())
+	defer testCase.Teardown()
+
+	calls := make(chan struct{}, 10)
+	testCase.Mux.HandleFunc("/cache_empty", func(w http.ResponseWriter, req *http.Request) {
+		calls <- struct{}{}
+		_, _ = w.Write([]byte(`{"error": {"code": 100, "message": "x"}}`))
+	})
+
+	proxy, err := NewHTTPCacheEmptyProxy(getTestHttpProxy(testCase, "/cache_empty"))
+	require.NoError(t, err)
+	handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": proxy})
+
+	opts := configtypes.ChannelOptions{
+		CacheEmptyProxyEnabled: true,
+		CacheEmptyProxyName:    "default",
+		ForceRecoveryMode:      "cache",
+	}
+	cfgContainer := newCacheEmptyTestContainer(t, opts, false)
+
+	errorsBefore := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("http", "cache_empty", "default"))
+	reply, err := handler.Handle(cfgContainer)(centrifuge.CacheEmptyEvent{Channel: "c"})
+	errorsAfter := testutil.ToFloat64(metrics.ProxyCallErrorCount.WithLabelValues("http", "cache_empty", "default"))
+
+	require.ErrorIs(t, err, centrifuge.ErrorInternal)
+	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
+	require.Len(t, calls, 1)
+	require.Equal(t, errorsBefore+1, errorsAfter)
+}
+
 // cacheEmptyGRPCTestServer answers NotifyCacheEmpty with the result of respond.
 type cacheEmptyGRPCTestServer struct {
 	proxyproto.UnimplementedCentrifugoProxyServer
@@ -152,6 +195,13 @@ func TestCacheEmptyHandlerGRPC(t *testing.T) {
 			name: "backend error",
 			respond: func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
 				return nil, errors.New("backend failed")
+			},
+			wantErr: true,
+		},
+		{
+			name: "status error",
+			respond: func(*proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
+				return nil, status.Error(codes.Unavailable, "backend is down")
 			},
 			wantErr: true,
 		},

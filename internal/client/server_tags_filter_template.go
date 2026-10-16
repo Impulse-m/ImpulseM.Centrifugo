@@ -19,10 +19,10 @@ import (
 // The client of the connection is not stored, it is read from the connection.
 const serverTagsFilterValuesKey = "server_tags_filter_template_values"
 
-// serverTagsFilterUniConnectKey is a client storage key with the subscriptions to uni-connect channels which have a
-// template, without their filter. A rebind to another user subscribes them again, since the connection keeps them and
-// their filters are rendered with the new values.
-const serverTagsFilterUniConnectKey = "server_tags_filter_template_uni_connect"
+// serverTagsFilterServerSideKey is a client storage key with the subscriptions which connect made to server-side
+// channels of uni-connect and connect proxy sources, when their namespace has a template. A rebind to another user
+// subscribes them again, since the connection keeps them and their filters are rendered with the new values.
+const serverTagsFilterServerSideKey = "server_tags_filter_template_server_side"
 
 // unsubscribeInsufficientState is the unsubscribe of a channel whose filter was rendered with values which the
 // connection no longer has. The client resubscribes it.
@@ -48,8 +48,8 @@ func (h *Handler) connectFilterTemplates(
 		values.User = credentials.UserID
 	}
 	storage[serverTagsFilterValuesKey] = storedValuesOf(values)
-	if uni := h.uniConnectSubscriptions(subscriptions); uni != nil {
-		storage[serverTagsFilterUniConnectKey] = uni
+	if serverSide := h.serverSideSubscriptions(subscriptions); serverSide != nil {
+		storage[serverTagsFilterServerSideKey] = serverSide
 	}
 	if err := h.applyFilterTemplates(subscriptions, values); err != nil {
 		return centrifuge.DisconnectPermissionDenied
@@ -57,21 +57,21 @@ func (h *Handler) connectFilterTemplates(
 	return nil
 }
 
-// uniConnectSubscriptions returns the subscriptions of the uni-connect channels of subs which have a template, without
-// their filter. It returns nil when there are none.
-func (h *Handler) uniConnectSubscriptions(subs map[string]centrifuge.SubscribeOptions) map[string]centrifuge.SubscribeOptions {
-	var uni map[string]centrifuge.SubscribeOptions
+// serverSideSubscriptions returns the subscriptions of the uni-connect and connect proxy channels of subs which have a
+// template. They are taken before the templates are applied, so their explicit filter is kept and the template is not:
+// a rebind renders the template with its own values. It returns nil when there are none.
+func (h *Handler) serverSideSubscriptions(subs map[string]centrifuge.SubscribeOptions) map[string]centrifuge.SubscribeOptions {
+	var serverSide map[string]centrifuge.SubscribeOptions
 	for channel, opts := range subs {
-		if opts.Source != subsource.UniConnect || h.templateOf(channel) == nil {
+		if (opts.Source != subsource.UniConnect && opts.Source != subsource.ConnectProxy) || h.templateOf(channel) == nil {
 			continue
 		}
-		if uni == nil {
-			uni = make(map[string]centrifuge.SubscribeOptions)
+		if serverSide == nil {
+			serverSide = make(map[string]centrifuge.SubscribeOptions)
 		}
-		opts.ServerTagsFilter = nil
-		uni[channel] = opts
+		serverSide[channel] = opts
 	}
-	return uni
+	return serverSide
 }
 
 // answerSubscribe answers a client subscription with reply, the result of OnSubscribe, after the server tags filter
@@ -144,23 +144,46 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 	return tokenChannelsChanged(client, extra.Subs)
 }
 
-// storeFilterValues stores the values as the values the templates of a connection are rendered with, after its user
-// moved to the values. Nothing is stored when no config has templates.
-func (h *Handler) storeFilterValues(c rebindableClient, values filtertemplate.Values) {
+// rebindFilters are the values of the server tags filter templates which a rebind moves a connection between: the values
+// of the new identity and the values the connection had. enabled is false when no config has templates, and then the
+// rebind does nothing with them.
+type rebindFilters struct {
+	enabled  bool
+	previous filtertemplate.Values
+	values   filtertemplate.Values
+}
+
+// prepareRebindFilters returns the template values of a rebind of c to newUser with the claims of its token. The values
+// the connection has are read here, before the rebind moves them.
+func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
-		return
+		return rebindFilters{}
 	}
+	return rebindFilters{
+		enabled:  true,
+		previous: connectionFilterValues(c),
+		values:   filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()},
+	}
+}
+
+// storeFilterValues stores the values as the values the templates of a connection are rendered with, after its user
+// moved to the values.
+func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 	storage, release := c.AcquireStorage()
 	storage[serverTagsFilterValuesKey] = storedValuesOf(values)
 	release(storage)
 }
 
-// rebindFilterTemplates unsubscribes the channels with a template when the values of a connection changed from previous
-// to values. The client resubscribes them with filters rendered with the new values. The user is one of the values: a
-// connection without a user which takes one renders its templates differently even when the claims are the same. The
-// server-side channels which the rebind subscribes again, see reboundSubscriptions, come back with the new filters.
-func (h *Handler) rebindFilterTemplates(c rebindableClient, previous filtertemplate.Values, values filtertemplate.Values) {
-	if sameFilterValues(previous, values) {
+// commitRebindFilters applies the template values of a rebind which Core applied: the values move to the new identity,
+// and the channels with a template are unsubscribed when the values changed. The client resubscribes them with filters
+// rendered with the new values. The server-side channels which the rebind subscribes again, see
+// reboundTemplateSubscriptions, come back with the new filters too.
+func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters) {
+	if !filters.enabled {
+		return
+	}
+	storeFilterValues(c, filters.values)
+	if sameFilterValues(filters.previous, filters.values) {
 		return
 	}
 	for channel := range c.ChannelsWithContext() {
@@ -168,6 +191,32 @@ func (h *Handler) rebindFilterTemplates(c rebindableClient, previous filtertempl
 			c.Unsubscribe(channel, unsubscribeInsufficientState)
 		}
 	}
+}
+
+// reboundTemplateSubscriptions completes toSubscribe, the subscriptions of a rebind to userID, with the server-side
+// channels with a template which the connection holds from its connect, and applies the templates to all of them with
+// the values of the new identity. The server-side channels are kept only with a user, since a move to an anonymous
+// identity unsubscribes them, see unsubscribeNotAnonymous. A missing value under reject is an error of the refresh.
+func (h *Handler) reboundTemplateSubscriptions(
+	c rebindableClient,
+	userID string,
+	toSubscribe map[string]centrifuge.SubscribeOptions,
+	filters rebindFilters,
+) error {
+	if !filters.enabled {
+		return nil
+	}
+	if userID != "" {
+		for channel, opts := range storedServerSideSubscriptions(c) {
+			if _, ok := toSubscribe[channel]; !ok && c.IsSubscribed(channel) {
+				toSubscribe[channel] = opts
+			}
+		}
+	}
+	if err := h.applyFilterTemplates(toSubscribe, filters.values); err != nil {
+		return centrifuge.ErrorPermissionDenied
+	}
+	return nil
 }
 
 // templateSubscriptions applies the server tags filter templates to subscriptions made on a connection after
@@ -274,12 +323,12 @@ func storedValuesOf(values filtertemplate.Values) filtertemplate.Values {
 	return filtertemplate.Values{Claims: values.Claims, User: values.User}
 }
 
-// storedUniConnectSubscriptions returns the uni-connect subscriptions with a template which a connection stored on connect.
-func storedUniConnectSubscriptions(c Client) map[string]centrifuge.SubscribeOptions {
+// storedServerSideSubscriptions returns the server-side subscriptions with a template which a connection stored on connect.
+func storedServerSideSubscriptions(c Client) map[string]centrifuge.SubscribeOptions {
 	storage, release := c.AcquireStorage()
-	uni, _ := storage[serverTagsFilterUniConnectKey].(map[string]centrifuge.SubscribeOptions)
+	serverSide, _ := storage[serverTagsFilterServerSideKey].(map[string]centrifuge.SubscribeOptions)
 	release(storage)
-	return uni
+	return serverSide
 }
 
 // sameFilterValues reports whether two sets of values render every template the same: the same user, and the same

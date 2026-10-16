@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -218,17 +217,11 @@ func (h *Handler) onRefreshRebind(
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
 	// The subscriptions of the new identity are built before anything moves, so a refusal of a template leaves the
-	// connection as it was. The values of the templates are the ones of the new identity; they are read before the
-	// rebind to compare them after it.
-	filterValues := filtertemplate.Values{Claims: verified.FilterTemplateClaims, User: newUser, Client: c.ID()}
-	templated := cfg.HasServerTagsFilterTemplates()
-	toSubscribe, err := h.reboundSubscriptions(c, newUser, verified.Subs, filterValues)
+	// connection as it was.
+	filters := h.prepareRebindFilters(c, verified.FilterTemplateClaims, newUser)
+	toSubscribe, err := h.reboundSubscriptions(c, newUser, verified.Subs, filters)
 	if err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
-	}
-	var previousValues filtertemplate.Values
-	if templated {
-		previousValues = connectionFilterValues(c)
 	}
 	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
@@ -275,12 +268,8 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, rebindError(c.ID(), err)
 	}
 	// The values of the templates move with the user once the rebind is applied, so a rebind which Core refuses changes
-	// neither the values nor a channel. A subscribe which overlaps the move renders with the stored values, see
-	// connectionFilterValues, and answerSubscribe unsubscribes it when the values changed while it committed.
-	if templated {
-		h.storeFilterValues(c, filterValues)
-		h.rebindFilterTemplates(c, previousValues, filterValues)
-	}
+	// neither the values nor a channel, see commitRebindFilters.
+	h.commitRebindFilters(c, filters)
 	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, rec, newUser, identity)
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
@@ -442,16 +431,14 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 }
 
 // reboundSubscriptions returns the subscriptions a connection moved to userID gets before the move: its personal
-// channel, the channels of its token, and the uni-connect channels which it holds with a template. The server tags
-// filter templates are rendered with values, which are the values of the new identity. A personal channel which cannot
-// be resolved disconnects the connection, and a template refusal is an error of the refresh; both come before the
-// rebind, so the connection keeps its identity. The uni-connect channels stay with a user, and a move to an anonymous
-// identity unsubscribes them, see unsubscribeNotAnonymous.
+// channel, the channels of its token, and the server-side channels with a template, see reboundTemplateSubscriptions.
+// A personal channel which cannot be resolved disconnects the connection, and a template refusal is an error of the
+// refresh; both come before the rebind, so the connection keeps its identity.
 func (h *Handler) reboundSubscriptions(
 	c rebindableClient,
 	userID string,
 	subs map[string]centrifuge.SubscribeOptions,
-	values filtertemplate.Values,
+	filters rebindFilters,
 ) (map[string]centrifuge.SubscribeOptions, error) {
 	cfg := h.cfgContainer.ConfigRef()
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
@@ -467,17 +454,8 @@ func (h *Handler) reboundSubscriptions(
 			toSubscribe[channel] = opts
 		}
 	}
-	if userID != "" && cfg.HasServerTagsFilterTemplates() {
-		for channel, opts := range storedUniConnectSubscriptions(c) {
-			if _, ok := toSubscribe[channel]; !ok && c.IsSubscribed(channel) {
-				toSubscribe[channel] = opts
-			}
-		}
-	}
-	if cfg.HasServerTagsFilterTemplates() {
-		if err := h.applyFilterTemplates(toSubscribe, values); err != nil {
-			return nil, centrifuge.ErrorPermissionDenied
-		}
+	if err := h.reboundTemplateSubscriptions(c, userID, toSubscribe, filters); err != nil {
+		return nil, err
 	}
 	return toSubscribe, nil
 }

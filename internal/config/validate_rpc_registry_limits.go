@@ -17,6 +17,10 @@ const rpcRingHashSetRequestHashKeyEnv = "GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST
 // rpcResponseHintMaxField is the largest field number of a protobuf message, see protowire.MaxValidNumber.
 const rpcResponseHintMaxField = 1<<29 - 1
 
+// rpcMemoryWatermarkMinBytes is the smallest memory watermark which is not off. A watermark below the resident memory
+// of a process trips on the first sample and never recovers, so a smaller value is a mistake, not a limit.
+const rpcMemoryWatermarkMinBytes int64 = 1 << 20
+
 var rpcAffinityHeaderRe = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
 
 // validateRPCRegistryLimits checks the limits of an enabled registry which can never work: an admission cost over the
@@ -54,6 +58,9 @@ func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RP
 	}
 	if reg.MemoryWatermarkBytes < 0 {
 		return fmt.Errorf("rpc.registry.memory_watermark_bytes: must not be negative, got %d", reg.MemoryWatermarkBytes)
+	}
+	if reg.MemoryWatermarkBytes > 0 && reg.MemoryWatermarkBytes < rpcMemoryWatermarkMinBytes {
+		return fmt.Errorf("rpc.registry.memory_watermark_bytes: must be 0 or at least %d, got %d", rpcMemoryWatermarkMinBytes, reg.MemoryWatermarkBytes)
 	}
 	if reg.MaxInflightBytes == 0 {
 		return nil

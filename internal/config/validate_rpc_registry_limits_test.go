@@ -45,6 +45,13 @@ func TestValidateRPCRegistryLimits(t *testing.T) {
 			wantErr: "rpc.registry.memory_watermark_bytes: must not be negative",
 		},
 		{
+			name: "memory watermark under 1 MiB is refused",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.MemoryWatermarkBytes = 5
+			},
+			wantErr: "rpc.registry.memory_watermark_bytes: must be 0 or at least 1048576, got 5",
+		},
+		{
 			name: "method cost above the in-flight budget can never run",
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry.MaxInflightBytes = 1000

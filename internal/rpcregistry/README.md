@@ -365,7 +365,7 @@ Admission decides whether a registry call may run, before its dedup and its back
 
 A refused call is answered with `errors.overloaded`, temporary, with `x-centrifugo-retry: later`: the call was not executed, so the client sends it again later, with the same `msg_id` if it has one. A refused call is not recorded for exactly-once RPC. Both keys are read at start, and a config reload does not change them.
 
-Config validation refuses a budget below the cost of any method, a negative budget or watermark, since such a method could never run. The rules which depend on bandwidth or latency are documented in [Large-payload fleets](#large-payload-fleets). A registry file reload runs the same budget, affinity and size hint rules: a file which fails them is refused, and the current registry stays active.
+Config validation refuses a budget below the cost of any method, a negative budget or watermark, and a watermark under 1 MiB, since such a method could never run and such a watermark never recovers. The rules which depend on bandwidth or latency are documented in [Large-payload fleets](#large-payload-fleets). A registry file reload runs the same budget, affinity and size hint rules: a file which fails them is refused, and the current registry stays active.
 
 Refusals are counted in `centrifugo_rpc_registry_admission_refusals_total{reason}`, with reason `inflight` or `memory`, and in `calls_total` with result `overloaded`. The budget in use is `centrifugo_rpc_registry_inflight_bytes`.
 

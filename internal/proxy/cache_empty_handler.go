@@ -13,33 +13,27 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/sync/singleflight"
 )
 
 // CacheEmptyHandler answers cache empty events with the cache empty proxy named in the channel options.
 type CacheEmptyHandler struct {
 	proxies map[string]CacheEmptyProxy
 	calls   map[string]*metrics.ProxyCallChildren
-	// groups shares the in-flight call of each proxy between the subscribers of one channel.
-	groups map[string]*singleflight.Group
 	// logLimiter lets a failed call be logged at most once a minute.
 	logLimiter *tools.IntervalLimiter
 }
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
 func NewCacheEmptyHandler(proxies map[string]CacheEmptyProxy) *CacheEmptyHandler {
-	// The handler keeps its own copy, so a later change of the caller's map cannot add a name without a group or a call.
+	// The handler keeps its own copy, so a later change of the caller's map cannot add a name without a call metric.
 	owned := maps.Clone(proxies)
 	calls := make(map[string]*metrics.ProxyCallChildren, len(owned))
-	groups := make(map[string]*singleflight.Group, len(owned))
 	for name, p := range owned {
 		calls[name] = metrics.NewProxyCallChildren(p.Protocol(), "cache_empty", name)
-		groups[name] = &singleflight.Group{}
 	}
 	return &CacheEmptyHandler{
 		proxies:    owned,
 		calls:      calls,
-		groups:     groups,
 		logLimiter: tools.NewIntervalLimiter(time.Minute),
 	}
 }
@@ -60,20 +54,16 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 			log.Error().Str("proxy", name).Str("channel", e.Channel).Msg("cache empty proxy not found")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
-		// Subscribers that find the same channel empty while a call is in flight share its result, and the call
-		// is logged once for all of them. groups has the same keys as proxies, so the lookup always succeeds.
-		result, err, _ := h.groups[name].Do(e.Channel, func() (any, error) {
-			populated, err := h.call(name, p, e.Channel)
-			if err != nil && h.logLimiter.Allow() {
+		// Each subscriber makes its own call, so the answer is decided after its own arrival.
+		populated, err := h.call(name, p, e.Channel)
+		if err != nil {
+			if h.logLimiter.Allow() {
 				log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			}
-			return populated, err
-		})
-		if err != nil {
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
 		return centrifuge.CacheEmptyReply{
-			Populated: result.(bool),
+			Populated: populated,
 		}, nil
 	}
 }

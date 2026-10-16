@@ -5,9 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"runtime"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -309,14 +306,16 @@ func TestCacheEmptyHandlerOwnsProxies(t *testing.T) {
 	require.Equal(t, centrifuge.CacheEmptyReply{}, reply)
 }
 
-// blockingCacheEmptyProxy counts its calls and holds each one until release is closed.
+// blockingCacheEmptyProxy counts its calls, reports each call on entered and holds it until release is closed.
 type blockingCacheEmptyProxy struct {
 	calls   atomic.Int64
+	entered chan struct{}
 	release chan struct{}
 }
 
 func (p *blockingCacheEmptyProxy) ProxyNotifyCacheEmpty(_ context.Context, _ *proxyproto.NotifyCacheEmptyRequest) (*proxyproto.NotifyCacheEmptyResponse, error) {
 	p.calls.Add(1)
+	p.entered <- struct{}{}
 	<-p.release
 	return &proxyproto.NotifyCacheEmptyResponse{
 		Result: &proxyproto.NotifyCacheEmptyResult{Populated: true},
@@ -331,43 +330,16 @@ func (p *blockingCacheEmptyProxy) Timeout() time.Duration {
 	return time.Second
 }
 
-// singleflightDoFrame is the stack frame of a goroutine that is inside singleflight.Group.Do, either as the
-// caller which runs the function or as a caller which waits for it.
-const singleflightDoFrame = "singleflight.(*Group).Do("
+// TestCacheEmptyHandlerCallsEverySubscriber checks that subscribers which find the same channel empty while a call
+// is in flight each call the backend: a subscriber's answer is decided after its own arrival, so it never joins
+// a call started before it. The backend holds both calls until both have arrived.
+func TestCacheEmptyHandlerCallsEverySubscriber(t *testing.T) {
+	const subscribers = 2
 
-// waitForSingleflightCallers returns once want goroutines are inside singleflight.Group.Do. A caller inside Do
-// while the call is in flight joins that call, so the test releases the backend only after every subscriber
-// has joined it. It fails the test when the callers do not get there in time.
-func waitForSingleflightCallers(t *testing.T, want int) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	const maxStackBufSize = 1 << 26
-	buf := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(buf, true)
-		// A full buffer may hold a truncated dump, so it is doubled and the dump is taken again.
-		if n == len(buf) && len(buf) < maxStackBufSize {
-			buf = make([]byte, 2*len(buf))
-			continue
-		}
-		if strings.Count(string(buf[:n]), singleflightDoFrame) >= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fewer than %d subscribers reached the in-flight call", want)
-		}
-		runtime.Gosched()
+	proxy := &blockingCacheEmptyProxy{
+		entered: make(chan struct{}, subscribers),
+		release: make(chan struct{}),
 	}
-}
-
-// TestCacheEmptyHandlerCoalescesInflightCalls checks that subscribers which find the same channel empty while
-// a call is in flight share one backend call. The release of the backend waits until every subscriber is inside
-// the shared call, see waitForSingleflightCallers, so all of them join the same call. Without coalescing no
-// subscriber waits in singleflight, and the wait fails. Without a shared result the count assertion fails.
-func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
-	const subscribers = 16
-
-	proxy := &blockingCacheEmptyProxy{release: make(chan struct{})}
 	handler := NewCacheEmptyHandler(map[string]CacheEmptyProxy{"default": proxy})
 	opts := configtypes.ChannelOptions{
 		CacheEmptyProxyEnabled: true,
@@ -377,38 +349,26 @@ func TestCacheEmptyHandlerCoalescesInflightCalls(t *testing.T) {
 	cfgContainer := newCacheEmptyTestContainer(t, opts, false)
 	cacheEmpty := handler.Handle(cfgContainer)
 
-	start := make(chan struct{})
 	replies := make(chan centrifuge.CacheEmptyReply, subscribers)
 	errs := make(chan error, subscribers)
-	var done sync.WaitGroup
 	for i := 0; i < subscribers; i++ {
-		done.Add(1)
 		go func() {
-			defer done.Done()
-			<-start
 			reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
 			replies <- reply
 			errs <- err
 		}()
 	}
-	close(start)
-	waitForSingleflightCallers(t, subscribers)
+	for i := 0; i < subscribers; i++ {
+		select {
+		case <-proxy.entered:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("fewer than %d subscribers reached the backend", subscribers)
+		}
+	}
 	close(proxy.release)
-	done.Wait()
-	close(replies)
-	close(errs)
-
-	for err := range errs {
-		require.NoError(t, err)
+	for i := 0; i < subscribers; i++ {
+		require.NoError(t, <-errs)
+		require.True(t, (<-replies).Populated)
 	}
-	for reply := range replies {
-		require.True(t, reply.Populated)
-	}
-	require.Equal(t, int64(1), proxy.calls.Load())
-
-	// A call made after the shared one has finished goes to the backend again: nothing is cached.
-	reply, err := cacheEmpty(centrifuge.CacheEmptyEvent{Channel: "c"})
-	require.NoError(t, err)
-	require.True(t, reply.Populated)
-	require.Equal(t, int64(2), proxy.calls.Load())
+	require.Equal(t, int64(subscribers), proxy.calls.Load())
 }

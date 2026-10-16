@@ -180,8 +180,11 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 // connection stored no values when the rebind was checked; the rebind then reads the config again before it applies
 // them, see reboundTemplateSubscriptions and commitRebindFilters. serverSide are the server-side channels with a template
 // which the connection holds and which the rebind subscribes again, read before the rebind moves the connection.
+// unstored is true when enabled and the connection stored no values: its previous values are unknown, see
+// commitRebindFilters.
 type rebindFilters struct {
 	enabled    bool
+	unstored   bool
 	previous   filtertemplate.Values
 	values     filtertemplate.Values
 	serverSide map[string]centrifuge.SubscribeOptions
@@ -190,15 +193,18 @@ type rebindFilters struct {
 // prepareRebindFilters returns the template values of a rebind of c to newUser with the claims of its token. The values
 // the connection has are read here, before the rebind moves them. A connection which stored values keeps them on every
 // rebind, also while the config has no templates: a reload which adds one must render the identity the connection has
-// now, not the one it had when the templates were switched off.
+// now, not the one it had when the templates were switched off. A connection which stored no values has no previous
+// values, see commitRebindFilters.
 func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate.Claims, newUser string) rebindFilters {
 	values := filtertemplate.Values{Claims: claims, User: newUser, Client: c.ID()}
-	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !hasStoredFilterValues(c) {
+	previous, stored := connectionFilterValuesStored(c)
+	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && !stored {
 		return rebindFilters{values: values}
 	}
 	return rebindFilters{
 		enabled:  true,
-		previous: connectionFilterValues(c),
+		unstored: !stored,
+		previous: previous,
 		values:   values,
 	}
 }
@@ -218,16 +224,16 @@ func (h *Handler) checkReboundFilters(
 	if !filters.enabled {
 		return filters, nil
 	}
-	if newUser != "" {
-		for channel, opts := range storedServerSideSubscriptions(c) {
-			if !c.IsSubscribed(channel) {
-				continue
-			}
-			if filters.serverSide == nil {
-				filters.serverSide = make(map[string]centrifuge.SubscribeOptions)
-			}
-			filters.serverSide[channel] = opts
+	// The server-side channels are kept for every identity, also the anonymous one: a skip template renders with the
+	// explicit filter only, and a reject template refuses the rebind here, as it does for the token subscriptions.
+	for channel, opts := range storedServerSideSubscriptions(c) {
+		if !c.IsSubscribed(channel) {
+			continue
 		}
+		if filters.serverSide == nil {
+			filters.serverSide = make(map[string]centrifuge.SubscribeOptions)
+		}
+		filters.serverSide[channel] = opts
 	}
 	candidates := make(map[string]centrifuge.SubscribeOptions, len(subs)+len(filters.serverSide)+1)
 	if newUser != "" && h.cfgContainer.ConfigRef().Client.SubscribeToUserPersonalChannel.Enabled {
@@ -269,9 +275,10 @@ func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters)
 		return
 	}
 	storeFilterValues(c, filters.values)
-	// A rebind checked while the config had no templates has no previous values, so its templated channels are
-	// unsubscribed whenever the config has templates now: they were subscribed without a template.
-	if filters.enabled && sameFilterValues(filters.previous, filters.values) {
+	// A connection which stored no values has no previous values: its channels were subscribed without the values of a
+	// template, or, when a reload added the template after its subscribe, with a fallback which is not a value it
+	// had. Its templated channels are unsubscribed whenever the config has templates now, even when the values are the same.
+	if filters.enabled && !filters.unstored && sameFilterValues(filters.previous, filters.values) {
 		return
 	}
 	for channel := range c.ChannelsWithContext() {
@@ -449,13 +456,20 @@ func subscriptionFilter(
 // a render which overlaps a rebind sees the values of one identity, and not the user of the rebind with the claims of the
 // previous one. A connection which stored no values renders with its user and no claims.
 func connectionFilterValues(c Client) filtertemplate.Values {
+	values, _ := connectionFilterValuesStored(c)
+	return values
+}
+
+// connectionFilterValuesStored returns the values of connectionFilterValues, read in one storage access, and whether the
+// connection stored values for its templates.
+func connectionFilterValuesStored(c Client) (filtertemplate.Values, bool) {
 	storage, release := c.AcquireStorage()
 	stored, ok := storedFilterValues(storage)
 	release(storage)
 	if !ok {
 		stored.User = c.UserID()
 	}
-	return filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}
+	return filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}, ok
 }
 
 // storedFilterValues returns the values a connection stored for its server tags filter templates, and whether it
@@ -463,14 +477,6 @@ func connectionFilterValues(c Client) filtertemplate.Values {
 func storedFilterValues(storage map[string]any) (filtertemplate.Values, bool) {
 	stored, ok := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
 	return stored, ok
-}
-
-// hasStoredFilterValues reports whether a connection stored values for its server tags filter templates.
-func hasStoredFilterValues(c Client) bool {
-	storage, release := c.AcquireStorage()
-	_, ok := storedFilterValues(storage)
-	release(storage)
-	return ok
 }
 
 // storedValuesOf returns the part of values which is stored: the user and the claims. The client is not stored.

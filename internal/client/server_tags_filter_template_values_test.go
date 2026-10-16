@@ -357,3 +357,122 @@ func TestServerTagsFilterTemplateRebindWhileTemplatesOff(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "u2", rendered.Val)
 }
+
+// TestServerTagsFilterTemplateRebindPendingToAnonymousAfterReload checks a pending connection which stored no values,
+// since the templates were off when it connected, does not keep a channel of a template which a reload added when it
+// rebinds to anonymous with the same empty claims. The channel was subscribed without the template, so it has no
+// rendered value to compare with, and it is unsubscribed with the resubscribe code.
+func TestServerTagsFilterTemplateRebindPendingToAnonymousAfterReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "open",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForAnonymous: true, SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
+	state.channels["open:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "open",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForAnonymous: true,
+				SubscribeForClient:    true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+				},
+			},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRebindAnonymousToPendingAfterReload checks an anonymous connection which stored no values,
+// subscribed to a channel of a namespace without a template, does not keep the channel when a reload adds a template
+// with {{user}} and it rebinds to a pending token. The Core user stays empty and the claims are empty, so the values
+// are the same as the fallback of an unstored connection, which is not a rendered value of the channel.
+func TestServerTagsFilterTemplateRebindAnonymousToPendingAfterReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "owned",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForAnonymous: true, SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["owned:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "owned",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForAnonymous: true,
+				SubscribeForClient:    true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
+				},
+			},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "pending_2fa", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["owned:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRebindToAnonymousKeepsSkipUniConnect checks a rebind to anonymous under skip re-subscribes a
+// stored uni-connect channel with its explicit filter only: the template has a missing value, so it is not applied.
+func TestServerTagsFilterTemplateRebindToAnonymousKeepsSkipUniConnect(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true, AllowDowngrade: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("42", "authenticated")
+	storage, release := client.AcquireStorage()
+	storage[serverTagsFilterServerSideKey] = map[string]centrifuge.SubscribeOptions{
+		"lenient:uni": {Source: subsource.UniConnect, ServerTagsFilter: sessionFilter("x")},
+	}
+	release(storage)
+	state.channels["lenient:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Contains(t, state.subscribed, "lenient:uni")
+	require.True(t, proto.Equal(sessionFilter("x"), state.subscribed["lenient:uni"].ServerTagsFilter), "got %v", state.subscribed["lenient:uni"].ServerTagsFilter)
+}

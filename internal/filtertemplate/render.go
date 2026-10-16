@@ -10,9 +10,11 @@ import (
 // renderer builds one fresh tree of a template. The nodes, the child pointers and the vals of the
 // tree are carved from three slices allocated once per render, so a render allocates one slice per
 // part and one string per templated field. Measured on an Intel i5-12600K (Windows, GOWORK=off go test
-// -bench -benchmem, three runs): BenchmarkTemplateRender 212-219 ns/op, 544 B/op, 5 allocs/op;
-// BenchmarkFasttemplateBaseline 54-55 ns/op, 5 B/op, 1 allocs/op; a plain form that allocates each node
-// and each vals slice on its own 272-276 ns/op, 552 B/op, 8 allocs/op. The arena is kept.
+// -bench -benchmem -count=3): BenchmarkTemplateRender 221-231 ns/op, 544 B/op, 5 allocs/op;
+// BenchmarkPlainRender (renderPlain, one allocation per node and per slice) 246-251 ns/op, 544 B/op,
+// 7 allocs/op; BenchmarkFasttemplateBaseline 54.6-55.0 ns/op, 5 B/op, 1 allocs/op. The arena is kept: it
+// is the only form within the allocation bound of TestRenderAllocationBound (nodes + templated fields + 1),
+// which the plain form exceeds with 7 allocations for the same template.
 type renderer struct {
 	v      Values
 	nodes  []protocol.FilterNode

@@ -126,7 +126,7 @@ A connection whose class is `pending_2fa` has a user in its token, which the reg
 
 ### Rebind on refresh
 
-`client.rebind.enabled` lets a refresh move a live connection to another identity without a reconnect. It is off by default: a refresh whose token has another user disconnects the connection, as it always did. `client.rebind.allow_downgrade` is read only when rebind is enabled.
+`client.rebind.enabled` lets a refresh move a live connection to another identity without a reconnect. It is off by default: a refresh whose token has another user disconnects the connection, as it always did. `client.rebind.allow_downgrade` is read only when rebind is enabled. It cannot be combined with `client.concurrency` above 1: startup refuses such a config. With one command at a time per connection, a subscription cannot commit while a downgrade runs. With more, a subscription could commit between the two passes which drop the channels of the user, and stay on the logged-out connection until its next refresh or disconnect.
 
 ```json
 "client": {
@@ -207,7 +207,6 @@ The rotation of the refresh token and the grace the issuer keeps for the previou
 ### Known gaps
 
 * An upgrade through rebind does not consume the per-user connect rate limit. Core's per-user connection limit still applies.
-* A subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left.
 * A token whose expiration passes in the milliseconds between the check of the refresh and the rebind of the core gets the refresh error `token expired` after the user channels have gone. The refresh checks the expiration before the channels move, so this needs the token to expire in that window. Its personal channel comes back on the next refresh with the same user. The channels the client subscribed itself stay unsubscribed until the client subscribes them again or reconnects.
 * A user block or a user token invalidation is not retried when the disconnect queue is full and drops its disconnect: the connection stays until its token expires. A dropped session revocation is followed by a sweep of all local connections.
 * With `client.rebind` off, an anonymous connection which has no token session at connect gets no record and is not in the session index. When it refreshes to an anonymous token with a session, it gets no record either, so the index does not hold it. A revocation of that session with an empty user argument runs a sweep of all local connections in the background, and the sweep reaches it. A revocation which names a user does not reach it, as the connection has no user and the session of an anonymous token belongs to no user. The connection stays until its next refresh, which finds the session revoked and replies `expired`, or until its token expires. With `client.rebind` on, every connection has its record, so such a connection is indexed by its session.

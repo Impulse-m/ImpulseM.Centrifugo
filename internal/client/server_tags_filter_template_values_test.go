@@ -197,10 +197,10 @@ func TestServerTagsFilterTemplateReloadChangesClaimPaths(t *testing.T) {
 	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
 }
 
-// TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide checks a rebind with other values keeps a uni-connect
-// channel which the connection got before a template was configured. Connect subscribed it without a template, so its
-// filter does not depend on the values, and it is not among the server-side subscriptions stored with a template.
-func TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide(t *testing.T) {
+// TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide checks a rebind with other values unsubscribes a
+// uni-connect channel which the connection got before a template was configured. Connect subscribed it without a
+// template, so it has no stored filter to render again, and it must not stay subscribed without the template.
+func TestServerTagsFilterTemplateRebindUnsubscribesUntemplatedServerSide(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
 		{
@@ -228,8 +228,8 @@ func TestServerTagsFilterTemplateRebindKeepsUntemplatedServerSide(t *testing.T) 
 	}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "42", state.user)
-	require.NotContains(t, state.unsubscribed, "lenient:uni")
-	require.Contains(t, state.channels, "lenient:uni")
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:uni"].Code)
+	require.NotContains(t, state.channels, "lenient:uni")
 }
 
 // TestServerTagsFilterTemplateRebindStoresTokenFilters checks a rebind with other values stores the filters of the

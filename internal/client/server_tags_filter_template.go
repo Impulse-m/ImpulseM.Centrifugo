@@ -278,7 +278,9 @@ func storeFilterValues(c rebindableClient, values filtertemplate.Values) {
 // commitRebindFilters applies the template values of a rebind which Core applied: the values move to the new identity,
 // and the channels with a template are unsubscribed when the values changed. The client resubscribes them with filters
 // rendered with the new values. The server-side channels which the rebind subscribes again, see
-// reboundTemplateSubscriptions, come back with the new filters too.
+// reboundTemplateSubscriptions, come back with the new filters too. A server-side channel which connect did not store
+// with a template is unsubscribed as well: its explicit filter is not known here, so it is not subscribed again, and
+// its channel keeps no filter of the previous values.
 func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters) {
 	if !filters.enabled {
 		return
@@ -287,15 +289,8 @@ func (h *Handler) commitRebindFilters(c rebindableClient, filters rebindFilters)
 	if sameFilterValues(filters.previous, filters.values) {
 		return
 	}
-	serverSide := storedServerSideSubscriptions(c)
-	for channel, chCtx := range c.ChannelsWithContext() {
+	for channel := range c.ChannelsWithContext() {
 		if h.templateOf(channel) == nil {
-			continue
-		}
-		// A server-side channel which connect subscribed without a template has no filter which depends on the values,
-		// so it keeps its filter. Only the ones stored on connect are subscribed again with the new values.
-		isServerSide := chCtx.Source == subsource.UniConnect || chCtx.Source == subsource.ConnectProxy
-		if _, stored := serverSide[channel]; isServerSide && !stored {
 			continue
 		}
 		c.Unsubscribe(channel, unsubscribeInsufficientState)

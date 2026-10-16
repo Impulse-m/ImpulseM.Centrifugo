@@ -220,6 +220,11 @@ func (h *Handler) onRefreshRebind(
 
 	newUser := coreUserID(nextClass, verified.UserID)
 	oldUser := c.UserID()
+	// An upgrade to a user takes the connect rate limit of that user, the bucket a connect of the user takes. A refused take
+	// is an error of the refresh: nothing has changed yet, so the connection keeps its identity.
+	if newUser != "" && newUser != oldUser && !h.userConnectAllowed(newUser) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
+	}
 	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
 	if newUser == "" {

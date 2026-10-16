@@ -257,17 +257,8 @@ func createRedisBroker(n *centrifuge.Node, cfgContainer *config.Container) (*cen
 }
 
 func createRedisPresenceManager(n *centrifuge.Node, cfgContainer *config.Container) (centrifuge.PresenceManager, string, error) {
-	cfg := cfgContainer.Config()
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.PresenceManager.Redis.Redis)
-	if err != nil {
-		return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-	}
-	presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
-		n, cfg.PresenceManager.Redis.Prefix, redisShards, cfg.PresenceManager.Redis.RedisPresenceManagerCommon)
-	if err != nil {
-		return nil, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
-	}
-	return presenceManager, mode, nil
+	presenceManager, _, mode, err := createRedisPresenceManagerFrom(n, cfgContainer.Config().PresenceManager.Redis)
+	return presenceManager, mode, err
 }
 
 func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) error {

@@ -378,19 +378,29 @@ func createNamedPresenceManager(
 		}
 		return presenceManager, nil, "", nil
 	case "redis":
-		redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, entry.Redis.Redis)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-		}
-		presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
-			node, entry.Redis.Prefix, redisShards, entry.Redis.RedisPresenceManagerCommon)
-		if err != nil {
-			return nil, redisShards, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
-		}
-		return presenceManager, redisShards, mode, nil
+		return createRedisPresenceManagerFrom(node, entry.Redis)
 	default:
 		return nil, nil, "", fmt.Errorf("unknown presence manager type: %s", entry.Type)
 	}
+}
+
+// createRedisPresenceManagerFrom creates a Redis presence manager on its own Redis shards. It returns the shards,
+// which the caller closes or keeps, and the connection mode for logging. The default presence manager and the named
+// presence managers use it.
+func createRedisPresenceManagerFrom(
+	node *centrifuge.Node,
+	redisCfg configtypes.RedisPresenceManager,
+) (centrifuge.PresenceManager, []*centrifuge.RedisShard, string, error) {
+	redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, redisCfg.Redis)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("error creating Redis shards: %w", err)
+	}
+	presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
+		node, redisCfg.Prefix, redisShards, redisCfg.RedisPresenceManagerCommon)
+	if err != nil {
+		return nil, redisShards, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
+	}
+	return presenceManager, redisShards, mode, nil
 }
 
 // createNamedMapBroker creates a named map broker by its type. It returns the Redis shards it created, which the

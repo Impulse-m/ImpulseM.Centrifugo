@@ -173,17 +173,28 @@ func namespaceEnginesRemoved(name string, recorded namespaceRouting) error {
 	)
 }
 
-// enabledBrokerKeys identifies the enabled entries by name, type and the settings which the running broker keeps
-// from startup. The connection details are left out, since a reload applies them.
-func enabledBrokerKeys(cfg Config) []string {
+// enabledKeys returns the sorted keys of the enabled entries of list. key returns the key of an enabled entry.
+func enabledKeys[T any](list []T, enabled func(entry T) bool, key func(entry T) string) []string {
 	var keys []string
-	for _, b := range cfg.Brokers {
-		if b.Enabled {
-			keys = append(keys, brokerKey(b))
+	for _, entry := range list {
+		if enabled(entry) {
+			keys = append(keys, key(entry))
 		}
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// enabledBrokerKeys identifies the enabled entries by name, type and the settings which the running broker keeps
+// from startup. The connection details are left out, since a reload applies them.
+func enabledBrokerKeys(cfg Config) []string {
+	return enabledKeys(
+		cfg.Brokers,
+		func(b configtypes.NamedBroker) bool {
+			return b.Enabled
+		},
+		brokerKey,
+	)
 }
 
 // brokerKey returns the key of an enabled entry of brokers. Only the settings which the type of the entry uses are
@@ -207,40 +218,40 @@ func brokerKey(b configtypes.NamedBroker) string {
 // enabledPresenceManagerKeys identifies the enabled entries by name, type and, for Redis, the prefix which the
 // running presence manager keeps from startup.
 func enabledPresenceManagerKeys(cfg Config) []string {
-	var keys []string
-	for _, pm := range cfg.PresenceManagers {
-		if !pm.Enabled {
-			continue
-		}
-		key := pm.Name + "/" + pm.Type
-		if pm.Type == "redis" {
-			key += "/" + redisPrefix(pm.Redis.Prefix)
-		}
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+	return enabledKeys(
+		cfg.PresenceManagers,
+		func(pm configtypes.NamedPresenceManager) bool {
+			return pm.Enabled
+		},
+		func(pm configtypes.NamedPresenceManager) string {
+			key := pm.Name + "/" + pm.Type
+			if pm.Type == "redis" {
+				key += "/" + redisPrefix(pm.Redis.Prefix)
+			}
+			return key
+		},
+	)
 }
 
 // enabledMapBrokerKeys identifies the enabled entries of map_brokers by name, type and the prefix which the running
 // map broker keeps from startup: the Redis prefix, or the Postgres table prefix.
 func enabledMapBrokerKeys(cfg Config) []string {
-	var keys []string
-	for _, mb := range cfg.MapBrokers {
-		if !mb.Enabled {
-			continue
-		}
-		key := mb.Name + "/" + mb.Type
-		switch mb.Type {
-		case "redis":
-			key += "/" + redisPrefix(mb.Redis.Prefix)
-		case "postgres":
-			key += "/" + postgresBrokerPrefix(mb.Postgres.TablePrefix)
-		}
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+	return enabledKeys(
+		cfg.MapBrokers,
+		func(mb configtypes.NamedMapBroker) bool {
+			return mb.Enabled
+		},
+		func(mb configtypes.NamedMapBroker) string {
+			key := mb.Name + "/" + mb.Type
+			switch mb.Type {
+			case "redis":
+				key += "/" + redisPrefix(mb.Redis.Prefix)
+			case "postgres":
+				key += "/" + postgresBrokerPrefix(mb.Postgres.TablePrefix)
+			}
+			return key
+		},
+	)
 }
 
 // namespaceRoutings returns the engine selection of channel.without_namespace followed by the one of each namespace.

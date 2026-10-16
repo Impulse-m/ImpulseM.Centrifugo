@@ -16,18 +16,22 @@ import (
 type CacheEmptyHandler struct {
 	proxies map[string]CacheEmptyProxy
 	calls   map[string]*metrics.ProxyCallChildren
-	group   singleflight.Group
+	// groups shares the in-flight call of each proxy between the subscribers of one channel.
+	groups map[string]*singleflight.Group
 }
 
 // NewCacheEmptyHandler creates a handler for the given cache empty proxies, by name.
 func NewCacheEmptyHandler(proxies map[string]CacheEmptyProxy) *CacheEmptyHandler {
 	calls := make(map[string]*metrics.ProxyCallChildren, len(proxies))
+	groups := make(map[string]*singleflight.Group, len(proxies))
 	for name, p := range proxies {
 		calls[name] = metrics.NewProxyCallChildren(p.Protocol(), "cache_empty", name)
+		groups[name] = &singleflight.Group{}
 	}
 	return &CacheEmptyHandler{
 		proxies: proxies,
 		calls:   calls,
+		groups:  groups,
 	}
 }
 
@@ -50,14 +54,16 @@ func (h *CacheEmptyHandler) Handle(cfgContainer *config.Container) centrifuge.Ca
 			log.Error().Str("proxy", name).Str("channel", e.Channel).Msg("cache empty proxy not found")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
-		// Subscribers that find the same channel empty while a call is in flight share its result.
-		key := name + "\x00" + e.Channel
-		result, err, _ := h.group.Do(key, func() (any, error) {
+		// Subscribers that find the same channel empty while a call is in flight share its result, and the call
+		// is logged once for all of them. groups has the same keys as proxies, so the lookup always succeeds.
+		result, err, _ := h.groups[name].Do(e.Channel, func() (any, error) {
 			populated, err := h.call(name, p, e.Channel)
+			if err != nil {
+				log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
+			}
 			return populated, err
 		})
 		if err != nil {
-			log.Error().Err(err).Str("proxy", name).Str("channel", e.Channel).Msg("error proxying cache empty")
 			return centrifuge.CacheEmptyReply{}, centrifuge.ErrorInternal
 		}
 		return centrifuge.CacheEmptyReply{

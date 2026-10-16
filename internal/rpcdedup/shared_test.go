@@ -23,17 +23,25 @@ type fakeEntry struct {
 	waiters []string
 }
 
-// addWaiter lists nodeID as a waiter of the in-flight record, once and up to maxWaiters, as beginScript does.
-func (e *fakeEntry) addWaiter(nodeID string) {
-	if len(e.waiters) >= maxWaiters {
-		return
-	}
+// addWaiter lists nodeID as a waiter of the in-flight record, once, as beginScript does. It reports whether the list
+// holds nodeID after the call, which it does not when the list is at maxWaiters.
+func (e *fakeEntry) addWaiter(nodeID string, maxWaiters int) bool {
 	for _, waiter := range e.waiters {
 		if waiter == nodeID {
-			return
+			return true
 		}
 	}
+	if len(e.waiters) >= maxWaiters {
+		return false
+	}
 	e.waiters = append(e.waiters, nodeID)
+	return true
+}
+
+// wakeCall is a call of the fake Wake: the key and the nodes it was written for.
+type wakeCall struct {
+	key   Key
+	nodes []string
 }
 
 // fakeBackend is the shared tier in memory. Its scripts follow the semantics of redis_scripts.go, and it counts and
@@ -63,11 +71,56 @@ type fakeBackend struct {
 	// afterBegin runs once a begin call has answered, outside the lock: a call which lands after the script does, such
 	// as the owner's completion of a call which the begin found in flight.
 	afterBegin func()
+	// beforeRead runs when a poll of the shared tier starts, before it reads, outside the lock: a hook which blocks holds
+	// the wait which polls there.
+	beforeRead func()
+	// wakes are the calls of Wake, in order, and wakeErr is the failure of every Wake call.
+	wakes   []wakeCall
+	wakeErr error
+	// wakeCh carries the keys which deliverWake sends to the wake watcher, and emptyCh the empty reads which emptyRead
+	// makes it see.
+	wakeCh  chan Key
+	emptyCh chan struct{}
+	// watchStarts is the number of times WatchWakes was entered.
+	watchStarts int
 }
 
 // newFakeBackend returns a connected backend without records.
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{entries: make(map[Key]*fakeEntry), connected: true}
+	return &fakeBackend{
+		entries:   make(map[Key]*fakeEntry),
+		connected: true,
+		wakeCh:    make(chan Key, 64),
+		emptyCh:   make(chan struct{}),
+	}
+}
+
+// deliverWake sends a wake of key to the wake watcher of the fake node, which reads it when it runs.
+func (f *fakeBackend) deliverWake(key Key) {
+	f.wakeCh <- key
+}
+
+// emptyRead makes the wake watcher of the fake node see an empty read, which lets it stop when it is idle. It gives up
+// after a second when no watcher runs, so that a test which expects none does not hang.
+func (f *fakeBackend) emptyRead() {
+	select {
+	case f.emptyCh <- struct{}{}:
+	case <-time.After(time.Second):
+	}
+}
+
+// watchStartCount returns how many times WatchWakes was entered.
+func (f *fakeBackend) watchStartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.watchStarts
+}
+
+// wakeCalls returns the calls of Wake so far.
+func (f *fakeBackend) wakeCalls() []wakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]wakeCall(nil), f.wakes...)
 }
 
 // enter logs a call and returns the failure of the backend.
@@ -143,8 +196,8 @@ func (f *fakeBackend) entry(key Key) (fakeEntry, bool) {
 }
 
 // Begin implements Backend with the semantics of beginScript.
-func (f *fakeBackend) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error) {
-	res, err := f.begin(ctx, key, fingerprint, nodeID, inflightTTL, register)
+func (f *fakeBackend) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, maxWaiters int) (BeginResult, error) {
+	res, err := f.begin(ctx, key, fingerprint, nodeID, inflightTTL, maxWaiters)
 	if err == nil && f.afterBegin != nil {
 		f.afterBegin()
 	}
@@ -152,7 +205,7 @@ func (f *fakeBackend) Begin(ctx context.Context, key Key, fingerprint [32]byte, 
 }
 
 // begin is Begin without the afterBegin hook, which runs once the script has answered.
-func (f *fakeBackend) begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration, register bool) (BeginResult, error) {
+func (f *fakeBackend) begin(_ context.Context, key Key, fingerprint [32]byte, nodeID string, _ time.Duration, maxWaiters int) (BeginResult, error) {
 	if err := f.enter("begin"); err != nil {
 		return BeginResult{}, err
 	}
@@ -173,8 +226,8 @@ func (f *fakeBackend) begin(_ context.Context, key Key, fingerprint [32]byte, no
 		return BeginResult{State: BeginMismatch}, nil
 	}
 	if e.state == 'i' {
-		if register {
-			e.addWaiter(nodeID)
+		if maxWaiters >= 1 && nodeID != e.owner && !e.addWaiter(nodeID, maxWaiters) {
+			return BeginResult{State: BeginInFlight, Owner: e.owner, WaitersFull: true}, nil
 		}
 		return BeginResult{State: BeginInFlight, Owner: e.owner}, nil
 	}
@@ -230,6 +283,40 @@ func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) Complete
 	return CompleteResult{Owned: true, Waiters: waiters}
 }
 
+// Wake implements Backend: it records the call, and fails with wakeErr when that is set.
+func (f *fakeBackend) Wake(_ context.Context, key Key, nodes []string) (int, error) {
+	if err := f.enter("wake"); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakes = append(f.wakes, wakeCall{key: key, nodes: append([]string(nil), nodes...)})
+	if f.wakeErr != nil {
+		return 0, f.wakeErr
+	}
+	return len(nodes), nil
+}
+
+// WatchWakes implements Backend: the fake watcher passes the delivered wakes to wake, and returns when idle reports
+// true at an empty read, or when ctx is done.
+func (f *fakeBackend) WatchWakes(ctx context.Context, _ string, wake func(Key), idle func() bool) error {
+	f.mu.Lock()
+	f.watchStarts++
+	f.mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case key := <-f.wakeCh:
+			wake(key)
+		case <-f.emptyCh:
+			if idle() {
+				return nil
+			}
+		}
+	}
+}
+
 // Cancel implements Backend with the semantics of cancelScript.
 func (f *fakeBackend) Cancel(_ context.Context, key Key, failure *centrifuge.Error, _ time.Duration) (CancelResult, error) {
 	if err := f.enter("cancel"); err != nil {
@@ -255,6 +342,9 @@ func (f *fakeBackend) Cancel(_ context.Context, key Key, failure *centrifuge.Err
 func (f *fakeBackend) Poll(_ context.Context, key Key) (PollResult, error) {
 	if err := f.enter("poll"); err != nil {
 		return PollResult{}, err
+	}
+	if f.beforeRead != nil {
+		f.beforeRead()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -316,19 +406,47 @@ type notifyCall struct {
 
 // sharedFixture is a Shared store over a node-local Memory and a fake backend, as node-a.
 type sharedFixture struct {
-	local    *Memory
-	backend  *fakeBackend
-	shared   *Shared
-	notified []notifyCall
-	// doneNotified are the done notifications of the fixture, see SharedOptions.DoneNotifier.
-	doneNotified []notifyCall
-	dropped      int
-	lost         int
-	// mu guards polls and ends, which the watchers of the fixture count.
+	local   *Memory
+	backend *fakeBackend
+	shared  *Shared
+	// notified are the cancel notifications of the fixture. The notifier runs in a goroutine of its own, so they are
+	// read through notifiedCalls.
+	notified   []notifyCall
+	notifiedMu sync.Mutex
+	dropped    int
+	lost       int
+	// mu guards polls, woke and ends, which the waits and the wake writes of the fixture count.
 	mu sync.Mutex
-	// polls is the number of polls which the waits of the fixture made, and ends the number of waits by how they ended.
+	// polls is the number of reads of the shared tier which the waits of the fixture made, woke the wakes which the owner
+	// wrote and which failed, and ends the number of waits by how they ended.
 	polls int
+	woke  [2]int
 	ends  map[string]int
+}
+
+// notifiedCalls returns the cancel notifications of the fixture so far.
+func (fx *sharedFixture) notifiedCalls() []notifyCall {
+	fx.notifiedMu.Lock()
+	defer fx.notifiedMu.Unlock()
+	return append([]notifyCall(nil), fx.notified...)
+}
+
+// requireNotifiedEventually waits until the cancel notifications of the fixture are want, and fails the test when they
+// are not, since the notifier runs in a goroutine of its own.
+func requireNotifiedEventually(t *testing.T, fx *sharedFixture, want []notifyCall) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return len(fx.notifiedCalls()) >= len(want)
+	}, 5*time.Second, time.Millisecond)
+	require.Equal(t, want, fx.notifiedCalls())
+}
+
+// Woke implements SharedObserver.
+func (fx *sharedFixture) Woke(written int, failed int) {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	fx.woke[0] += written
+	fx.woke[1] += failed
 }
 
 // AckDropped implements SharedObserver.
@@ -341,8 +459,8 @@ func (fx *sharedFixture) LostOwnership() {
 	fx.lost++
 }
 
-// WatchPolled implements SharedObserver.
-func (fx *sharedFixture) WatchPolled() {
+// WatchRead implements SharedObserver.
+func (fx *sharedFixture) WatchRead() {
 	fx.mu.Lock()
 	defer fx.mu.Unlock()
 	fx.polls++
@@ -372,25 +490,40 @@ func (fx *sharedFixture) endCount(end string) int {
 	return fx.ends[end]
 }
 
-// newSharedFixture returns a shared store of node-a with the given failure mode.
+// newSharedFixture returns a shared store of node-a with the given failure mode, and the wakeup off.
 func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
 	t.Helper()
-	return newSharedFixtureWith(t, failOpen, false, 0)
+	return newSharedFixtureWith(t, failOpen, false)
 }
 
-// newSharedFixtureWakeup returns a shared store of node-a with the wakeup by notification on, and pollInterval as the
-// fallback poll interval of its waits.
-func newSharedFixtureWakeup(t *testing.T, pollInterval time.Duration) *sharedFixture {
+// newSharedFixtureWakeup returns a shared store of node-a with the wakeup on. Its check and its idle stop are an hour
+// away unless a test sets them. Its Run runs until the test ends, as it does in production, so the wake watcher runs
+// when the node has remote waits.
+func newSharedFixtureWakeup(t *testing.T) *sharedFixture {
 	t.Helper()
-	return newSharedFixtureWith(t, false, true, pollInterval)
+	fx := newSharedFixtureWith(t, false, true)
+	fx.shared.checkDelay = time.Hour
+	fx.shared.watchIdleAfter = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = fx.shared.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return fx
 }
 
-// newSharedFixtureWith returns a shared store of node-a. With wakeup set, its waiters are registered and notified.
-func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool, pollInterval time.Duration) *sharedFixture {
+// newSharedFixtureWith returns a shared store of node-a. With wakeup set, its waiters are registered in the shared tier
+// and woken by the wakes of the owner.
+func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool) *sharedFixture {
 	t.Helper()
 	local, _ := newTestMemory(1024)
 	fx := &sharedFixture{local: local, backend: newFakeBackend()}
-	opts := SharedOptions{
+	fx.shared = NewShared(SharedOptions{
 		Local:         local,
 		Backend:       fx.backend,
 		NodeID:        "node-a",
@@ -398,20 +531,16 @@ func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool, pollInterval
 		MaxReplyBytes: 1024,
 		FailOpen:      failOpen,
 		Notifier: func(nodeID string, key Key) {
+			fx.notifiedMu.Lock()
+			defer fx.notifiedMu.Unlock()
 			fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
 		},
 		Observer:      fx,
 		PollInitial:   time.Millisecond,
 		PollMax:       2 * time.Millisecond,
 		AckFlushEvery: time.Hour,
-	}
-	if wakeup {
-		opts.DoneNotifier = func(nodeID string, key Key) {
-			fx.doneNotified = append(fx.doneNotified, notifyCall{nodeID: nodeID, key: key})
-		}
-		opts.WakeupPollInterval = pollInterval
-	}
-	fx.shared = NewShared(opts)
+		Wakeup:        wakeup,
+	})
 	return fx
 }
 
@@ -588,7 +717,7 @@ func TestSharedCancelBeforeRemoteMarkIsSentToOwner(t *testing.T) {
 	lookup, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
-	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}}, fx.notified)
+	requireNotifiedEventually(t, fx, []notifyCall{{nodeID: "node-b", key: sharedKey}})
 
 	fx.backend.finish(sharedKey, Record{Reply: []byte("answer")})
 	waitDone(t, owner)
@@ -745,7 +874,7 @@ func TestSharedCancelInFlightElsewhereNotifiesOwner(t *testing.T) {
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
-	require.Equal(t, []notifyCall{{nodeID: "node-b", key: sharedKey}}, fx.notified)
+	requireNotifiedEventually(t, fx, []notifyCall{{nodeID: "node-b", key: sharedKey}})
 	require.True(t, testIsMiss(t, fx.local, sharedKey), "nothing is recorded locally")
 }
 
@@ -754,7 +883,7 @@ func TestSharedCancelOwnedByThisNodeWithoutFlightDoesNothing(t *testing.T) {
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-a", Record{})
 
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
-	require.Empty(t, fx.notified)
+	require.Empty(t, fx.notifiedCalls())
 	require.True(t, testIsMiss(t, fx.local, sharedKey))
 }
 
@@ -788,7 +917,7 @@ func TestSharedCancelFailureFollowsOnStoreError(t *testing.T) {
 	fx := newSharedFixture(t, true)
 	fx.backend.setFail(errors.New("redis is down"))
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
-	require.Empty(t, fx.notified)
+	require.Empty(t, fx.notifiedCalls())
 	require.True(t, testIsMiss(t, fx.local, sharedKey), "nothing is recorded locally")
 
 	closed := newSharedFixture(t, false)
@@ -988,7 +1117,7 @@ func TestSharedCancelReachesCallThatBeganDuringCancel(t *testing.T) {
 
 	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
-	require.Empty(t, fx.notified, "the owner is this node, which is not notified")
+	require.Empty(t, fx.notifiedCalls(), "the owner is this node, which is not notified")
 }
 
 func TestSharedCancelTombstoneReplacesCachedDoneRecord(t *testing.T) {
@@ -1286,12 +1415,45 @@ func (o *droppedAckObserver) AckDropped() {
 func (o *droppedAckObserver) LostOwnership() {
 }
 
-// WatchPolled implements SharedObserver.
-func (o *droppedAckObserver) WatchPolled() {
+// WatchRead implements SharedObserver.
+func (o *droppedAckObserver) WatchRead() {
 }
 
 // WatchEnded implements SharedObserver.
 func (o *droppedAckObserver) WatchEnded(string) {
+}
+
+// Woke implements SharedObserver.
+func (o *droppedAckObserver) Woke(int, int) {
+}
+
+// TestSharedCancelNotifierOffReplyPath checks that the cancel notification of a call on another node is sent from a
+// goroutine of its own: a notifier which blocks does not hold the answer to the cancel.
+func TestSharedCancelNotifierOffReplyPath(t *testing.T) {
+	fx := newSharedFixture(t, false)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	release := make(chan struct{})
+	fx.shared.notifier = func(nodeID string, key Key) {
+		<-release
+		fx.notifiedMu.Lock()
+		defer fx.notifiedMu.Unlock()
+		fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
+	}
+
+	cancelled := make(chan error, 1)
+	go func() {
+		cancelled <- fx.shared.Cancel(sharedKey, testCancelled)
+	}()
+	select {
+	case err := <-cancelled:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("the cancel waits for its notification")
+	}
+	require.Empty(t, fx.notifiedCalls())
+
+	close(release)
+	requireNotifiedEventually(t, fx, []notifyCall{{nodeID: "node-b", key: sharedKey}})
 }
 
 func TestSharedAckQueueFullDropsAndCounts(t *testing.T) {

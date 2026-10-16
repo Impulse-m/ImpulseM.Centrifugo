@@ -1083,6 +1083,11 @@ message RevokeTokenRequest {
     string uid = 2;
     string user = 3;
     int64 revoked_at = 4;
+    // disconnect is the code and reason the connections with the revoked
+    // session are closed with. Optional: without it they are closed with
+    // code 3005 (connection expired). Code must be in 4000-4999 and reason
+    // at most 123 bytes.
+    Disconnect disconnect = 5;
 }
 
 // RevokeTokenResult is the result of a revoke token call. Empty at the

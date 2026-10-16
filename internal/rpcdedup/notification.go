@@ -8,10 +8,6 @@ import (
 // CancelNotificationOp is the op of the node notification which asks the node that runs a call to cancel it.
 const CancelNotificationOp = "rpc_dedup_cancel"
 
-// DoneNotificationOp is the op of the node notification which tells a node that waits for a call that its record is
-// written. The payload is the key, as for CancelNotificationOp.
-const DoneNotificationOp = "rpc_dedup_done"
-
 // errMalformedNotification is returned by the decoders for a payload which is not a key notification.
 var errMalformedNotification = errors.New("malformed key notification")
 
@@ -28,16 +24,6 @@ func EncodeCancel(key Key) []byte {
 
 // DecodeCancel returns the key of a payload of CancelNotificationOp. A payload without a scope is malformed.
 func DecodeCancel(data []byte) (Key, error) {
-	return decodeKey(data)
-}
-
-// EncodeDone returns the payload of DoneNotificationOp for key.
-func EncodeDone(key Key) []byte {
-	return encodeKey(key)
-}
-
-// DecodeDone returns the key of a payload of DoneNotificationOp. A payload without a scope is malformed.
-func DecodeDone(data []byte) (Key, error) {
 	return decodeKey(data)
 }
 

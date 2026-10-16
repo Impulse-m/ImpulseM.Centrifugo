@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/redis/rueidis"
 	"github.com/stretchr/testify/require"
 )
 
@@ -179,6 +180,45 @@ func TestSplitWaiters(t *testing.T) {
 	require.Empty(t, splitWaiters(""))
 	require.Equal(t, []string{"a"}, splitWaiters("a"))
 	require.Equal(t, []string{"a", "b", "c"}, splitWaiters("a b c"))
+}
+
+func TestParseBeginFullWaiters(t *testing.T) {
+	// A caller which is not listed, because the list is at its cap, is told so with the third part.
+	res, err := parseBegin([]string{"inflight", "node-a", "full"})
+	require.NoError(t, err)
+	require.Equal(t, BeginResult{State: BeginInFlight, Owner: "node-a", WaitersFull: true}, res)
+
+	for _, parts := range [][]string{{"inflight", "node-a", "x"}, {"inflight", "node-a", "full", "x"}, {"inflight", "", "full"}} {
+		_, err = parseBegin(parts)
+		require.ErrorIs(t, err, errMalformedReply, "%v", parts)
+	}
+}
+
+func TestWakeStreamKey(t *testing.T) {
+	require.Equal(t, "p.rpc.wake.{n}", WakeStreamKey("p", "n"))
+	// The hash tag is the node, so the stream of a node is one slot of Redis Cluster.
+	require.Equal(t, "centrifugo.rpc.wake.{node-1}", WakeStreamKey("centrifugo", "node-1"))
+}
+
+func TestParseWakeEntries(t *testing.T) {
+	streams := map[string][]rueidis.XRangeEntry{
+		"p.rpc.wake.{n}": {
+			{ID: "1-0", FieldValues: map[string]string{"s": "u1:a", "m": "7"}},
+			{ID: "2-0", FieldValues: map[string]string{"m": "8"}},
+			{ID: "3-0", FieldValues: map[string]string{"s": "u1:a", "m": "x"}},
+			{ID: "4-0", FieldValues: map[string]string{"s": "", "m": "9"}},
+			{ID: "5-0", FieldValues: map[string]string{"s": "u1:a", "m": "10"}},
+		},
+	}
+	entries := parseWakeEntries(streams)
+	require.Equal(t, []wakeEntry{
+		{id: "1-0", key: Key{Scope: "u1:a", MsgID: 7}},
+		{id: "2-0", malformed: true},
+		{id: "3-0", malformed: true},
+		{id: "4-0", malformed: true},
+		{id: "5-0", key: Key{Scope: "u1:a", MsgID: 10}},
+	}, entries, "a malformed entry keeps its id, so it is deleted and the cursor passes it")
+	require.Empty(t, parseWakeEntries(nil))
 }
 
 func TestParseTombstoneWithoutErrorIsMalformed(t *testing.T) {

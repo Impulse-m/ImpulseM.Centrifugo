@@ -166,6 +166,24 @@ func TestAdmissionReadRuntimeMemory(t *testing.T) {
 	require.Greater(t, value, int64(0))
 }
 
+func TestAdmissionReadRuntimeMemoryConcurrent(t *testing.T) {
+	// Each read has its own sample buffer, so reads which overlap do not share one. Run under -race, a shared buffer fails.
+	a := testAdmission(t, 0, 1<<40)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				if value := a.readRuntimeMemory(); value <= 0 {
+					t.Errorf("resident memory %d is not positive", value)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func BenchmarkAdmission(b *testing.B) {
 	a := NewAdmission(configtypes.RPCRegistry{
 		MaxInflightBytes:     testBenchBudget,

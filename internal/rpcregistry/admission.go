@@ -50,8 +50,6 @@ type Admission struct {
 	tripped atomic.Bool
 	// sampleFunc returns the resident memory in bytes. It is the runtime reader, unless a test replaces it.
 	sampleFunc func() int64
-	// samples is the buffer of the runtime reader. Only the caller which took the sample reads it.
-	samples []runtimemetrics.Sample
 	// counters are the admission metrics, nil when the metrics are not initialised.
 	counters *metrics.RPCRegistryAdmissionMetrics
 }
@@ -66,11 +64,7 @@ func NewAdmission(cfg configtypes.RPCRegistry, m *metrics.RPCRegistryAdmissionMe
 		maxInflight: cfg.MaxInflightBytes,
 		watermark:   cfg.MemoryWatermarkBytes,
 		epoch:       time.Now(),
-		samples: []runtimemetrics.Sample{
-			{Name: memoryTotalMetric},
-			{Name: memoryReleasedMetric},
-		},
-		counters: m,
+		counters:    m,
 	}
 	a.sampledAt.Store(admissionUnsampled)
 	a.sampleFunc = a.readRuntimeMemory
@@ -146,11 +140,15 @@ func (a *Admission) refreshSample(now int64) {
 }
 
 // readRuntimeMemory returns the resident memory of the Go runtime: the total memory of its classes less the heap
-// memory which is released to the OS. Only the admission sampler calls it, which holds the samples buffer.
+// memory which is released to the OS. The samples are read into a buffer of the call, so two callers never share one.
 func (a *Admission) readRuntimeMemory() int64 {
-	runtimemetrics.Read(a.samples)
-	total := a.samples[0].Value.Uint64()
-	released := a.samples[1].Value.Uint64()
+	samples := [2]runtimemetrics.Sample{
+		{Name: memoryTotalMetric},
+		{Name: memoryReleasedMetric},
+	}
+	runtimemetrics.Read(samples[:])
+	total := samples[0].Value.Uint64()
+	released := samples[1].Value.Uint64()
 	if released > total {
 		return 0
 	}

@@ -92,15 +92,15 @@ func enableCacheEmptyProxies(
 	cfg config.Config,
 	namedProxies map[string]configtypes.Proxy,
 ) error {
-	return forEachCacheEmptyUser(cfg, func(name string, namespace string) error {
+	return forEachCacheEmptyGroup(cfg, func(name string, namespace string) error {
 		return enableCacheEmptyProxy(proxyMap, cfg, namedProxies, name, namespace)
 	})
 }
 
-// forEachCacheEmptyUser calls fn with the cache empty proxy name and the namespace of each channel group that
+// forEachCacheEmptyGroup calls fn with the cache empty proxy name and the namespace of each channel group that
 // has a cache empty proxy enabled. The group of channels without namespace has the empty namespace. It stops at
 // the first error fn returns.
-func forEachCacheEmptyUser(cfg config.Config, fn func(name string, namespace string) error) error {
+func forEachCacheEmptyGroup(cfg config.Config, fn func(name string, namespace string) error) error {
 	withoutNamespace := cfg.Channel.WithoutNamespace
 	if withoutNamespace.CacheEmptyProxyEnabled {
 		if err := fn(withoutNamespace.CacheEmptyProxyName, ""); err != nil {
@@ -122,8 +122,8 @@ func forEachCacheEmptyUser(cfg config.Config, fn func(name string, namespace str
 // without namespace are keyed by the empty string.
 func cacheEmptyLayout(cfg config.Config) map[string]string {
 	layout := map[string]string{}
-	// The callback never fails, so the error of forEachCacheEmptyUser is always nil.
-	_ = forEachCacheEmptyUser(cfg, func(name string, namespace string) error {
+	// The callback never fails, so the error of forEachCacheEmptyGroup is always nil.
+	_ = forEachCacheEmptyGroup(cfg, func(name string, namespace string) error {
 		layout[namespace] = name
 		return nil
 	})

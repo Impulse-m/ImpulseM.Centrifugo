@@ -44,9 +44,11 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisErrors   prometheus.Counter
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
-	rpcRegistryDedupRemotePolls   prometheus.Counter
+	rpcRegistryDedupRemoteReads   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
+	rpcRegistryDedupWakes         *prometheus.CounterVec
+	rpcRegistryDedupWakeWatchers  prometheus.Gauge
 }
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
@@ -301,11 +303,11 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
-	m.rpcRegistryDedupRemotePolls = prometheus.NewCounter(prometheus.CounterOpts{
+	m.rpcRegistryDedupRemoteReads = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
-		Name:        "dedup_remote_polls_total",
-		Help:        "Number of polls of the shared exactly-once RPC tier made by the waits for calls which run on other nodes.",
+		Name:        "dedup_remote_reads_total",
+		Help:        "Number of reads of the shared exactly-once RPC tier made by the waits for calls which run on other nodes: one on a wake, one at the check, and one per poll with the wakeup off.",
 		ConstLabels: constLabels,
 	})
 
@@ -313,7 +315,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_remote_waits_total",
-		Help:        "Number of waits for calls which run on other nodes, by how they ended: notified by the node which runs the call, polled, or ended at the in-flight deadline. With the wakeup on, polled while the nodes are alive means lost notifications.",
+		Help:        "Number of waits for calls which run on other nodes, by how they ended: woken by a wake of the node which runs the call, checked at the check, polled with the wakeup off, ended at the in-flight deadline, or refused because the waiter nodes of the call are full. Checked while the nodes are alive means lost wakes, and refused means the waiter list is full.",
 		ConstLabels: constLabels,
 	}, []string{"end"})
 	for _, end := range rpcRegistryDedupWaitEnds {
@@ -324,13 +326,31 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_notifications_total",
-		Help:        "Number of node notifications of exactly-once RPC which this node sent, by op and result. The cancel op asks the node which runs a call to cancel it; the done op tells a node which waits for a call that its record is written.",
+		Help:        "Number of node notifications of exactly-once RPC which this node sent, by op and result. The cancel op asks the node which runs a call to cancel it.",
 		ConstLabels: constLabels,
 	}, []string{"op", "result"})
 	for _, op := range rpcRegistryDedupNotifyOps {
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "ok")
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
 	}
+
+	m.rpcRegistryDedupWakes = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_wakes_total",
+		Help:        "Number of wakes which this node wrote to the wake streams of the nodes which wait for its calls, by result: one per waiter node of a completed call.",
+		ConstLabels: constLabels,
+	}, []string{"result"})
+	m.rpcRegistryDedupWakes.WithLabelValues(rpcRegistryDedupWakeOK)
+	m.rpcRegistryDedupWakes.WithLabelValues(rpcRegistryDedupWakeError)
+
+	m.rpcRegistryDedupWakeWatchers = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_wake_watchers",
+		Help:        "Number of wake watchers of this node which are reading the wake streams: one per shard while the node has waits for calls on other nodes, and for a minute after the last one ended. Zero on an idle node.",
+		ConstLabels: constLabels,
+	})
 
 	return []prometheus.Collector{
 		m.accessRevokeRejectsTotal,
@@ -363,9 +383,11 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisErrors,
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
-		m.rpcRegistryDedupRemotePolls,
+		m.rpcRegistryDedupRemoteReads,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
+		m.rpcRegistryDedupWakes,
+		m.rpcRegistryDedupWakeWatchers,
 	}
 }
 
@@ -428,9 +450,11 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
-	RPCRegistryDedupRemotePollsTotal = m.rpcRegistryDedupRemotePolls
+	RPCRegistryDedupRemoteReadsTotal = m.rpcRegistryDedupRemoteReads
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications
+	RPCRegistryDedupWakesTotal = m.rpcRegistryDedupWakes
+	RPCRegistryDedupWakeWatchers = m.rpcRegistryDedupWakeWatchers
 }
 
 // redisDurationBuckets are the buckets of the Redis duration histograms, from 100 microseconds to 1 second.

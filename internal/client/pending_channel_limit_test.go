@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 
@@ -42,21 +41,10 @@ func TestPendingConnectionIsLimitedByChannelLimit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, connected := connectTestClientFrame(t, node, pendingChannelToken(t, tt.subs))
+			token := rebindTestToken(t, "42", "pending_2fa", revokeTestUUID, map[string]any{"subs": tt.subs})
+			client, connected := connectTestClientFrame(t, node, token)
 			require.Equal(t, tt.wantConnected, connected)
 			require.Len(t, client.Channels(), tt.wantChannels)
 		})
 	}
-}
-
-// pendingChannelToken returns a connection token of class pending_2fa with user 42 and the subs given.
-func pendingChannelToken(t *testing.T, subs map[string]any) string {
-	t.Helper()
-	return getConnTokenWithClaims(t, map[string]any{
-		"sub":        "42",
-		"jti":        revokeTestUUID,
-		"iat":        time.Now().Unix(),
-		"auth_class": "pending_2fa",
-		"subs":       subs,
-	})
 }

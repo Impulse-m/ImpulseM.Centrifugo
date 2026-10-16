@@ -16,9 +16,7 @@ func resolveResponseSizeHint(hint *configtypes.RPCResponseSizeHint) *configtypes
 		return nil
 	}
 	resolved := *hint
-	if resolved.OverheadBytes == 0 {
-		resolved.OverheadBytes = configtypes.DefaultResponseSizeOverheadBytes
-	}
+	resolved.OverheadBytes = configtypes.ResolvedResponseSizeOverhead(*hint)
 	return &resolved
 }
 

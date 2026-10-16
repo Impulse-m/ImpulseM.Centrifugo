@@ -12,6 +12,15 @@ const (
 // DefaultResponseSizeOverheadBytes is the envelope added to a response size hint when overhead_bytes is zero.
 const DefaultResponseSizeOverheadBytes = 1024
 
+// ResolvedResponseSizeOverhead returns the overhead of a response size hint, with the default applied when
+// overhead_bytes is zero. The registry and its validation both use it, so they cannot disagree.
+func ResolvedResponseSizeOverhead(hint RPCResponseSizeHint) int {
+	if hint.OverheadBytes == 0 {
+		return DefaultResponseSizeOverheadBytes
+	}
+	return hint.OverheadBytes
+}
+
 // RPCMethodLimits are the effective limits of a registry method.
 type RPCMethodLimits struct {
 	Timeout          time.Duration

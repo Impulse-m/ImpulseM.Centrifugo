@@ -135,10 +135,7 @@ func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RP
 		if hint.OverheadBytes < 0 {
 			return fmt.Errorf("rpc registry method %q: response_size_hint.overhead_bytes must not be negative, got %d", method.Method, hint.OverheadBytes)
 		}
-		overhead := hint.OverheadBytes
-		if overhead == 0 {
-			overhead = configtypes.DefaultResponseSizeOverheadBytes
-		}
+		overhead := configtypes.ResolvedResponseSizeOverhead(*hint)
 		limits := configtypes.ResolveRPCMethodLimits(method, targets[method.Target], file.Defaults)
 		if overhead >= limits.MaxResponseBytes {
 			return fmt.Errorf("rpc registry method %q: response_size_hint.overhead_bytes %d must be less than max_response_bytes %d", method.Method, overhead, limits.MaxResponseBytes)

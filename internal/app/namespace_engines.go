@@ -321,11 +321,10 @@ func (e *namespaceEngines) createBroker(
 		}
 		return broker, mode, nil
 	case "nats":
-		broker, err := natsbroker.New(node, entry.Nats)
+		broker, err := natsBrokerFrom(node, cfgContainer, entry.Nats)
 		if err != nil {
 			return nil, "", err
 		}
-		broker.SetRawModeDataCheck(rawModeDataCheck(cfgContainer))
 		return broker, "nats", nil
 	case "postgres":
 		broker, err := createPostgresStreamBroker(node, entry.Postgres)
@@ -336,6 +335,21 @@ func (e *namespaceEngines) createBroker(
 	default:
 		return nil, "", fmt.Errorf("unknown broker type: %s", entry.Type)
 	}
+}
+
+// natsBrokerFrom creates a Nats broker with the settings of natsCfg, which applies publication_data_format of
+// the channels to the messages of raw mode. The default broker and the named brokers use it.
+func natsBrokerFrom(
+	node *centrifuge.Node,
+	cfgContainer *config.Container,
+	natsCfg configtypes.NatsBroker,
+) (*natsbroker.NatsBroker, error) {
+	broker, err := natsbroker.New(node, natsCfg)
+	if err != nil {
+		return nil, err
+	}
+	broker.SetRawModeDataCheck(rawModeDataCheck(cfgContainer))
+	return broker, nil
 }
 
 // createNamedPresenceManager creates a named presence manager by its type. It returns the Redis shards it
@@ -392,7 +406,7 @@ func createNamedMapBroker(
 		}
 		return mapBroker, redisShards, mode, nil
 	case "postgres":
-		mapBroker, err := createNamedPostgresMapBroker(node, entry.Postgres)
+		mapBroker, err := createPostgresMapBroker(node, entry.Postgres)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -402,9 +416,9 @@ func createNamedMapBroker(
 	}
 }
 
-// createNamedPostgresMapBroker creates a Postgres map broker of a named entry with the settings of the map_broker
-// section. It initializes the schema unless skip_schema_init is set, as the default map broker does.
-func createNamedPostgresMapBroker(
+// createPostgresMapBroker creates a Postgres map broker with the settings of a map_broker section. It initializes
+// the schema unless skip_schema_init is set. The default map broker and the named map brokers use it.
+func createPostgresMapBroker(
 	node *centrifuge.Node,
 	pgCfg configtypes.PostgresMapBroker,
 ) (*pgmapbroker.PostgresMapBroker, error) {

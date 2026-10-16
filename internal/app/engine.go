@@ -9,7 +9,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/controllers"
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
-	"github.com/centrifugal/centrifugo/v6/internal/pgmapbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/pgstreambroker"
 	"github.com/centrifugal/centrifugo/v6/internal/redisnatsbroker"
 
@@ -204,12 +203,7 @@ func memoryPresenceManagerConfig() (*centrifuge.MemoryPresenceManagerConfig, err
 }
 
 func NatsBroker(node *centrifuge.Node, cfgContainer *config.Container) (*natsbroker.NatsBroker, error) {
-	broker, err := natsbroker.New(node, cfgContainer.Config().Broker.Nats)
-	if err != nil {
-		return nil, err
-	}
-	broker.SetRawModeDataCheck(rawModeDataCheck(cfgContainer))
-	return broker, nil
+	return natsBrokerFrom(node, cfgContainer, cfgContainer.Config().Broker.Nats)
 }
 
 // rawModeDataCheck applies publication_data_format of a channel to messages
@@ -301,36 +295,9 @@ func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) e
 		mapBroker, err = confighelpers.CentrifugeRedisMapBroker(
 			node, cfg.MapBroker.Redis.Prefix, redisShards, cfg.MapBroker.Redis.RedisMapBrokerCommon)
 	case "postgres":
-		pgCfg := cfg.MapBroker.Postgres
-		pgBrokerCfg := pgmapbroker.PostgresMapBrokerConfig{
-			DSN:                    pgCfg.DSN,
-			TLS:                    pgCfg.TLS,
-			PoolSize:               pgCfg.PoolSize,
-			NumShards:              pgCfg.NumShards,
-			TTLCheckInterval:       pgCfg.TTLCheckInterval.ToDuration(),
-			CleanupInterval:        pgCfg.CleanupInterval.ToDuration(),
-			IdempotentResultTTL:    pgCfg.IdempotentResultTTL.ToDuration(),
-			BinaryData:             pgCfg.BinaryData,
-			StreamRetention:        pgCfg.StreamRetention.ToDuration(),
-			UseNotify:              pgCfg.UseNotify,
-			NotifyDSN:              pgCfg.NotifyDSN,
-			TablePrefix:            pgCfg.TablePrefix,
-			PartitionLookaheadDays: pgCfg.PartitionLookaheadDays,
-			PartitionRetentionDays: pgCfg.PartitionRetentionDays,
-			Outbox: pgmapbroker.OutboxConfig{
-				PollInterval: pgCfg.Outbox.PollInterval.ToDuration(),
-				BatchSize:    pgCfg.Outbox.BatchSize,
-			},
-		}
-		mapBroker, err = pgmapbroker.NewPostgresMapBroker(node, pgBrokerCfg)
+		mapBroker, err = createPostgresMapBroker(node, cfg.MapBroker.Postgres)
 		if err != nil {
-			return fmt.Errorf("error creating Postgres map broker: %w", err)
-		}
-		if !pgCfg.SkipSchemaInit {
-			pgBroker := mapBroker.(*pgmapbroker.PostgresMapBroker)
-			if schemaErr := pgBroker.EnsureSchema(context.Background()); schemaErr != nil {
-				return fmt.Errorf("error initializing Postgres map broker schema: %w", schemaErr)
-			}
+			return err
 		}
 		mapBrokerMode = "postgres"
 	default:

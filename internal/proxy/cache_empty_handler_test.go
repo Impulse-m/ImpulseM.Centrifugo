@@ -209,9 +209,15 @@ const singleflightDoFrame = "singleflight.(*Group).Do("
 func waitForSingleflightCallers(t *testing.T, want int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
+	const maxStackBufSize = 1 << 26
 	buf := make([]byte, 1<<20)
 	for {
 		n := runtime.Stack(buf, true)
+		// A full buffer may hold a truncated dump, so it is doubled and the dump is taken again.
+		if n == len(buf) && len(buf) < maxStackBufSize {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
 		if strings.Count(string(buf[:n]), singleflightDoFrame) >= want {
 			return
 		}

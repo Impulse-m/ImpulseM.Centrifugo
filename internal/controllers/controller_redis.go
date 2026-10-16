@@ -83,7 +83,13 @@ func (c *RedisController) Close(ctx context.Context) error {
 type noopBrokerEventHandler struct{}
 
 // HandlePublication ignores the publication.
-func (noopBrokerEventHandler) HandlePublication(_ string, _ *centrifuge.Publication, _ centrifuge.StreamPosition, _ bool, _ *centrifuge.Publication) error {
+func (noopBrokerEventHandler) HandlePublication(
+	_ string,
+	_ *centrifuge.Publication,
+	_ centrifuge.StreamPosition,
+	_ bool,
+	_ *centrifuge.Publication,
+) error {
 	return nil
 }
 

@@ -235,7 +235,7 @@ func enabledMapBrokerKeys(cfg Config) []string {
 		key := mb.Name + "/" + mb.Type
 		switch mb.Type {
 		case "redis":
-			key += "/" + mb.Redis.Prefix
+			key += "/" + redisPrefix(mb.Redis.Prefix)
 		case "postgres":
 			key += "/" + postgresBrokerPrefix(mb.Postgres.TablePrefix)
 		}

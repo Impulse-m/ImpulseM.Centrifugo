@@ -31,20 +31,23 @@ const defaultRedisAddress = "127.0.0.1:6379"
 // defaultRedisPort is the port which a Redis host gets when its address has none.
 const defaultRedisPort = "6379"
 
-// redisEngineRef is a Redis broker of the configuration: the default one, a named one or a named map broker.
+// redisEngineRef is a Redis broker of the configuration: the default broker or engine, the default map broker,
+// a named broker or a named map broker. isDefault marks the default ones.
 type redisEngineRef struct {
-	label   string
-	hosts   []string
-	prefix  string
-	cluster bool
+	label     string
+	hosts     []string
+	prefix    string
+	cluster   bool
+	isDefault bool
 }
 
-// postgresEngineRef is a Postgres broker of the configuration: the default stream broker, a named one or a named
-// map broker.
+// postgresEngineRef is a Postgres broker of the configuration: the default broker, the default map broker, a named
+// broker or a named map broker. isDefault marks the default ones.
 type postgresEngineRef struct {
 	label       string
 	dsn         string
 	tablePrefix string
+	isDefault   bool
 }
 
 // validateNamespaceEngines validates the named brokers, presence managers and map brokers, the references to
@@ -162,53 +165,38 @@ func validateNamespaceEngineRef(
 	return nil
 }
 
-// validateNamedRedisPrefixes rejects two Redis brokers, named or default, and named map brokers which use the same
-// Redis and the same prefix. Core subscribes a channel only on the broker which routes it, so in standalone mode
-// such brokers do not duplicate publications. Core turns on sharded PUB/SUB only with NumShardedPubSubPartitions,
-// which the server does not set; then brokers with one prefix subscribe the same partition channels and deliver
-// each publication twice. The rule keeps that mode safe. A cluster broker conflicts with any broker of the same
-// prefix, since the cluster hosts are not resolved when the configuration is validated.
+// validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same
+// Redis and the same prefix. The default broker and the default map broker are not compared with each other: they
+// have always been accepted together. Core subscribes a channel only on the broker which routes it, so in standalone
+// mode such brokers do not duplicate publications. Core turns on sharded PUB/SUB only with
+// NumShardedPubSubPartitions, which the server does not set; then brokers with one prefix subscribe the same
+// partition channels and deliver each publication twice. The rule keeps that mode safe. A cluster broker conflicts
+// with any broker of the same prefix, since the cluster hosts are not resolved when the configuration is validated.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
 	if !c.Broker.Enabled && c.Engine.Type == "redis" {
-		refs = append(refs, redisEngineRef{
-			label:   "engine",
-			hosts:   redisHosts(c.Engine.Redis.Redis),
-			prefix:  redisPrefix(c.Engine.Redis.Prefix),
-			cluster: usesRedisCluster(c.Engine.Redis.Redis),
-		})
+		refs = append(refs, newRedisEngineRef("engine", c.Engine.Redis.Redis, c.Engine.Redis.Prefix, true))
 	} else if c.Broker.Enabled && c.Broker.Type == "redis" {
-		refs = append(refs, redisEngineRef{
-			label:   "broker",
-			hosts:   redisHosts(c.Broker.Redis.Redis),
-			prefix:  redisPrefix(c.Broker.Redis.Prefix),
-			cluster: usesRedisCluster(c.Broker.Redis.Redis),
-		})
+		refs = append(refs, newRedisEngineRef("broker", c.Broker.Redis.Redis, c.Broker.Redis.Prefix, true))
+	}
+	if c.MapBroker.Type == "redis" {
+		refs = append(refs, newRedisEngineRef("map_broker", c.MapBroker.Redis.Redis, c.MapBroker.Redis.Prefix, true))
 	}
 	for _, b := range c.Brokers {
-		if !b.Enabled || b.Type != "redis" {
-			continue
+		if b.Enabled && b.Type == "redis" {
+			refs = append(refs, newRedisEngineRef(fmt.Sprintf("brokers %q", b.Name), b.Redis.Redis, b.Redis.Prefix, false))
 		}
-		refs = append(refs, redisEngineRef{
-			label:   fmt.Sprintf("brokers %q", b.Name),
-			hosts:   redisHosts(b.Redis.Redis),
-			prefix:  redisPrefix(b.Redis.Prefix),
-			cluster: usesRedisCluster(b.Redis.Redis),
-		})
 	}
 	for _, mb := range c.MapBrokers {
-		if !mb.Enabled || mb.Type != "redis" {
-			continue
+		if mb.Enabled && mb.Type == "redis" {
+			refs = append(refs, newRedisEngineRef(fmt.Sprintf("map_brokers %q", mb.Name), mb.Redis.Redis, mb.Redis.Prefix, false))
 		}
-		refs = append(refs, redisEngineRef{
-			label:   fmt.Sprintf("map_brokers %q", mb.Name),
-			hosts:   redisHosts(mb.Redis.Redis),
-			prefix:  redisPrefix(mb.Redis.Prefix),
-			cluster: usesRedisCluster(mb.Redis.Redis),
-		})
 	}
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
+			if refs[i].isDefault && refs[j].isDefault {
+				continue
+			}
 			if refs[i].prefix != refs[j].prefix {
 				continue
 			}
@@ -223,40 +211,44 @@ func validateNamedRedisPrefixes(c Config) error {
 	return nil
 }
 
+// newRedisEngineRef returns the reference of a Redis broker with the connection and the prefix which it uses.
+func newRedisEngineRef(label string, redisCfg configtypes.Redis, prefix string, isDefault bool) redisEngineRef {
+	return redisEngineRef{
+		label:     label,
+		hosts:     redisHosts(redisCfg),
+		prefix:    redisPrefix(prefix),
+		cluster:   usesRedisCluster(redisCfg),
+		isDefault: isDefault,
+	}
+}
+
 // validateNamedPostgresTables rejects two Postgres brokers, default or named, and named map brokers which use the
 // same DSN and the same table prefix. Each broker's outbox worker reads every row of its tables, so a node would
-// deliver each publication once per broker. The DSNs are compared as written.
+// deliver each publication once per broker. The default broker and the default map broker are not compared with
+// each other, as for Redis. The DSNs are compared as written.
 func validateNamedPostgresTables(c Config) error {
 	var refs []postgresEngineRef
 	if c.Broker.Enabled && c.Broker.Type == "postgres" {
-		refs = append(refs, postgresEngineRef{
-			label:       "broker",
-			dsn:         c.Broker.Postgres.DSN,
-			tablePrefix: postgresBrokerPrefix(c.Broker.Postgres.TablePrefix),
-		})
+		refs = append(refs, newPostgresEngineRef("broker", c.Broker.Postgres.DSN, c.Broker.Postgres.TablePrefix, true))
+	}
+	if c.MapBroker.Type == "postgres" {
+		refs = append(refs, newPostgresEngineRef("map_broker", c.MapBroker.Postgres.DSN, c.MapBroker.Postgres.TablePrefix, true))
 	}
 	for _, b := range c.Brokers {
-		if !b.Enabled || b.Type != "postgres" {
-			continue
+		if b.Enabled && b.Type == "postgres" {
+			refs = append(refs, newPostgresEngineRef(fmt.Sprintf("brokers %q", b.Name), b.Postgres.DSN, b.Postgres.TablePrefix, false))
 		}
-		refs = append(refs, postgresEngineRef{
-			label:       fmt.Sprintf("brokers %q", b.Name),
-			dsn:         b.Postgres.DSN,
-			tablePrefix: postgresBrokerPrefix(b.Postgres.TablePrefix),
-		})
 	}
 	for _, mb := range c.MapBrokers {
-		if !mb.Enabled || mb.Type != "postgres" {
-			continue
+		if mb.Enabled && mb.Type == "postgres" {
+			refs = append(refs, newPostgresEngineRef(fmt.Sprintf("map_brokers %q", mb.Name), mb.Postgres.DSN, mb.Postgres.TablePrefix, false))
 		}
-		refs = append(refs, postgresEngineRef{
-			label:       fmt.Sprintf("map_brokers %q", mb.Name),
-			dsn:         mb.Postgres.DSN,
-			tablePrefix: postgresBrokerPrefix(mb.Postgres.TablePrefix),
-		})
 	}
 	for i := range refs {
 		for j := i + 1; j < len(refs); j++ {
+			if refs[i].isDefault && refs[j].isDefault {
+				continue
+			}
 			if refs[i].dsn == refs[j].dsn && refs[i].tablePrefix == refs[j].tablePrefix {
 				return fmt.Errorf(
 					"%s and %s use the same PostgreSQL and the same table_prefix; set a distinct table_prefix",
@@ -266,6 +258,16 @@ func validateNamedPostgresTables(c Config) error {
 		}
 	}
 	return nil
+}
+
+// newPostgresEngineRef returns the reference of a Postgres broker with the DSN and the table prefix which it uses.
+func newPostgresEngineRef(label string, dsn string, tablePrefix string, isDefault bool) postgresEngineRef {
+	return postgresEngineRef{
+		label:       label,
+		dsn:         dsn,
+		tablePrefix: postgresBrokerPrefix(tablePrefix),
+		isDefault:   isDefault,
+	}
 }
 
 // usesRedisCluster reports whether a Redis configuration connects in cluster mode: it has cluster addresses, or

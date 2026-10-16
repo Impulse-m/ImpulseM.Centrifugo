@@ -64,7 +64,7 @@ func (h *Handler) connectFilterTemplates(
 	if serverSide := h.serverSideSubscriptions(subscriptions); serverSide != nil {
 		storage[serverTagsFilterServerSideKey] = serverSide
 	}
-	if err := h.applyFilterTemplates(subscriptions, values, false); err != nil {
+	if err := h.applyFilterTemplates(subscriptions, values); err != nil {
 		return centrifuge.DisconnectPermissionDenied
 	}
 	return nil
@@ -151,9 +151,11 @@ func (h *Handler) refreshFilterTemplate(
 // A bound connection whose template refuses a token subscription is disconnected with insufficient state: the client
 // reconnects, and the connect is refused with DisconnectPermissionDenied, the code of a refused server-side
 // subscription. An unbound connection (connect proxy) keeps its missing claims, so its refresh does not compare them,
-// and a refused token subscription is dropped from the refresh instead: it is not subscribed unfiltered, and the
-// refresh is answered, since a disconnect would only reconnect it through the proxy with the same missing claims.
-// extra.Subs is the map of the refresh, owned by the call, and the templates are applied to it in place.
+// and a refused token subscription is dropped from the refresh instead: it is not subscribed unfiltered. The refresh is
+// answered when the dropped channel is not subscribed. A channel which the connection still holds is found by
+// tokenChannelsChanged, so the connection is disconnected with insufficient state, and its reconnect does not subscribe
+// the channel without the template. extra.Subs is the map of the refresh, owned by the call, and the templates are
+// applied to it in place.
 func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra RefreshExtra) bool {
 	if h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		storage, release := client.AcquireStorage()
@@ -161,8 +163,7 @@ func (h *Handler) tokenSubscriptionsChanged(client *centrifuge.Client, extra Ref
 		unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
 		release(storage)
 		if unbound {
-			// With dropRefused the refused subscriptions are removed and no error is returned.
-			_ = h.applyFilterTemplates(extra.Subs, connectionFilterValues(client), true)
+			h.dropRefusedFilterTemplates(extra.Subs, connectionFilterValues(client))
 		} else {
 			if !stored.Claims.Equal(extra.FilterTemplateClaims) {
 				return true
@@ -249,7 +250,7 @@ func (h *Handler) checkReboundFilters(
 			candidates[channel] = opts
 		}
 	}
-	if err := h.applyFilterTemplates(candidates, filters.values, false); err != nil {
+	if err := h.applyFilterTemplates(candidates, filters.values); err != nil {
 		return rebindFilters{}, centrifuge.ErrorPermissionDenied
 	}
 	return filters, nil
@@ -349,7 +350,7 @@ func (h *Handler) reboundTemplateSubscriptions(
 			toSubscribe[channel] = opts
 		}
 	}
-	if err := h.applyFilterTemplates(toSubscribe, filters.values, false); err != nil {
+	if err := h.applyFilterTemplates(toSubscribe, filters.values); err != nil {
 		return centrifuge.DisconnectPermissionDenied
 	}
 	h.storeReboundTokenFilters(c, toSubscribe)
@@ -362,7 +363,7 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
-	if err := h.applyFilterTemplates(subs, connectionFilterValues(c), false); err != nil {
+	if err := h.applyFilterTemplates(subs, connectionFilterValues(c)); err != nil {
 		return centrifuge.ErrorPermissionDenied
 	}
 	return nil
@@ -370,30 +371,49 @@ func (h *Handler) templateSubscriptions(c Client, subs map[string]centrifuge.Sub
 
 // applyFilterTemplates sets the server tags filter of every subscription whose namespace has a template to the
 // template combined with the explicit filter of the subscription. It returns the error of the first missing value
-// under reject. With dropRefused, a subscription which such a value refuses is removed from subs instead, and no error
-// is returned: an unbound connection must not subscribe it without its template.
-func (h *Handler) applyFilterTemplates(
-	subs map[string]centrifuge.SubscribeOptions,
-	values filtertemplate.Values,
-	dropRefused bool,
-) error {
+// under reject.
+func (h *Handler) applyFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) error {
 	for channel, opts := range subs {
-		tmpl := h.templateOf(channel)
-		if tmpl == nil {
-			continue
-		}
-		filter, err := subscriptionFilter(tmpl, values, channel, opts.ServerTagsFilter)
+		filtered, err := h.applyFilterTemplate(channel, opts, values)
 		if err != nil {
-			if dropRefused {
-				delete(subs, channel)
-				continue
-			}
 			return err
 		}
-		opts.ServerTagsFilter = filter
-		subs[channel] = opts
+		subs[channel] = filtered
 	}
 	return nil
+}
+
+// dropRefusedFilterTemplates applies the templates like applyFilterTemplates, but removes from subs each subscription
+// which a missing value refuses, instead of returning an error: an unbound connection must not subscribe it without its
+// template.
+func (h *Handler) dropRefusedFilterTemplates(subs map[string]centrifuge.SubscribeOptions, values filtertemplate.Values) {
+	for channel, opts := range subs {
+		filtered, err := h.applyFilterTemplate(channel, opts, values)
+		if err != nil {
+			delete(subs, channel)
+			continue
+		}
+		subs[channel] = filtered
+	}
+}
+
+// applyFilterTemplate returns the subscription opts with the template of channel combined with its explicit filter. A
+// channel without a template keeps opts as they are.
+func (h *Handler) applyFilterTemplate(
+	channel string,
+	opts centrifuge.SubscribeOptions,
+	values filtertemplate.Values,
+) (centrifuge.SubscribeOptions, error) {
+	tmpl := h.templateOf(channel)
+	if tmpl == nil {
+		return opts, nil
+	}
+	filter, err := subscriptionFilter(tmpl, values, channel, opts.ServerTagsFilter)
+	if err != nil {
+		return centrifuge.SubscribeOptions{}, err
+	}
+	opts.ServerTagsFilter = filter
+	return opts, nil
 }
 
 // channelFilter returns the server tags filter of a client subscription to channel which sets explicit, under the

@@ -43,9 +43,16 @@ func NewNamespaceEnginesRecord(cfg Config) *NamespaceEnginesRecord {
 	return record
 }
 
+// EnabledEngineKinds reports, for brokers, presence_managers and map_brokers, whether cfg has an enabled entry.
+// The app routes channels to the kinds which have one, see NewNamespaceEnginesRecord for the same condition.
+func EnabledEngineKinds(cfg Config) (brokers bool, presenceManagers bool, mapBrokers bool) {
+	return len(enabledBrokerKeys(cfg)) > 0, len(enabledPresenceManagerKeys(cfg)) > 0, len(enabledMapBrokerKeys(cfg)) > 0
+}
+
 // hasEnabledEngines reports whether cfg has an enabled entry of brokers, presence_managers or map_brokers.
 func hasEnabledEngines(cfg Config) bool {
-	return len(enabledBrokerKeys(cfg)) > 0 || len(enabledPresenceManagerKeys(cfg)) > 0 || len(enabledMapBrokerKeys(cfg)) > 0
+	brokers, presenceManagers, mapBrokers := EnabledEngineKinds(cfg)
+	return brokers || presenceManagers || mapBrokers
 }
 
 // Commit records the namespaces of a configuration which a reload has applied. A recorded name keeps its selection:
@@ -138,19 +145,10 @@ func controllerPrefix(controller configtypes.Controller) string {
 	case "nats":
 		return controller.Nats.Prefix
 	case "postgres":
-		return postgresControllerPrefix(controller.Postgres.TablePrefix)
+		return postgresBrokerPrefix(controller.Postgres.TablePrefix)
 	default:
 		return ""
 	}
-}
-
-// postgresControllerPrefix returns the table prefix which the Postgres controller uses: an empty prefix is cf, and
-// trailing underscores are trimmed.
-func postgresControllerPrefix(tablePrefix string) string {
-	if tablePrefix == "" {
-		tablePrefix = "cf"
-	}
-	return strings.TrimRight(tablePrefix, "_")
 }
 
 func namespaceEnginesChanged(what string) error {

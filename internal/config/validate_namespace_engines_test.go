@@ -124,6 +124,13 @@ func TestValidateNamespaceEngines(t *testing.T) {
 			wantErr: "unknown broker type: redisnats",
 		},
 		{
+			name: "redisnats section on a named broker is refused",
+			modify: func(cfg *Config) {
+				cfg.Brokers[0].RedisNats = &configtypes.RedisNatsBroker{}
+			},
+			wantErr: `brokers "broadcast": redisnats is not supported on named brokers`,
+		},
+		{
 			name: "disabled broker with unknown type is still checked",
 			modify: func(cfg *Config) {
 				cfg.Brokers[2].Enabled = false

@@ -59,6 +59,11 @@ func validateNamespaceEngines(c Config) error {
 		if err := validateEntry("broker", b.Name, b.Type, brokerNames, knownNamedBrokerTypes); err != nil {
 			return err
 		}
+		// The entry embeds the standalone broker section, which has the redisnats key too. It is not a named type, so
+		// the key is refused rather than ignored.
+		if b.RedisNats != nil {
+			return fmt.Errorf("brokers %q: redisnats is not supported on named brokers", b.Name)
+		}
 		if b.Name == reservedEngineName {
 			return fmt.Errorf("invalid broker name: %s is reserved", b.Name)
 		}

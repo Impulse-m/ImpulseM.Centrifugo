@@ -1361,7 +1361,10 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
-	if refusesHistory(&chOpts) {
+	// The template filters the publications of a subscription, and history reads publications without the subscription,
+	// so it would read the publications of every tenant or session the template keeps apart. Recovery is not refused: it
+	// is the catch-up of a filtered subscription and applies the filter.
+	if chOpts.HasServerTagsFilterTemplate() {
 		return centrifuge.HistoryReply{}, centrifuge.ErrorPermissionDenied
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

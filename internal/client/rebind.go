@@ -268,9 +268,12 @@ func (h *Handler) onRefreshRebind(
 	}
 	// The values of the templates move with the user once the rebind is applied, so a rebind which Core refuses changes
 	// neither the values nor a channel, see commitRebindFilters.
-	h.commitRebindFilters(c, filters)
+	commitErr := h.commitRebindFilters(c, filters)
 	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, rec, newUser, identity)
+	if commitErr != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, commitErr
+	}
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
@@ -478,6 +481,11 @@ func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	}
 	personalChannel, personalOptions, err := h.personalChannelSubscription(c.UserID())
 	if err != nil {
+		return nil
+	}
+	// A channel which the connection holds is not subscribed again, so its template is not rendered here: a refresh is
+	// answered, and a claim value which the connection has no stored value for disconnects it, see tokenSubscriptionsChanged.
+	if c.IsSubscribed(personalChannel) {
 		return nil
 	}
 	toSubscribe := map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions}

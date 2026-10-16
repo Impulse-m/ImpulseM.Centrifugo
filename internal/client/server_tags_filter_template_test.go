@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -235,12 +236,8 @@ func TestServerTagsFilterTemplateConnectionSubscriptions(t *testing.T) {
 // mergeClaims returns a copy of base with the extra claims added; a nil extra returns a copy of base.
 func mergeClaims(base map[string]any, extra map[string]any) map[string]any {
 	merged := map[string]any{}
-	for key, value := range base {
-		merged[key] = value
-	}
-	for key, value := range extra {
-		merged[key] = value
-	}
+	maps.Copy(merged, base)
+	maps.Copy(merged, extra)
 	return merged
 }
 

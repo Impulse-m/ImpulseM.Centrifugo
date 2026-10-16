@@ -404,14 +404,14 @@ func validateNamedNatsSubjects(c Config) error {
 		}
 	}
 	if c.Controller.Enabled && c.Controller.Type == "nats" {
-		refs = append(refs, newNatsControllerRefs("controller", c.Controller.Nats.NatsPrefixed, false)...)
+		refs = append(refs, newNatsControllerRefs("controller", c.Controller.Nats.NatsPrefixed, true)...)
 	}
 	if !c.Controller.Enabled && c.Broker.Enabled && (c.Broker.Type == "nats" || c.Broker.Type == "redisnats") {
 		// Without a controller, Core makes the default NATS broker the controller, so it subscribes the control subjects
 		// on its own connection. Its channels are below prefix.client., which the control subjects never match, unless
-		// it is in raw mode: a raw root is concatenated with the channel, so it can reach them. Only the raw mode
-		// subjects are compared with the broker's own subject space.
-		refs = append(refs, newNatsControllerRefs("broker control", c.Broker.Nats.NatsPrefixed, !c.Broker.Nats.RawMode.Enabled)...)
+		// it is in raw mode: a raw root is concatenated with the channel, so it can reach them. Only in raw mode are
+		// the control subjects compared with the broker's own subject space.
+		refs = append(refs, newNatsControllerRefs("broker control", c.Broker.Nats.NatsPrefixed, c.Broker.Nats.RawMode.Enabled)...)
 	}
 	first, second, found := firstEngineConflict(
 		refs,
@@ -449,19 +449,20 @@ func newNatsBrokerRef(label string, natsCfg configtypes.NatsBroker, isDefault bo
 
 // newNatsControllerRefs returns the subjects which a NATS controller subscribes, as natsbroker does: the control
 // subject prefix.control, and the node subjects prefix.node.<id>, whose space is prefix.node. since node IDs are
-// appended to it. isDefault marks the references of the default broker which is the controller, see isDefault.
-func newNatsControllerRefs(label string, natsCfg configtypes.NatsPrefixed, isDefault bool) []natsEngineRef {
+// appended to it. compareWithDefault is false for the subjects of the default broker which is the controller, which
+// are then not compared with the default broker's own subject space, see isDefault.
+func newNatsControllerRefs(label string, natsCfg configtypes.NatsPrefixed, compareWithDefault bool) []natsEngineRef {
 	return []natsEngineRef{
 		{
 			label:     label,
 			space:     natsCfg.Prefix + ".control",
 			exact:     true,
-			isDefault: isDefault,
+			isDefault: !compareWithDefault,
 		},
 		{
 			label:     label,
 			space:     natsCfg.Prefix + ".node.",
-			isDefault: isDefault,
+			isDefault: !compareWithDefault,
 		},
 	}
 }

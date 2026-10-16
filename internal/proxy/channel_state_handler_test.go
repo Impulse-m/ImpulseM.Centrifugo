@@ -248,3 +248,19 @@ func TestChannelStateHandlerOldestFailingBatch(t *testing.T) {
 	require.NoError(t, handle(context.Background(), batch("b")))
 	require.Zero(t, gauge())
 }
+
+// TestChannelStateHandlerForget checks that a forgotten rejected batch no longer holds the gauge, which is what
+// the partition consumer relies on when it stops delivering the batch.
+func TestChannelStateHandlerForget(t *testing.T) {
+	proxy := &channelStateRejectingProxy{rejects: map[string]bool{"a": true}}
+	handler := NewChannelStateHandler(proxy)
+	handle := handler.Handle()
+	batch := []*proxyproto.ChannelEvent{{TimeMs: 1697206286533, Channel: "a", Type: "occupied"}}
+
+	require.Error(t, handle(context.Background(), batch))
+	require.NotZero(t, testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp))
+
+	handler.Forget(batch)
+	require.Zero(t, testutil.ToFloat64(metrics.ChannelStateOldestFailingBatchTimestamp))
+	handler.Forget(nil)
+}

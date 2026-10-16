@@ -7,8 +7,8 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,17 +20,18 @@ type channelStateBatchKey struct {
 	timeMs    int64
 }
 
-// ChannelStateHandler delivers batches of channel state events to the channel state proxy.
+// ChannelStateHandler delivers batches of channel state events to the channel state proxy. The oldest failing
+// batch gauge is process wide, so one handler is supported per process.
 type ChannelStateHandler struct {
 	proxy   ChannelStateProxy
 	timeout time.Duration
 	calls   *metrics.ProxyCallChildren
-	// logger logs a rejected batch at most once a minute.
-	logger zerolog.Logger
+	// logLimiter lets a rejected batch be logged at most once a minute.
+	logLimiter *tools.IntervalLimiter
 	// mu guards failing.
 	mu sync.Mutex
 	// failing maps the first event of each rejected batch to the time the batch was first sent.
-	// An entry is removed when the batch is delivered.
+	// An entry is removed when the batch is delivered or forgotten.
 	failing map[channelStateBatchKey]time.Time
 }
 
@@ -38,11 +39,11 @@ type ChannelStateHandler struct {
 // the timeout of the proxy.
 func NewChannelStateHandler(p ChannelStateProxy) *ChannelStateHandler {
 	return &ChannelStateHandler{
-		proxy:   p,
-		timeout: p.Timeout(),
-		calls:   metrics.NewProxyCallChildren(p.Protocol(), "state", "default"),
-		logger:  log.Logger.Sample(&zerolog.BurstSampler{Burst: 1, Period: time.Minute}),
-		failing: map[channelStateBatchKey]time.Time{},
+		proxy:      p,
+		timeout:    p.Timeout(),
+		calls:      metrics.NewProxyCallChildren(p.Protocol(), "state", "default"),
+		logLimiter: tools.NewIntervalLimiter(time.Minute),
+		failing:    map[channelStateBatchKey]time.Time{},
 	}
 }
 
@@ -66,10 +67,24 @@ func (h *ChannelStateHandler) Handle() func(ctx context.Context, events []*proxy
 	}
 }
 
+// Forget removes the rejected batch of events from the gauge. The partition consumer calls it when it stops
+// delivering the batch, for example when another node takes over the partition, so the gauge does not show a
+// batch which this node no longer retries.
+func (h *ChannelStateHandler) Forget(events []*proxyproto.ChannelEvent) {
+	if len(events) == 0 {
+		return
+	}
+	key := newChannelStateBatchKey(events[0])
+	h.mu.Lock()
+	delete(h.failing, key)
+	h.updateGaugeLocked()
+	h.mu.Unlock()
+}
+
 // track records the outcome of a batch whose first event is first. A rejected batch keeps the time it was
 // first sent until a later attempt delivers it, so a batch which is never accepted shows as a growing age.
 func (h *ChannelStateHandler) track(first *proxyproto.ChannelEvent, size int, err error) {
-	key := channelStateBatchKey{channel: first.Channel, eventType: first.Type, timeMs: first.TimeMs}
+	key := newChannelStateBatchKey(first)
 	h.mu.Lock()
 	_, failing := h.failing[key]
 	if err == nil {
@@ -80,14 +95,19 @@ func (h *ChannelStateHandler) track(first *proxyproto.ChannelEvent, size int, er
 	h.updateGaugeLocked()
 	h.mu.Unlock()
 
-	if err != nil {
-		h.logger.Error().
+	if err != nil && h.logLimiter.Allow() {
+		log.Error().
 			Err(err).
 			Str("channel", first.Channel).
 			Str("type", first.Type).
 			Int("events", size).
 			Msg("channel state batch rejected, it is sent again and the events behind it wait")
 	}
+}
+
+// newChannelStateBatchKey returns the key of the batch whose first event is first.
+func newChannelStateBatchKey(first *proxyproto.ChannelEvent) channelStateBatchKey {
+	return channelStateBatchKey{channel: first.Channel, eventType: first.Type, timeMs: first.TimeMs}
 }
 
 // updateGaugeLocked sets the gauge to the time of the oldest rejected batch, or to 0 when no batch is rejected.

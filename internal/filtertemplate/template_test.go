@@ -97,6 +97,18 @@ func TestCompileErrors(t *testing.T) {
 	}
 }
 
+// TestCompileErrorNamesField checks a compile error names the namespace, the node and the field of the variable.
+func TestCompileErrorNamesField(t *testing.T) {
+	_, err := CompileSet(map[string]Source{"chat": {Filter: map[string]any{
+		"op": "and",
+		"nodes": []any{
+			map[string]any{"key": "k", "cmp": "eq", "val": "x"},
+			map[string]any{"key": "k", "cmp": "in", "vals": []any{"a", "{{claims}}"}},
+		},
+	}}})
+	require.EqualError(t, err, `namespace "chat": filter: nodes[1]: vals[1]: unknown variable "claims"`)
+}
+
 func TestEmptyFilterHasNoTemplate(t *testing.T) {
 	set, err := CompileSet(map[string]Source{"chat": {}, "other": {Filter: map[string]any{}}})
 	require.NoError(t, err)
@@ -269,16 +281,18 @@ func TestRenderAllocationBound(t *testing.T) {
 	tmpl := compileOne(t, "tenant", Source{Filter: tenantFilter()})
 	claims := Claims{Paths: []string{"tenant"}, Values: []string{"acme"}}
 	values := Values{Claims: claims, User: "u1"}
-	// Three nodes; templated fields are claims.tenant and "user:{{user}}"; one slice for the vals.
-	const nodes = 3
+	// The arena of a render is three slices (nodes, child pointers, vals), and one string per templated field: the
+	// claim and "user:{{user}}". BenchmarkTemplateRender measures 5 allocations for this template. The race detector
+	// adds one, so the bound allows 6 under -race.
+	const arenaSlices = 3
 	const templatedFields = 2
-	const extra = 1
+	const raceAllowance = 1
 	allocs := testing.AllocsPerRun(1000, func() {
 		if _, err := tmpl.Render(values); err != nil {
 			panic(err)
 		}
 	})
-	require.LessOrEqual(t, allocs, float64(nodes+templatedFields+extra))
+	require.LessOrEqual(t, allocs, float64(arenaSlices+templatedFields+raceAllowance))
 }
 
 func BenchmarkTemplateRender(b *testing.B) {

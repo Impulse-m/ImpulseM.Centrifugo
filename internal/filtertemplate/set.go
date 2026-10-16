@@ -3,7 +3,6 @@ package filtertemplate
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -146,7 +145,7 @@ func compileNode(sp *protocol.FilterNode) (*node, error) {
 	n := &node{op: sp.Op, key: sp.Key, cmp: sp.Cmp}
 	val, err := parseField(sp.Val)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("val: %w", err)
 	}
 	n.val = val
 	if sp.Vals != nil {
@@ -154,7 +153,7 @@ func compileNode(sp *protocol.FilterNode) (*node, error) {
 		for i, s := range sp.Vals {
 			f, err := parseField(s)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("vals[%d]: %w", i, err)
 			}
 			n.vals[i] = f
 		}
@@ -163,11 +162,11 @@ func compileNode(sp *protocol.FilterNode) (*node, error) {
 		n.nodes = make([]*node, len(sp.Nodes))
 		for i, child := range sp.Nodes {
 			if child == nil {
-				return nil, errors.New("null node in nodes")
+				return nil, fmt.Errorf("nodes[%d]: null node", i)
 			}
 			c, err := compileNode(child)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("nodes[%d]: %w", i, err)
 			}
 			n.nodes[i] = c
 		}

@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
@@ -58,7 +57,7 @@ func (h *Handler) connectFilterTemplates(
 	if !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() {
 		return nil
 	}
-	values := filtertemplate.Values{Claims: verified.FilterTemplateClaims, Client: clientID, Unbound: tokenless}
+	values := filtertemplate.Values{Claims: verified.FilterTemplateClaims, Client: clientID}
 	if credentials != nil {
 		values.User = credentials.UserID
 	}
@@ -291,8 +290,8 @@ func (h *Handler) templateOf(channel string) *filtertemplate.Template {
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an
 // error, which the caller turns into a refusal of the subscription. Under skip the explicit filter stands alone,
-// but only for a missing value: any other error is a refusal, and so is a missing claim of an unbound connection, see
-// unboundClaimMissing. The decision is logged, with the name of the variable when the error is a missing value.
+// but only for a missing value: any other error is a refusal. The decision is logged, with the name of the variable
+// when the error is a missing value.
 func subscriptionFilter(
 	tmpl *filtertemplate.Template,
 	values filtertemplate.Values,
@@ -305,7 +304,7 @@ func subscriptionFilter(
 	}
 	var missing filtertemplate.MissingValueError
 	isMissing := errors.As(err, &missing)
-	if isMissing && tmpl.OnMissing() == filtertemplate.OnMissingSkip && !unboundClaimMissing(values, missing) {
+	if isMissing && tmpl.OnMissing() == filtertemplate.OnMissingSkip {
 		if logging.Enabled(logging.DebugLevel) {
 			log.Debug().Str("channel", channel).Str("client", values.Client).Str("user", values.User).Str("variable", missing.Variable).Msg("server tags filter template skipped, missing value")
 		}
@@ -319,26 +318,18 @@ func subscriptionFilter(
 	return nil, err
 }
 
-// unboundClaimMissing reports whether a missing value is a claim of a connection which has no token claims bound. The
-// client chooses the connect path which leaves them unbound, so under skip such a claim is still refused: skipping the
-// template would deliver the subscription without it.
-func unboundClaimMissing(values filtertemplate.Values, missing filtertemplate.MissingValueError) bool {
-	return values.Unbound && strings.HasPrefix(missing.Variable, "claims.")
-}
-
 // connectionFilterValues returns the values which the templates of a connection are rendered with: the claims stored on
-// connect or rebind, the user stored with them, the client of the connection, and whether the claims are unbound. The
-// user is read from the storage, so a render which overlaps a rebind sees the values of one identity, and not the user of
-// the rebind with the claims of the previous one. A connection which stored no values renders with its user and no claims.
+// connect or rebind, the user stored with them, and the client of the connection. The user is read from the storage,
+// so a render which overlaps a rebind sees the values of one identity, and not the user of the rebind with the claims
+// of the previous one. A connection which stored no values renders with its user and no claims.
 func connectionFilterValues(c Client) filtertemplate.Values {
 	storage, release := c.AcquireStorage()
 	stored, ok := storedFilterValues(storage)
-	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
 	release(storage)
 	if !ok {
 		stored.User = c.UserID()
 	}
-	return filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID(), Unbound: unbound}
+	return filtertemplate.Values{Claims: stored.Claims, User: stored.User, Client: c.ID()}
 }
 
 // storedFilterValues returns the values a connection stored for its server tags filter templates, and whether it

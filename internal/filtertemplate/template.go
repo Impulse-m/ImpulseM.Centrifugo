@@ -68,9 +68,6 @@ type Values struct {
 	Claims Claims
 	User   string
 	Client string
-	// Unbound is set for a connection which has no token claims bound, such as one connected through a connect proxy
-	// without a token. Render does not read it: the caller decides what a missing claim of such a connection means.
-	Unbound bool
 }
 
 // MissingValueError is returned by Render for a variable which has no value.

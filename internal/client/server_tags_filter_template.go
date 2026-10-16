@@ -3,7 +3,6 @@ package client
 import (
 	"errors"
 
-	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -246,14 +245,6 @@ func (h *Handler) filterWithValues(
 func (h *Handler) templateOf(channel string) *filtertemplate.Template {
 	chOpts, _, _ := h.cfgContainer.ChannelOptionsRef(channel)
 	return chOpts.Compiled.ServerTagsFilterTemplate
-}
-
-// refusesHistory reports whether explicit history is refused on a channel with chOpts. The template filters the
-// publications of a subscription, and history reads publications without the subscription, so it would read the
-// publications of every tenant or session the template keeps apart. Recovery is not refused: it is the catch-up of a
-// filtered subscription and applies the filter.
-func refusesHistory(chOpts *configtypes.ChannelOptions) bool {
-	return chOpts.HasServerTagsFilterTemplate()
 }
 
 // subscriptionFilter renders tmpl with values and combines it with explicit. A missing value under reject is an

@@ -9,7 +9,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
-	"github.com/centrifugal/centrifugo/v6/internal/pgmapbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 
 	"github.com/centrifugal/centrifuge"
@@ -380,90 +379,4 @@ func createRedisPresenceManagerFrom(
 		return nil, redisShards, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
 	}
 	return presenceManager, redisShards, mode, nil
-}
-
-func createMemoryMapBroker(n *centrifuge.Node) (centrifuge.MapBroker, error) {
-	return centrifuge.NewMemoryMapBroker(n, centrifuge.MemoryMapBrokerConfig{})
-}
-
-// createMapBroker creates a map broker by its type, the default one or a named one. It returns the Redis shards it
-// created, which the caller closes or keeps, and the connection mode for logging.
-func createMapBroker(
-	node *centrifuge.Node,
-	cfg configtypes.MapBroker,
-) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
-	switch cfg.Type {
-	case "memory":
-		mapBroker, err := createMemoryMapBroker(node)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return mapBroker, nil, "", nil
-	case "redis":
-		return createRedisMapBroker(node, cfg.Redis)
-	case "postgres":
-		mapBroker, err := createPostgresMapBroker(node, cfg.Postgres)
-		if err != nil {
-			return nil, nil, "", err
-		}
-		return mapBroker, nil, "postgres", nil
-	default:
-		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", cfg.Type)
-	}
-}
-
-// createRedisMapBroker creates a Redis map broker on its own Redis shards. It returns the shards, which the caller
-// closes or keeps, and the connection mode for logging. The default map broker and the named map brokers use it.
-func createRedisMapBroker(
-	node *centrifuge.Node,
-	redisCfg configtypes.RedisMapBroker,
-) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(node, redisCfg.Redis)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("error creating Redis shards for map broker: %w", err)
-	}
-	mapBroker, err := confighelpers.CentrifugeRedisMapBroker(
-		node, redisCfg.Prefix, redisShards, redisCfg.RedisMapBrokerCommon)
-	if err != nil {
-		return nil, redisShards, mode, fmt.Errorf("error creating Redis map broker: %w", err)
-	}
-	return mapBroker, redisShards, mode, nil
-}
-
-// createPostgresMapBroker creates a Postgres map broker with the settings of a map_broker section. It initializes
-// the schema unless skip_schema_init is set. The default map broker and the named map brokers use it.
-func createPostgresMapBroker(
-	node *centrifuge.Node,
-	pgCfg configtypes.PostgresMapBroker,
-) (*pgmapbroker.PostgresMapBroker, error) {
-	pgBrokerCfg := pgmapbroker.PostgresMapBrokerConfig{
-		DSN:                    pgCfg.DSN,
-		TLS:                    pgCfg.TLS,
-		PoolSize:               pgCfg.PoolSize,
-		NumShards:              pgCfg.NumShards,
-		TTLCheckInterval:       pgCfg.TTLCheckInterval.ToDuration(),
-		CleanupInterval:        pgCfg.CleanupInterval.ToDuration(),
-		IdempotentResultTTL:    pgCfg.IdempotentResultTTL.ToDuration(),
-		BinaryData:             pgCfg.BinaryData,
-		StreamRetention:        pgCfg.StreamRetention.ToDuration(),
-		UseNotify:              pgCfg.UseNotify,
-		NotifyDSN:              pgCfg.NotifyDSN,
-		TablePrefix:            pgCfg.TablePrefix,
-		PartitionLookaheadDays: pgCfg.PartitionLookaheadDays,
-		PartitionRetentionDays: pgCfg.PartitionRetentionDays,
-		Outbox: pgmapbroker.OutboxConfig{
-			PollInterval: pgCfg.Outbox.PollInterval.ToDuration(),
-			BatchSize:    pgCfg.Outbox.BatchSize,
-		},
-	}
-	mapBroker, err := pgmapbroker.NewPostgresMapBroker(node, pgBrokerCfg)
-	if err != nil {
-		return nil, fmt.Errorf("error creating Postgres map broker: %w", err)
-	}
-	if !pgCfg.SkipSchemaInit {
-		if schemaErr := mapBroker.EnsureSchema(context.Background()); schemaErr != nil {
-			return nil, fmt.Errorf("error initializing Postgres map broker schema: %w", schemaErr)
-		}
-	}
-	return mapBroker, nil
 }

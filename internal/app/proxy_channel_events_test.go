@@ -316,3 +316,26 @@ func TestCacheEmptyTargets(t *testing.T) {
 		})
 	}
 }
+
+// TestReloadGuardChannelStateSettings checks that the reload guard sees a change of the channel state proxy
+// target and of the Redis placement, which take effect only after a restart.
+func TestReloadGuardChannelStateSettings(t *testing.T) {
+	startup := newChannelStateTestConfig()
+	startupTarget := channelStateTargetOf(startup)
+	startupPlacement := channelStatePlacementOf(startup)
+
+	reloaded := newChannelStateTestConfig()
+	require.Equal(t, startupTarget, channelStateTargetOf(reloaded))
+	require.Equal(t, startupPlacement, channelStatePlacementOf(reloaded))
+
+	reloaded.Channel.Proxy.State.Endpoint = "http://localhost:8000/moved"
+	require.NotEqual(t, startupTarget, channelStateTargetOf(reloaded))
+
+	reloaded = newChannelStateTestConfig()
+	reloaded.Engine.Redis.ChannelState.NumPartitions = startup.Engine.Redis.ChannelState.NumPartitions + 1
+	require.NotEqual(t, startupPlacement, channelStatePlacementOf(reloaded))
+
+	guard := newReloadGuard(startup)
+	require.NoError(t, guard.check(startup))
+	require.Error(t, guard.check(config.DefaultConfig()))
+}

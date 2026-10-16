@@ -404,11 +404,8 @@ func handleSignals(
 	serviceCancel context.CancelFunc, ingestDone chan struct{}, ingestCancel context.CancelFunc,
 ) {
 	cfg := cfgContainer.Config()
-	// The cache empty proxies were created from the config at startup, so a reload must keep their layout.
-	cacheEmptyGuard := newCacheEmptyReloadGuard(cfg)
-	// The channel state proxy and its engine hook were created from the config at startup, so a reload must keep
-	// the channel groups with channel state.
-	startupChannelState := channelStateLayout(cfg)
+	// The proxies and engine hooks were created from the config at startup, so a reload must keep their layout.
+	guard := newReloadGuard(cfg)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, os.Interrupt, syscall.SIGTERM)
 	for {
@@ -429,11 +426,7 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
-			if err = cacheEmptyGuard.check(newCfg); err != nil {
-				log.Error().Msgf("error reloading: %v", err)
-				continue
-			}
-			if err = checkChannelStateReload(startupChannelState, newCfg); err != nil {
+			if err = guard.check(newCfg); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
@@ -441,7 +434,7 @@ func handleSignals(
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
-			cacheEmptyGuard.warn(newCfg)
+			guard.warn(newCfg)
 			log.Info().Msg("configuration successfully reloaded")
 		case syscall.SIGINT, os.Interrupt, syscall.SIGTERM:
 			log.Info().Msg("shutting down ...")

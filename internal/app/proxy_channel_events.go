@@ -184,29 +184,74 @@ func warnCacheEmptyTargetsReload(startup map[string]cacheEmptyTarget, newCfg con
 	}
 }
 
-// cacheEmptyReloadGuard holds the cache empty layout and targets of the startup config, and checks each
-// reloaded config against them.
-type cacheEmptyReloadGuard struct {
-	layout  map[string]string
-	targets map[string]cacheEmptyTarget
+// channelStateTarget is the endpoint and the timeout of the channel state proxy, as the config sets them.
+type channelStateTarget struct {
+	endpoint string
+	timeout  configtypes.Duration
 }
 
-// newCacheEmptyReloadGuard takes the cache empty layout and targets of the startup config.
-func newCacheEmptyReloadGuard(cfg config.Config) *cacheEmptyReloadGuard {
-	return &cacheEmptyReloadGuard{
-		layout:  cacheEmptyLayout(cfg),
-		targets: cacheEmptyTargets(cfg),
+// channelStateTargetOf returns the target of the channel state proxy of the config.
+func channelStateTargetOf(cfg config.Config) channelStateTarget {
+	return channelStateTarget{endpoint: cfg.Channel.Proxy.State.Endpoint, timeout: cfg.Channel.Proxy.State.Timeout}
+}
+
+// channelStatePlacement is the Redis placement of the channel state events of the engine and of the presence manager.
+type channelStatePlacement struct {
+	engine   configtypes.RedisChannelState
+	presence configtypes.RedisChannelState
+}
+
+// channelStatePlacementOf returns the Redis placement of the channel state events of the config.
+func channelStatePlacementOf(cfg config.Config) channelStatePlacement {
+	return channelStatePlacement{
+		engine:   cfg.Engine.Redis.ChannelState,
+		presence: cfg.PresenceManager.Redis.ChannelState,
 	}
 }
 
-// check rejects newCfg when it changes the cache empty layout of the startup config.
-func (g *cacheEmptyReloadGuard) check(newCfg config.Config) error {
-	return checkCacheEmptyReload(g.layout, newCfg)
+// reloadGuard holds the layouts and the targets of the startup config, and checks each reloaded config
+// against them. The proxies and the engine hooks are created from the startup config, so a reload keeps
+// their layout and only logs the changes which take effect after a restart.
+type reloadGuard struct {
+	cacheEmptyLayout      map[string]string
+	cacheEmptyTargets     map[string]cacheEmptyTarget
+	channelStateGroups    []string
+	channelStateTarget    channelStateTarget
+	channelStatePlacement channelStatePlacement
 }
 
-// warn logs each cache empty proxy whose endpoint or timeout changed in newCfg.
-func (g *cacheEmptyReloadGuard) warn(newCfg config.Config) {
-	warnCacheEmptyTargetsReload(g.targets, newCfg)
+// newReloadGuard takes the cache empty and channel state settings of the startup config.
+func newReloadGuard(cfg config.Config) *reloadGuard {
+	return &reloadGuard{
+		cacheEmptyLayout:      cacheEmptyLayout(cfg),
+		cacheEmptyTargets:     cacheEmptyTargets(cfg),
+		channelStateGroups:    channelStateLayout(cfg),
+		channelStateTarget:    channelStateTargetOf(cfg),
+		channelStatePlacement: channelStatePlacementOf(cfg),
+	}
+}
+
+// check rejects newCfg when it changes the cache empty layout or the channel state groups of the startup config.
+func (g *reloadGuard) check(newCfg config.Config) error {
+	if err := checkCacheEmptyReload(g.cacheEmptyLayout, newCfg); err != nil {
+		return err
+	}
+	return checkChannelStateReload(g.channelStateGroups, newCfg)
+}
+
+// warn logs the cache empty and channel state settings of newCfg which changed and take effect after a restart.
+// The channel state settings are logged only when channel state is enabled at startup.
+func (g *reloadGuard) warn(newCfg config.Config) {
+	warnCacheEmptyTargetsReload(g.cacheEmptyTargets, newCfg)
+	if len(g.channelStateGroups) == 0 {
+		return
+	}
+	if channelStateTargetOf(newCfg) != g.channelStateTarget {
+		log.Warn().Msg("channel state proxy endpoint or timeout changed on reload, the change takes effect after a restart")
+	}
+	if channelStatePlacementOf(newCfg) != g.channelStatePlacement {
+		log.Warn().Msg("channel state vacated_event_delay or num_partitions changed on reload, the change takes effect after a restart")
+	}
 }
 
 // enableCacheEmptyProxy resolves the cache empty proxy named by name and logs it. An empty namespace

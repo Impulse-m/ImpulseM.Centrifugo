@@ -119,12 +119,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 			return fmt.Errorf("brokers[%s]: %w", entry.Name, err)
 		}
 		e.brokers[entry.Name] = broker
-		log.Info().
-			Str("kind", "broker").
-			Str("name", entry.Name).
-			Str("type", entry.Type).
-			Str("mode", mode).
-			Msg("namespace engine created")
+		logEngineCreated("broker", entry.Name, entry.Type, mode)
 	}
 	for _, entry := range cfg.PresenceManagers {
 		if !entry.Enabled {
@@ -136,12 +131,7 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 			return fmt.Errorf("presence_managers[%s]: %w", entry.Name, err)
 		}
 		e.presenceManagers[entry.Name] = presenceManager
-		log.Info().
-			Str("kind", "presence_manager").
-			Str("name", entry.Name).
-			Str("type", entry.Type).
-			Str("mode", mode).
-			Msg("namespace engine created")
+		logEngineCreated("presence_manager", entry.Name, entry.Type, mode)
 	}
 	for _, entry := range cfg.MapBrokers {
 		if !entry.Enabled {
@@ -153,14 +143,20 @@ func (e *namespaceEngines) create(node *centrifuge.Node, cfgContainer *config.Co
 			return fmt.Errorf("map_brokers[%s]: %w", entry.Name, err)
 		}
 		e.mapBrokers[entry.Name] = mapBroker
-		log.Info().
-			Str("kind", "map_broker").
-			Str("name", entry.Name).
-			Str("type", entry.Type).
-			Str("mode", mode).
-			Msg("namespace engine created")
+		logEngineCreated("map_broker", entry.Name, entry.Type, mode)
 	}
 	return nil
+}
+
+// logEngineCreated logs a named engine which create has created. kind is the list which holds the entry, and mode
+// is the connection mode of its Redis shards, if any.
+func logEngineCreated(kind string, name string, typ string, mode string) {
+	log.Info().
+		Str("kind", kind).
+		Str("name", name).
+		Str("type", typ).
+		Str("mode", mode).
+		Msg("namespace engine created")
 }
 
 // run registers the event handler of every named broker and map broker. It must be called after the node runs:

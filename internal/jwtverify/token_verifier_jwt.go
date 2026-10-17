@@ -892,16 +892,23 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 }
 
 // PrepareReload builds everything the verifier needs for config without changing
-// the verifier. Calling the returned function applies the new config and can't
-// fail, so several verifiers may be reloaded all or nothing.
-func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), error) {
+// the verifier. Calling apply switches the verifier to the new config and can't
+// fail, so several verifiers may be reloaded all or nothing. Calling discard
+// instead drops the new config, for a reload which fails after this prepare.
+// Call exactly one of them. apply stops the JWKS cache of the config it replaces,
+// and discard stops the JWKS cache of the new config, so no cache outlives its
+// config.
+func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), func(), error) {
 	next, err := NewTokenVerifierJWT(config, verifier.cfgContainer)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return func() {
+	applied := false
+	apply := func() {
 		verifier.mu.Lock()
 		defer verifier.mu.Unlock()
+		applied = true
+		previous := verifier.jwksManager
 		verifier.jwksManager = next.jwksManager
 		verifier.algorithms = next.algorithms
 		verifier.previousHMACAlgorithms = next.previousHMACAlgorithms
@@ -914,11 +921,20 @@ func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), error
 		verifier.authClassClaim = next.authClassClaim
 		verifier.sessionClaim = next.sessionClaim
 		verifier.generationClaim = next.generationClaim
-	}, nil
+		if previous != nil {
+			_ = previous.Stop()
+		}
+	}
+	discard := func() {
+		if !applied && next.jwksManager != nil {
+			_ = next.jwksManager.Stop()
+		}
+	}
+	return apply, discard, nil
 }
 
 func (verifier *VerifierJWT) Reload(config VerifierConfig) error {
-	apply, err := verifier.PrepareReload(config)
+	apply, _, err := verifier.PrepareReload(config)
 	if err != nil {
 		return err
 	}

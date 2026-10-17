@@ -42,6 +42,14 @@ type partitionProgress struct {
 	behindSince time.Time
 }
 
+// lag returns the number of records between the consumed offset and the target offset of the partition.
+func (p *partitionProgress) lag() int64 {
+	if p.target > p.next {
+		return p.target - p.next
+	}
+	return 0
+}
+
 // ReadinessTracker decides whether a source of access revocation events has caught up and whether it
 // is lagging. The target offset of a partition is its last stable offset, so an open transaction does
 // not count as lag. It is fed by per-partition observations (next consumed offset and target offset)
@@ -63,6 +71,13 @@ type ReadinessTracker struct {
 	caughtUpAt  time.Time
 	caughtUpCh  chan struct{}
 	closed      bool
+	// notReached is the number of partitions which never reached their target, lagRecords the sum of their lags,
+	// behind the number of partitions with a behindSince, and oldestBehind the earliest of those. They are kept
+	// up to date by Observe, so evaluating the state does not loop over the partitions.
+	notReached   int
+	lagRecords   int64
+	behind       int
+	oldestBehind time.Time
 }
 
 // NewReadinessTracker creates a ReadinessTracker. The clock is used for all timing decisions, so tests
@@ -90,18 +105,67 @@ func (t *ReadinessTracker) Observe(partition int32, next int64, target int64) {
 	if !ok {
 		progress = &partitionProgress{}
 		t.partitions[partition] = progress
+		t.notReached++
 	}
+	t.lagRecords -= progress.lag()
 	if next >= 0 {
 		progress.next = next
 	}
 	progress.target = target
+	t.lagRecords += progress.lag()
 	if progress.next >= progress.target {
-		progress.reached = true
-		progress.behindSince = time.Time{}
-	} else if progress.behindSince.IsZero() {
-		progress.behindSince = now
+		t.reachedLocked(progress)
+	} else {
+		t.behindLocked(progress, now)
 	}
 	t.refreshLocked(now)
+}
+
+// reachedLocked records that the partition is at its target, which ends its lag.
+func (t *ReadinessTracker) reachedLocked(progress *partitionProgress) {
+	if !progress.reached {
+		progress.reached = true
+		t.notReached--
+	}
+	if progress.behindSince.IsZero() {
+		return
+	}
+	t.behind--
+	wasOldest := progress.behindSince.Equal(t.oldestBehind)
+	progress.behindSince = time.Time{}
+	if wasOldest {
+		t.recomputeOldestBehindLocked()
+	}
+}
+
+// behindLocked records that the partition is behind its target, starting its lag at now unless it is behind already.
+// The clock does not go back, so a partition which becomes behind is never older than the oldest one.
+func (t *ReadinessTracker) behindLocked(progress *partitionProgress, now time.Time) {
+	if !progress.behindSince.IsZero() {
+		return
+	}
+	progress.behindSince = now
+	t.behind++
+	if t.oldestBehind.IsZero() {
+		t.oldestBehind = now
+	}
+}
+
+// recomputeOldestBehindLocked finds the earliest behindSince of the partitions which are behind. It loops over the
+// partitions only when the oldest one has caught up, and not at all when none is behind.
+func (t *ReadinessTracker) recomputeOldestBehindLocked() {
+	t.oldestBehind = time.Time{}
+	if t.behind == 0 {
+		return
+	}
+	for _, progress := range t.partitions {
+		if progress.behindSince.IsZero() {
+			continue
+		}
+		if t.oldestBehind.IsZero() || progress.behindSince.Before(t.oldestBehind) {
+			t.oldestBehind = progress.behindSince
+		}
+	}
 }
 
 // FetchSucceeded records a successful fetch response from a broker, even an empty one.
@@ -147,13 +211,9 @@ func (t *ReadinessTracker) refreshLocked(now time.Time) ReadinessSnapshot {
 		snapshot.CatchUpDuration = t.caughtUpAt.Sub(t.startedAt)
 	}
 	snapshot.Lagging = now.Sub(t.lastFetch) > t.config.LagThreshold
-	for _, progress := range t.partitions {
-		if progress.target > progress.next {
-			snapshot.LagRecords += progress.target - progress.next
-		}
-		if !progress.behindSince.IsZero() && now.Sub(progress.behindSince) > t.config.LagThreshold {
-			snapshot.Lagging = true
-		}
+	snapshot.LagRecords = t.lagRecords
+	if !t.oldestBehind.IsZero() && now.Sub(t.oldestBehind) > t.config.LagThreshold {
+		snapshot.Lagging = true
 	}
 	t.readyFlag.Store(snapshot.Ready)
 	t.laggingFlag.Store(snapshot.Lagging)
@@ -166,9 +226,10 @@ func (t *ReadinessTracker) CaughtUpAfterFailOpen() <-chan struct{} {
 	return t.caughtUpCh
 }
 
-// evaluateLocked updates ready, failedOpen and caughtUp flags for the given moment.
+// evaluateLocked updates ready, failedOpen and caughtUp flags for the given moment. No partition known yet means
+// the offsets are not listed yet, so it is not caught up.
 func (t *ReadinessTracker) evaluateLocked(now time.Time) {
-	if !t.caughtUp && t.allReachedLocked() {
+	if !t.caughtUp && len(t.partitions) > 0 && t.notReached == 0 {
 		t.caughtUp = true
 		t.caughtUpAt = now
 		if t.failedOpen && !t.closed {
@@ -187,18 +248,4 @@ func (t *ReadinessTracker) evaluateLocked(now time.Time) {
 		t.ready = true
 		t.failedOpen = true
 	}
-}
-
-// allReachedLocked reports whether every known partition reached its target offset at least once. No
-// partition known yet means the offsets are not listed yet, so it is not caught up.
-func (t *ReadinessTracker) allReachedLocked() bool {
-	if len(t.partitions) == 0 {
-		return false
-	}
-	for _, progress := range t.partitions {
-		if !progress.reached {
-			return false
-		}
-	}
-	return true
 }

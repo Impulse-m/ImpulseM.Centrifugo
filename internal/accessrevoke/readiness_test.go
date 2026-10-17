@@ -195,3 +195,118 @@ func TestReadinessLagRecordsSumsPartitions(t *testing.T) {
 	tracker.Observe(2, 4, 4)
 	require.Equal(t, int64(6), tracker.Snapshot().LagRecords)
 }
+
+// recomputedReadiness is the state of a ReadinessTracker which a loop over its partitions gives.
+type recomputedReadiness struct {
+	lagRecords   int64
+	lagging      bool
+	notReached   int
+	behind       int
+	oldestBehind time.Time
+	allReached   bool
+}
+
+// recomputeReadiness loops over the partitions of tracker at now, the way the state was computed before the counters
+// were incremental.
+func recomputeReadiness(tracker *ReadinessTracker, now time.Time) recomputedReadiness {
+	var state recomputedReadiness
+	state.lagging = now.Sub(tracker.lastFetch) > tracker.config.LagThreshold
+	for _, progress := range tracker.partitions {
+		if progress.target > progress.next {
+			state.lagRecords += progress.target - progress.next
+		}
+		if !progress.reached {
+			state.notReached++
+		}
+		if progress.behindSince.IsZero() {
+			continue
+		}
+		state.behind++
+		if state.oldestBehind.IsZero() || progress.behindSince.Before(state.oldestBehind) {
+			state.oldestBehind = progress.behindSince
+		}
+		if now.Sub(progress.behindSince) > tracker.config.LagThreshold {
+			state.lagging = true
+		}
+	}
+	state.allReached = len(tracker.partitions) > 0 && state.notReached == 0
+	return state
+}
+
+// TestReadinessIncrementalMatchesRecompute runs a deterministic sequence of observations and fetches over 50 partitions.
+// After each step the incremental state must equal what a loop over the partitions gives.
+func TestReadinessIncrementalMatchesRecompute(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	state := uint64(1)
+	nextRandom := func() uint64 {
+		state ^= state << 13
+		state ^= state >> 7
+		state ^= state << 17
+		return state
+	}
+	caughtUp := false
+	for range 2000 {
+		if nextRandom()%4 == 0 {
+			tracker.FetchSucceeded()
+		} else {
+			partition := int32(nextRandom() % 50)
+			target := int64(nextRandom() % 1000)
+			consumed := int64(nextRandom()%1100) - 50
+			tracker.Observe(partition, consumed, target)
+		}
+		clock.Advance(time.Duration(nextRandom()%4) * time.Second)
+
+		snapshot := tracker.Snapshot()
+		expected := recomputeReadiness(tracker, clock.now)
+		caughtUp = caughtUp || expected.allReached
+		require.Equal(t, expected.lagRecords, snapshot.LagRecords)
+		require.Equal(t, expected.lagging, snapshot.Lagging)
+		require.Equal(t, caughtUp, snapshot.CaughtUp)
+		require.Equal(t, expected.notReached, tracker.notReached)
+		require.Equal(t, expected.behind, tracker.behind)
+		require.True(t, expected.oldestBehind.Equal(tracker.oldestBehind))
+	}
+}
+
+// TestReadinessOldestBehindRecomputedWhenItClears makes three partitions fall behind one second apart. When the oldest
+// of them catches up, the lag is measured from the next oldest one, not from the cleared one.
+func TestReadinessOldestBehindRecomputedWhenItClears(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	tracker.Observe(0, 0, 10)
+	clock.Advance(time.Second)
+	tracker.Observe(1, 0, 10)
+	clock.Advance(time.Second)
+	tracker.Observe(2, 0, 10)
+	clock.Advance(time.Second)
+	tracker.Observe(0, 10, 10)
+	require.False(t, tracker.Lagging())
+
+	// The oldest partition left is the one behind since t1, so lagging starts after t1 plus the threshold.
+	clock.Advance(28 * time.Second)
+	tracker.FetchSucceeded()
+	require.False(t, tracker.Lagging())
+
+	clock.Advance(time.Second)
+	tracker.FetchSucceeded()
+	require.True(t, tracker.Lagging())
+
+	// Partition 1 catches up, and partition 2, behind since t2, is the oldest one left.
+	tracker.Observe(1, 10, 10)
+	require.False(t, tracker.Lagging())
+
+	clock.Advance(time.Second)
+	tracker.FetchSucceeded()
+	require.True(t, tracker.Lagging())
+}
+
+func BenchmarkReadinessObserve(b *testing.B) {
+	tracker, _ := newReadinessTest(false)
+	for partition := range 1000 {
+		tracker.Observe(int32(partition), 0, 10)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		tracker.Observe(int32(i%1000), int64(i%10), 10)
+	}
+}

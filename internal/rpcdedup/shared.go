@@ -568,9 +568,11 @@ func (s *Shared) Wake(key Key) {
 // check makes a retry idempotent. All the writes of the call stay within ctx, which ends at the IO timeout or the
 // in-flight TTL of the call, counted from its begin, so the reply of the call is not held longer than that. When the
 // writes fail, the record is still kept locally, and a retransmit on another node runs the call again once the in-flight
-// record expires. A write which reports that this node does not own the in-flight record is not retried, and neither is
-// a write which finds no shard of the shared tier connected: a retry cannot reach a shard which is not there, so the
-// reply does not wait for the backoff. It returns the waiters of the write which took effect, and nil when none did.
+// record expires. A write which reports that this node does not own the in-flight record is not retried. A write which
+// finds no shard of the shared tier connected is not retried either, so the reply does not wait for the backoff. A retry
+// helps only when a shard connects within that backoff, so a node which starts while Redis is still connecting keeps such
+// a record locally, and a retransmit on another node may run the call again. It returns the waiters of the write which
+// took effect, and nil when none did.
 func (s *Shared) completeShared(ctx context.Context, key Key, flight *Flight, rec Record, errJSON string) []string {
 	stored := rec
 	if overReplyLimit(rec, errJSON, s.maxReplyBytes) {

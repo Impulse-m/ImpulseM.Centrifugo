@@ -444,6 +444,13 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 		return resp
 	}
 
+	// A server API subscription has no connection values to render a server tags filter template with, and a
+	// subscription without the template would bypass it.
+	if chOpts.HasServerTagsFilterTemplate() {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
+
 	presence := chOpts.Presence
 	if cmd.Override != nil && cmd.Override.Presence != nil {
 		presence = cmd.Override.Presence.Value

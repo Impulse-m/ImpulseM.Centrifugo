@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
@@ -26,6 +27,9 @@ func (h *Handler) onRefreshToken(c rebindableClient, e centrifuge.RefreshEvent) 
 	class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
 	if !ok {
 		log.Info().Str("client", c.ID()).Str("user", c.UserID()).Msg("invalid refresh token auth class")
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
+	if h.pendingLifetimeRefused(c.ID(), class, token) {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	// An anonymous token is refused as it is on connect, whatever identity the connection holds.
@@ -107,7 +111,7 @@ func (h *Handler) refreshWithoutRecord(
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
-	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true, FilterTemplateClaims: token.FilterTemplateClaims}, nil
 }
 
 // refreshReply returns the reply of a refresh which keeps or moves the identity of a connection. The user and the auth
@@ -180,9 +184,18 @@ func (h *Handler) onRefreshRebind(
 	if prev.origin == originProxy {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
+	// A downgrade is refused while the handler runs with a concurrency above one: client.concurrency is read at start, so a
+	// reload which allows a downgrade does not change the connections which run, and two commands could interleave with it.
+	allowDowngrade := cfg.Client.Rebind.AllowDowngrade && h.runningConcurrency <= 1
+	// A connection which holds a user is refused an anonymous token above one command at a time, whatever its class:
+	// the channels of the user go in two passes, and a second command could commit between them. The user is the one
+	// the connection holds, not the one Core sees, so a pending connection, which Core sees with no user, is covered too.
+	if verified.UserID == "" && prev.tokenUser != "" && h.runningConcurrency > 1 {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
+	}
 	// A logout of a connection with a user disconnects it unless allow_downgrade is set. The check comes before the
 	// class check, so the logout of a connection is disconnected the same way whatever its class.
-	if verified.UserID == "" && c.UserID() != "" && !cfg.Client.Rebind.AllowDowngrade {
+	if verified.UserID == "" && c.UserID() != "" && !allowDowngrade {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	claim := h.registryConfig().AuthClassClaim
@@ -197,7 +210,7 @@ func (h *Handler) onRefreshRebind(
 	if held := prev.account; held != "" && verified.UserID != "" && held != verified.UserID {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorPermissionDenied
 	}
-	if err := rebindTransitionError(effectiveClass(prev, claim, c.UserID()), nextClass, cfg.Client.Rebind.AllowDowngrade); err != nil {
+	if err := rebindTransitionError(effectiveClass(prev, claim, c.UserID()), nextClass, allowDowngrade); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 
@@ -215,7 +228,24 @@ func (h *Handler) onRefreshRebind(
 	}
 
 	newUser := coreUserID(nextClass, verified.UserID)
+	// A rebind subscribes the personal channel and the channels of its token after the identity moves. Core closes a
+	// connection whose subscribe finds client.channel_limit reached, so a rebind which would not fit is refused here,
+	// while the connection keeps its identity and its channels. This holds for a rebind to no user too.
+	if h.reboundChannelsExceedLimit(c, newUser, verified.Subs, cfg) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorLimitExceeded
+	}
 	oldUser := c.UserID()
+	// An upgrade to a user takes the connect rate limit of that user, the bucket a connect of the user takes. A refused take
+	// is an error of the refresh: nothing has changed yet, so the connection keeps its identity.
+	if newUser != "" && newUser != oldUser && !h.userConnectAllowed(newUser) {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
+	}
+	// The templates of the subscriptions of the new identity are checked before anything moves, so a refusal leaves the
+	// connection as it was.
+	filters, templateErr := h.checkReboundFilters(c, verified, newUser)
+	if templateErr != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, templateErr
+	}
 	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
 	if newUser == "" {
@@ -262,6 +292,10 @@ func (h *Handler) onRefreshRebind(
 	}
 	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, rec, newUser, identity)
+	// The values of the templates move with the user once the rebind is applied, see commitRebindFilters.
+	if err := h.commitRebindFilters(c, filters); err != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, err
+	}
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
@@ -274,7 +308,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
+	if err := h.subscribeRebound(c, newUser, filters.subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if verified.Meta != nil {
@@ -332,7 +366,7 @@ func (h *Handler) refreshSameIdentity(
 		setStorageMeta(c, verified.Meta)
 	}
 	reply := h.refreshReply(verified, identity, class, h.replyIdentityOn(cfg))
-	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true, FilterTemplateClaims: verified.FilterTemplateClaims}, nil
 }
 
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an
@@ -424,28 +458,85 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 // its personal channel, and the single connection of the user is enforced first. The channels the connection has
 // already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
 // does not disconnect it. A personal channel which cannot be resolved disconnects the connection after the rebind,
-// which leaves no half-moved connection: a disconnect ends the connection and releases what it holds.
+// which leaves no half-moved connection: a disconnect ends the connection and releases what it holds. The templates
+// of the subscriptions are applied to them, see reboundTemplateSubscriptions.
 func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[string]centrifuge.SubscribeOptions) error {
 	cfg := h.cfgContainer.ConfigRef()
+	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
+		if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
+			return err
+		}
+	}
+	toSubscribe, err := h.reboundChannels(cfg, userID, subs)
+	if err != nil {
+		return centrifuge.DisconnectServerError
+	}
+	if err := h.reboundTemplateSubscriptions(c, toSubscribe); err != nil {
+		return err
+	}
+	return subscribeChannels(c, toSubscribe)
+}
+
+// reboundChannels returns the channels a rebound connection subscribes to: its personal channel, when it has a user and
+// the personal channel is enabled, and the channels of its token. A personal channel which cannot be resolved is left
+// out, and its error is returned with the other channels. subscribeRebound and the channel limit pre-check both take the
+// channels from here, so they cannot drift apart.
+func (h *Handler) reboundChannels(
+	cfg *config.Config,
+	userID string,
+	subs map[string]centrifuge.SubscribeOptions,
+) (map[string]centrifuge.SubscribeOptions, error) {
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
+	var err error
 	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled {
-		if cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
-			if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
-				return err
-			}
+		var personalChannel string
+		var personalOptions centrifuge.SubscribeOptions
+		personalChannel, personalOptions, err = h.personalChannelSubscription(userID)
+		if err == nil {
+			toSubscribe[personalChannel] = personalOptions
 		}
-		personalChannel, personalOptions, err := h.personalChannelSubscription(userID)
-		if err != nil {
-			return centrifuge.DisconnectServerError
-		}
-		toSubscribe[personalChannel] = personalOptions
 	}
 	for channel, opts := range subs {
 		if _, ok := toSubscribe[channel]; !ok {
 			toSubscribe[channel] = opts
 		}
 	}
-	return subscribeChannels(c, toSubscribe)
+	return toSubscribe, err
+}
+
+// reboundChannelsExceedLimit reports whether a rebind of c to userID and the subscribe which follows it take c over
+// client.channel_limit. The channels c keeps are counted first: a rebind to no user first drops the channels which
+// unsubscribeNotAnonymous drops, so those are not counted. Then each channel of subscribeRebound which c does not keep is
+// counted. A personal channel which cannot be resolved is not counted, as subscribeRebound disconnects for it. The limit
+// is the one the node runs with, read at Setup. Without a limit it reports false.
+func (h *Handler) reboundChannelsExceedLimit(
+	c rebindableClient,
+	userID string,
+	subs map[string]centrifuge.SubscribeOptions,
+	cfg *config.Config,
+) bool {
+	limit := h.runningChannelLimit
+	if limit <= 0 {
+		return false
+	}
+	toSubscribe, _ := h.reboundChannels(cfg, userID, subs)
+	channels := c.ChannelsWithContext()
+	kept := func(channel string, source uint8) bool {
+		return userID != "" || h.keepsAnonymous(channel, source)
+	}
+	count := 0
+	for channel, chCtx := range channels {
+		if kept(channel, chCtx.Source) {
+			count++
+		}
+	}
+	for channel := range toSubscribe {
+		if chCtx, ok := channels[channel]; ok && kept(channel, chCtx.Source) {
+			continue
+		}
+		count++
+	}
+	return count > limit
 }
 
 // restorePersonalChannel subscribes a connection with a user to its personal channel when it is not subscribed to it. A
@@ -462,7 +553,7 @@ func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	if err != nil {
 		return nil
 	}
-	return subscribeChannels(c, map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions})
+	return h.subscribeRestoredPersonal(c, personalChannel, personalOptions)
 }
 
 // subscribeChannels subscribes c to the channels of toSubscribe which it is not subscribed to yet.

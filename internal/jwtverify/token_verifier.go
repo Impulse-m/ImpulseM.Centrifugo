@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 )
 
 type Verifier interface {
@@ -41,6 +42,9 @@ type ConnectToken struct {
 	Generation uint64
 	// IssuedAt is a Unix time in seconds the token was issued at (iat claim). Zero when absent.
 	IssuedAt int64
+	// FilterTemplateClaims are the values of the claims which server tags filter templates refer to.
+	// Zero when no namespace has a template.
+	FilterTemplateClaims filtertemplate.Claims
 }
 
 type SubscribeToken struct {

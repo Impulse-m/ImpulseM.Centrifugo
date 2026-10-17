@@ -72,8 +72,8 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 }
 
 // RevokeToken revokes session (uid claim of connection tokens) on all nodes. Connections of user
-// with this session are disconnected when user is set. Without user only connect and refresh
-// checks apply.
+// with this session are disconnected when user is set. Without user the node also sweeps its
+// local connections in the background and disconnects those which carry this session.
 func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *RevokeTokenResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "revoke_token")
 

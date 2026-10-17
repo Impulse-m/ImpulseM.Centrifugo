@@ -95,6 +95,9 @@ func (c Config) Validate() error {
 	if err := validateChannelOptions(c.Channel.WithoutNamespace, c.Channel.HistoryMetaTTL, proxyNames, c); err != nil {
 		return fmt.Errorf("in channel.without_namespace: %v", err)
 	}
+	if err := validateServerTagsFilterTemplate("", c.Channel.WithoutNamespace); err != nil {
+		return err
+	}
 
 	if err := validateRpcOptions(c.RPC.WithoutNamespace, proxyNames); err != nil {
 		return fmt.Errorf("in rpc.without_namespace: %v", err)
@@ -230,6 +233,9 @@ func validateNamespace(ns configtypes.ChannelNamespace, globalHistoryMetaTTL con
 		return fmt.Errorf("invalid namespace name – %s (must match %s regular expression)", name, namePattern)
 	}
 	if err := validateChannelOptions(ns.ChannelOptions, globalHistoryMetaTTL, proxyNames, cfg); err != nil {
+		return err
+	}
+	if err := validateServerTagsFilterTemplate(name, ns.ChannelOptions); err != nil {
 		return err
 	}
 	return nil

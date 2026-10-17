@@ -3,6 +3,7 @@ package metrics
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -239,9 +240,22 @@ var rpcRegistryRefusedReasons = [...]string{
 	RPCRegistryRefusedMemory,
 }
 
-// RPCRegistryInflightBytes is the bytes of registry calls in flight on the node, by the cost of admission. It is changed by
-// the fork metrics setup, and is nil when the metrics are not initialised.
-var RPCRegistryInflightBytes prometheus.Gauge
+// RPCRegistryInflightBytes is the bytes of registry calls in flight on the node, by the cost of admission. It is a gauge
+// func which reads the bound source at scrape time, so a call does not write it. It is set by the fork metrics setup, and
+// is nil when the metrics are not initialised.
+var RPCRegistryInflightBytes prometheus.Collector
+
+// rpcRegistryInflightSource is the reader of the bytes in flight, bound by the admission which the registry runs.
+var rpcRegistryInflightSource atomic.Pointer[func() int64]
+
+// readRPCRegistryInflight returns the bytes in flight of the bound admission, or zero when none is bound.
+func readRPCRegistryInflight() float64 {
+	read := rpcRegistryInflightSource.Load()
+	if read == nil {
+		return 0
+	}
+	return float64((*read)())
+}
 
 // RPCRegistryAdmissionRefusalsTotal counts the registry calls which admission refused, by reason. It is set by the fork
 // metrics setup, and is nil when the metrics are not initialised.
@@ -249,7 +263,6 @@ var RPCRegistryAdmissionRefusalsTotal *prometheus.CounterVec
 
 // RPCRegistryAdmissionMetrics holds the admission metrics, resolved once. A nil value does nothing.
 type RPCRegistryAdmissionMetrics struct {
-	inflightBytes   prometheus.Gauge
 	refusedInflight prometheus.Counter
 	refusedMemory   prometheus.Counter
 }
@@ -260,19 +273,19 @@ func NewRPCRegistryAdmissionMetrics() *RPCRegistryAdmissionMetrics {
 		return nil
 	}
 	return &RPCRegistryAdmissionMetrics{
-		inflightBytes:   RPCRegistryInflightBytes,
 		refusedInflight: RPCRegistryAdmissionRefusalsTotal.WithLabelValues(RPCRegistryRefusedInflight),
 		refusedMemory:   RPCRegistryAdmissionRefusalsTotal.WithLabelValues(RPCRegistryRefusedMemory),
 	}
 }
 
-// AddInflight changes the bytes of calls in flight by delta. A delta is order-independent, so concurrent charges and
-// releases leave the gauge at the sum of the calls in flight.
-func (m *RPCRegistryAdmissionMetrics) AddInflight(delta int64) {
+// BindInflight makes the in-flight gauge read the bytes in flight by read at each scrape. A call does not write the gauge,
+// so the admission path costs no shared write for it. The admission of a registry binds its own reader when it is built,
+// so the last admission built is the one read.
+func (m *RPCRegistryAdmissionMetrics) BindInflight(read func() int64) {
 	if m == nil {
 		return
 	}
-	m.inflightBytes.Add(float64(delta))
+	rpcRegistryInflightSource.Store(&read)
 }
 
 // RefusedInflight counts one call which the in-flight budget refused.

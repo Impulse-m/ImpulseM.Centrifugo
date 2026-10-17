@@ -50,7 +50,7 @@ type forkRegistry struct {
 	rpcRegistryDedupNotifications *prometheus.CounterVec
 	rpcRegistryDedupWakes         *prometheus.CounterVec
 	rpcRegistryDedupWakeWatchers  prometheus.Gauge
-	rpcRegistryInflightBytes      prometheus.Gauge
+	rpcRegistryInflightBytes      prometheus.Collector
 	rpcRegistryAdmissionRefusals  *prometheus.CounterVec
 }
 
@@ -345,13 +345,13 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupNotifications.WithLabelValues(op, "error")
 	}
 
-	m.rpcRegistryInflightBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+	m.rpcRegistryInflightBytes = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "inflight_bytes",
 		Help:        "Bytes of RPC method registry calls in flight on the node, by the cost of admission. Zero when rpc.registry.max_inflight_bytes is off.",
 		ConstLabels: constLabels,
-	})
+	}, readRPCRegistryInflight)
 
 	m.rpcRegistryAdmissionRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,

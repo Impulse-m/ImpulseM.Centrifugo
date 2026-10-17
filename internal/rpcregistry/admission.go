@@ -70,6 +70,7 @@ func NewAdmission(cfg configtypes.RPCRegistry, m *metrics.RPCRegistryAdmissionMe
 	}
 	a.sampledAt.Store(admissionUnsampled)
 	a.sampleFunc = a.readRuntimeMemory
+	m.BindInflight(a.inflight.Load)
 	return a
 }
 
@@ -94,7 +95,6 @@ func (a *Admission) Release(cost int64) {
 		return
 	}
 	a.inflight.Add(-cost)
-	a.counters.AddInflight(-cost)
 }
 
 // charge adds cost to the bytes in flight when the sum stays within the budget. It is a CAS loop, so a sum which is
@@ -106,7 +106,6 @@ func (a *Admission) charge(cost int64) bool {
 			return false
 		}
 		if a.inflight.CompareAndSwap(current, current+cost) {
-			a.counters.AddInflight(cost)
 			return true
 		}
 	}

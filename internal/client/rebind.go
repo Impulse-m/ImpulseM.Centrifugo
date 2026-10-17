@@ -111,7 +111,7 @@ func (h *Handler) refreshWithoutRecord(
 	if token.Meta != nil {
 		setStorageMeta(c, token.Meta)
 	}
-	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true}, nil
+	return h.refreshReply(token, identity, class, false), RefreshExtra{Subs: token.Subs, CheckSubs: true, FilterTemplateClaims: token.FilterTemplateClaims}, nil
 }
 
 // refreshReply returns the reply of a refresh which keeps or moves the identity of a connection. The user and the auth
@@ -240,6 +240,12 @@ func (h *Handler) onRefreshRebind(
 	if newUser != "" && newUser != oldUser && !h.userConnectAllowed(newUser) {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorTooManyRequests
 	}
+	// The templates of the subscriptions of the new identity are checked before anything moves, so a refusal leaves the
+	// connection as it was.
+	filters, templateErr := h.checkReboundFilters(c, verified, newUser)
+	if templateErr != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, templateErr
+	}
 	// The rate limit state of the new user is attached before the rebind, and detached again when it fails.
 	// Attaching releases the state of the previous user, so only a connection without a user is detached.
 	if newUser == "" {
@@ -286,6 +292,10 @@ func (h *Handler) onRefreshRebind(
 	}
 	runTestHook(&testHookRebound, c)
 	h.syncSessionConnection(c, rec, newUser, identity)
+	// The values of the templates move with the user once the rebind is applied, see commitRebindFilters.
+	if err := h.commitRebindFilters(c, filters); err != nil {
+		return centrifuge.RefreshReply{}, RefreshExtra{}, err
+	}
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
@@ -298,7 +308,7 @@ func (h *Handler) onRefreshRebind(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, revokeError(c.ID(), verified.UserID, result, centrifuge.DisconnectExpired)
 	}
 
-	if err := h.subscribeRebound(c, newUser, verified.Subs); err != nil {
+	if err := h.subscribeRebound(c, newUser, filters.subs); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
 	if verified.Meta != nil {
@@ -356,7 +366,7 @@ func (h *Handler) refreshSameIdentity(
 		setStorageMeta(c, verified.Meta)
 	}
 	reply := h.refreshReply(verified, identity, class, h.replyIdentityOn(cfg))
-	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true}, nil
+	return reply, RefreshExtra{Subs: verified.Subs, CheckSubs: true, FilterTemplateClaims: verified.FilterTemplateClaims}, nil
 }
 
 // rebindAllowed reports whether a connection of class from may move to class to. Downgrades of an
@@ -448,7 +458,8 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 // its personal channel, and the single connection of the user is enforced first. The channels the connection has
 // already are kept. The subscriptions are not checked against the token channels of the connection, so a refresh
 // does not disconnect it. A personal channel which cannot be resolved disconnects the connection after the rebind,
-// which leaves no half-moved connection: a disconnect ends the connection and releases what it holds.
+// which leaves no half-moved connection: a disconnect ends the connection and releases what it holds. The templates
+// of the subscriptions are applied to them, see reboundTemplateSubscriptions.
 func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[string]centrifuge.SubscribeOptions) error {
 	cfg := h.cfgContainer.ConfigRef()
 	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
@@ -459,6 +470,9 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 	toSubscribe, err := h.reboundChannels(cfg, userID, subs)
 	if err != nil {
 		return centrifuge.DisconnectServerError
+	}
+	if err := h.reboundTemplateSubscriptions(c, toSubscribe); err != nil {
+		return err
 	}
 	return subscribeChannels(c, toSubscribe)
 }
@@ -539,7 +553,7 @@ func (h *Handler) restorePersonalChannel(c rebindableClient) error {
 	if err != nil {
 		return nil
 	}
-	return subscribeChannels(c, map[string]centrifuge.SubscribeOptions{personalChannel: personalOptions})
+	return h.subscribeRestoredPersonal(c, personalChannel, personalOptions)
 }
 
 // subscribeChannels subscribes c to the channels of toSubscribe which it is not subscribed to yet.

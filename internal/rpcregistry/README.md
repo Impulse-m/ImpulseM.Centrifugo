@@ -204,6 +204,12 @@ The request and the reply of the exchange are bytes the issuer defines: the serv
 
 The rotation of the refresh token and the grace the issuer keeps for the previous one belong to the issuer. The server does not store or check refresh tokens.
 
+The issuer keeps accepting a consumed refresh token for a grace, and answers it with the same rotated refresh token and a fresh access token, so a client whose reply was lost, or which lost a race with another client of the same installation, recovers by presenting the token it holds again. The issuer publishes the grace in seconds in its exchange reply; the SDKs retry a refused token until it has passed and declare the session dead only then (the SDK's grace setting, else 30 s, when the issuer publishes none). An issuer without a grace makes a lost reply a dead session. Size the issuer for the renewals: they mint at connections / (0.8 x ttl) per second, and each mint is a rotation write.
+
+The issuer refuses a refresh token with any gRPC status and the `app-type` trailer (`rpc.registry.app_error.type_key`), for example `REFRESH_TOKEN_REFUSED`. The SDKs classify the refusal by that name, from a list the app configures, never by the protocol code or the application code. No `grpc_status_to_code_transforms` entry is needed.
+
+The `meta` claim of the access token is the connection's attribution: it is stored at connect, replaced at a refresh or rebind whose token carries the claim (a token without it keeps the attribution the connection has, as upstream's refresh does; an issuer that wants to drop it sends an empty object), forwarded to proxies with `include_connection_meta`, and read by backends from the `authorization: Bearer` token of non-anonymous calls. The exchange call is anonymous, so its attribution is in the request the issuer defined.
+
 ### Known gaps
 
 * A server API subscription which commits while a downgrade to anonymous runs can stay on the connection until its next refresh or disconnect. The channels of the user are dropped before the identity moves and again after it moves, so only a subscription which commits after the second pass is left. A client command cannot do this with one command at a time per connection, but a server API subscription does not go through that queue.

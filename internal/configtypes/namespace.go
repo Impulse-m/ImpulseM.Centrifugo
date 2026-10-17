@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 )
 
 const (
@@ -130,6 +131,10 @@ type ChannelOptions struct {
 	// AllowTagsFilter enables tags filtering for channels in namespace. Clients can pass tags filter in subscribe request.
 	// When tags filter is set only messages with matching tags will be delivered to the client.
 	AllowTagsFilter bool `mapstructure:"allow_tags_filter" json:"allow_tags_filter" envconfig:"allow_tags_filter" yaml:"allow_tags_filter" toml:"allow_tags_filter" doc:"Allows clients to pass a tags filter on subscribe so only publications with matching tags are delivered to them."`
+
+	// ServerTagsFilterTemplate is a server tags filter applied to every subscription in the namespace,
+	// with values of the connection token claims, user and client rendered in.
+	ServerTagsFilterTemplate ServerTagsFilterTemplate `mapstructure:"server_tags_filter_template" json:"server_tags_filter_template" envconfig:"server_tags_filter_template" yaml:"server_tags_filter_template" toml:"server_tags_filter_template" doc:"Server tags filter applied to every subscription in the namespace, with values of the connection token claims, the user and the client rendered in. Combined with an explicit server tags filter by and. The server API subscribe is refused on such channels."`
 
 	// DeltaPublish enables delta publish mechanism for all messages published in namespace channels
 	// without explicit flag usage in publish API request. Setting this option does not guarantee that
@@ -282,4 +287,6 @@ type SharedPollConfig struct {
 
 type Compiled struct {
 	CompiledChannelRegex *regexp.Regexp `json:"-" yaml:"-" toml:"-" envconfig:"-"`
+	// ServerTagsFilterTemplate is the compiled server_tags_filter_template, nil when there is none.
+	ServerTagsFilterTemplate *filtertemplate.Template `json:"-" yaml:"-" toml:"-" envconfig:"-"`
 }

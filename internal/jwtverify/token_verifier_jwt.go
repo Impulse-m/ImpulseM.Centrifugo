@@ -748,6 +748,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 	ct.AuthClass = authClass
 	ct.Session = verifier.sessionFromClaims(token.Claims(), claims.RegisteredClaims)
 	ct.Generation = verifier.generationFromClaims(token.Claims())
+	ct.FilterTemplateClaims = verifier.filterTemplateClaims(token.Claims())
 	if claims.RegisteredClaims.IssuedAt != nil {
 		ct.IssuedAt = claims.RegisteredClaims.IssuedAt.Unix()
 	}

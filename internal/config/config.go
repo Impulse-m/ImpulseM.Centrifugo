@@ -143,6 +143,12 @@ type Config struct {
 	// "" for channels without namespace, with defaults applied. Set when the
 	// config is prepared for a Container, see ChannelOptionsRef.
 	namespaceOptions map[string]*configtypes.ChannelOptions
+
+	// serverTagsFilterClaims is the sorted union of the claim paths of the server tags filter templates,
+	// and hasServerTagsFilterTemplates tells whether any of them has a template. Set when the config is
+	// prepared for a Container, see ServerTagsFilterClaims.
+	serverTagsFilterClaims       []string
+	hasServerTagsFilterTemplates bool
 }
 
 type Meta struct {

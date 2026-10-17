@@ -33,18 +33,32 @@ func TestRPCDedupWakeupExplicitFalseFromEnv(t *testing.T) {
 }
 
 // A config which loaded before the wakeup was on by default, with redis enabled and a waiter cap out of range, and no
-// wakeup switch, must keep loading. The cap is replaced by the default with a warning.
+// wakeup switch, must keep loading. A cap above the maximum becomes the maximum, and a cap below the minimum becomes the
+// default, each with a warning.
 func TestRPCDedupWakeupCapOutOfRangeWithoutSwitchLoads(t *testing.T) {
-	configFile := filepath.Join(t.TempDir(), "config.json")
-	content := `{"rpc": {"registry": {"dedup": {"redis": {"enabled": true, "address": ["localhost:6379"], "prefix": "centrifugo", "wakeup": {"max_waiter_nodes": 2000}}}}}}`
-	require.NoError(t, os.WriteFile(configFile, []byte(content), 0600))
+	tests := []struct {
+		name       string
+		maxWaiters string
+		expected   int
+	}{
+		{name: "above the maximum", maxWaiters: "2000", expected: 1024},
+		{name: "zero", maxWaiters: "0", expected: 64},
+		{name: "negative", maxWaiters: "-3", expected: 64},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configFile := filepath.Join(t.TempDir(), "config.json")
+			content := `{"rpc": {"registry": {"dedup": {"redis": {"enabled": true, "address": ["localhost:6379"], "prefix": "centrifugo", "wakeup": {"max_waiter_nodes": ` + test.maxWaiters + `}}}}}}`
+			require.NoError(t, os.WriteFile(configFile, []byte(content), 0600))
 
-	conf, meta := getConfig(t, configFile)
+			conf, meta := getConfig(t, configFile)
 
-	require.True(t, conf.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
-	require.Equal(t, 64, conf.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
-	require.NoError(t, validateRPCDedupRedis(conf, conf.RPC.Registry.Dedup.Redis))
-	require.Len(t, meta.DeprecationWarnings, 1)
+			require.True(t, conf.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
+			require.Equal(t, test.expected, conf.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
+			require.NoError(t, validateRPCDedupRedis(conf, conf.RPC.Registry.Dedup.Redis))
+			require.Len(t, meta.DeprecationWarnings, 1)
+		})
+	}
 }
 
 // An explicit wakeup switch keeps the cap, and validation refuses it out of range.

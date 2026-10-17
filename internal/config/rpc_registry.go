@@ -38,17 +38,19 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 
 // The key and the environment variable of the wakeup switch of the dedup Redis.
 const (
-	rpcDedupWakeupEnabledKey = "rpc.registry.dedup.redis.wakeup.enabled"
-	rpcDedupWakeupEnabledEnv = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
+	rpcDedupWakeupEnabledKey  = "rpc.registry.dedup.redis.wakeup.enabled"
+	rpcDedupWakeupEnabledEnv  = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
+	rpcDedupMaxWaiterNodesKey = "rpc.registry.dedup.redis.wakeup.max_waiter_nodes"
 	// defaultRPCDedupMaxWaiterNodes is the default of rpc.registry.dedup.redis.wakeup.max_waiter_nodes, which is the
 	// default tag of configtypes.RPCDedupWakeup.
 	defaultRPCDedupMaxWaiterNodes = 64
 )
 
-// fallbackRPCDedupWakeupCap replaces a waiter cap out of range with its default when neither the file nor the
-// environment sets the wakeup switch, so the wakeup is on by default only. The wakeup was off by default before, and a
-// cap set for it was never checked, so a config which loaded before must keep loading. Such a cap is replaced here, and
-// the replacement is returned as a warning. An explicit switch keeps the cap, which is then checked by validation.
+// fallbackRPCDedupWakeupCap replaces a waiter cap out of range when neither the file nor the environment sets the
+// wakeup switch, so the wakeup is on by default only. The wakeup was off by default before, and a cap set for it was
+// never checked, so a config which loaded before must keep loading. A cap above the maximum becomes the maximum, and a
+// cap below the minimum becomes the default. The replacement is returned as a warning. An explicit switch keeps the
+// cap, which is then checked by validation.
 func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
 	if v.InConfig(rpcDedupWakeupEnabledKey) {
 		return nil
@@ -57,12 +59,27 @@ func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
 		return nil
 	}
 	wakeup := &conf.RPC.Registry.Dedup.Redis.Wakeup
-	if wakeup.MaxWaiterNodes >= minRPCDedupMaxWaiterNodes && wakeup.MaxWaiterNodes <= maxRPCDedupMaxWaiterNodes {
+	// A zero from the file is already the default by the default tag of the envconfig pass, so the file value is read
+	// from viper to see it.
+	offending := wakeup.MaxWaiterNodes
+	if v.InConfig(rpcDedupMaxWaiterNodesKey) && !isRPCDedupMaxWaiterNodesInRange(v.GetInt(rpcDedupMaxWaiterNodesKey)) {
+		offending = v.GetInt(rpcDedupMaxWaiterNodesKey)
+	}
+	if isRPCDedupMaxWaiterNodesInRange(offending) {
 		return nil
 	}
-	warning := fmt.Sprintf("rpc.registry.dedup.redis.wakeup.max_waiter_nodes is %d, out of range, and is set to %d, as the wakeup is on by default; set rpc.registry.dedup.redis.wakeup.enabled to choose", wakeup.MaxWaiterNodes, defaultRPCDedupMaxWaiterNodes)
-	wakeup.MaxWaiterNodes = defaultRPCDedupMaxWaiterNodes
+	replacement := defaultRPCDedupMaxWaiterNodes
+	if offending > maxRPCDedupMaxWaiterNodes {
+		replacement = maxRPCDedupMaxWaiterNodes
+	}
+	warning := fmt.Sprintf("rpc.registry.dedup.redis.wakeup.max_waiter_nodes is %d, out of range, and is set to %d, as the wakeup is on by default; set rpc.registry.dedup.redis.wakeup.enabled to choose", offending, replacement)
+	wakeup.MaxWaiterNodes = replacement
 	return []string{warning}
+}
+
+// isRPCDedupMaxWaiterNodesInRange reports whether a waiter cap is within the bounds which validation accepts.
+func isRPCDedupMaxWaiterNodesInRange(maxWaiterNodes int) bool {
+	return maxWaiterNodes >= minRPCDedupMaxWaiterNodes && maxWaiterNodes <= maxRPCDedupMaxWaiterNodes
 }
 
 // LoadRPCRegistryFile reads the RPC registry file at path. The format is chosen by the

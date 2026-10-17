@@ -304,6 +304,24 @@ func TestRPCRegistryLimitWarnings(t *testing.T) {
 				cfg.RPC.Registry.Methods[0].MaxResponseBytes = 1048576
 			},
 		},
+		{
+			name: "admission cost over the budget warns",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.MessageSizeLimit = 524288
+				cfg.RPC.Registry.MaxInflightBytes = 1310720
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 524288
+			},
+			wantWarnings: []string{`method "users.getUser": a request of max_request_bytes 524288 costs 1572864, over max_inflight_bytes (1310720)`},
+		},
+		{
+			name: "hinted method admission cost is not checked",
+			modify: func(cfg *Config) {
+				cfg.WebSocket.MessageSizeLimit = 524288
+				cfg.RPC.Registry.MaxInflightBytes = 1310720
+				cfg.RPC.Registry.Methods[0].MaxRequestBytes = 524288
+				cfg.RPC.Registry.Methods[0].ResponseSizeHint = &configtypes.RPCResponseSizeHint{RequestField: 3}
+			},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

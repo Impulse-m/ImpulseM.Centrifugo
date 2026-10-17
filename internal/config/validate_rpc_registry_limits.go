@@ -163,10 +163,11 @@ func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RP
 	return nil
 }
 
-// rpcRegistryLimitWarnings returns a warning for each method limit which the transports or the reply queue of the node
-// cannot carry. The method still serves every request under the transport limit and every reply under the queue limit,
-// and only its own bound is out of reach, so these are warnings and not errors: one registry file shared by fleets with
-// different transports is the expected case. The node limits come from the whole config, so this is not a file check.
+// rpcRegistryLimitWarnings returns a warning for each method limit which the transports, the reply queue of the node or
+// the admission budget cannot carry. The method still serves every request under the transport limit and every reply
+// under the queue limit, and only its own bound is out of reach, so these are warnings and not errors: one registry file
+// shared by fleets with different transports is the expected case. The node limits come from the whole config, so this
+// is not a file check.
 func rpcRegistryLimitWarnings(c Config, file configtypes.RPCRegistryFile) []string {
 	var warnings []string
 	targets := rpcTargetsByName(file)
@@ -176,8 +177,26 @@ func rpcRegistryLimitWarnings(c Config, file configtypes.RPCRegistryFile) []stri
 		if c.Client.QueueMaxSize > 0 && limits.MaxResponseBytes > c.Client.QueueMaxSize {
 			warnings = append(warnings, fmt.Sprintf("rpc registry method %q: max_response_bytes %d exceeds client.queue_max_size (%d): a reply of that size would disconnect the client as slow", method.Method, limits.MaxResponseBytes, c.Client.QueueMaxSize))
 		}
+		warning := rpcAdmissionCostWarning(c.RPC.Registry.MaxInflightBytes, method, limits)
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
 	}
 	return warnings
+}
+
+// rpcAdmissionCostWarning returns the warning of a method whose full-size request costs more than the in-flight budget,
+// or the empty string. A hinted method is not checked: its response bound follows the request, so a full-size request
+// with a small hint costs less than the limit. The cost of an unhinted call is its request bytes plus max_response_bytes.
+func rpcAdmissionCostWarning(budget int64, method configtypes.RPCMethod, limits configtypes.RPCMethodLimits) string {
+	if budget <= 0 || method.ResponseSizeHint != nil {
+		return ""
+	}
+	cost := int64(limits.MaxRequestBytes) + int64(limits.MaxResponseBytes)
+	if cost <= budget {
+		return ""
+	}
+	return fmt.Sprintf("rpc registry method %q: a request of max_request_bytes %d costs %d, over max_inflight_bytes (%d): requests of that size are always refused", method.Method, limits.MaxRequestBytes, cost, budget)
 }
 
 // rpcRequestLimitWarnings returns the warnings of one method request limit over the message limit of each bidirectional

@@ -61,6 +61,22 @@ func TestRPCDedupWakeupCapOutOfRangeWithoutSwitchLoads(t *testing.T) {
 	}
 }
 
+// A cap set by the environment overrides the file, so an out-of-range file cap is not read when the environment sets the
+// cap: the environment value is kept, with no warning.
+func TestRPCDedupWakeupCapFromEnvOverridesOutOfRangeFile(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	content := `{"rpc": {"registry": {"dedup": {"redis": {"enabled": true, "address": ["localhost:6379"], "prefix": "centrifugo", "wakeup": {"max_waiter_nodes": 5000}}}}}}`
+	require.NoError(t, os.WriteFile(configFile, []byte(content), 0600))
+	t.Setenv("CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_MAX_WAITER_NODES", "100")
+
+	conf, meta := getConfig(t, configFile)
+
+	require.True(t, conf.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
+	require.Equal(t, 100, conf.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
+	require.NoError(t, validateRPCDedupRedis(conf, conf.RPC.Registry.Dedup.Redis))
+	require.Empty(t, meta.DeprecationWarnings)
+}
+
 // An explicit wakeup switch keeps the cap, and validation refuses it out of range.
 func TestRPCDedupWakeupCapOutOfRangeWithSwitchIsRefused(t *testing.T) {
 	configFile := filepath.Join(t.TempDir(), "config.json")

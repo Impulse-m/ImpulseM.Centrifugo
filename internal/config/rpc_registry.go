@@ -41,6 +41,7 @@ const (
 	rpcDedupWakeupSwitchPath   = "rpc.registry.dedup.redis.wakeup.enabled"            //nolint:gosec // A config key, not a credential.
 	rpcDedupWakeupSwitchVar    = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED" //nolint:gosec // An environment variable name, not a credential.
 	rpcDedupMaxWaiterNodesPath = "rpc.registry.dedup.redis.wakeup.max_waiter_nodes"
+	rpcDedupMaxWaiterNodesVar  = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_MAX_WAITER_NODES" //nolint:gosec // An environment variable name, not a credential.
 	// defaultRPCDedupMaxWaiterNodes is the default of rpc.registry.dedup.redis.wakeup.max_waiter_nodes, which is the
 	// default tag of configtypes.RPCDedupWakeup.
 	defaultRPCDedupMaxWaiterNodes = 64
@@ -50,7 +51,8 @@ const (
 // wakeup switch, so the wakeup is on by default only. The wakeup was off by default before, and a cap set for it was
 // never checked, so a config which loaded before must keep loading. A cap above the maximum becomes the maximum, and a
 // cap below the minimum becomes the default. The replacement is returned as a warning. An explicit switch keeps the
-// cap, which is then checked by validation.
+// cap, which is then checked by validation. A cap set by the environment overrides the file, so the file value is not
+// read then.
 func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
 	if !conf.RPC.Registry.Dedup.Redis.Enabled {
 		return nil
@@ -65,7 +67,8 @@ func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
 	// A zero from the file is already the default by the default tag of the envconfig pass, so the file value is read
 	// from viper to see it.
 	offending := wakeup.MaxWaiterNodes
-	if v.InConfig(rpcDedupMaxWaiterNodesPath) && !isRPCDedupMaxWaiterNodesInRange(v.GetInt(rpcDedupMaxWaiterNodesPath)) {
+	_, capSetByEnv := os.LookupEnv(rpcDedupMaxWaiterNodesVar)
+	if !capSetByEnv && v.InConfig(rpcDedupMaxWaiterNodesPath) && !isRPCDedupMaxWaiterNodesInRange(v.GetInt(rpcDedupMaxWaiterNodesPath)) {
 		offending = v.GetInt(rpcDedupMaxWaiterNodesPath)
 	}
 	if isRPCDedupMaxWaiterNodesInRange(offending) {

@@ -51,7 +51,7 @@ func rpcTargetsByName(file configtypes.RPCRegistryFile) map[string]configtypes.R
 }
 
 // validateRPCAdmissionBudget checks the admission keys. The budget must not be negative, and a method whose smallest
-// cost is over the budget could never run.
+// cost is over the budget could never run, since every call costs at least its response bound.
 func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
 	if reg.MaxInflightBytes < 0 {
 		return fmt.Errorf("rpc.registry.max_inflight_bytes: must not be negative, got %d", reg.MaxInflightBytes)
@@ -70,16 +70,16 @@ func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RP
 		limits := configtypes.ResolveRPCMethodLimits(method, targets[method.Target], file.Defaults)
 		cost := rpcSmallestAdmissionCost(method, limits)
 		if cost > reg.MaxInflightBytes {
-			return fmt.Errorf("rpc registry method %q: cost %d bytes exceeds rpc.registry.max_inflight_bytes (%d): the method can never run", method.Method, cost, reg.MaxInflightBytes)
+			return fmt.Errorf("rpc registry method %q: a call costs at least %d bytes, which exceeds rpc.registry.max_inflight_bytes (%d): the method can never run", method.Method, cost, reg.MaxInflightBytes)
 		}
 	}
 	return nil
 }
 
-// rpcSmallestAdmissionCost returns the smallest cost a call of method can be admitted with: its request limit plus its
-// response bound. A method without a response size hint always reserves its response limit. A hinted method reserves
-// the hint, so a call which reads one byte reserves the overhead and that byte, and the method can run under a budget
-// below its response limit.
+// rpcSmallestAdmissionCost returns a lower bound of the cost a call of method can be admitted with. A call costs its
+// request bytes plus its response bound, and a request may be empty, so the smallest cost is the smallest response
+// bound: the response limit, or for a hinted method the overhead and one byte, the smallest hint which bounds a reply.
+// The request limit is not added: a call under the budget is admitted whatever its request size.
 func rpcSmallestAdmissionCost(method configtypes.RPCMethod, limits configtypes.RPCMethodLimits) int64 {
 	response := limits.MaxResponseBytes
 	if method.ResponseSizeHint != nil {
@@ -88,7 +88,7 @@ func rpcSmallestAdmissionCost(method configtypes.RPCMethod, limits configtypes.R
 			response = hinted
 		}
 	}
-	return int64(limits.MaxRequestBytes) + int64(response)
+	return int64(response)
 }
 
 // validateRPCAffinity checks the affinity routing of the targets: ring_hash and affinity_header come together, the

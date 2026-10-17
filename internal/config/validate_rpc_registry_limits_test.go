@@ -56,7 +56,13 @@ func TestValidateRPCRegistryLimits(t *testing.T) {
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry.MaxInflightBytes = 1000
 			},
-			wantErr: `method "users.getUser": cost 1114112 bytes exceeds rpc.registry.max_inflight_bytes (1000): the method can never run`,
+			wantErr: `method "users.getUser": a call costs at least 1048576 bytes, which exceeds rpc.registry.max_inflight_bytes (1000): the method can never run`,
+		},
+		{
+			name: "method whose response bound fits the budget passes whatever its request size",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.MaxInflightBytes = 1 << 20
+			},
 		},
 		{
 			name: "in-flight budget above the cost of every method passes",
@@ -71,7 +77,7 @@ func TestValidateRPCRegistryLimits(t *testing.T) {
 				cfg.RPC.Registry.MaxInflightBytes = 4 << 20
 				cfg.RPC.Registry.Methods[0].MaxResponseBytes = 8 << 20
 			},
-			wantErr: `method "users.getUser": cost 8454144 bytes exceeds rpc.registry.max_inflight_bytes (4194304): the method can never run`,
+			wantErr: `method "users.getUser": a call costs at least 8388608 bytes, which exceeds rpc.registry.max_inflight_bytes (4194304): the method can never run`,
 		},
 		{
 			name: "hinted method can run under a budget below its response limit",

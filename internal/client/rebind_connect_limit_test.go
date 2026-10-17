@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -120,4 +121,55 @@ func TestRebindUpgradeOfOtherUserTakesItsBucket(t *testing.T) {
 	}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "47", second.UserID())
+}
+
+// TestRebindToNoUserRefusedAtChannelLimit checks that a rebind to no user, to an anonymous or a pending token, is refused
+// before the identity moves when the channels of the token do not fit under client.channel_limit. The connection keeps its
+// identity and its channels, and nothing is rebound. A downgrade counts the channels it keeps, so a channel which the
+// downgrade drops does not count against the limit.
+func TestRebindToNoUserRefusedAtChannelLimit(t *testing.T) {
+	subs := map[string]any{"tok-a": map[string]any{}, "tok-b": map[string]any{}}
+
+	cfg := newRebindTestConfig(configtypes.Rebind{Enabled: true}, configtypes.RateLimitUserCommand{})
+	cfg.Client.ChannelLimit = 1
+	h, _ := newRebindTestHandlerWithConfig(t, cfg)
+
+	// An anonymous connection refreshing to a pending token would take both channels of the token.
+	anonymous, anonymousState := newRebindTestClient("", "anonymous")
+	before := anonymous.ExtState().(*connState).identity.Load()
+	_, _, err := h.OnRefresh(anonymous, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "pending_2fa", revokeTestUUID, map[string]any{"subs": subs}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorLimitExceeded, err)
+	require.Empty(t, anonymousState.rebinds)
+	require.Empty(t, anonymousState.channels)
+	require.Same(t, before, anonymous.ExtState().(*connState).identity.Load())
+
+	// A pending connection which holds a channel of its token refreshes to an anonymous token. The downgrade drops that
+	// channel, so the two channels of the token do not fit under a limit of one, and they do fit under a limit of two.
+	pending, pendingState := newRebindTestClientWithToken("", "42", "pending_2fa")
+	pendingState.channels["tok"] = centrifuge.ChannelContext{Source: subsource.ConnectionToken}
+	before = pending.ExtState().(*connState).identity.Load()
+	_, _, err = h.OnRefresh(pending, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, map[string]any{"subs": subs}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorLimitExceeded, err)
+	require.Empty(t, pendingState.rebinds)
+	require.Len(t, pendingState.channels, 1)
+	require.Contains(t, pendingState.channels, "tok")
+	require.Same(t, before, pending.ExtState().(*connState).identity.Load())
+
+	cfg.Client.ChannelLimit = 2
+	h, _ = newRebindTestHandlerWithConfig(t, cfg)
+	fits, fitsState := newRebindTestClientWithToken("", "42", "pending_2fa")
+	fitsState.channels["tok"] = centrifuge.ChannelContext{Source: subsource.ConnectionToken}
+	_, _, err = h.OnRefresh(fits, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, map[string]any{"subs": subs}),
+	}, nil)
+	require.NoError(t, err)
+	require.Empty(t, fits.UserID())
+	require.Len(t, fitsState.rebinds, 1)
+	require.NotContains(t, fitsState.channels, "tok")
+	require.Contains(t, fitsState.channels, "tok-a")
+	require.Contains(t, fitsState.channels, "tok-b")
 }

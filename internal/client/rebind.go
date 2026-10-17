@@ -228,10 +228,10 @@ func (h *Handler) onRefreshRebind(
 	}
 
 	newUser := coreUserID(nextClass, verified.UserID)
-	// An upgrade subscribes the personal channel and the channels of its token after the identity moves. Core closes a
-	// connection whose subscribe finds client.channel_limit reached, so an upgrade which would not fit is refused here,
-	// while the connection keeps its identity and its channels.
-	if newUser != "" && h.reboundChannelsExceedLimit(c, newUser, verified.Subs, cfg) {
+	// A rebind subscribes the personal channel and the channels of its token after the identity moves. Core closes a
+	// connection whose subscribe finds client.channel_limit reached, so a rebind which would not fit is refused here,
+	// while the connection keeps its identity and its channels. This holds for a rebind to no user too.
+	if h.reboundChannelsExceedLimit(c, newUser, verified.Subs, cfg) {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.ErrorLimitExceeded
 	}
 	oldUser := c.UserID()
@@ -490,10 +490,11 @@ func (h *Handler) reboundChannels(
 	return toSubscribe, err
 }
 
-// reboundChannelsExceedLimit reports whether subscribeRebound would take c over client.channel_limit: the channels it
-// adds to c, which c is not subscribed to yet, on top of the channels c has. A personal channel which cannot be resolved
-// is not counted, as subscribeRebound disconnects for it. The limit is the one the node runs with, read at Setup. Without
-// a limit it reports false.
+// reboundChannelsExceedLimit reports whether a rebind of c to userID and the subscribe which follows it take c over
+// client.channel_limit. The channels c keeps are counted first: a rebind to no user first drops the channels which
+// unsubscribeNotAnonymous drops, so those are not counted. Then each channel of subscribeRebound which c does not keep is
+// counted. A personal channel which cannot be resolved is not counted, as subscribeRebound disconnects for it. The limit
+// is the one the node runs with, read at Setup. Without a limit it reports false.
 func (h *Handler) reboundChannelsExceedLimit(
 	c rebindableClient,
 	userID string,
@@ -505,11 +506,21 @@ func (h *Handler) reboundChannelsExceedLimit(
 		return false
 	}
 	toSubscribe, _ := h.reboundChannels(cfg, userID, subs)
-	count := len(c.ChannelsWithContext())
-	for channel := range toSubscribe {
-		if !c.IsSubscribed(channel) {
+	channels := c.ChannelsWithContext()
+	kept := func(channel string, source uint8) bool {
+		return userID != "" || h.keepsAnonymous(channel, source)
+	}
+	count := 0
+	for channel, chCtx := range channels {
+		if kept(channel, chCtx.Source) {
 			count++
 		}
+	}
+	for channel := range toSubscribe {
+		if chCtx, ok := channels[channel]; ok && kept(channel, chCtx.Source) {
+			continue
+		}
+		count++
 	}
 	return count > limit
 }

@@ -43,6 +43,9 @@ func validateRPCRegistry(c Config) error {
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
 	}
+	if c.RPC.Registry.PendingMaxLifetime.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.pending_2fa_max_lifetime: must not be negative, got %s", c.RPC.Registry.PendingMaxLifetime.ToDuration())
+	}
 	file, err := ResolveRPCRegistry(c.RPC.Registry)
 	if err != nil {
 		return err
@@ -102,15 +105,17 @@ func validateRPCDedup(c Config) error {
 	return nil
 }
 
-// minRPCDedupPollInterval is the shortest fallback poll interval of the wakeup of a duplicate, see
-// rpc.registry.dedup.redis.notification.poll_interval.
-const minRPCDedupPollInterval = 100 * time.Millisecond
+// The bounds of the waiter nodes of a record, see rpc.registry.dedup.redis.wakeup.max_waiter_nodes.
+const (
+	minRPCDedupMaxWaiterNodes = 1
+	maxRPCDedupMaxWaiterNodes = 1024
+)
 
 // validateRPCDedupRedis checks the shared tier of exactly-once RPC: either it reuses the Redis of the engine, or its own
-// Redis configuration is valid and has a prefix.
+// Redis configuration is valid and has a prefix. The wakeup checks its waiter cap only when it is on.
 func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
-	if redis.Notification.Enabled && redis.Notification.PollInterval.ToDuration() < minRPCDedupPollInterval {
-		return fmt.Errorf("rpc.registry.dedup.redis.notification.poll_interval: must be at least %s, got %s", minRPCDedupPollInterval, redis.Notification.PollInterval.ToDuration())
+	if redis.Wakeup.Enabled && !isRPCDedupMaxWaiterNodesInRange(redis.Wakeup.MaxWaiterNodes) {
+		return fmt.Errorf("rpc.registry.dedup.redis.wakeup.max_waiter_nodes: must be between %d and %d, got %d", minRPCDedupMaxWaiterNodes, maxRPCDedupMaxWaiterNodes, redis.Wakeup.MaxWaiterNodes)
 	}
 	if redis.ReuseFromEngine {
 		if c.Engine.Type != "redis" {

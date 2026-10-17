@@ -14,13 +14,8 @@ func RegisterHandlers(
 	extra map[string]centrifuge.NotificationHandler,
 ) {
 	handlers := mergeHandlers(notificationHandlers(node, statsSender, revoker), extra)
-	node.OnNotification(func(event centrifuge.NotificationEvent) {
-		h, ok := handlers[event.Op]
-		if !ok {
-			return
-		}
-		go h(event)
-	})
+	deliveries := newDelivery(handlers, queueSize)
+	node.OnNotification(deliveries.deliver)
 }
 
 func notificationHandlers(

@@ -12,6 +12,24 @@
       "presence_ttl": "30s"
     }
   },
+  "brokers": [
+    {
+      "name": "sample",
+      "enabled": true,
+      "type": "redis",
+      "redis": {
+        "address": ["redis://10.0.0.5:6379"],
+        "prefix": "sample"
+      }
+    }
+  ],
+  "presence_managers": [
+    {
+      "name": "sample",
+      "enabled": true,
+      "type": "memory"
+    }
+  ],
   "client": {
     "allowed_origins": ["http://localhost:3000"],
     "token": {

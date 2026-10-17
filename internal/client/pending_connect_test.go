@@ -30,6 +30,12 @@ func newAuthClassTestHandler(t *testing.T, cfg config.Config) (*Handler, *access
 	t.Helper()
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
+	return newAuthClassTestHandlerOnNode(t, cfg, node)
+}
+
+// newAuthClassTestHandlerOnNode returns a set up handler with cfg, which serves connections of node.
+func newAuthClassTestHandlerOnNode(t *testing.T, cfg config.Config, node *centrifuge.Node) (*Handler, *accessrevoke.Store, *centrifuge.Node) {
+	t.Helper()
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{
@@ -100,7 +106,7 @@ func TestPendingConnectionIsNotInUserIndexAndIsRevocableBySession(t *testing.T) 
 			sessionKey, _ := accessrevoke.Key(revokeTestUUID)
 			require.Len(t, store.SessionConnections().Connections(sessionKey), 1)
 
-			require.NoError(t, revoker.RevokeSession(tt.userID, revokeTestUUID, now, 0))
+			require.NoError(t, revoker.RevokeSession(tt.userID, revokeTestUUID, now, 0, nil))
 			require.Eventually(t, func() bool {
 				return len(node.Hub().Connections()) == 0
 			}, 5*time.Second, 5*time.Millisecond)
@@ -143,7 +149,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 	var revokeErr error
 	hook := func(rebindableClient) {
 		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
-		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0)
+		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0, nil)
 	}
 	testHookConnectTracked.Store(&hook)
 	t.Cleanup(func() { testHookConnectTracked.Store(nil) })

@@ -323,9 +323,9 @@ var RPCRegistryDedupRedisDuration prometheus.Histogram
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
 
-// RPCRegistryDedupRemotePollsTotal counts the polls of the shared tier which the waits for calls on other nodes make.
+// RPCRegistryDedupRemoteReadsTotal counts the reads of the shared tier which the waits for calls on other nodes make.
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
-var RPCRegistryDedupRemotePollsTotal prometheus.Counter
+var RPCRegistryDedupRemoteReadsTotal prometheus.Counter
 
 // RPCRegistryDedupRemoteWaitsTotal counts the waits for calls on other nodes, by how they ended. It is set by the fork
 // metrics setup, and is nil when the metrics are not initialised.
@@ -335,24 +335,38 @@ var RPCRegistryDedupRemoteWaitsTotal *prometheus.CounterVec
 // result. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupNotificationsTotal *prometheus.CounterVec
 
+// RPCRegistryDedupWakesTotal counts the wakes which this node writes for the waiters of its calls, by result. It is set
+// by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupWakesTotal *prometheus.CounterVec
+
+// RPCRegistryDedupWakeWatchers is the number of wake watchers of this node which read the wake streams. It is set by
+// the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupWakeWatchers prometheus.Gauge
+
 // The values of the op label of RPCRegistryDedupNotificationsTotal, one per notification op.
 const (
 	RPCRegistryDedupNotifyCancel = "cancel"
-	RPCRegistryDedupNotifyDone   = "done"
+)
+
+// The values of the result label of RPCRegistryDedupWakesTotal.
+const (
+	rpcRegistryDedupWakeOK    = "ok"
+	rpcRegistryDedupWakeError = "error"
 )
 
 // rpcRegistryDedupWaitEnds are the values of the end label of RPCRegistryDedupRemoteWaitsTotal, which has a series for
 // each of them from the start.
 var rpcRegistryDedupWaitEnds = [...]string{
-	rpcdedup.WatchEndNotified,
+	rpcdedup.WatchEndWoken,
+	rpcdedup.WatchEndChecked,
 	rpcdedup.WatchEndPolled,
 	rpcdedup.WatchEndDeadline,
+	rpcdedup.WatchEndRefused,
 }
 
 // rpcRegistryDedupNotifyOps are the values of the op label of RPCRegistryDedupNotificationsTotal.
 var rpcRegistryDedupNotifyOps = [...]string{
 	RPCRegistryDedupNotifyCancel,
-	RPCRegistryDedupNotifyDone,
 }
 
 // RPCRegistryDedupOutcome is an outcome of a call of exactly-once RPC, the value of the outcome label.
@@ -422,14 +436,17 @@ type RPCRegistryDedupMetrics struct {
 	redisErrors      prometheus.Counter
 	redisDuration    prometheus.Histogram
 	ackDrops         prometheus.Counter
-	remotePolls      prometheus.Counter
-	waitNotified     prometheus.Counter
+	remoteReads      prometheus.Counter
+	waitWoken        prometheus.Counter
+	waitChecked      prometheus.Counter
 	waitPolled       prometheus.Counter
 	waitDeadline     prometheus.Counter
+	waitRefused      prometheus.Counter
 	notifyCancelOK   prometheus.Counter
 	notifyCancelErr  prometheus.Counter
-	notifyDoneOK     prometheus.Counter
-	notifyDoneErr    prometheus.Counter
+	wakesOK          prometheus.Counter
+	wakesErr         prometheus.Counter
+	wakeWatchers     prometheus.Gauge
 }
 
 // NewRPCRegistryDedupMetrics resolves the outcome counters. It returns nil when the metrics are not
@@ -461,28 +478,33 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 			m.bytes[i] = RPCRegistryDedupBytes.WithLabelValues(label)
 		}
 	}
-	m.remotePolls = RPCRegistryDedupRemotePollsTotal
+	m.remoteReads = RPCRegistryDedupRemoteReadsTotal
 	if RPCRegistryDedupRemoteWaitsTotal != nil {
-		m.waitNotified = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndNotified)
+		m.waitWoken = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndWoken)
+		m.waitChecked = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndChecked)
 		m.waitPolled = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndPolled)
 		m.waitDeadline = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndDeadline)
+		m.waitRefused = RPCRegistryDedupRemoteWaitsTotal.WithLabelValues(rpcdedup.WatchEndRefused)
 	}
 	if RPCRegistryDedupNotificationsTotal != nil {
 		m.notifyCancelOK = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyCancel, "ok")
 		m.notifyCancelErr = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyCancel, "error")
-		m.notifyDoneOK = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyDone, "ok")
-		m.notifyDoneErr = RPCRegistryDedupNotificationsTotal.WithLabelValues(RPCRegistryDedupNotifyDone, "error")
 	}
+	if RPCRegistryDedupWakesTotal != nil {
+		m.wakesOK = RPCRegistryDedupWakesTotal.WithLabelValues(rpcRegistryDedupWakeOK)
+		m.wakesErr = RPCRegistryDedupWakesTotal.WithLabelValues(rpcRegistryDedupWakeError)
+	}
+	m.wakeWatchers = RPCRegistryDedupWakeWatchers
 	return m
 }
 
-// WatchPolled counts a poll of the shared tier which a wait for a call on another node makes. It implements
+// WatchRead counts a read of the shared tier which a wait for a call on another node makes. It implements
 // rpcdedup.SharedObserver.
-func (m *RPCRegistryDedupMetrics) WatchPolled() {
+func (m *RPCRegistryDedupMetrics) WatchRead() {
 	if m == nil {
 		return
 	}
-	incCounter(m.remotePolls)
+	incCounter(m.remoteReads)
 }
 
 // WatchEnded counts a wait for a call on another node by how it ended. It implements rpcdedup.SharedObserver.
@@ -491,13 +513,36 @@ func (m *RPCRegistryDedupMetrics) WatchEnded(end string) {
 		return
 	}
 	switch end {
-	case rpcdedup.WatchEndNotified:
-		incCounter(m.waitNotified)
+	case rpcdedup.WatchEndWoken:
+		incCounter(m.waitWoken)
+	case rpcdedup.WatchEndChecked:
+		incCounter(m.waitChecked)
 	case rpcdedup.WatchEndPolled:
 		incCounter(m.waitPolled)
 	case rpcdedup.WatchEndDeadline:
 		incCounter(m.waitDeadline)
+	case rpcdedup.WatchEndRefused:
+		incCounter(m.waitRefused)
 	}
+}
+
+// Woke counts the wakes which this node wrote for a completed call, the written and the failed ones. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) Woke(written int, failed int) {
+	if m == nil {
+		return
+	}
+	addCounter(m.wakesOK, written)
+	addCounter(m.wakesErr, failed)
+}
+
+// WakeWatching counts a wake watcher which starts reading the wake streams (+1) or stops (-1). It implements
+// rpcdedup.BackendObserver.
+func (m *RPCRegistryDedupMetrics) WakeWatching(delta int) {
+	if m == nil || m.wakeWatchers == nil {
+		return
+	}
+	m.wakeWatchers.Add(float64(delta))
 }
 
 // Notified counts a node notification of exactly-once RPC which this node sent, by its op, one of the
@@ -511,10 +556,13 @@ func (m *RPCRegistryDedupMetrics) Notified(op string, ok bool) {
 		incCounter(m.notifyCancelOK)
 	case op == RPCRegistryDedupNotifyCancel:
 		incCounter(m.notifyCancelErr)
-	case op == RPCRegistryDedupNotifyDone && ok:
-		incCounter(m.notifyDoneOK)
-	case op == RPCRegistryDedupNotifyDone:
-		incCounter(m.notifyDoneErr)
+	}
+}
+
+// addCounter adds n to c when it is set.
+func addCounter(c prometheus.Counter, n int) {
+	if c != nil && n > 0 {
+		c.Add(float64(n))
 	}
 }
 

@@ -51,7 +51,7 @@ func TestRefreshWithoutExpiryIsRevocableBySession(t *testing.T) {
 	require.Equal(t, "42", userID)
 	require.Equal(t, accessrevoke.Identity(revokeTestOtherUUID, 0, now), identity)
 
-	require.NoError(t, revoker.RevokeSession("42", revokeTestOtherUUID, now, 0))
+	require.NoError(t, revoker.RevokeSession("42", revokeTestOtherUUID, now, 0, nil))
 	require.Eventually(t, func() bool {
 		return len(node.Hub().Connections()) == 0
 	}, 5*time.Second, 5*time.Millisecond)

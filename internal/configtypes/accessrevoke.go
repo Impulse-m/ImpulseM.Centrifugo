@@ -37,8 +37,8 @@ type AccessRevoke struct {
 	// because of access revocation.
 	DisconnectRate int `mapstructure:"disconnect_rate" default:"1000" json:"disconnect_rate" envconfig:"disconnect_rate" yaml:"disconnect_rate" toml:"disconnect_rate" doc:"A maximum number of live connections disconnected per second on this node because of access revocation."`
 	// DisconnectQueueSize is a size of the queue of pending live disconnects. Disconnects beyond
-	// the queue size are dropped; the refresh check catches them within token lifetime.
-	DisconnectQueueSize int `mapstructure:"disconnect_queue_size" default:"100000" json:"disconnect_queue_size" envconfig:"disconnect_queue_size" yaml:"disconnect_queue_size" toml:"disconnect_queue_size" doc:"A size of the queue of pending live disconnects. Disconnects beyond the queue size are dropped; the refresh check catches them within token lifetime."`
+	// the queue size are dropped and retried by user or session once the queue has room.
+	DisconnectQueueSize int `mapstructure:"disconnect_queue_size" default:"100000" json:"disconnect_queue_size" envconfig:"disconnect_queue_size" yaml:"disconnect_queue_size" toml:"disconnect_queue_size" doc:"A size of the queue of pending live disconnects. Disconnects beyond the queue size are dropped and retried by user or session once the queue has room."`
 	// NotifyRate is a maximum number of access revocation notifications sent to other nodes per second.
 	NotifyRate int `mapstructure:"notify_rate" default:"100" json:"notify_rate" envconfig:"notify_rate" yaml:"notify_rate" toml:"notify_rate" doc:"A maximum number of access revocation notifications sent to other nodes per second."`
 	// DefaultTTL is how long a revocation entry is kept when the request does not set expiration time.

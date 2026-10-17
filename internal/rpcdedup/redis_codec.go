@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/redis/rueidis"
 )
 
 // Record states of a Redis record, the value of field s.
@@ -27,9 +28,11 @@ const (
 	redisFieldUncached = "u"
 )
 
-// maxWaiters is the number of waiter node ids an in-flight record lists. A node beyond it is not registered and relies
-// on its fallback poll. It is the 8 of beginScript.
-const maxWaiters = 8
+// Field names of a wake stream entry: the hashed scope and the decimal msg_id of the record which was written.
+const (
+	redisWakeFieldScope = "s"
+	redisWakeFieldMsgID = "m"
+)
 
 // errMalformedReply is returned for a script reply which the Redis backend does not know. It means a foreign write
 // under the same prefix, and is counted as a Redis error.
@@ -100,10 +103,16 @@ func parseBegin(parts []string) (BeginResult, error) {
 		}
 		return BeginResult{State: BeginCancelled, Record: rec}, nil
 	case "inflight":
-		if len(parts) != 2 || parts[1] == "" {
+		if len(parts) < 2 || parts[1] == "" {
 			return BeginResult{}, errMalformedReply
 		}
-		return BeginResult{State: BeginInFlight, Owner: parts[1]}, nil
+		switch {
+		case len(parts) == 2:
+			return BeginResult{State: BeginInFlight, Owner: parts[1]}, nil
+		case len(parts) == 3 && parts[2] == "full":
+			return BeginResult{State: BeginInFlight, Owner: parts[1], WaitersFull: true}, nil
+		}
+		return BeginResult{}, errMalformedReply
 	case "done":
 		if len(parts) != 4 {
 			return BeginResult{}, errMalformedReply
@@ -181,6 +190,54 @@ func parseComplete(parts []string) (CompleteResult, error) {
 // splitWaiters returns the node ids of a waiter list, none for "".
 func splitWaiters(w string) []string {
 	return strings.Fields(w)
+}
+
+// WakeStreamKey returns the wake stream of nodeID: {prefix}.rpc.wake.{nodeID}. The braces are the Redis Cluster hash
+// tag, so the stream of a node is in one slot. It is in the family of the records, whose key has the brace right after
+// rpc., so the two cannot collide.
+func WakeStreamKey(prefix string, nodeID string) string {
+	return prefix + ".rpc.wake.{" + nodeID + "}"
+}
+
+// wakeEntry is an entry of a wake stream: the key whose record is written. An entry which is malformed has no key, and
+// is still an entry, so that its id is deleted and the cursor passes it.
+type wakeEntry struct {
+	id        string
+	key       Key
+	malformed bool
+}
+
+// parseWakeEntries returns the entries of the XREAD reply of the wake streams, in order, from the decoded reply. An
+// entry without a scope or with a msg_id which is not decimal is malformed: it keeps its id, so it is deleted and the
+// cursor passes it, and it is flagged so that it wakes nothing.
+func parseWakeEntries(streams map[string][]rueidis.XRangeEntry) []wakeEntry {
+	var entries []wakeEntry
+	for _, stream := range streams {
+		for _, entry := range stream {
+			e := wakeEntry{id: entry.ID}
+			key, ok := parseWakeKey(entry.FieldValues)
+			if ok {
+				e.key = key
+			} else {
+				e.malformed = true
+			}
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// parseWakeKey returns the key of the fields of a wake entry: s the scope and m the decimal msg_id.
+func parseWakeKey(fields map[string]string) (Key, bool) {
+	scope, ok := fields[redisWakeFieldScope]
+	if !ok || scope == "" {
+		return Key{}, false
+	}
+	msgID, err := strconv.ParseUint(fields[redisWakeFieldMsgID], 10, 64)
+	if err != nil {
+		return Key{}, false
+	}
+	return Key{Scope: scope, MsgID: msgID}, true
 }
 
 // parseRecord returns the record of the reply fields of a done record: reply, error JSON and the uncached flag.

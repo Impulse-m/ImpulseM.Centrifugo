@@ -24,6 +24,8 @@ import (
 func testRedisDedupConfig(address string, prefix string) configtypes.RPCDedupRedis {
 	return configtypes.RPCDedupRedis{
 		Enabled: true,
+		// The wakeup is set explicitly off: these tests exercise the polling of a remote wait. The wakeup tests replace it.
+		Wakeup: configtypes.RPCDedupWakeup{Enabled: false},
 		RedisPrefixed: configtypes.RedisPrefixed{
 			Prefix: prefix,
 			Redis:  configtypes.Redis{Address: []string{address}},
@@ -267,7 +269,7 @@ func TestRPCDedupRedisRemoteJoinTimeoutCarriesLaterSignal(t *testing.T) {
 	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
 	fingerprint := rpcdedup.Fingerprint("users.slow", []byte("x"))
 	owner := rpcdedup.NewRedis(prefix, nodeB.rpcDedup.connector, 0, nil)
-	begin, err := owner.Begin(context.Background(), key, fingerprint, "node-x", time.Minute, false)
+	begin, err := owner.Begin(context.Background(), key, fingerprint, "node-x", time.Minute, 0)
 	require.NoError(t, err)
 	require.Equal(t, rpcdedup.BeginMiss, begin.State)
 

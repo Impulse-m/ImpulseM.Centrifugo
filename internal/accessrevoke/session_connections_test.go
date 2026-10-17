@@ -92,7 +92,7 @@ func TestSessionConnectionsConcurrentTrackUntrackRevoke(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for r := 0; r < rounds; r++ {
-			_ = revoker.RevokeSession("user-1", sessionIDForTest(r%4), 0, 0)
+			_ = revoker.RevokeSession("user-1", sessionIDForTest(r%4), 0, 0, nil)
 		}
 	}()
 	go func() {
@@ -248,7 +248,7 @@ func TestRevokerRevokeSessionDisconnectsSessionConnections(t *testing.T) {
 			var tracked Tracked
 			store.SessionConnections().Track(pending, &tracked, session)
 
-			require.NoError(t, revoker.RevokeSession(tt.userID, testUUID, 0, 0))
+			require.NoError(t, revoker.RevokeSession(tt.userID, testUUID, 0, 0, nil))
 			require.Eventually(t, func() bool {
 				disconnects, _ := pending.snapshot()
 				return len(disconnects) == 1
@@ -273,7 +273,7 @@ func TestRevokerRevokeSessionWithoutUserRequestsSweep(t *testing.T) {
 		}
 	}
 
-	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0))
+	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0, nil))
 	select {
 	case <-swept:
 	case <-time.After(5 * time.Second):

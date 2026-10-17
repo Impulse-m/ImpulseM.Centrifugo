@@ -12,6 +12,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
@@ -70,6 +71,12 @@ type Handler struct {
 	trackSigVerifierKey     string
 	trackSigPrevVerifier    *trackSignatureVerifier
 	trackSigPrevVerifierKey string
+
+	// runningConcurrency is the client.concurrency the handler runs with. It is read at Setup, and a reload does not change it.
+	runningConcurrency int
+	// runningChannelLimit is the client.channel_limit the node runs with. It is read at Setup, as Core keeps the limit it was
+	// given at node creation, so a reload does not change it.
+	runningChannelLimit int
 }
 
 // NewHandler creates new Handler.
@@ -210,6 +217,8 @@ func (h *Handler) Setup() error {
 
 	cfg := h.cfgContainer.ConfigRef()
 	concurrency := cfg.Client.Concurrency
+	h.runningConcurrency = concurrency
+	h.runningChannelLimit = cfg.Client.ChannelLimit
 
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err
@@ -237,7 +246,7 @@ func (h *Handler) Setup() error {
 					cb(reply, err)
 					return
 				}
-				if extra.CheckSubs && tokenChannelsChanged(client, extra.Subs) {
+				if extra.CheckSubs && h.tokenSubscriptionsChanged(client, extra) {
 					// Check whether server-side subscriptions changed. If yes – disconnect
 					// the client to make its token-based server-side subscriptions actual.
 					// Theoretically we could avoid disconnection here using Subscribe/Unsubscribe
@@ -262,7 +271,7 @@ func (h *Handler) Setup() error {
 		client.OnSubscribe(func(event centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
 			started := h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubscribe(client, event, subscribeProxyHandler, proxySubscribeStreamHandler)
-				cb(reply, err)
+				h.answerSubscribe(client, event.Channel, reply, err, cb)
 			})
 			if !started {
 				// The callback must be invoked exactly once, also when the client
@@ -275,6 +284,7 @@ func (h *Handler) Setup() error {
 		client.OnSubRefresh(func(event centrifuge.SubRefreshEvent, cb centrifuge.SubRefreshCallback) {
 			h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubRefresh(client, subRefreshProxyHandler, event)
+				reply, err = h.refreshFilterTemplate(client, event.Channel, reply, err)
 				cb(reply, err)
 			})
 		})
@@ -329,6 +339,7 @@ func (h *Handler) Setup() error {
 		})
 
 		client.OnUnsubscribe(func(e centrifuge.UnsubscribeEvent) {
+			h.forgetTemplatedChannel(client, e.Channel)
 			if len(h.proxyMap.SubscribeStreamProxies) > 0 {
 				storage, release := client.AcquireStorage()
 				streamCancelKey := "stream_cancel_" + e.Channel
@@ -463,6 +474,9 @@ func (h *Handler) OnClientConnecting(
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
+		if h.pendingLifetimeRefused(e.ClientID, class, token) {
+			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
+		}
 		setCoreCredentials(credentials, class, token.UserID)
 		verified = token
 
@@ -502,11 +516,12 @@ func (h *Handler) OnClientConnecting(
 		return centrifuge.ConnectReply{}, centrifuge.ErrorTooManyRequests
 	}
 
+	// The require option is read once, here after the connect proxy call, and the gate and the refusal below both use it.
+	requiresFilter := h.cfgContainer.ConfigRef().RequiresServerTagsFilter()
+
 	// Handle single connection enforcement before establishing connection.
-	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
-		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
-			return centrifuge.ConnectReply{}, err
-		}
+	if err := h.enforceConnectSingleConnection(cfg, requiresFilter, e.ClientID, credentials, false); err != nil {
+		return centrifuge.ConnectReply{}, err
 	}
 
 	// Automatically subscribe on personal server-side channel.
@@ -548,7 +563,12 @@ func (h *Handler) OnClientConnecting(
 				return centrifuge.ConnectReply{}, centrifuge.ErrorInternal
 			}
 
-			if !isPrivateChannel && !chOpts.SubscribeProxyEnabled && validChannelName {
+			// Channels authorized by a subscribe proxy or a subscribe stream proxy are
+			// never subscribed here: only the proxy decides on them. Subscriptions
+			// created here are stream subscriptions, so channels of a namespace with
+			// another subscription type are skipped, like in OnSubscribe.
+			if !isPrivateChannel && !chOpts.SubscribeProxyEnabled && !chOpts.SubscribeStreamProxyEnabled && validChannelName &&
+				isSubscriptionTypeAllowed(centrifuge.SubscriptionTypeStream, chOpts.SubscriptionType) {
 				if isUserLimitedChannel && (userID != "" && h.cfgContainer.UserAllowed(ch, userID)) {
 					channelOk = true
 				} else if chOpts.SubscribeForClient && (userID != "" || chOpts.SubscribeForAnonymous) && !isUserLimitedChannel {
@@ -600,6 +620,15 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
+	if err := h.connectFilterTemplates(e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
+	if err := h.requireConnectFilters(e.ClientID, credentials, subscriptions, storage, requiresFilter); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
+	if err := h.enforceConnectSingleConnection(cfg, requiresFilter, e.ClientID, credentials, true); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
 	storeConnectionTokenFilters(storage, subscriptions)
 	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)
 	h.storeRPCConnection(storage, e.Instance)
@@ -630,8 +659,9 @@ func (h *Handler) OnClientConnecting(
 }
 
 type RefreshExtra struct {
-	Subs      map[string]centrifuge.SubscribeOptions
-	CheckSubs bool
+	Subs                 map[string]centrifuge.SubscribeOptions
+	CheckSubs            bool
+	FilterTemplateClaims filtertemplate.Claims
 }
 
 func getPerCallData(c Client) proxy.PerCallData {
@@ -808,6 +838,12 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 	isPrivateChannel := h.cfgContainer.IsPrivateChannel(e.Channel)
 	isUserLimitedChannel := chOpts.UserLimitedChannels && h.cfgContainer.IsUserLimited(e.Channel)
 
+	// Access checks for the options a client may ask for on subscribe. Note, using
+	// forceSubscribed here because all checks are passed when they are called but
+	// connection is not yet subscribed in Centrifuge registry.
+	historyAllowed := func() bool { return h.hasAccessToHistory(c, e.Channel, chOpts, true) }
+	presenceAllowed := func() bool { return h.hasAccessToPresence(c, e.Channel, chOpts, true) }
+
 	if isPrivateChannel && e.Token == "" {
 		log.Warn().Str("channel", e.Channel).Str("client", c.ID()).Str("user", c.UserID()).Msg("attempt to subscribe on private channel without token")
 		return centrifuge.SubscribeReply{}, SubscribeExtra{}, centrifuge.ErrorPermissionDenied
@@ -845,7 +881,7 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 		options = token.Options
 		allowed = true
 		options.Source = subsource.SubscriptionToken
-	} else if isUserLimitedChannel && h.cfgContainer.UserAllowed(e.Channel, c.UserID()) {
+	} else if isUserLimitedChannel && c.UserID() != "" && h.cfgContainer.UserAllowed(e.Channel, c.UserID()) {
 		allowed = true
 		options.Source = subsource.UserLimited
 	} else if (chOpts.SubscribeProxyEnabled) && !isUserLimitedChannel {
@@ -857,6 +893,8 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 		if chOpts.SubRefreshProxyEnabled {
 			r.ClientSideRefresh = false
 		}
+		applyRequestedPositioningRecovery(&r.Options, e, chOpts, historyAllowed)
+		applyRequestedJoinLeave(&r.Options, e, presenceAllowed)
 		applyNamespaceSubscribeOptions(&r.Options, chOpts, e.Channel, e.Type)
 		return r, SubscribeExtra{}, err
 	} else if (chOpts.SubscribeStreamProxyEnabled) && !isUserLimitedChannel {
@@ -879,6 +917,8 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 		if chOpts.SubRefreshProxyEnabled {
 			r.ClientSideRefresh = false
 		}
+		// Positioning and recovery are not used for subscribe stream proxy.
+		applyRequestedJoinLeave(&r.Options, e, presenceAllowed)
 		// Only stream subscriptions: the namespace's subscription type is checked
 		// at config validation.
 		applyNamespaceSubscribeOptions(&r.Options, chOpts, e.Channel, centrifuge.SubscriptionTypeStream)
@@ -898,23 +938,8 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 
 	applyNamespaceSubscribeOptions(&options, chOpts, e.Channel, e.Type)
 
-	// Note, using forceSubscribed here because all checks are passed but connection is not yet
-	// subscribed in Centrifuge registry.
-	if e.Positioned && (chOpts.AllowPositioning || h.hasAccessToHistory(c, e.Channel, chOpts, true)) {
-		options.EnablePositioning = true
-	}
-	if e.Recoverable && (chOpts.AllowRecovery || h.hasAccessToHistory(c, e.Channel, chOpts, true)) {
-		options.EnableRecovery = true
-	}
-	if e.JoinLeave && chOpts.JoinLeave && h.hasAccessToPresence(c, e.Channel, chOpts, true) {
-		options.PushJoinLeave = true
-	}
-
-	// In cache recovery mode auto_cache_recover makes Centrifugo deliver the latest
-	// publication on subscribe without the client providing an empty "since" itself.
-	if chOpts.AutoCacheRecover && options.EnableRecovery && options.RecoveryMode == centrifuge.RecoveryModeCache {
-		options.AutoCacheRecover = true
-	}
+	applyRequestedPositioningRecovery(&options, e, chOpts, historyAllowed)
+	applyRequestedJoinLeave(&options, e, presenceAllowed)
 
 	return centrifuge.SubscribeReply{
 		Options:           options,
@@ -937,6 +962,13 @@ func (h *Handler) OnPublish(c Client, e centrifuge.PublishEvent, publishProxyHan
 	}
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.PublishReply{}, err
+	}
+
+	// A publish goes into a stream: map channels are published into with a map
+	// publish, the same way they are subscribed to with a map subscription.
+	if !isSubscriptionTypeAllowed(centrifuge.SubscriptionTypeStream, chOpts.SubscriptionType) {
+		log.Info().Str("channel", e.Channel).Str("client", c.ID()).Str("user", c.UserID()).Msg("publish not allowed for namespace subscription type")
+		return centrifuge.PublishReply{}, centrifuge.ErrorPermissionDenied
 	}
 
 	// Data format validation
@@ -1346,6 +1378,9 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 		return centrifuge.HistoryReply{}, centrifuge.ErrorUnknownChannel
 	}
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
+		return centrifuge.HistoryReply{}, err
+	}
+	if err = refusesHistory(c, e.Channel, &chOpts); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

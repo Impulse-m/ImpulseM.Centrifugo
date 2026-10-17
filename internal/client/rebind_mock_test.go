@@ -51,6 +51,14 @@ func (m *rebindClientMock) Disconnect(disconnect ...centrifuge.Disconnect) {
 	panic("rebindClientMock: Disconnect is not expected, a test closes a real connection")
 }
 
+func (m *rebindClientMock) BeginDisconnect(disconnect centrifuge.Disconnect) bool {
+	panic("rebindClientMock: BeginDisconnect is not expected, a test closes a real connection")
+}
+
+func (m *rebindClientMock) Closing() bool {
+	return false
+}
+
 func (m *rebindClientMock) Unsubscribe(ch string, unsubscribe ...centrifuge.Unsubscribe) {
 	if m.UnsubscribeFunc == nil {
 		panic("rebindClientMock: UnsubscribeFunc not set")

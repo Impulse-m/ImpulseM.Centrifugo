@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 )
 
 const (
@@ -131,6 +132,14 @@ type ChannelOptions struct {
 	// When tags filter is set only messages with matching tags will be delivered to the client.
 	AllowTagsFilter bool `mapstructure:"allow_tags_filter" json:"allow_tags_filter" envconfig:"allow_tags_filter" yaml:"allow_tags_filter" toml:"allow_tags_filter" doc:"Allows clients to pass a tags filter on subscribe so only publications with matching tags are delivered to them."`
 
+	// ServerTagsFilterTemplate is a server tags filter applied to every subscription in the namespace,
+	// with values of the connection token claims, user and client rendered in.
+	ServerTagsFilterTemplate ServerTagsFilterTemplate `mapstructure:"server_tags_filter_template" json:"server_tags_filter_template" envconfig:"server_tags_filter_template" yaml:"server_tags_filter_template" toml:"server_tags_filter_template" doc:"Server tags filter applied to every subscription in the namespace, with values of the connection token claims, the user and the client rendered in. Combined with an explicit server tags filter by and. The server API subscribe is refused on such channels."`
+
+	// RequireServerTagsFilter refuses every subscription to a channel of the namespace which carries no server tags
+	// filter, whichever route made it, and refuses client history calls on the namespace.
+	RequireServerTagsFilter bool `mapstructure:"require_server_tags_filter" json:"require_server_tags_filter" envconfig:"require_server_tags_filter" yaml:"require_server_tags_filter" toml:"require_server_tags_filter" doc:"Refuses every subscription to channels of this namespace which carries no server tags filter, whichever route made it, and refuses client history calls on the namespace, so a route which forgets the filter fails closed. A client subscribe gets permission denied (103); a connect-time server-side subscription of the connection token or the connect proxy refuses the connection (3507); a channel a client asks for at connect is dropped; the server API subscribe, which cannot carry a filter, gets not available (108). A filter produced by <<server_tags_filter_template>> counts; a template skipped under <<on_missing_value: skip>> leaves a subscription without an explicit filter refused, and a personal channel whose template was skipped refuses the connection (3507). Off by default."`
+
 	// DeltaPublish enables delta publish mechanism for all messages published in namespace channels
 	// without explicit flag usage in publish API request. Setting this option does not guarantee that
 	// publication will be compressed when going towards subscribers – it still depends on subscriber
@@ -221,6 +230,14 @@ type ChannelOptions struct {
 	// Default: "stream" (traditional PUB/SUB with history).
 	SubscriptionType string `mapstructure:"subscription_type" json:"subscription_type" envconfig:"subscription_type" yaml:"subscription_type" toml:"subscription_type" expose:"full" doc:"Subscription mechanism for the namespace. One of <<stream>> (default, PUB/SUB with history), <<map>>, <<map_clients>>, <<map_users>>, or <<shared_poll>>."`
 
+	// BrokerName selects an extra broker from the brokers list for the channels of the namespace.
+	// Empty means the default broker.
+	BrokerName string `mapstructure:"broker_name" json:"broker_name" envconfig:"broker_name" yaml:"broker_name" toml:"broker_name" expose:"full" doc:"Name of an entry from the <<brokers>> list used for the channels of this namespace. Empty means the default broker."`
+
+	// PresenceManagerName selects an extra presence manager from the presence_managers list for the
+	// channels of the namespace. Empty means the default presence manager.
+	PresenceManagerName string `mapstructure:"presence_manager_name" json:"presence_manager_name" envconfig:"presence_manager_name" yaml:"presence_manager_name" toml:"presence_manager_name" expose:"full" doc:"Name of an entry from the <<presence_managers>> list used for the channels of this namespace. Empty means the default presence manager."`
+
 	// Map contains configuration for map subscription types (map, map_clients, map_users).
 	Map MapConfig `mapstructure:"map" json:"map" envconfig:"map" yaml:"map" toml:"map" doc:"Configuration for the map subscription types (<<map>>, <<map_clients>>, <<map_users>>)."`
 
@@ -232,6 +249,10 @@ type ChannelOptions struct {
 
 // MapConfig contains configuration for map subscription types (map, map_clients, map_users).
 type MapConfig struct {
+	// BrokerName selects an extra map broker from the map_brokers list for the channels of the namespace.
+	// Empty means the default map broker.
+	BrokerName string `mapstructure:"broker_name" json:"broker_name" envconfig:"broker_name" yaml:"broker_name" toml:"broker_name" expose:"full" doc:"Name of an entry from the <<map_brokers>> list used for the map channels of this namespace. Empty means the default <<map_broker>>."`
+
 	Mode                              string   `mapstructure:"mode" json:"mode" envconfig:"mode" yaml:"mode" toml:"mode" expose:"full" doc:"Map mode controlling how keys are stored and delivered. See map subscription docs for supported values."`
 	KeyTTL                            Duration `mapstructure:"key_ttl" json:"key_ttl" envconfig:"key_ttl" yaml:"key_ttl" toml:"key_ttl" doc:"How long a key is retained in the map after its last update, e.g. <<300s>>. Zero means no expiration."`
 	StreamSize                        int      `mapstructure:"stream_size" json:"stream_size" envconfig:"stream_size" yaml:"stream_size" toml:"stream_size" doc:"Maximum number of updates kept in the per-channel change stream used to bring subscribers up to date."`
@@ -270,4 +291,6 @@ type SharedPollConfig struct {
 
 type Compiled struct {
 	CompiledChannelRegex *regexp.Regexp `json:"-" yaml:"-" toml:"-" envconfig:"-"`
+	// ServerTagsFilterTemplate is the compiled server_tags_filter_template, nil when there is none.
+	ServerTagsFilterTemplate *filtertemplate.Template `json:"-" yaml:"-" toml:"-" envconfig:"-"`
 }

@@ -39,6 +39,14 @@ func checkConfig(t *testing.T, conf Config) {
 	require.Equal(t, []string{"redis:6379"}, conf.Engine.Redis.Address)
 	require.Equal(t, configtypes.MapStringString(map[string]string{"x": "y"}), conf.Client.Proxy.Connect.HTTP.StaticHeaders)
 	require.Equal(t, configtypes.MapStringString(map[string]string{"X": "y"}), conf.Client.Proxy.Refresh.HTTP.StaticHeaders)
+	require.Len(t, conf.Brokers, 1)
+	require.Equal(t, "sample", conf.Brokers[0].Name)
+	require.Equal(t, "redis", conf.Brokers[0].Type)
+	require.Equal(t, []string{"redis://10.0.0.5:6379"}, conf.Brokers[0].Redis.Address)
+	require.Equal(t, "sample", conf.Brokers[0].Redis.Prefix)
+	require.Len(t, conf.PresenceManagers, 1)
+	require.Equal(t, "sample", conf.PresenceManagers[0].Name)
+	require.Equal(t, "memory", conf.PresenceManagers[0].Type)
 }
 
 func TestConfigJSON(t *testing.T) {

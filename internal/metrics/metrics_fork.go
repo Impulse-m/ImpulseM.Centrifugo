@@ -11,6 +11,7 @@ type forkRegistry struct {
 	accessRevokeRejectsTotal            *prometheus.CounterVec
 	accessRevokeDisconnectsTotal        *prometheus.CounterVec
 	accessRevokeDisconnectsDroppedTotal prometheus.Counter
+	accessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
 	accessRevokeStoreSize               *prometheus.GaugeVec
 
 	// Access revocation source metrics
@@ -77,6 +78,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Help:        "Number of live disconnects dropped because the access revocation disconnect queue was full.",
 		ConstLabels: constLabels,
 	})
+
+	m.accessRevokeDisconnectRetriesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "disconnect_retries_total",
+		Help:        "Number of dropped access revocation disconnects re-evaluated by key once the queue had room.",
+		ConstLabels: constLabels,
+	}, []string{"kind"})
 
 	m.accessRevokeStoreSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
@@ -356,6 +365,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
+		m.accessRevokeDisconnectRetriesTotal,
 		m.accessRevokeStoreSize,
 		m.accessRevokeSourceReady,
 		m.accessRevokeSourceLagging,
@@ -420,6 +430,7 @@ func (m *Registry) setForkMetrics() {
 	AccessRevokeRejectsTotal = m.accessRevokeRejectsTotal
 	AccessRevokeDisconnectsTotal = m.accessRevokeDisconnectsTotal
 	AccessRevokeDisconnectsDroppedTotal = m.accessRevokeDisconnectsDroppedTotal
+	AccessRevokeDisconnectRetriesTotal = m.accessRevokeDisconnectRetriesTotal
 	AccessRevokeStoreSize = m.accessRevokeStoreSize
 
 	AccessRevokeSourceReady = m.accessRevokeSourceReady

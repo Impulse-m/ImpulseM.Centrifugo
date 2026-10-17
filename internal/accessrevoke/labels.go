@@ -20,3 +20,12 @@ const (
 
 // stageSweep is the rejects metric stage of the catch-up sweep.
 const stageSweep = "sweep"
+
+// stageRetry is the rejects metric stage of a retry of dropped disconnects.
+const stageRetry = "retry"
+
+// Kinds of a retried key, used as metric label values.
+const (
+	retryKindUser    = "user"
+	retryKindSession = "session"
+)

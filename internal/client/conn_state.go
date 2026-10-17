@@ -22,6 +22,8 @@ const storageKeyConnState = "conn_state"
 type rebindableClient interface {
 	Client
 	Disconnect(disconnect ...centrifuge.Disconnect)
+	BeginDisconnect(disconnect centrifuge.Disconnect) bool
+	Closing() bool
 	ExtState() any
 	Rebind(opts centrifuge.RebindOptions) error
 	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error

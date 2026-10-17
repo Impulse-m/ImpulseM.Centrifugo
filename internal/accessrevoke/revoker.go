@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+
 	"github.com/centrifugal/centrifuge"
 )
 
@@ -46,6 +48,7 @@ func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 		// Session is the only revocation kind changed by revoke_token, so only it is checked.
 		SweepConnections(hub, store, queue, CheckOptions{Session: true})
 	}
+	queue.setRetrier(revoker.retry)
 	return revoker
 }
 
@@ -70,9 +73,10 @@ func (r *Revoker) UnblockUser(userID string) error {
 // session. Connections without a user which have this session are disconnected through the session
 // index, with or without userID. Empty userID also runs a sweep of all local connections in the
 // background, which disconnects the connections with this session that the index does not hold. The
-// sweep is O(local connections), so passing userID is strongly preferred at scale. Every disconnect
-// closes with the disconnect the session is revoked with, see Store.RevokeSession, or with
-// centrifuge.DisconnectExpired when it has none.
+// sweep is O(local connections), so passing userID is strongly preferred at scale. A disconnect the
+// queue drops is retried by its user or session once the queue has room. Every disconnect closes with
+// the disconnect the session is revoked with, see Store.RevokeSession, or with centrifuge.DisconnectExpired
+// when it has none.
 func (r *Revoker) RevokeSession(
 	userID string,
 	sessionID string,
@@ -86,24 +90,19 @@ func (r *Revoker) RevokeSession(
 	}
 	sessionKey, _ := Key(sessionID)
 	closeConn := closeWith(r.store.sessionDisconnect(sessionKey), centrifuge.DisconnectExpired)
-	indexDropped := r.disconnectSessionConnections(sessionKey, closeConn)
+	r.disconnectSessionConnections(sessionKey, closeConn)
 	if userID == "" {
 		// The sweep also finds the indexed connections, and a disconnect is idempotent, so a connection hit by both is
 		// disconnected once in effect.
 		r.requestSweep()
 		return nil
 	}
-	userDropped := r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
+	r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
 		if identity.Session == sessionKey {
 			return ReasonSession
 		}
 		return ""
 	}, closeConn)
-	// A dropped disconnect of a session is not retried by the queue. The sweep checks the sessions of all local
-	// connections, so it disconnects the dropped ones.
-	if indexDropped || userDropped {
-		r.requestSweep()
-	}
 	return nil
 }
 
@@ -155,36 +154,58 @@ func (r *Revoker) Apply(notification Notification) error {
 }
 
 // disconnectMatching enqueues disconnect of every local connection of the user for which reasonOf
-// returns a non-empty reason. It reports whether the queue dropped a disconnect because it was full.
+// returns a non-empty reason. A dropped disconnect is kept under the user for a retry.
 func (r *Revoker) disconnectMatching(
 	userID string,
 	reasonOf func(identity centrifuge.TokenIdentity) Reason,
 	disconnect centrifuge.Disconnect,
-) bool {
-	dropped := false
+) {
+	key := retryKey{user: userID}
 	for _, client := range r.hub.UserConnections(userID) {
 		_, identity := IdentityOf(client)
 		reason := reasonOf(identity)
 		if reason == "" {
 			continue
 		}
-		if !r.queue.Enqueue(client, disconnect, reason) {
-			dropped = true
-		}
+		r.queue.enqueueKeyed(key, client, disconnect, reason)
 	}
-	return dropped
 }
 
 // disconnectSessionConnections enqueues disconnect of the indexed connections of session. Such connections
-// have no user, so disconnectMatching does not find them. It reports whether the queue dropped a disconnect.
-func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) bool {
-	dropped := false
+// may have no user, so disconnectMatching does not find them all. A dropped disconnect is kept under the
+// session for a retry.
+func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) {
+	key := retryKey{session: session}
 	for _, conn := range r.store.SessionConnections().Connections(session) {
-		if !r.queue.Enqueue(conn, disconnect, ReasonSession) {
-			dropped = true
-		}
+		r.queue.enqueueKeyed(key, conn, disconnect, ReasonSession)
 	}
-	return dropped
+}
+
+// retry re-evaluates a key of dropped disconnects on the queue goroutine. The store is read again, so a connection is
+// disconnected only when the store still rejects it, and an entry which expired is not applied.
+func (r *Revoker) retry(key retryKey) {
+	if key.user != "" {
+		metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindUser).Inc()
+		// Every kind is checked, so a retry applies whatever the store still holds for the user.
+		opts := CheckOptions{Block: true, Session: true, UserTokens: true}
+		for _, client := range r.hub.UserConnections(key.user) {
+			if client.Closing() {
+				continue
+			}
+			disconnect, reason, revoked := CheckConnection(r.store, client, opts, stageRetry)
+			if revoked {
+				r.queue.enqueueKeyed(key, client, disconnect, reason)
+			}
+		}
+		return
+	}
+	metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindSession).Inc()
+	_, ok := r.store.session(key.session, r.store.nowUnix())
+	if !ok {
+		return
+	}
+	closeConn := closeWith(r.store.sessionDisconnect(key.session), centrifuge.DisconnectExpired)
+	r.disconnectSessionConnections(key.session, closeConn)
 }
 
 // requestSweep starts a sweep in the background. If a sweep is already running, it marks one more

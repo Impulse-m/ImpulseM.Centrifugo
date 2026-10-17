@@ -87,6 +87,15 @@ func newRevokeTestHandler(t *testing.T, cfg config.Config) (*Handler, *accessrev
 
 func connectRevokeTestClient(t *testing.T, node *centrifuge.Node, token string) *centrifuge.Client {
 	t.Helper()
+	client, connected := connectTestClientFrame(t, node, token)
+	require.True(t, connected)
+	return client
+}
+
+// connectTestClientFrame sends a connect with token to node over a test transport. It returns the client and whether the
+// frame went on: false when the connect was refused with a disconnect.
+func connectTestClientFrame(t *testing.T, node *centrifuge.Node, token string) (*centrifuge.Client, bool) {
+	t.Helper()
 	transport := tools.NewTestTransport()
 	client, closeFn, err := centrifuge.NewClient(context.Background(), node, transport)
 	require.NoError(t, err)
@@ -98,8 +107,7 @@ func connectRevokeTestClient(t *testing.T, node *centrifuge.Node, token string) 
 	}
 	data, err := protocol.NewJSONCommandEncoder().Encode(command)
 	require.NoError(t, err)
-	require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20))
-	return client
+	return client, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20)
 }
 
 func TestAccessRevokeConnectBlockedUser(t *testing.T) {

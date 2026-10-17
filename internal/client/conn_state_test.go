@@ -85,17 +85,19 @@ func TestDefaultConnectPathHoldsNothing(t *testing.T) {
 }
 
 // TestConnStateOnlyWithFeatures checks that each condition of needsConnState creates a record on its own, and that
-// no feature creates none. The access store alone creates one only for a connection with no user and a session.
+// no feature creates none. The access store alone creates one only for a connection with no user and a token session.
 func TestConnStateOnlyWithFeatures(t *testing.T) {
 	tests := []struct {
 		name      string
 		feature   string
 		anonymous bool
+		noSession bool
 		wantRec   bool
 	}{
 		{name: "no feature", feature: "", wantRec: false},
 		{name: "access revocation, user token", feature: "revoke", wantRec: false},
 		{name: "access revocation, anonymous token with session", feature: "revoke", anonymous: true, wantRec: true},
+		{name: "access revocation, anonymous token without session", feature: "revoke", anonymous: true, noSession: true, wantRec: false},
 		{name: "client command limit", feature: "client_command", wantRec: true},
 		{name: "user command limit", feature: "user_command", wantRec: true},
 		{name: "registry", feature: "registry", wantRec: true},
@@ -108,6 +110,9 @@ func TestConnStateOnlyWithFeatures(t *testing.T) {
 			claims := map[string]any{"sub": "42", "jti": revokeTestUUID}
 			if tt.anonymous {
 				delete(claims, "sub")
+			}
+			if tt.noSession {
+				delete(claims, "jti")
 			}
 			rec := connectRecordOf(t, h, getConnTokenWithClaims(t, claims))
 			require.Equal(t, tt.wantRec, rec != nil)
@@ -137,6 +142,25 @@ func TestDefaultConnectWithUserHoldsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, reply.Storage, storageKeyConnState)
 	require.False(t, h.needsConnState(cfgContainer.ConfigRef(), reply.Credentials.UserID, reply.Credentials.TokenIdentity))
+}
+
+// TestDefaultConnectAnonymousHoldsNothing checks that an anonymous connection without a token session holds no record
+// with the production access store on, as the defaults turn it on. Its connect puts no storage key and its OnConnect
+// sets no ext state, so it pays nothing for the access revocation it has no session for.
+func TestDefaultConnectAnonymousHoldsNothing(t *testing.T) {
+	h, _, node := newAuthClassTestHandler(t, config.DefaultConfig())
+
+	claims := map[string]any{}
+	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
+		ClientID: "c1",
+		Token:    getConnTokenWithClaims(t, claims),
+	}, nil, false)
+	require.NoError(t, err)
+	require.NotContains(t, reply.Storage, storageKeyConnState)
+
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, claims))
+	require.Empty(t, client.UserID())
+	require.Nil(t, client.ExtState())
 }
 
 // newFeatureTestHandler returns a handler with the one feature of TestConnStateOnlyWithFeatures switched on.

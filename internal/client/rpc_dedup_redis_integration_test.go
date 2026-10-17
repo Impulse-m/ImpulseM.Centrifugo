@@ -24,6 +24,8 @@ import (
 func testRedisDedupConfig(address string, prefix string) configtypes.RPCDedupRedis {
 	return configtypes.RPCDedupRedis{
 		Enabled: true,
+		// The wakeup is set explicitly off: these tests exercise the polling of a remote wait. The wakeup tests replace it.
+		Wakeup: configtypes.RPCDedupWakeup{Enabled: false},
 		RedisPrefixed: configtypes.RedisPrefixed{
 			Prefix: prefix,
 			Redis:  configtypes.Redis{Address: []string{address}},

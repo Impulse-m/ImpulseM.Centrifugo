@@ -94,25 +94,12 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 }
 
 // needsConnState reports whether a connection with userID and identity gets a record. A feature which reads the record
-// needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one only for
-// a connection with no user and a token session, the connections its session index holds. OnClientConnecting decides
-// with it, from the credentials of the connection. OnConnect decides with clientNeedsConnState, from the same user and
-// identity as Core holds them, so a record made at connect is the one OnConnect adopts.
+// needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one for a
+// connection with no user whose token has a session, see storeNeedsConnState. OnClientConnecting decides with it, from
+// the credentials of the connection. OnConnect re-decides with clientNeedsConnState, which mirrors connectRecord, see
+// trackConnect.
 func (h *Handler) needsConnState(cfg *config.Config, userID string, identity centrifuge.TokenIdentity) bool {
 	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID, identity)
-}
-
-// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. The
-// identity of the client is read only when the access store is set and the client has no user, since reading it takes
-// the lock of the client.
-func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
-	if h.configNeedsConnState(cfg) {
-		return true
-	}
-	if h.accessStore == nil || client.UserID() != "" {
-		return false
-	}
-	return h.storeNeedsConnState("", client.TokenIdentity())
 }
 
 // configNeedsConnState reports whether a feature of the configuration needs a record for every connection.
@@ -124,10 +111,37 @@ func (h *Handler) configNeedsConnState(cfg *config.Config) bool {
 		h.clientLimiter != nil
 }
 
+// clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. It reads
+// the user and the token identity Core holds, which are the ones the connect credentials gave. The identity is read under
+// the client's lock only for a connection with no user while the access store is set, so a connection with a user under
+// the default config is decided without it. It mirrors connectRecord, which reads the same facts from the credentials,
+// because Core copies credentials.TokenIdentity into the client at connect.
+func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
+	if h.configNeedsConnState(cfg) {
+		return true
+	}
+	if h.accessStore == nil || client.UserID() != "" {
+		return false
+	}
+	return h.storeNeedsConnState("", client.TokenIdentity())
+}
+
+// adoptClientRecord adopts the record of a connecting client into its ext state, when clientNeedsConnState says the
+// client has one, and returns it. Without one nothing is read from storage. The record is a single assignment, so the
+// closures of trackConnect capture it by value and it does not escape on the default path.
+func (h *Handler) adoptClientRecord(client *centrifuge.Client) *connState {
+	if !h.clientNeedsConnState(h.cfgContainer.ConfigRef(), client) {
+		return nil
+	}
+	return adoptConnState(client)
+}
+
 // storeNeedsConnState reports whether the access store needs a record for a connection with userID and identity: a
-// connection with no user and a token session, which its session index holds.
+// connection with no user whose token has a session. The session index holds only such connections. A connection with
+// no user and no session at connect has none; a refresh which gives it a session is kept by Core, and a revocation of
+// that session reaches it through the sweep, see the README of rpcregistry.
 func (h *Handler) storeNeedsConnState(userID string, identity centrifuge.TokenIdentity) bool {
-	return h.accessStore != nil && userID == "" && identity.Session != [16]byte{}
+	return h.accessStore != nil && userID == "" && identity.Session != ([16]byte{})
 }
 
 // keptToken returns the token a connection keeps for the RPC method registry. The token is kept only when the registry

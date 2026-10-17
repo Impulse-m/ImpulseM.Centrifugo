@@ -127,6 +127,15 @@ func newRebindTestHandlerWithUserCommand(
 	userCommand configtypes.RateLimitUserCommand,
 ) (*Handler, *accessrevoke.Store) {
 	t.Helper()
+	return newRebindTestHandlerWithConfig(t, newRebindTestConfig(rebind, userCommand))
+}
+
+// newRebindTestConfig returns the config of the rebind tests: rebind as given, the user command rate limits of
+// userCommand, and the personal channel and the auth class claim of the tests.
+func newRebindTestConfig(
+	rebind configtypes.Rebind,
+	userCommand configtypes.RateLimitUserCommand,
+) config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Client.Rebind = rebind
 	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
@@ -135,8 +144,16 @@ func newRebindTestHandlerWithUserCommand(
 	cfg.Channel.WithoutNamespace.SubscribeForAnonymous = true
 	cfg.Channel.WithoutNamespace.UserLimitedChannels = true
 	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	return cfg
+}
+
+// newRebindTestHandlerWithConfig returns the handler of cfg, with the rate limits and the access store of the rebind
+// tests set up.
+func newRebindTestHandlerWithConfig(t *testing.T, cfg config.Config) (*Handler, *accessrevoke.Store) {
+	t.Helper()
 	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
 	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.runningChannelLimit = cfg.Client.ChannelLimit
 	store := accessrevoke.NewStore(time.Minute)
 	h.SetAccessRevoke(store, nil)
 	return h, store

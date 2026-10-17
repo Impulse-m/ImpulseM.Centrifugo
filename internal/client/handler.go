@@ -71,6 +71,12 @@ type Handler struct {
 	trackSigVerifierKey     string
 	trackSigPrevVerifier    *trackSignatureVerifier
 	trackSigPrevVerifierKey string
+
+	// runningConcurrency is the client.concurrency the handler runs with. It is read at Setup, and a reload does not change it.
+	runningConcurrency int
+	// runningChannelLimit is the client.channel_limit the node runs with. It is read at Setup, as Core keeps the limit it was
+	// given at node creation, so a reload does not change it.
+	runningChannelLimit int
 }
 
 // NewHandler creates new Handler.
@@ -211,6 +217,8 @@ func (h *Handler) Setup() error {
 
 	cfg := h.cfgContainer.ConfigRef()
 	concurrency := cfg.Client.Concurrency
+	h.runningConcurrency = concurrency
+	h.runningChannelLimit = cfg.Client.ChannelLimit
 
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err
@@ -464,6 +472,9 @@ func (h *Handler) OnClientConnecting(
 		class, ok := rpcregistry.ConnectionAuthClass(token.AuthClass, token.UserID)
 		if !ok {
 			log.Info().Str("client", e.ClientID).Msg("invalid connection token auth class")
+			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
+		}
+		if h.pendingLifetimeRefused(e.ClientID, class, token) {
 			return centrifuge.ConnectReply{}, centrifuge.DisconnectInvalidToken
 		}
 		setCoreCredentials(credentials, class, token.UserID)

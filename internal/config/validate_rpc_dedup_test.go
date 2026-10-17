@@ -397,11 +397,11 @@ func TestValidateRPCDedupRedis(t *testing.T) {
 	}
 }
 
-func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
+func TestDefaultsOfRPCDedup(t *testing.T) {
 	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.False(t, cfg.RPC.Registry.Dedup.Redis.Enabled)
-	require.False(t, cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
+	require.True(t, cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
 	require.Equal(t, 64, cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())

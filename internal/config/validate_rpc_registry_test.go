@@ -64,6 +64,13 @@ func TestValidateRPCRegistryRules(t *testing.T) {
 			wantErr: "rpc.registry.poll_interval: must not be negative",
 		},
 		{
+			name: "pending max lifetime must not be negative",
+			modify: func(reg *configtypes.RPCRegistry) {
+				reg.PendingMaxLifetime = configtypes.Duration(-time.Second)
+			},
+			wantErr: "rpc.registry.pending_2fa_max_lifetime: must not be negative",
+		},
+		{
 			name: "method name must match pattern",
 			modify: func(reg *configtypes.RPCRegistry) {
 				reg.Methods[0].Method = "bad method!"

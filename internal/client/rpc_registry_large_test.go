@@ -7,9 +7,11 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,8 +21,8 @@ import (
 // Sizes of the admission tests. A users.get call of data "slow" costs its 4 bytes and the 64 KiB response bound of
 // its method, and a hinted blob.read of 4 KiB costs its request and 4 KiB plus 1 KiB of overhead.
 const (
-	testAdmissionHeldCost int64 = 4 + 64<<10
-	testAdmissionSmallRead int64 = 6000
+	testAdmissionHeldCost  int64  = 4 + 64<<10
+	testAdmissionSmallRead int64  = 6000
 	testAdmissionHintField uint32 = 3
 )
 
@@ -163,6 +165,80 @@ func TestRegistryResponseHintBoundsTheReply(t *testing.T) {
 	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "blob.read", Data: testHintedRequest(4096, payload)}, nil)
 	require.NoError(t, err)
 	require.Equal(t, testHintedRequest(4096, payload), reply.Data)
+}
+
+// A refused call with a msg_id leaves no record of exactly-once RPC: its retransmit, once the budget is free, runs the
+// backend once, and its answer is not a cached one. The refusal is counted in both admission metrics, and the in-flight
+// gauge follows the charge of the held call.
+func TestRegistryAdmissionRefusedMsgIDLeavesNoDedupRecord(t *testing.T) {
+	vec := testDedupOutcomes(t)
+	backend := newDedupBackend(t)
+	reg := dedupRegistryConfig()
+	reg.Errors.Overloaded = configtypes.RPCRegistryError{Code: 111, Message: "too many requests"}
+	// The held call of users.get costs its 4 byte request and its 64 KiB response bound. The budget leaves 100 bytes
+	// beside it, so a second call of the method, whose cost is over 100 bytes, is refused while the first is held.
+	heldCost := int64(len("gate") + 64<<10)
+	reg.MaxInflightBytes = heldCost + 100
+	h := newDedupHandler(t, reg, backend)
+
+	overloadedBefore := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultOverloaded))
+	inflightRefusalsBefore := testutil.ToFloat64(metrics.RPCRegistryAdmissionRefusalsTotal.WithLabelValues(metrics.RPCRegistryRefusedInflight))
+	gaugeBefore := testutil.ToFloat64(metrics.RPCRegistryInflightBytes)
+
+	held := newDedupClient("c1", "42", nil, testInstance)
+	heldDone := dedupCallAsync(h, held, "users.get", dedupMsgID(1), "gate")
+	backend.waitEntered(t)
+	require.Equal(t, gaugeBefore+float64(heldCost), testutil.ToFloat64(metrics.RPCRegistryInflightBytes), "the gauge follows the held charge")
+
+	client := newDedupClient("c2", "42", nil, testInstance)
+	msgID := dedupMsgID(2)
+	_, err := dedupCall(h, client, "users.get", msgID, "x")
+	var protoErr *centrifuge.Error
+	require.ErrorAs(t, err, &protoErr)
+	require.Equal(t, uint32(111), protoErr.Code)
+	require.True(t, protoErr.Temporary)
+	require.Equal(t, rpcRetryLater, protoErr.Metadata[rpcRetryMetadataKey])
+	require.Len(t, backend.Calls(), 1, "a refused call is not run")
+	require.Equal(t, overloadedBefore+1, testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultOverloaded)))
+	require.Equal(t, inflightRefusalsBefore+1, testutil.ToFloat64(metrics.RPCRegistryAdmissionRefusalsTotal.WithLabelValues(metrics.RPCRegistryRefusedInflight)))
+
+	backend.releaseGate()
+	r := waitDedupResult(t, heldDone)
+	require.NoError(t, r.err)
+	require.Equal(t, gaugeBefore, testutil.ToFloat64(metrics.RPCRegistryInflightBytes), "the gauge returns to its value before the held call")
+
+	// The retransmit carries the same msg_id. It finds no record, so it runs the backend once.
+	reply, err := dedupCall(h, client, "users.get", msgID, "x")
+	require.NoError(t, err)
+	require.False(t, reply.Cached)
+	require.Equal(t, []byte("reply:x"), reply.Data)
+	require.Len(t, backend.Calls(), 2, "the held call and the retransmit each run the backend once")
+	require.Equal(t, 0.0, testDedupCount(vec, "hit_done"))
+	require.Equal(t, 2.0, testDedupCount(vec, "miss"), "only the held call and the retransmit reach the dedup store")
+}
+
+// A call refused by the memory watermark is counted under the memory reason, and under the overloaded result.
+func TestRegistryAdmissionMemoryRefusalIsCounted(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	reg := registryTestRegistryConfig()
+	reg.Errors.Overloaded = configtypes.RPCRegistryError{Code: 111, Message: "too many requests"}
+	// The resident memory of the test process is over 1 MiB, so the first admission trips the watermark.
+	reg.MemoryWatermarkBytes = 1 << 20
+	registry := startRegistryTestRegistry(t, reg, backend)
+	cfg := config.DefaultConfig()
+	cfg.RPC.Registry = reg
+	h, _ := newRegistryTestHandler(t, cfg, registry)
+	client := newRegistryTestClient("c1", "42", nil, nil)
+
+	overloadedBefore := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultOverloaded))
+	memoryRefusalsBefore := testutil.ToFloat64(metrics.RPCRegistryAdmissionRefusalsTotal.WithLabelValues(metrics.RPCRegistryRefusedMemory))
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	var protoErr *centrifuge.Error
+	require.ErrorAs(t, err, &protoErr)
+	require.Equal(t, uint32(111), protoErr.Code)
+	require.Empty(t, backend.Calls(), "a refused call is not run")
+	require.Equal(t, overloadedBefore+1, testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultOverloaded)))
+	require.Equal(t, memoryRefusalsBefore+1, testutil.ToFloat64(metrics.RPCRegistryAdmissionRefusalsTotal.WithLabelValues(metrics.RPCRegistryRefusedMemory)))
 }
 
 func BenchmarkRegistryCallLarge(b *testing.B) {

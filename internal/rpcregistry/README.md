@@ -393,40 +393,110 @@ Refusals are counted in `centrifugo_rpc_registry_admission_refusals_total{reason
 
 ## Large-payload fleets
 
-A large-payload fleet is an ordinary Centrifugo deployment whose registry is configured for big frames. It needs no server feature beyond the keys above and the response size hint: the frame limit, the reply queue, the write timeout and the concurrency are the existing keys of the fleet. The numbers below are an example for a chunk profile of 512 KiB parts with 1 MiB reads, and any other profile substitutes its own.
+A large-payload fleet is an ordinary Centrifugo deployment whose registry is configured for big frames. It needs no server feature beyond the keys above and the response size hint: the frame limit, the reply queue, the write timeout and the concurrency are the existing keys of the fleet. No profile in this section is a default. Each profile is derived from the same parametric rules, and any other profile substitutes its own inputs.
 
-```json
-{
-  "websocket": {"message_size_limit": 1114112, "write_timeout": "60s"},
-  "client": {
-    "concurrency": 4,
-    "queue_max_size": 4263936,
-    "user_connection_limit": 16,
-    "connection_rate_limit": 2000
-  },
-  "rpc": {"registry": {
-    "enabled": true,
-    "file": "/etc/centrifugo/rpc_registry_large.yaml",
-    "max_inflight_bytes": 536870912,
-    "memory_watermark_bytes": 3221225472
-  }}
-}
-```
+### Deriving the keys
 
-Rules, with their reasons:
+The inputs of a profile are:
 
-* `websocket.message_size_limit` is at least the largest `max_request_bytes` plus 1 KiB of envelope. 1114112 is 1 MiB plus 64 KiB. The server logs a warning at start, on a configuration reload and in `checkconfig` when a method's `max_request_bytes` is over this limit, and keeps loading: the method still serves every request under the transport limit. A registry file shared by fleets with different limits is the expected case of that warning.
-* `client.queue_max_size` is at least `client.concurrency` times the largest `max_response_bytes`, plus 64 KiB. A reply over the queue disconnects the client as slow, and the queue holds at most one reply per call in flight. The server logs a warning in the same cases, at start, on a configuration reload and in `checkconfig`, when a method's `max_response_bytes` is over this size, and keeps loading: the method still serves every reply under the queue size.
-* `client.concurrency` is at least the window of the client's pool plus one. At the default `0`, calls run one at a time on the read loop, so a window of one is what a socket carries without blocking it. A larger window needs the concurrency raised, or the read loop blocks on the semaphore and reads no pongs, and the connection is closed when a call outlives the pong timeout.
-* `websocket.write_timeout` is at least the largest response over the slowest client link: 1 MiB at 1 Mbit/s takes 8 s.
-* The registry file lists only the large-payload methods, each with `idempotent: true`, an explicit `timeout`, `max_request_bytes` and `max_response_bytes`, `response_size_hint` on reads, the affinity header in `headers` and the moves and redirects in `error_metadata`. Targets which keep state per object on a replica use `ring_hash`.
-* No channel namespaces, and no personal channel on the fleet: client subscriptions are refused by default, and the fleet runs no broker. Issue tokens without `channels`, since each would add a server-side subscription.
+* `P`: the part size of an upload, in bytes.
+* `R`: the largest read, in bytes.
+* `W`: the window of the client's pool, the calls in flight on one connection.
+* `S`: the slowest client link the fleet serves, in bytes per second.
+* `λ`: the payload rate one node admits, in bytes per second. It is at most the node's link.
+* `T`: the backend's 99th percentile latency for the large methods, in seconds.
+* `M`: the node's `GOMEMLIMIT`, in bytes.
+
+Two constants are fixed. `E` is 1024 bytes, the envelope of one frame, and `K` is 65536 bytes. The hint's `overhead_bytes` is 1024, which is `E`. The keys follow:
+
+| Key | Formula | Reason |
+|---|---|---|
+| `max_request_bytes` of a write | `P + E` | a part and its envelope |
+| `max_request_bytes` of a read | `E` | a read carries a position and a length only |
+| `max_response_bytes` of a read | `R + E` | a read and its envelope |
+| `max_response_bytes` of a write | `E` | a write answers with an acknowledgement |
+| `websocket.message_size_limit` | `(P + E) + E` | the largest request and one envelope; a frame over the limit closes the socket with 1009 |
+| `client.concurrency` | `W + 1` | the window plus one, so the read loop keeps a slot to read pongs |
+| `client.queue_max_size` | `client.concurrency × (R + E) + K` | the queue holds one reply per call in flight, and a reply over the size disconnects the client as slow |
+| `websocket.write_timeout` | `(R + E) ÷ S`, rounded up to a whole second | the largest reply must leave on the slowest link in time |
+| `rpc.registry.max_inflight_bytes` | `2 × λ × T`, rounded up to a power of two in MiB | twice the bytes in flight at the tail (see Sizing the admission) |
+| `rpc.registry.memory_watermark_bytes` | `0.75 × M` | the watermark sits at 75% of the memory limit |
+| `response_size_hint.overhead_bytes` | `O`, 1024 | a read of `h` bytes reserves `h + O`, and the full `R + E` from `h = R` on |
+
+Two checks close the derivation. The transient of the budget must fit under the watermark: `3 × max_inflight_bytes ≤ memory_watermark_bytes`. And the budget must cover one full-size write, `max_request_bytes + max_response_bytes`, or it refuses that write at any load. If the first check fails, lower the rate or the latency the budget is sized for, or raise the memory limit.
+
+### Worked examples
+
+Each profile lists its inputs, then its keys. The arithmetic column applies the formulas above to the inputs. Sizes are in bytes unless a unit is given, and the rounding is stated where it applies.
+
+**(a) Small objects: 64 KiB parts, 256 KiB reads, 1 GiB node.** Inputs: `P` = 65536, `R` = 262144, `W` = 2, `S` = 125000 (1 Mbit/s), `λ` = 12500000 (100 Mbit/s), `T` = 0.5 s, `M` = 768 MiB (805306368).
+
+| Key | Value | Arithmetic |
+|---|---|---|
+| `max_request_bytes`, write | 66560 | 65536 + 1024 |
+| `max_request_bytes`, read | 1024 | `E` |
+| `max_response_bytes`, read | 263168 | 262144 + 1024 |
+| `max_response_bytes`, write | 1024 | `E` |
+| `websocket.message_size_limit` | 67584 | 66560 + 1024 |
+| `client.concurrency` | 3 | 2 + 1 |
+| `client.queue_max_size` | 855040 | 3 × 263168 + 65536 |
+| `websocket.write_timeout` | 3s | 263168 ÷ 125000 = 2.11, rounded up |
+| `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 262144 |
+| `rpc.registry.max_inflight_bytes` | 16777216 (16 MiB) | 2 × 12500000 × 0.5 = 12500000 = 11.9 MiB, rounded up to 16 MiB |
+| `rpc.registry.memory_watermark_bytes` | 603979776 (576 MiB) | 0.75 × 805306368; the transient 3 × 16 MiB = 48 MiB fits under it |
+
+**(b) 512 KiB parts with 1 MiB reads, 2 GiB node with `GOMEMLIMIT` 1.6 GiB.** Inputs: `P` = 524288, `R` = 1048576, `W` = 3, `S` = 32000 (256 kbit/s), `λ` = 62500000 (500 Mbit/s), `T` = 2 s, `M` = 1.6 GiB.
+
+| Key | Value | Arithmetic |
+|---|---|---|
+| `max_request_bytes`, write | 525312 | 524288 + 1024 |
+| `max_request_bytes`, read | 1024 | `E` |
+| `max_response_bytes`, read | 1049600 | 1048576 + 1024 |
+| `max_response_bytes`, write | 1024 | `E` |
+| `websocket.message_size_limit` | 526336 | 525312 + 1024 |
+| `client.concurrency` | 4 | 3 + 1 |
+| `client.queue_max_size` | 4263936 | 4 × 1049600 + 65536 |
+| `websocket.write_timeout` | 33s | 1049600 ÷ 32000 = 32.8, rounded up |
+| `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 1048576 |
+| `rpc.registry.max_inflight_bytes` | 268435456 (256 MiB) | 2 × 62500000 × 2 = 250000000 = 238.4 MiB, rounded up to 256 MiB; the transient 3 × 256 MiB = 768 MiB fits under the watermark |
+| `rpc.registry.memory_watermark_bytes` | 1288490189 (1.2 GiB) | 0.75 × 1.6 GiB, rounded to the byte |
+
+**(c) Large-object tier: 4 MiB parts and 4 MiB reads, 8 GiB node with `GOMEMLIMIT` 6 GiB.** Inputs: `P` = 4194304, `R` = 4194304, `W` = 2, `S` = 1250000 (10 Mbit/s), `λ` = 125000000 (1 Gbit/s), `T` = 4 s, `M` = 6 GiB (6442450944).
+
+| Key | Value | Arithmetic |
+|---|---|---|
+| `max_request_bytes`, write | 4195328 | 4194304 + 1024 |
+| `max_request_bytes`, read | 1024 | `E` |
+| `max_response_bytes`, read | 4195328 | 4194304 + 1024 |
+| `max_response_bytes`, write | 1024 | `E` |
+| `websocket.message_size_limit` | 4196352 | 4195328 + 1024 |
+| `client.concurrency` | 3 | 2 + 1 |
+| `client.queue_max_size` | 12651520 | 3 × 4195328 + 65536 |
+| `websocket.write_timeout` | 4s | 4195328 ÷ 1250000 = 3.36, rounded up |
+| `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 4194304 |
+| `rpc.registry.max_inflight_bytes` | 1073741824 (1 GiB) | 2 × 125000000 × 4 = 1000000000 = 953.7 MiB, rounded up to 1 GiB; the transient 3 GiB fits under the watermark |
+| `rpc.registry.memory_watermark_bytes` | 4831838208 (4.5 GiB) | 0.75 × 6442450944 |
+
+### Fleet rules
+
+* The registry file lists only the large-payload methods. Each has `idempotent: true`, an explicit `timeout` (set per method, not derived here), `max_request_bytes` and `max_response_bytes`, `response_size_hint` on reads, the affinity header in `headers` (for example `x-example-affinity`), and the moves and redirects in `error_metadata`. Targets which keep state per object on a replica use `ring_hash`.
+* The server logs a warning at start, on a configuration reload and in `checkconfig` when a method's `max_request_bytes` is over `websocket.message_size_limit`, or its `max_response_bytes` is over `client.queue_max_size`. It keeps loading: the method still serves every request under the transport limit, and every reply under the queue size. A registry file shared by fleets with different limits is the expected case of that warning.
+* At the default `client.concurrency` of `0`, calls run one at a time on the read loop, so a window of one is what a socket carries without blocking it. A larger window needs the concurrency raised, or the read loop blocks on the semaphore and reads no pongs, and the connection is closed when a call outlives the pong timeout.
+* No channel namespaces, and no personal channel on the fleet. Client subscriptions are refused by default, and the fleet runs no broker. Issue tokens without `channels`, since each would add a server-side subscription. A personal channel would let `single_connection` close the user's other pooled connections.
+
+### Moves and redirects
+
+The SDK pool acts on three answers of a backend. Each answer is an error or a reply. The method lists the trailers which carry it in `error_metadata`, so the registry copies them into the error. The server does nothing else with them.
+
+* **Move.** An error whose trailer names the place which has the data, for example `x-example-relocate: eu-2`. The pool's `reroute` hook maps the error to an endpoint key, and the pool sends the call there at once, with its affinity hint. The hook runs on error replies only, never on a lost connection or a timeout. Each resend counts against `retries`. The application updates its own cluster map. A move never changes a connection on the server.
+* **Redirect with a plain URL.** A reply or an error which names a URL, for example in `x-example-location`. The pool's `redirect` hook returns the URL, its headers and a byte limit, and the SDK fetches that final URL itself, within the call's deadline. The SDK follows no hop: a 3xx answer fails the fetch with the redirect error. A secure endpoint (`wss:`) is never downgraded, so its URL must be `https:`, and a URL on `http:` is accepted only for an insecure endpoint (`ws:`). A URL of any other scheme is refused before the request is sent. The fetch waits for a slot of the pool's bound on concurrent fetches, within the call's deadline. It is not retried, because the URL may be single-use.
+* **Application-handled redirect.** A backend-defined object, carried as an ordinary reply or error, for example a reply which names another endpoint key and a method of that cluster. The SDK does not decode it, and the `redirect` hook returns nothing for it. The application decodes the object and follows it with its own calls, for example `pool.rpc("blob.readPart", data, {endpointKey: "eu-2"})`. The original call settles with the object, and the follow-up is a new call.
 
 ### Sizing the admission
 
-Calls in flight obey Little's law: the bytes in flight equal the admitted payload rate times the time a call stays on the node. So `max_inflight_bytes` is about twice the bytes in flight at the 99th percentile of the backend latency, and the memory of the calls in flight is at most about three times the budget while they are being moved, and about one time it while they wait on the backend. For a node on a 1 Gbit/s link, about 125 MB/s of payload, and a p99 of 2 s, the bytes in flight at the tail are about 250 MB, so the example budget is 512 MiB.
+Calls in flight obey Little's law: the bytes in flight equal the admitted payload rate times the time a call stays on the node. So `max_inflight_bytes` is about twice the bytes in flight at the 99th percentile of the backend latency, as the formula in the derivation states. Below it the budget never refuses a healthy fleet. Above it, a stalled backend, whose latency grows towards the method timeout, is what trips the budget.
 
-The watermark sits at 75% to 80% of `GOMEMLIMIT`, or of the container limit less the headroom of the kernel and the sockets. The example's 3 GiB on a 4 GiB node leaves the budget's transient of 1.5 GiB its place, and catches what the budget cannot see: the writer queues of slow readers, the decoder buffers, and everything else the node does.
+The memory of the calls in flight is at most about three times the budget while they are being moved, and about one time it while they wait on the backend. So the transient must fit under the watermark. The watermark sits at 75% to 80% of `GOMEMLIMIT`, or of the container limit less the headroom of the kernel and the sockets. It catches what the budget cannot see: the writer queues of slow readers, the decoder buffers, and everything else the node does. The GC works harder as the runtime nears `GOMEMLIMIT`, so the watermark sits below it, not at it.
 
 Alert on `centrifugo_rpc_registry_inflight_bytes / max_inflight_bytes > 0.8`, and on `rate(centrifugo_rpc_registry_admission_refusals_total[5m]) > 0` by `reason`. `inflight` means the backend is slow for the offered load. `memory` means the node is undersized, or slow readers hold the writer queues.
 

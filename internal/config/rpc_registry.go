@@ -38,8 +38,8 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 
 // The key and the environment variable of the wakeup switch of the dedup Redis.
 const (
-	rpcDedupWakeupEnabledPath  = "rpc.registry.dedup.redis.wakeup.enabled"
-	rpcDedupWakeupEnabledVar   = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
+	rpcDedupWakeupSwitchPath   = "rpc.registry.dedup.redis.wakeup.enabled"
+	rpcDedupWakeupSwitchVar    = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
 	rpcDedupMaxWaiterNodesPath = "rpc.registry.dedup.redis.wakeup.max_waiter_nodes"
 	// defaultRPCDedupMaxWaiterNodes is the default of rpc.registry.dedup.redis.wakeup.max_waiter_nodes, which is the
 	// default tag of configtypes.RPCDedupWakeup.
@@ -52,10 +52,10 @@ const (
 // cap below the minimum becomes the default. The replacement is returned as a warning. An explicit switch keeps the
 // cap, which is then checked by validation.
 func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
-	if v.InConfig(rpcDedupWakeupEnabledPath) {
+	if v.InConfig(rpcDedupWakeupSwitchPath) {
 		return nil
 	}
-	if _, set := os.LookupEnv(rpcDedupWakeupEnabledVar); set {
+	if _, set := os.LookupEnv(rpcDedupWakeupSwitchVar); set {
 		return nil
 	}
 	wakeup := &conf.RPC.Registry.Dedup.Redis.Wakeup

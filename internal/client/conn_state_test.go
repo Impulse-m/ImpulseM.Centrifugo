@@ -148,15 +148,7 @@ func TestDefaultConnectWithUserHoldsNothing(t *testing.T) {
 // with the production access store on, as the defaults turn it on. Its connect puts no storage key and its OnConnect
 // sets no ext state, so it pays nothing for the access revocation it has no session for.
 func TestDefaultConnectAnonymousHoldsNothing(t *testing.T) {
-	cfg := config.DefaultConfig()
-	node := tools.NodeWithMemoryEngineNoHandlers()
-	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
-	cfgContainer, err := config.NewContainer(cfg)
-	require.NoError(t, err)
-	verifier, err := jwtverify.NewTokenVerifierJWT(jwtverify.VerifierConfig{HMACSecretKey: "secret"}, cfgContainer)
-	require.NoError(t, err)
-	h := NewHandler(node, cfgContainer, verifier, nil, &ProxyMap{})
-	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+	h, _, node := newAuthClassTestHandler(t, config.DefaultConfig())
 
 	claims := map[string]any{}
 	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
@@ -166,7 +158,6 @@ func TestDefaultConnectAnonymousHoldsNothing(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, reply.Storage, storageKeyConnState)
 
-	require.NoError(t, h.Setup())
 	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, claims))
 	require.Empty(t, client.UserID())
 	require.Nil(t, client.ExtState())

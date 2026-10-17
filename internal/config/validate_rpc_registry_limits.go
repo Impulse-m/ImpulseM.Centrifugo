@@ -8,17 +8,17 @@ import (
 	"strings"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // rpcRingHashSetRequestHashKeyEnv is the environment variable which gRPC reads to decide whether a ring_hash balancer
 // hashes the value of its request header. When it is set to false, gRPC hashes at random.
 const rpcRingHashSetRequestHashKeyEnv = "GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY"
 
-// rpcResponseHintMaxField is the largest field number of a protobuf message, see protowire.MaxValidNumber.
-const rpcResponseHintMaxField = 1<<29 - 1
-
-// rpcMemoryWatermarkMinBytes is the smallest memory watermark which is not off. A watermark below the resident memory
-// of a process trips on the first sample and never recovers, so a smaller value is a mistake, not a limit.
+// rpcMemoryWatermarkMinBytes is the smallest memory watermark which is not off. Every Go process has more than 1 MiB
+// resident, so a smaller watermark trips on the first sample and never recovers: a mistake, not a limit. The floor does
+// not guard a larger watermark, which may still refuse calls while the resident memory is over it, see the README.
 const rpcMemoryWatermarkMinBytes int64 = 1 << 20
 
 var rpcAffinityHeaderRe = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
@@ -148,8 +148,8 @@ func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RP
 		if hint == nil {
 			continue
 		}
-		if hint.RequestField < 1 || hint.RequestField > rpcResponseHintMaxField {
-			return fmt.Errorf("rpc registry method %q: response_size_hint.request_field must be from 1 to %d, got %d", method.Method, rpcResponseHintMaxField, hint.RequestField)
+		if hint.RequestField < 1 || hint.RequestField > int(protowire.MaxValidNumber) {
+			return fmt.Errorf("rpc registry method %q: response_size_hint.request_field must be from 1 to %d, got %d", method.Method, protowire.MaxValidNumber, hint.RequestField)
 		}
 		if hint.OverheadBytes < 0 {
 			return fmt.Errorf("rpc registry method %q: response_size_hint.overhead_bytes must not be negative, got %d", method.Method, hint.OverheadBytes)

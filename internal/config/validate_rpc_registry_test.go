@@ -364,8 +364,8 @@ func TestValidateRPCRegistryChecksFileWhenEnabled(t *testing.T) {
 	require.NoError(t, err)
 	warnings := rpcRegistryLimitWarnings(cfg, file)
 	require.Len(t, warnings, 1)
-	require.Contains(t, warnings[0], `method "files.saveFilePart"`)
-	require.Contains(t, warnings[0], "websocket.message_size_limit")
+	require.Contains(t, warnings[0], "rpc registry method")
+	require.Contains(t, warnings[0], "max_request_bytes 524288 exceeds websocket.message_size_limit (65536)")
 }
 
 func TestValidateRPCRegistryFileVersion(t *testing.T) {

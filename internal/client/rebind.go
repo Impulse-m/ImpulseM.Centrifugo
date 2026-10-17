@@ -451,25 +451,43 @@ func (h *Handler) keepsAnonymous(channel string, source uint8) bool {
 // which leaves no half-moved connection: a disconnect ends the connection and releases what it holds.
 func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[string]centrifuge.SubscribeOptions) error {
 	cfg := h.cfgContainer.ConfigRef()
+	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
+		if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
+			return err
+		}
+	}
+	toSubscribe, err := h.reboundChannels(cfg, userID, subs)
+	if err != nil {
+		return centrifuge.DisconnectServerError
+	}
+	return subscribeChannels(c, toSubscribe)
+}
+
+// reboundChannels returns the channels a rebound connection subscribes to: its personal channel, when it has a user and
+// the personal channel is enabled, and the channels of its token. A personal channel which cannot be resolved is left
+// out, and its error is returned with the other channels. subscribeRebound and the channel limit pre-check both take the
+// channels from here, so they cannot drift apart.
+func (h *Handler) reboundChannels(
+	cfg *config.Config,
+	userID string,
+	subs map[string]centrifuge.SubscribeOptions,
+) (map[string]centrifuge.SubscribeOptions, error) {
 	toSubscribe := make(map[string]centrifuge.SubscribeOptions, len(subs)+1)
+	var err error
 	if userID != "" && cfg.Client.SubscribeToUserPersonalChannel.Enabled {
-		if cfg.Client.SubscribeToUserPersonalChannel.SingleConnection {
-			if err := h.enforceSingleUserConnection(c.ID(), userID); err != nil {
-				return err
-			}
+		var personalChannel string
+		var personalOptions centrifuge.SubscribeOptions
+		personalChannel, personalOptions, err = h.personalChannelSubscription(userID)
+		if err == nil {
+			toSubscribe[personalChannel] = personalOptions
 		}
-		personalChannel, personalOptions, err := h.personalChannelSubscription(userID)
-		if err != nil {
-			return centrifuge.DisconnectServerError
-		}
-		toSubscribe[personalChannel] = personalOptions
 	}
 	for channel, opts := range subs {
 		if _, ok := toSubscribe[channel]; !ok {
 			toSubscribe[channel] = opts
 		}
 	}
-	return subscribeChannels(c, toSubscribe)
+	return toSubscribe, err
 }
 
 // reboundChannelsExceedLimit reports whether subscribeRebound would take c over client.channel_limit: the channels it
@@ -485,17 +503,9 @@ func (h *Handler) reboundChannelsExceedLimit(
 	if limit <= 0 {
 		return false
 	}
-	added := make(map[string]struct{}, len(subs)+1)
-	if cfg.Client.SubscribeToUserPersonalChannel.Enabled {
-		if personalChannel, _, err := h.personalChannelSubscription(userID); err == nil {
-			added[personalChannel] = struct{}{}
-		}
-	}
-	for channel := range subs {
-		added[channel] = struct{}{}
-	}
+	toSubscribe, _ := h.reboundChannels(cfg, userID, subs)
 	count := len(c.ChannelsWithContext())
-	for channel := range added {
+	for channel := range toSubscribe {
 		if !c.IsSubscribed(channel) {
 			count++
 		}

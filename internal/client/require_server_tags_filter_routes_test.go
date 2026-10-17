@@ -16,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -239,4 +240,41 @@ func TestRequireReboundUnsubscribesDroppedChannel(t *testing.T) {
 	require.Equal(t, "42", state.user)
 	require.NotContains(t, state.channels, "tpl:room")
 	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["tpl:room"].Code)
+}
+
+// TestRequireConnectKeepsSingleConnection checks a connect which the option refuses leaves the other connection of its user
+// connected, without any template: the single connection is enforced only once the connect is accepted.
+func TestRequireConnectKeepsSingleConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "req",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true, RequireServerTagsFilter: true},
+		},
+	}
+	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	cfg.Client.SubscribeToUserPersonalChannel.SingleConnection = true
+	cfg.Channel.WithoutNamespace.Presence = true
+	env := newTemplateEnv(t, cfg)
+	_, firstTransport := connectWithConnToken(t, env.node, connTokenOf(t, nil))
+	personalChannel := env.cfgContainer.PersonalChannel("12")
+	require.Eventually(t, func() bool {
+		stats, err := env.node.PresenceStats(personalChannel)
+		return err == nil && stats.NumClients == 1
+	}, 5*time.Second, time.Millisecond)
+
+	// The channels claim of the second token has no filter for req, so its connect is refused with 3507.
+	secondTransport := newRecordingTransport()
+	secondClient, closeFn, err := centrifuge.NewClient(context.Background(), env.node, secondTransport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(secondClient, &protocol.Command{
+		Id: 1,
+		Connect: &protocol.ConnectRequest{
+			Token: connTokenOf(t, map[string]any{"channels": []string{"req:room"}}),
+		},
+	})
+	require.Equal(t, centrifuge.DisconnectPermissionDenied.Code, secondTransport.waitDisconnect(t).Code)
+	// The single connection disconnect of the first connection is asynchronous, so it is watched for a while.
+	require.Never(t, firstTransport.disconnected, 300*time.Millisecond, 10*time.Millisecond)
 }

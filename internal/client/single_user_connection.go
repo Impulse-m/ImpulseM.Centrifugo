@@ -7,17 +7,18 @@ import (
 )
 
 // enforceConnectSingleConnection enforces the single connection of the user of a connect at one of its two points, see
-// OnClientConnecting. Without templates the single connection is enforced before the subscriptions of the connect are
-// built, as upstream does. With templates it is enforced after the templates are applied, so a connect which a template
-// refuses does not disconnect the other connection of the user. The config is the one the connect started with, so only
-// one of the two points enforces it.
+// OnClientConnecting. Without templates or the require option the single connection is enforced before the subscriptions
+// of the connect are built, as upstream does. With either of them it is enforced after the subscriptions are checked, so a
+// connect which a template or the option refuses does not disconnect the other connection of the user. The config is the
+// one the connect started with, so only one of the two points enforces it.
 func (h *Handler) enforceConnectSingleConnection(
 	cfg *config.Config,
 	clientID string,
 	credentials *centrifuge.Credentials,
 	afterTemplates bool,
 ) error {
-	if cfg.HasServerTagsFilterTemplates() != afterTemplates || !singleConnectionApplies(cfg, credentials) {
+	deferred := cfg.HasServerTagsFilterTemplates() || cfg.RequiresServerTagsFilter()
+	if deferred != afterTemplates || !singleConnectionApplies(cfg, credentials) {
 		return nil
 	}
 	return h.enforceSingleUserConnection(clientID, credentials.UserID)

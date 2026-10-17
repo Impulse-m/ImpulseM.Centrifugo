@@ -3,6 +3,7 @@ package rpcdedup
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -34,15 +35,43 @@ func flushedAcks(batches [][]ScopeAcks) int {
 	return keys
 }
 
-// With no acks queued, the flush makes no backend call, however long the node runs.
-func TestSharedAckFlushMakesNoBackendCallWithoutAcks(t *testing.T) {
-	fx := newSharedFixture(t, false)
-	fx.shared.ackFlushEvery = 5 * time.Millisecond
-	runAckFlush(t, fx)
+// An idle node arms no flush timer: the interval starts at the first queued ack, so the ack is flushed exactly one
+// interval after it was queued. A timer which had run since the start, as a ticker does, would flush it earlier, at its
+// next tick. The fake clock of the bubble makes the idle hour free.
+func TestSharedAckFlushTimerStartsAtFirstAck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fx := newSharedFixture(t, false)
+		fx.shared.ackFlushEvery = 100 * time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = fx.shared.Run(ctx)
+		}()
+		defer func() {
+			cancel()
+			<-done
+		}()
 
-	time.Sleep(100 * time.Millisecond)
-	require.Empty(t, fx.backend.ackBatches())
-	require.Equal(t, 0, countCalls(fx.backend.callLog(), "ack"))
+		time.Sleep(time.Hour + 30*time.Millisecond)
+		synctest.Wait()
+		require.Empty(t, fx.backend.ackBatches(), "an idle node flushes nothing")
+		require.Equal(t, 0, countCalls(fx.backend.callLog(), "ack"))
+
+		scope := testScope("u1", "a")
+		testAnswer(t, fx.local, Key{Scope: scope, MsgID: 1}, "ok")
+		require.NoError(t, fx.shared.Ack(scope, []uint64{1}))
+		synctest.Wait()
+
+		time.Sleep(99 * time.Millisecond)
+		synctest.Wait()
+		require.Empty(t, fx.backend.ackBatches(), "the ack waits for the full interval")
+
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, 1, flushedAcks(fx.backend.ackBatches()))
+		require.Len(t, fx.backend.ackBatches(), 1)
+	})
 }
 
 // An ack which is alone in its batch is flushed once the flush interval has passed.

@@ -659,12 +659,16 @@ func (s *Shared) Stats() Stats {
 	return s.local.Stats()
 }
 
-// Run flushes the queued acks to the shared tier every AckFlushEvery, and as soon as a batch is full. When ctx is done
-// it stops the wake watcher, flushes what is queued once more and returns the context error. It starts no wake watcher
-// itself: those start with the first remote wait. It implements service.Service.
+// Run flushes the queued acks to the shared tier, as soon as a batch is full, and otherwise AckFlushEvery after the first
+// ack of the batch. The flush timer is armed only while a batch holds acks, so an idle node runs no timer. When ctx is
+// done it stops the wake watcher, flushes what is queued once more and returns the context error. It starts no wake
+// watcher itself: those start with the first remote wait. It implements service.Service.
 func (s *Shared) Run(ctx context.Context) error {
-	ticker := time.NewTicker(s.ackFlushEvery)
-	defer ticker.Stop()
+	flush := time.NewTimer(s.ackFlushEvery)
+	flush.Stop()
+	defer flush.Stop()
+	// flushC is the channel of flush while its batch holds acks, and nil otherwise, which blocks its case.
+	var flushC <-chan time.Time
 	batch := make([]Key, 0, s.ackBatch)
 	for {
 		select {
@@ -673,14 +677,21 @@ func (s *Shared) Run(ctx context.Context) error {
 			s.drainAcks(batch)
 			return ctx.Err()
 		case key := <-s.acks:
+			if len(batch) == 0 {
+				flush.Reset(s.ackFlushEvery)
+				flushC = flush.C
+			}
 			batch = append(batch, key)
 			if len(batch) >= s.ackBatch {
 				s.flushAcks(context.Background(), batch)
 				batch = batch[:0]
+				flush.Stop()
+				flushC = nil
 			}
-		case <-ticker.C:
+		case <-flushC:
 			s.flushAcks(context.Background(), batch)
 			batch = batch[:0]
+			flushC = nil
 		}
 	}
 }

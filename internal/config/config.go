@@ -149,6 +149,10 @@ type Config struct {
 	// prepared for a Container, see ServerTagsFilterClaims.
 	serverTagsFilterClaims       []string
 	hasServerTagsFilterTemplates bool
+
+	// requiresServerTagsFilter is true when channel.without_namespace or any namespace has require_server_tags_filter.
+	// Set when the config is prepared for a Container, see RequiresServerTagsFilter.
+	requiresServerTagsFilter bool
 }
 
 type Meta struct {

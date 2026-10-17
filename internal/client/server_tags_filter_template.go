@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filterrequire"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -110,17 +111,23 @@ func (h *Handler) answerSubscribe(
 	err error,
 	cb centrifuge.SubscribeCallback,
 ) {
-	if err != nil || !h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() || h.templateOf(channel) == nil {
+	templated := err == nil && h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates() && h.templateOf(channel) != nil
+	var values filtertemplate.Values
+	if templated {
+		values = connectionFilterValues(client)
+		filter, templateErr := h.filterWithValues(channel, values, reply.Options.ServerTagsFilter)
+		if templateErr != nil {
+			err = centrifuge.ErrorPermissionDenied
+		} else {
+			reply.Options.ServerTagsFilter = filter
+		}
+	}
+	// The require option checks the filter of the reply after the template is combined in, so a template filter counts.
+	err = h.requireSubscribeFilter(client, channel, &reply, err)
+	if err != nil || !templated {
 		cb(reply, err)
 		return
 	}
-	values := connectionFilterValues(client)
-	filter, err := h.filterWithValues(channel, values, reply.Options.ServerTagsFilter)
-	if err != nil {
-		cb(reply, centrifuge.ErrorPermissionDenied)
-		return
-	}
-	reply.Options.ServerTagsFilter = filter
 	cb(reply, nil)
 	if !client.IsSubscribed(channel) {
 		return
@@ -263,9 +270,14 @@ func (h *Handler) filterWithValues(
 
 // refusesHistory returns the error of a history call on a channel with chOpts. The template filters the publications of a
 // subscription, and history reads publications without the subscription, so a channel with a template refuses it.
+// The require_server_tags_filter option refuses it too: every subscriber of its namespace is filtered, and history is not.
 // Recovery is not refused: it applies the filter of the subscription.
-func refusesHistory(chOpts *configtypes.ChannelOptions) error {
+func refusesHistory(c Client, channel string, chOpts *configtypes.ChannelOptions) error {
 	if chOpts.HasServerTagsFilterTemplate() {
+		return centrifuge.ErrorPermissionDenied
+	}
+	if chOpts.RequireServerTagsFilter {
+		filterrequire.LogHistoryRefused(channel, c.ID(), c.UserID())
 		return centrifuge.ErrorPermissionDenied
 	}
 	return nil

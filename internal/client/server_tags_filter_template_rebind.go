@@ -24,6 +24,12 @@ type rebindFilters struct {
 	previous filtertemplate.Values
 	values   filtertemplate.Values
 	subs     map[string]centrifuge.SubscribeOptions
+	// rendered is subs with the templates of the new identity applied, as checkReboundTemplates rendered them for the check
+	// of the require option; nil when no template was rendered.
+	rendered map[string]centrifuge.SubscribeOptions
+	// dropped are the server-side channels which the connection holds and the require option drops from subs, see
+	// requireReboundPrecheck. Their records are forgotten once the rebind is applied.
+	dropped []string
 }
 
 // prepareRebindFilters returns the template values of a rebind of c to newUser with the claims of its token. The values
@@ -57,8 +63,30 @@ func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate
 // when a template of a subscription which the new identity gets has a missing value under reject, and disconnects the
 // connection when it holds a server-side channel of a template namespace which connect did not store with its template,
 // see untemplatedServerSide. The templates are rendered only to check them: the rebind renders them again once it is
-// applied. It does nothing when no config has templates and the connection stored no values.
+// applied. It does nothing when no config has templates and the connection stored no values. The require option is
+// checked last, see requireReboundPrecheck.
 func (h *Handler) checkReboundFilters(
+	c rebindableClient,
+	verified jwtverify.ConnectToken,
+	newUser string,
+) (rebindFilters, error) {
+	filters, err := h.checkReboundTemplates(c, verified, newUser)
+	if err != nil {
+		return rebindFilters{}, err
+	}
+	dropped, err := h.requireReboundPrecheck(c, filters.values, newUser, filters.subs, filters.rendered)
+	if err != nil {
+		return rebindFilters{}, err
+	}
+	for _, channel := range dropped {
+		delete(filters.subs, channel)
+	}
+	filters.dropped = dropped
+	return filters, nil
+}
+
+// checkReboundTemplates is the template part of checkReboundFilters.
+func (h *Handler) checkReboundTemplates(
 	c rebindableClient,
 	verified jwtverify.ConnectToken,
 	newUser string,
@@ -84,28 +112,32 @@ func (h *Handler) checkReboundFilters(
 		maps.Copy(filters.subs, verified.Subs)
 		maps.Copy(filters.subs, held)
 	}
-	if err := h.checkFilterTemplates(filters.values, filters.subs); err != nil {
+	rendered, err := h.checkFilterTemplates(filters.values, filters.subs)
+	if err != nil {
 		return rebindFilters{}, err
 	}
+	filters.rendered = rendered
 	if newUser != "" && h.cfgContainer.ConfigRef().Client.SubscribeToUserPersonalChannel.Enabled {
 		personal := map[string]centrifuge.SubscribeOptions{h.cfgContainer.PersonalChannel(newUser): {}}
-		if err := h.checkFilterTemplates(filters.values, personal); err != nil {
+		if _, err := h.checkFilterTemplates(filters.values, personal); err != nil {
 			return rebindFilters{}, err
 		}
 	}
 	return filters, nil
 }
 
-// checkFilterTemplates returns ErrorPermissionDenied when a template of subs refuses its subscription with values. subs
-// is not changed.
+// checkFilterTemplates returns subs with the templates of its namespaces applied to a clone, which subs is not changed by.
+// It returns ErrorPermissionDenied when a template of subs refuses its subscription with values. The clone is what the
+// require option checks, so the templates are rendered once for both.
 func (h *Handler) checkFilterTemplates(
 	values filtertemplate.Values,
 	subs map[string]centrifuge.SubscribeOptions,
-) error {
-	if err := h.applyFilterTemplates(maps.Clone(subs), values); err != nil {
-		return centrifuge.ErrorPermissionDenied
+) (map[string]centrifuge.SubscribeOptions, error) {
+	rendered := maps.Clone(subs)
+	if err := h.applyFilterTemplates(rendered, values); err != nil {
+		return nil, centrifuge.ErrorPermissionDenied
 	}
-	return nil
+	return rendered, nil
 }
 
 // untemplatedServerSide reports whether c holds a uni-connect or connect proxy channel of a namespace with a template
@@ -257,8 +289,18 @@ func (h *Handler) subscribeRestoredPersonal(c rebindableClient, channel string, 
 		return nil
 	}
 	toSubscribe := map[string]centrifuge.SubscribeOptions{channel: opts}
-	if err := h.templateSubscriptions(c, toSubscribe); err != nil {
-		return centrifuge.ErrorPermissionDenied
+	templated := h.cfgContainer.ConfigRef().HasServerTagsFilterTemplates()
+	if templated {
+		if err := h.applyFilterTemplates(toSubscribe, connectionFilterValues(c)); err != nil {
+			return centrifuge.ErrorPermissionDenied
+		}
+	}
+	// The channel is recorded only once the refusal is passed, so a refused restore leaves no record of it.
+	if err := h.refusesRestoredPersonal(c, toSubscribe); err != nil {
+		return err
+	}
+	if templated {
+		h.recordTemplatedChannel(c, channel)
 	}
 	return subscribeChannels(c, toSubscribe)
 }

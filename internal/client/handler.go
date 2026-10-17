@@ -516,8 +516,11 @@ func (h *Handler) OnClientConnecting(
 		return centrifuge.ConnectReply{}, centrifuge.ErrorTooManyRequests
 	}
 
+	// The require option is read once, here after the connect proxy call, and the gate and the refusal below both use it.
+	requiresFilter := h.cfgContainer.ConfigRef().RequiresServerTagsFilter()
+
 	// Handle single connection enforcement before establishing connection.
-	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, false); err != nil {
+	if err := h.enforceConnectSingleConnection(cfg, requiresFilter, e.ClientID, credentials, false); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
 
@@ -620,7 +623,10 @@ func (h *Handler) OnClientConnecting(
 	if err := h.connectFilterTemplates(e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
-	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, true); err != nil {
+	if err := h.requireConnectFilters(e.ClientID, credentials, subscriptions, storage, requiresFilter); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
+	if err := h.enforceConnectSingleConnection(cfg, requiresFilter, e.ClientID, credentials, true); err != nil {
 		return centrifuge.ConnectReply{}, err
 	}
 	storeConnectionTokenFilters(storage, subscriptions)
@@ -1374,7 +1380,7 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
-	if err = refusesHistory(&chOpts); err != nil {
+	if err = refusesHistory(c, e.Channel, &chOpts); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

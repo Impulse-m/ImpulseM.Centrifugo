@@ -450,6 +450,10 @@ func (h *Executor) Subscribe(_ context.Context, cmd *SubscribeRequest) *Subscrib
 		resp.Error = ErrorNotAvailable
 		return resp
 	}
+	if refusesRequiredServerTagsFilter(&chOpts, channel, user) {
+		resp.Error = ErrorNotAvailable
+		return resp
+	}
 
 	presence := chOpts.Presence
 	if cmd.Override != nil && cmd.Override.Presence != nil {

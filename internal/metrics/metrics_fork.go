@@ -338,7 +338,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "inflight_bytes",
-		Help:        "Bytes of RPC method registry calls in flight on the node, by the cost of admission. Set only when rpc.registry.max_inflight_bytes is set.",
+		Help:        "Bytes of RPC method registry calls in flight on the node, by the cost of admission. Zero when rpc.registry.max_inflight_bytes is off.",
 		ConstLabels: constLabels,
 	})
 

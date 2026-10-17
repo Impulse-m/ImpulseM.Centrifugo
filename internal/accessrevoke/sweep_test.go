@@ -27,7 +27,7 @@ func TestSweepConnectionsDisconnectsRejectedOnly(t *testing.T) {
 	waitConnections(t, node, "user-3", 1)
 
 	require.NoError(t, store.BlockUser("user-1", 0))
-	require.NoError(t, store.RevokeSession(testOtherUUID, 0, 0))
+	require.NoError(t, store.RevokeSession(testOtherUUID, 0, 0, nil))
 
 	rejected := SweepConnections(node.Hub(), store, queue, allAccessChecks)
 	require.Equal(t, 2, rejected)

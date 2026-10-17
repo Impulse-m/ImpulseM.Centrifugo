@@ -27,6 +27,11 @@ type Flight struct {
 	localOnly bool
 	// remote is set when the call runs on another node, and this flight waits for its answer.
 	remote bool
+	// wake is signalled when the owner of the call on another node notifies this node that the record is written. It is
+	// made by markRemote when the wakeup is on, and nil otherwise, so a flight costs nothing more when the wakeup is off.
+	wake chan struct{}
+	// wakePending is a wakeup which came before markRemote: markRemote makes wake pre-filled then.
+	wakePending bool
 }
 
 // NewFlight returns a flight which has not started, with a zero fingerprint. A zero fingerprint matches only a
@@ -74,13 +79,35 @@ func (f *Flight) Cancel() {
 	}
 }
 
-// markRemote marks the flight as waiting for a call which runs on another node. It reports whether the flight was
-// cancelled before, while it had no call to cancel: the caller then tells the node which runs the call.
-func (f *Flight) markRemote() bool {
+// markRemote marks the flight as waiting for a call which runs on another node. With wakeup set it makes the wake
+// channel, pre-filled when a wakeup came before. It reports whether the flight was cancelled before, while it had no
+// call to cancel: the caller then tells the node which runs the call.
+func (f *Flight) markRemote(wakeup bool) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.remote = true
+	if wakeup {
+		f.wake = make(chan struct{}, 1)
+		if f.wakePending {
+			f.wake <- struct{}{}
+		}
+	}
 	return f.cancelled
+}
+
+// nudge signals the watcher of the flight that the record may be written. Several nudges coalesce. A nudge before
+// markRemote is kept for it, and a nudge on a flight which never turns remote is kept and never read.
+func (f *Flight) nudge() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.wake == nil {
+		f.wakePending = true
+		return
+	}
+	select {
+	case f.wake <- struct{}{}:
+	default:
+	}
 }
 
 // isRemote reports whether the flight waits for a call which runs on another node.

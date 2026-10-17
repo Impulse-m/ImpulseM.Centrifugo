@@ -23,7 +23,7 @@ func TestRevokeSessionRequestsSweepWhenDisconnectDropped(t *testing.T) {
 	}
 	connectTestClient(t, node, "42|s1|0|1000")
 
-	require.NoError(t, revoker.RevokeSession("42", "s1", 1000, 0))
+	require.NoError(t, revoker.RevokeSession("42", "s1", 1000, 0, nil))
 	select {
 	case <-swept:
 	case <-time.After(5 * time.Second):
@@ -47,7 +47,7 @@ func TestRevokeSessionWithRoomRequestsNoSweep(t *testing.T) {
 	}
 	connectTestClient(t, node, "42|s1|0|1000")
 
-	require.NoError(t, revoker.RevokeSession("42", "s1", 1000, 0))
+	require.NoError(t, revoker.RevokeSession("42", "s1", 1000, 0, nil))
 	select {
 	case <-swept:
 		t.Fatal("a queued disconnect requested a sweep")

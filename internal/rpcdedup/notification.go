@@ -8,31 +8,40 @@ import (
 // CancelNotificationOp is the op of the node notification which asks the node that runs a call to cancel it.
 const CancelNotificationOp = "rpc_dedup_cancel"
 
-// errMalformedCancel is returned by DecodeCancel for a payload which is not a cancel notification.
-var errMalformedCancel = errors.New("malformed cancel notification")
+// errMalformedNotification is returned by the decoders for a payload which is not a key notification.
+var errMalformedNotification = errors.New("malformed key notification")
 
-// cancelNotification is the payload of CancelNotificationOp. Its fields are short, as the payload is sent per
-// cancelled call.
-type cancelNotification struct {
+// keyNotification is the payload of the key notifications. Its fields are short, as the payload is sent per call.
+type keyNotification struct {
 	Scope string `json:"s"`
 	MsgID uint64 `json:"m"`
 }
 
 // EncodeCancel returns the payload of CancelNotificationOp for key.
 func EncodeCancel(key Key) []byte {
-	// Marshalling a struct of a string and an integer does not fail.
-	data, _ := json.Marshal(cancelNotification(key))
-	return data
+	return encodeKey(key)
 }
 
 // DecodeCancel returns the key of a payload of CancelNotificationOp. A payload without a scope is malformed.
 func DecodeCancel(data []byte) (Key, error) {
-	var n cancelNotification
+	return decodeKey(data)
+}
+
+// encodeKey returns the payload of a key notification.
+func encodeKey(key Key) []byte {
+	// Marshalling a struct of a string and an integer does not fail.
+	data, _ := json.Marshal(keyNotification(key))
+	return data
+}
+
+// decodeKey returns the key of a payload of a key notification. A payload without a scope is malformed.
+func decodeKey(data []byte) (Key, error) {
+	var n keyNotification
 	if err := json.Unmarshal(data, &n); err != nil {
 		return Key{}, err
 	}
 	if n.Scope == "" {
-		return Key{}, errMalformedCancel
+		return Key{}, errMalformedNotification
 	}
 	return Key(n), nil
 }

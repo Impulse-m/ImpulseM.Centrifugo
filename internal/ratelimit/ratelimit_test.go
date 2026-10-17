@@ -408,4 +408,94 @@ func TestClientLimiterCommandAllowedAndNeedsKey(t *testing.T) {
 func TestOperationString(t *testing.T) {
 	require.Equal(t, "presence_stats", OperationPresenceStats.String())
 	require.Equal(t, "rpc", OperationRPC.String())
+	require.Equal(t, "map_publish", OperationMapPublish.String())
+	require.Equal(t, "map_remove", OperationMapRemove.String())
+	require.Equal(t, "track", OperationTrack.String())
+	require.Equal(t, "untrack", OperationUntrack.String())
+}
+
+// testMapTrackOperations returns operation buckets of map and shared poll operations, with a namespace override
+// of map_publish and without buckets of untrack.
+func testMapTrackOperations() configtypes.RateLimitOperations {
+	return configtypes.RateLimitOperations{
+		Default: testContainer(time.Second, 10),
+		MapPublish: configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testList(time.Second, 3),
+			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Second, 1)},
+			},
+		},
+		MapRemove: testChannel(time.Second, 2),
+		Track:     testChannel(time.Second, 4),
+	}
+}
+
+func TestMapAndTrackOperationsResolutionInAllPlans(t *testing.T) {
+	ops := testMapTrackOperations()
+	clientP := newCommandPlan(configtypes.RateLimitClientCommand{Enabled: true, RateLimitOperations: ops})
+	userP := newUserPlan(configtypes.RateLimitUserCommand{Enabled: true, RateLimitOperations: ops})
+	redisP := newRedisUserPlan(configtypes.RateLimitRedisUserCommand{Enabled: true, RateLimitOperations: ops})
+
+	plans := []struct {
+		name    string
+		resolve func(op Operation, key string) *scope
+	}{
+		{
+			name:    "client_command",
+			resolve: clientP.resolve,
+		},
+		{
+			name:    "user_command",
+			resolve: userP.resolve,
+		},
+		{
+			name: "redis_user_command",
+			resolve: func(op Operation, key string) *scope {
+				return redisP.ops[op].resolve(key)
+			},
+		},
+	}
+	tests := []struct {
+		name     string
+		op       Operation
+		key      string
+		wantName string
+	}{
+		{name: "map_publish base", op: OperationMapPublish, key: "", wantName: "map_publish"},
+		{name: "map_publish namespace override", op: OperationMapPublish, key: "chat", wantName: "map_publish.ns.chat"},
+		{name: "map_publish unknown namespace uses base", op: OperationMapPublish, key: "other", wantName: "map_publish"},
+		{name: "map_remove base", op: OperationMapRemove, key: "chat", wantName: "map_remove"},
+		{name: "track base", op: OperationTrack, key: "", wantName: "track"},
+		{name: "untrack not configured uses default", op: OperationUntrack, key: "", wantName: defaultScopeName},
+	}
+	for _, plan := range plans {
+		for _, tt := range tests {
+			t.Run(plan.name+" "+tt.name, func(t *testing.T) {
+				s := plan.resolve(tt.op, tt.key)
+				require.NotNil(t, s)
+				require.Equal(t, tt.wantName, s.name)
+			})
+		}
+	}
+}
+
+func TestMapAndTrackOperationsBucketsInClientPlan(t *testing.T) {
+	p := newCommandPlan(configtypes.RateLimitClientCommand{Enabled: true, RateLimitOperations: testMapTrackOperations()})
+
+	// Namespace override replaces the base buckets of map_publish, the other operations keep theirs.
+	require.Equal(t, []Bucket{NewBucket(time.Second, 1)}, scopeBuckets(p.resolve(OperationMapPublish, "chat")))
+	require.Equal(t, []Bucket{NewBucket(time.Second, 3)}, scopeBuckets(p.resolve(OperationMapPublish, "")))
+	require.Equal(t, []Bucket{NewBucket(time.Second, 2)}, scopeBuckets(p.resolve(OperationMapRemove, "")))
+	require.Equal(t, []Bucket{NewBucket(time.Second, 4)}, scopeBuckets(p.resolve(OperationTrack, "")))
+	require.Equal(t, []Bucket{NewBucket(time.Second, 10)}, scopeBuckets(p.resolve(OperationUntrack, "")))
+}
+
+// scopeBuckets returns the buckets of a scope in their order.
+func scopeBuckets(s *scope) []Bucket {
+	buckets := make([]Bucket, 0, len(s.buckets))
+	for _, sb := range s.buckets {
+		buckets = append(buckets, sb.bucket)
+	}
+	return buckets
 }

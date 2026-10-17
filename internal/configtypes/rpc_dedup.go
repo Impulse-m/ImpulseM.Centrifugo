@@ -22,6 +22,18 @@ type RPCDedupRedis struct {
 	ReuseFromEngine bool `mapstructure:"reuse_from_engine" json:"reuse_from_engine" envconfig:"reuse_from_engine" yaml:"reuse_from_engine" toml:"reuse_from_engine" doc:"Use the Redis and the prefix of the Redis engine. Requires engine.type redis."`
 	// RedisPrefixed is a Redis configuration. Ignored when ReuseFromEngine is set.
 	RedisPrefixed `mapstructure:",squash" yaml:",inline"`
+	// Wakeup is the wakeup of a duplicate which waits for a call on another node.
+	Wakeup RPCDedupWakeup `mapstructure:"wakeup" json:"wakeup" envconfig:"wakeup" yaml:"wakeup" toml:"wakeup" doc:"Wakeup of duplicates which wait for a call on another node, see rpc.registry.dedup.redis.wakeup.enabled."`
+}
+
+// RPCDedupWakeup configures the wakeup of a duplicate which waits for a call running on another node: the node which
+// runs the call writes a wake into a Redis stream of each waiting node when its record is written, and the waiting node
+// reads the answer at once instead of polling for it.
+type RPCDedupWakeup struct {
+	// Enabled turns the wakeup on.
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Wakes a duplicate which waits for a call running on another node by a wake which that node writes to a stream of this node in the dedup Redis when the answer is written, instead of polling Redis every 50 to 500 ms for it. While a node has such duplicates waiting, and for a minute after, it keeps one blocking read per Redis shard on its stream; otherwise nothing. A wait reads the answer on each wake it gets and once 2 seconds after it started; a repeated wake, such as one after a restart, costs one more read. A wait never reads on a timer. Enable it on every node. Off by default. Needs rpc.registry.dedup.redis.enabled, and is ignored without it. Read at start: a change takes effect after a restart."`
+	// MaxWaiterNodes bounds the nodes which an in-flight record lists as waiting for its call.
+	MaxWaiterNodes int `mapstructure:"max_waiter_nodes" default:"64" json:"max_waiter_nodes" envconfig:"max_waiter_nodes" yaml:"max_waiter_nodes" toml:"max_waiter_nodes" doc:"Nodes which an in-flight record lists as waiting for its call. A duplicate on a node beyond it does not wait: it is answered with the temporary later error at once, and counted as a refused wait. The list holds node ids, one per node which ran a duplicate of the call while it was in flight; a node which restarted in that time counts again with its new id. Size it to the nodes which can receive a retransmit of one call within its method timeout plus 10 seconds, which is the whole cluster behind one load balancer: keep the default unless refused waits are counted. At least 1, at most 1024. Default <<64>>."`
 }
 
 // RPCDedup configures exactly-once RPC. A non-idempotent registry call with a msg_id is recorded, and a

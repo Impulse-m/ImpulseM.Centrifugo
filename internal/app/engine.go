@@ -204,12 +204,7 @@ func memoryPresenceManagerConfig() (*centrifuge.MemoryPresenceManagerConfig, err
 }
 
 func NatsBroker(node *centrifuge.Node, cfgContainer *config.Container) (*natsbroker.NatsBroker, error) {
-	broker, err := natsbroker.New(node, cfgContainer.Config().Broker.Nats)
-	if err != nil {
-		return nil, err
-	}
-	broker.SetRawModeDataCheck(rawModeDataCheck(cfgContainer))
-	return broker, nil
+	return natsBrokerFrom(node, cfgContainer, cfgContainer.Config().Broker.Nats)
 }
 
 // rawModeDataCheck applies publication_data_format of a channel to messages
@@ -258,50 +253,32 @@ func createRedisEngine(n *centrifuge.Node, cfgContainer *config.Container) (*cen
 
 func createRedisBroker(n *centrifuge.Node, cfgContainer *config.Container) (*centrifuge.RedisBroker, string, error) {
 	cfg := cfgContainer.Config()
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.Broker.Redis.Redis)
-	if err != nil {
-		return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-	}
-	broker, err := confighelpers.CentrifugeRedisBroker(
-		n, cfg.Broker.Redis.Prefix, redisShards, cfg.Broker.Redis.RedisBrokerCommon, cfg.Broker.Type == "redisnats")
-	if err != nil {
-		return nil, mode, fmt.Errorf("error creating Redis broker: %w", err)
-	}
-	return broker, mode, nil
+	broker, _, mode, err := createRedisBrokerFrom(n, "", cfg.Broker.Redis, cfg.Broker.Type == "redisnats")
+	return broker, mode, err
 }
 
 func createRedisPresenceManager(n *centrifuge.Node, cfgContainer *config.Container) (centrifuge.PresenceManager, string, error) {
-	cfg := cfgContainer.Config()
-	redisShards, mode, err := confighelpers.CentrifugeRedisShards(n, cfg.PresenceManager.Redis.Redis)
-	if err != nil {
-		return nil, "", fmt.Errorf("error creating Redis shards: %w", err)
-	}
-	presenceManager, err := confighelpers.CentrifugeRedisPresenceManager(
-		n, cfg.PresenceManager.Redis.Prefix, redisShards, cfg.PresenceManager.Redis.RedisPresenceManagerCommon)
-	if err != nil {
-		return nil, mode, fmt.Errorf("error creating Redis presence manager: %w", err)
-	}
-	return presenceManager, mode, nil
+	presenceManager, _, mode, err := createRedisPresenceManagerFrom(n, cfgContainer.Config().PresenceManager.Redis)
+	return presenceManager, mode, err
 }
 
-func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) error {
-	cfg := cfgContainer.Config()
+func createMapBroker(node *centrifuge.Node, cfg configtypes.MapBroker) (centrifuge.MapBroker, []*centrifuge.RedisShard, string, error) {
 	var mapBroker centrifuge.MapBroker
 	var mapBrokerMode string
+	var redisShards []*centrifuge.RedisShard
 	var err error
-	switch cfg.MapBroker.Type {
+	switch cfg.Type {
 	case "memory":
 		mapBroker, err = centrifuge.NewMemoryMapBroker(node, centrifuge.MemoryMapBrokerConfig{})
 	case "redis":
-		var redisShards []*centrifuge.RedisShard
-		redisShards, mapBrokerMode, err = confighelpers.CentrifugeRedisShards(node, cfg.MapBroker.Redis.Redis)
+		redisShards, mapBrokerMode, err = confighelpers.CentrifugeRedisShards(node, cfg.Redis.Redis)
 		if err != nil {
-			return fmt.Errorf("error creating Redis shards for map broker: %w", err)
+			return nil, nil, "", fmt.Errorf("error creating Redis shards for map broker: %w", err)
 		}
 		mapBroker, err = confighelpers.CentrifugeRedisMapBroker(
-			node, cfg.MapBroker.Redis.Prefix, redisShards, cfg.MapBroker.Redis.RedisMapBrokerCommon)
+			node, cfg.Redis.Prefix, redisShards, cfg.Redis.RedisMapBrokerCommon)
 	case "postgres":
-		pgCfg := cfg.MapBroker.Postgres
+		pgCfg := cfg.Postgres
 		pgBrokerCfg := pgmapbroker.PostgresMapBrokerConfig{
 			DSN:                    pgCfg.DSN,
 			TLS:                    pgCfg.TLS,
@@ -324,20 +301,29 @@ func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) e
 		}
 		mapBroker, err = pgmapbroker.NewPostgresMapBroker(node, pgBrokerCfg)
 		if err != nil {
-			return fmt.Errorf("error creating Postgres map broker: %w", err)
+			return nil, nil, "", fmt.Errorf("error creating Postgres map broker: %w", err)
 		}
 		if !pgCfg.SkipSchemaInit {
 			pgBroker := mapBroker.(*pgmapbroker.PostgresMapBroker)
 			if schemaErr := pgBroker.EnsureSchema(context.Background()); schemaErr != nil {
-				return fmt.Errorf("error initializing Postgres map broker schema: %w", schemaErr)
+				return nil, nil, "", fmt.Errorf("error initializing Postgres map broker schema: %w", schemaErr)
 			}
 		}
 		mapBrokerMode = "postgres"
 	default:
-		return fmt.Errorf("unknown map broker type: %s", cfg.MapBroker.Type)
+		return nil, nil, "", fmt.Errorf("unknown map broker type: %s", cfg.Type)
 	}
 	if err != nil {
-		return fmt.Errorf("error creating map broker: %v", err)
+		return nil, redisShards, mapBrokerMode, fmt.Errorf("error creating map broker: %v", err)
+	}
+	return mapBroker, redisShards, mapBrokerMode, nil
+}
+
+func configureMapBroker(node *centrifuge.Node, cfgContainer *config.Container) error {
+	cfg := cfgContainer.Config()
+	mapBroker, _, mapBrokerMode, err := createMapBroker(node, cfg.MapBroker)
+	if err != nil {
+		return err
 	}
 	event := log.Info().Str("map_broker_type", cfg.MapBroker.Type)
 	if mapBrokerMode != "" {

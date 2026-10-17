@@ -267,7 +267,7 @@ func TestRPCDedupRedisRemoteJoinTimeoutCarriesLaterSignal(t *testing.T) {
 	key := rpcdedup.Key{Scope: rpcdedup.ScopeOf("i", "42", []byte(testInstance)), MsgID: msgID}
 	fingerprint := rpcdedup.Fingerprint("users.slow", []byte("x"))
 	owner := rpcdedup.NewRedis(prefix, nodeB.rpcDedup.connector, 0, nil)
-	begin, err := owner.Begin(context.Background(), key, fingerprint, "node-x", time.Minute)
+	begin, err := owner.Begin(context.Background(), key, fingerprint, "node-x", time.Minute, 0)
 	require.NoError(t, err)
 	require.Equal(t, rpcdedup.BeginMiss, begin.State)
 

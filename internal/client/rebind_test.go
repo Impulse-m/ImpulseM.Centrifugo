@@ -1,20 +1,26 @@
 package client
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 const rebindTestClaim = "auth_class"
@@ -500,7 +506,7 @@ func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {
 		{
 			name: "session",
 			revoke: func(store *accessrevoke.Store) {
-				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0, nil))
 			},
 			wantErr: centrifuge.DisconnectExpired,
 		},
@@ -556,4 +562,95 @@ func TestRebindUpgradeRealConnectionLeavesSessionIndex(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(store.SessionConnections().Connections(pendingKey)) == 0
 	}, 5*time.Second, 5*time.Millisecond)
+}
+
+// TestAnonymousConnectExchangeAndRefreshUpgrades checks the flow of an SDK which obtains its connection token over the
+// connection: it connects with no token, calls the exchange method, an anonymous method whose call carries no token, and
+// refreshes with the access token the exchange returned, which upgrades the connection to the user of the token.
+func TestAnonymousConnectExchangeAndRefreshUpgrades(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	cfg.Client.Rebind.Enabled = true
+	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	regCfg := registryTestRegistryConfig()
+	regCfg.AppError = configtypes.RPCRegistryAppError{CodeKey: "app-code", TypeKey: "app-type"}
+	regCfg.Methods = []configtypes.RPCMethod{
+		{
+			Method:     "exchange",
+			GRPCMethod: registryTestBackendMethod,
+			Target:     "backend",
+			AuthClass:  configtypes.RPCAuthClassAnonymous,
+		},
+	}
+	cfg.RPC.Registry = regCfg
+	h, _, node := newAuthClassTestHandler(t, cfg)
+	// Setup wires the RPC handler of the node only when a registry is already set, so the registry is set after it and
+	// the call goes to OnRPC directly, as the registry tests do.
+	backend := newRegistryTestBackend(t)
+	h.SetRPCRegistry(startRegistryTestRegistry(t, regCfg, backend))
+
+	client := connectRevokeTestClient(t, node, "")
+	require.Len(t, node.Hub().Connections(), 1)
+	require.Empty(t, client.UserID())
+	// A connection with no token stores no class; the class it has is anonymous.
+	require.Equal(t, rpcregistry.AuthClassAnonymous, effectiveClass(connStateOf(client).identity.Load(), "", ""))
+
+	request := []byte("exchange-request")
+	reply, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "exchange", Data: request}, nil)
+	require.NoError(t, err)
+	// The backend answers with the bytes of the request.
+	require.Equal(t, request, reply.Data)
+	calls := backend.Calls()
+	require.Len(t, calls, 1)
+	require.Equal(t, registryTestBackendMethod, calls[0].Method)
+	require.Empty(t, calls[0].Metadata.Get("authorization"))
+
+	// The backend refuses the exchange by app type: the anonymous method reports the type of the trailer.
+	backend.FailMethod(registryTestBackendMethod, tools.GRPCBytesFailure{
+		Err:      status.Error(codes.InvalidArgument, "refused"),
+		Trailers: metadata.Pairs("app-type", "REFRESH_TOKEN_REFUSED"),
+	})
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "exchange", Data: request}, nil)
+	protoErr := requireProtocolError(t, err)
+	require.Equal(t, uint32(400), protoErr.Code)
+	require.Equal(t, "REFRESH_TOKEN_REFUSED", protoErr.AppType)
+
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"meta": map[string]any{"installation": "x"},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", client.UserID())
+	require.Equal(t, registryTestClass("authenticated"), connStateOf(client).identity.Load().class)
+	require.True(t, client.IsSubscribed(h.cfgContainer.PersonalChannel("42")))
+
+	// The meta claim of the access token replaces the connection's attribution at the rebind.
+	require.Equal(t, json.RawMessage(`{"installation":"x"}`), storedMeta(t, client))
+
+	// A later refresh whose token carries another meta claim replaces the attribution of the connection.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"meta": map[string]any{"installation": "y"},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, json.RawMessage(`{"installation":"y"}`), storedMeta(t, client))
+
+	// A refresh whose token carries no meta claim keeps the attribution the connection has, as upstream's refresh does.
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, json.RawMessage(`{"installation":"y"}`), storedMeta(t, client))
+}
+
+// storedMeta returns the meta the storage of client holds, and fails the test when it holds none.
+func storedMeta(t *testing.T, client Client) json.RawMessage {
+	t.Helper()
+	storage, release := client.AcquireStorage()
+	defer release(storage)
+	meta, ok := storage[clientstorage.KeyMeta].(json.RawMessage)
+	require.True(t, ok)
+	return meta
 }

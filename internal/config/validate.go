@@ -46,6 +46,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateNamespaceEngines(c); err != nil {
+		return err
+	}
+
 	if err := validateRPCRegistry(c); err != nil {
 		return err
 	}
@@ -270,6 +274,9 @@ func validateChannelOptions(c configtypes.ChannelOptions, globalHistoryMetaTTL c
 		return errors.New("both history size and history ttl required for recovery")
 	}
 	if err := validateSharedPositionSync(c, cfg); err != nil {
+		return err
+	}
+	if err := validateBandwidthOptions(c); err != nil {
 		return err
 	}
 	if c.AutoCacheRecover && (!c.ForceRecovery || c.ForceRecoveryMode != "cache") {

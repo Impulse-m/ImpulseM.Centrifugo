@@ -142,6 +142,17 @@ type ChannelOptions struct {
 	// connection options and whether Centrifugo Node is able to find previous publication in channel.
 	DeltaPublish bool `mapstructure:"delta_publish" json:"delta_publish" envconfig:"delta_publish" yaml:"delta_publish" toml:"delta_publish" doc:"Enables delta publish for all messages in the namespace without setting the flag per publish call. Actual compression still depends on subscriber connection options."`
 
+	// KeepLatestPublication keeps the latest publication of each channel in node memory while the channel
+	// has subscribers. This lets delta compression work for subscribers without positioning or recovery.
+	KeepLatestPublication bool `mapstructure:"keep_latest_publication" json:"keep_latest_publication" envconfig:"keep_latest_publication" yaml:"keep_latest_publication" toml:"keep_latest_publication" doc:"Keeps the latest publication of each channel in node memory while the channel has subscribers, so delta compression also works for subscribers without positioning or recovery (at most once). Requires <<allowed_delta_types>>. Not used for map subscriptions."`
+
+	// AllowChannelCompaction allows clients to negotiate a numeric channel id on subscribe.
+	AllowChannelCompaction bool `mapstructure:"allow_channel_compaction" json:"allow_channel_compaction" envconfig:"allow_channel_compaction" yaml:"allow_channel_compaction" toml:"allow_channel_compaction" doc:"Allows clients to negotiate a numeric channel id on subscribe, which replaces the channel name in publication, join and leave pushes."`
+
+	// ClientPublishDebounceInterval is returned to clients on subscribe. The client SDK coalesces rapid
+	// publishes to the channel and sends only the latest value after this interval. Zero disables it.
+	ClientPublishDebounceInterval Duration `mapstructure:"client_publish_debounce_interval" json:"client_publish_debounce_interval" envconfig:"client_publish_debounce_interval" yaml:"client_publish_debounce_interval" toml:"client_publish_debounce_interval" doc:"Returned to the client on subscribe. The client SDK coalesces rapid publishes to the channel and sends only the latest value after this interval, e.g. <<50ms>>. Pending data is dropped on unsubscribe or disconnect. Zero disables it."`
+
 	// SubscribeForAnonymous allows anonymous clients to subscribe on channels in namespace.
 	SubscribeForAnonymous bool `mapstructure:"allow_subscribe_for_anonymous" json:"allow_subscribe_for_anonymous" envconfig:"allow_subscribe_for_anonymous" yaml:"allow_subscribe_for_anonymous" toml:"allow_subscribe_for_anonymous" doc:"Allows anonymous (empty user ID) clients to subscribe to channels in this namespace."`
 
@@ -215,6 +226,14 @@ type ChannelOptions struct {
 	// Default: "stream" (traditional PUB/SUB with history).
 	SubscriptionType string `mapstructure:"subscription_type" json:"subscription_type" envconfig:"subscription_type" yaml:"subscription_type" toml:"subscription_type" expose:"full" doc:"Subscription mechanism for the namespace. One of <<stream>> (default, PUB/SUB with history), <<map>>, <<map_clients>>, <<map_users>>, or <<shared_poll>>."`
 
+	// BrokerName selects an extra broker from the brokers list for the channels of the namespace.
+	// Empty means the default broker.
+	BrokerName string `mapstructure:"broker_name" json:"broker_name" envconfig:"broker_name" yaml:"broker_name" toml:"broker_name" expose:"full" doc:"Name of an entry from the <<brokers>> list used for the channels of this namespace. Empty means the default broker."`
+
+	// PresenceManagerName selects an extra presence manager from the presence_managers list for the
+	// channels of the namespace. Empty means the default presence manager.
+	PresenceManagerName string `mapstructure:"presence_manager_name" json:"presence_manager_name" envconfig:"presence_manager_name" yaml:"presence_manager_name" toml:"presence_manager_name" expose:"full" doc:"Name of an entry from the <<presence_managers>> list used for the channels of this namespace. Empty means the default presence manager."`
+
 	// Map contains configuration for map subscription types (map, map_clients, map_users).
 	Map MapConfig `mapstructure:"map" json:"map" envconfig:"map" yaml:"map" toml:"map" doc:"Configuration for the map subscription types (<<map>>, <<map_clients>>, <<map_users>>)."`
 
@@ -226,6 +245,10 @@ type ChannelOptions struct {
 
 // MapConfig contains configuration for map subscription types (map, map_clients, map_users).
 type MapConfig struct {
+	// BrokerName selects an extra map broker from the map_brokers list for the channels of the namespace.
+	// Empty means the default map broker.
+	BrokerName string `mapstructure:"broker_name" json:"broker_name" envconfig:"broker_name" yaml:"broker_name" toml:"broker_name" expose:"full" doc:"Name of an entry from the <<map_brokers>> list used for the map channels of this namespace. Empty means the default <<map_broker>>."`
+
 	Mode                              string   `mapstructure:"mode" json:"mode" envconfig:"mode" yaml:"mode" toml:"mode" expose:"full" doc:"Map mode controlling how keys are stored and delivered. See map subscription docs for supported values."`
 	KeyTTL                            Duration `mapstructure:"key_ttl" json:"key_ttl" envconfig:"key_ttl" yaml:"key_ttl" toml:"key_ttl" doc:"How long a key is retained in the map after its last update, e.g. <<300s>>. Zero means no expiration."`
 	StreamSize                        int      `mapstructure:"stream_size" json:"stream_size" envconfig:"stream_size" yaml:"stream_size" toml:"stream_size" doc:"Maximum number of updates kept in the per-channel change stream used to bring subscribers up to date."`

@@ -29,15 +29,15 @@ func newFailingBeginBackend() *failingBeginBackend {
 }
 
 // Begin signals that it was entered, waits for the release, and fails.
-func (b *failingBeginBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+func (b *failingBeginBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration, _ int) (rpcdedup.BeginResult, error) {
 	b.entered <- struct{}{}
 	<-b.release
 	return rpcdedup.BeginResult{}, errors.New("shared tier down")
 }
 
 // Complete fails: a call which failed to begin keeps no record.
-func (b *failingBeginBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
-	return false, errors.New("shared tier down")
+func (b *failingBeginBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (rpcdedup.CompleteResult, error) {
+	return rpcdedup.CompleteResult{}, errors.New("shared tier down")
 }
 
 // Cancel fails.
@@ -55,6 +55,16 @@ func (b *failingBeginBackend) Ack(_ context.Context, _ []rpcdedup.ScopeAcks) err
 	return nil
 }
 
+// Wake is not expected: the call fails to begin, so it completes nothing.
+func (b *failingBeginBackend) Wake(_ context.Context, _ rpcdedup.Key, _ []string) (int, error) {
+	return 0, errors.New("unexpected wake")
+}
+
+// WatchWakes returns at once: the shared tier is down, so no wake watcher can read.
+func (b *failingBeginBackend) WatchWakes(_ context.Context, _ string, _ func(rpcdedup.Key), _ func() bool) error {
+	return errors.New("shared tier down")
+}
+
 // Connected reports that the backend is reachable, so that the store tries it.
 func (b *failingBeginBackend) Connected() bool {
 	return true
@@ -65,13 +75,13 @@ func (b *failingBeginBackend) Connected() bool {
 type remoteInFlightBackend struct{}
 
 // Begin reports that the call runs on another node.
-func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration) (rpcdedup.BeginResult, error) {
+func (b *remoteInFlightBackend) Begin(_ context.Context, _ rpcdedup.Key, _ [32]byte, _ string, _ time.Duration, _ int) (rpcdedup.BeginResult, error) {
 	return rpcdedup.BeginResult{State: rpcdedup.BeginInFlight, Owner: "node-x"}, nil
 }
 
 // Complete is not expected: the duplicate of a remote call keeps no record of it.
-func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (bool, error) {
-	return false, errors.New("unexpected complete")
+func (b *remoteInFlightBackend) Complete(_ context.Context, _ rpcdedup.Key, _ string, _ rpcdedup.Record, _ string, _ time.Duration) (rpcdedup.CompleteResult, error) {
+	return rpcdedup.CompleteResult{}, errors.New("unexpected complete")
 }
 
 // Cancel is not expected.
@@ -86,6 +96,16 @@ func (b *remoteInFlightBackend) Poll(_ context.Context, _ rpcdedup.Key) (rpcdedu
 
 // Ack does nothing.
 func (b *remoteInFlightBackend) Ack(_ context.Context, _ []rpcdedup.ScopeAcks) error {
+	return nil
+}
+
+// Wake is not expected: this node runs no call of the test.
+func (b *remoteInFlightBackend) Wake(_ context.Context, _ rpcdedup.Key, _ []string) (int, error) {
+	return 0, errors.New("unexpected wake")
+}
+
+// WatchWakes returns at once: the test does not run the wake watcher.
+func (b *remoteInFlightBackend) WatchWakes(_ context.Context, _ string, _ func(rpcdedup.Key), _ func() bool) error {
 	return nil
 }
 

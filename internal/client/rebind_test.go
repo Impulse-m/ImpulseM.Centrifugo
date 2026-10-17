@@ -506,7 +506,7 @@ func TestRebindRevocationBetweenCheckAndApplyDisconnects(t *testing.T) {
 		{
 			name: "session",
 			revoke: func(store *accessrevoke.Store) {
-				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+				require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0, nil))
 			},
 			wantErr: centrifuge.DisconnectExpired,
 		},

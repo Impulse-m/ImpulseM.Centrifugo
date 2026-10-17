@@ -2,10 +2,12 @@ package rpcdedup
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/redis/rueidis"
 )
@@ -36,6 +38,9 @@ type BeginResult struct {
 	State  BeginState
 	Record Record
 	Owner  string
+	// WaitersFull is set with BeginInFlight when the caller asked to be listed as a waiter and the record lists the
+	// maximum of waiter nodes already. The caller is not listed, and must not wait.
+	WaitersFull bool
 }
 
 // CancelState is the state of a key which Backend.Cancel found, or left.
@@ -92,22 +97,31 @@ type CompleteResult struct {
 }
 
 // Backend is the shared tier of a Shared store. Redis implements it; tests use a fake. Complete takes errJSON, the
-// encoded error of rec, which the caller encodes once. Begin with register set adds nodeID to the waiters of a call
-// which runs on another node, which its owner notifies when the record is written.
+// encoded error of rec, which the caller encodes once. Begin with maxWaiters above zero lists nodeID as a waiter of a
+// call which runs on another node, in a list of at most maxWaiters nodes, which the owner wakes when the record is
+// written. Wake writes a wake for key to the wake stream of each of nodes. WatchWakes reads the wakes of nodeID.
 type Backend interface {
-	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error)
+	Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, maxWaiters int) (BeginResult, error)
 	Complete(ctx context.Context, key Key, nodeID string, rec Record, errJSON string, ttl time.Duration) (CompleteResult, error)
+	// Wake writes a wake for key to the wake stream of each of nodes, on the shard of key. It returns how many wakes were
+	// written, and the first error of the others.
+	Wake(ctx context.Context, key Key, nodes []string) (int, error)
+	// WatchWakes reads the wakes of nodeID on every shard and calls wake for each, until ctx is done or idle reports
+	// true at an empty read. It returns when every shard loop returned.
+	WatchWakes(ctx context.Context, nodeID string, wake func(Key), idle func() bool) error
 	Cancel(ctx context.Context, key Key, failure *centrifuge.Error, ttl time.Duration) (CancelResult, error)
 	Poll(ctx context.Context, key Key) (PollResult, error)
 	Ack(ctx context.Context, acks []ScopeAcks) error
 	Connected() bool
 }
 
-// BackendObserver observes the Redis calls of the shared tier: the duration of every call, and every failed one.
-// Methods may be called from any goroutine.
+// BackendObserver observes the Redis calls of the shared tier: the duration of every call, and every failed one, and
+// the wake watchers which are reading. Methods may be called from any goroutine.
 type BackendObserver interface {
 	RedisCall(seconds float64)
 	RedisError()
+	// WakeWatching is called with +1 when a wake watcher of a shard starts reading, and -1 when it stops.
+	WakeWatching(delta int)
 }
 
 // Redis is the Backend over the shards of a Connector. Every record of a scope is on the shard of the scope, and
@@ -117,6 +131,10 @@ type Redis struct {
 	connector *redisshard.Connector
 	timeout   time.Duration
 	observer  BackendObserver
+	// readBlock is the block of a wake read, wakeReadBlock unless a test shortens it.
+	readBlock time.Duration
+	// errorLog limits the log of the wake watchers' read errors to one per redisshard.ErrorLogInterval.
+	errorLog *tools.IntervalLimiter
 }
 
 // NewRedis returns the Redis backend of the keys with prefix. The connector may not be connected yet: calls made
@@ -131,14 +149,16 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 		connector: connector,
 		timeout:   ioTimeout,
 		observer:  observer,
+		readBlock: wakeReadBlock,
+		errorLog:  tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
 }
 
-// Begin implements Backend with the begin script.
-func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, register bool) (BeginResult, error) {
+// Begin implements Backend with the begin script. maxWaiters is the cap of the waiter list, zero for none.
+func (r *Redis) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, maxWaiters int) (BeginResult, error) {
 	var result BeginResult
 	err := r.exec(ctx, key.Scope, func(callCtx context.Context, shard *redisshard.RedisShard) error {
-		args := []string{string(fingerprint[:]), nodeID, redisTTLMillis(inflightTTL), registerArg(register)}
+		args := []string{string(fingerprint[:]), nodeID, redisTTLMillis(inflightTTL), strconv.Itoa(maxWaiters)}
 		res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
 			return beginScript.Exec(callCtx, client, []string{RedisKey(r.prefix, key)}, args)
 		})
@@ -178,14 +198,6 @@ func (r *Redis) Complete(ctx context.Context, key Key, nodeID string, rec Record
 		return CompleteResult{}, err
 	}
 	return result, nil
-}
-
-// registerArg returns the register argument of the begin script.
-func registerArg(register bool) string {
-	if register {
-		return "1"
-	}
-	return "0"
 }
 
 // Cancel implements Backend with the cancel script.

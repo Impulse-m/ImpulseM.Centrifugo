@@ -4249,6 +4249,10 @@
         },
         "revoked_at": {
           "type": "integer"
+        },
+        "disconnect": {
+          "$ref": "#/definitions/api.Disconnect",
+          "description": "disconnect is the code and reason the connections with the revoked\nsession are closed with. Optional: without it they are closed with\ncode 3005 (connection expired). Code must be in 4000-4999 and reason\nat most 123 bytes."
         }
       },
       "description": "RevokeTokenRequest revokes a token by its unique ID (jti claim of a JWT).\nClients using the token are disconnected shortly, and can not connect\nwith it again. Centrifugo PRO only."

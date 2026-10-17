@@ -44,5 +44,13 @@ func New(node *centrifuge.Node, config configtypes.Controller) (centrifuge.Contr
 		return controller, nil
 	}
 
+	if config.Type == "redis" {
+		return newRedisControllerFromConfig(node, config)
+	}
+
+	if config.Type == "nats" {
+		return newNatsControllerFromConfig(node, config)
+	}
+
 	return nil, fmt.Errorf("unknown controller type: %s", config.Type)
 }

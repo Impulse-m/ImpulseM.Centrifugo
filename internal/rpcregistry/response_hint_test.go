@@ -155,6 +155,15 @@ func TestResponseBoundFieldAfterLimit(t *testing.T) {
 	require.Equal(t, 2048+testHintOverhead, testHintMethod().ResponseBound(within), "the hint within the tag limit is read")
 }
 
+func TestResponseBoundLastOccurrenceWins(t *testing.T) {
+	method := testHintMethod()
+	data := append(hintValue(64<<10), hintValue(10_000_000)...)
+	require.Equal(t, testHintMaxBytes, method.ResponseBound(data), "a repeated field keeps its last value, as the backend decodes it")
+
+	data = append(hintValue(10_000_000), hintValue(2048)...)
+	require.Equal(t, 2048+testHintOverhead, method.ResponseBound(data), "a repeated field keeps its last value, as the backend decodes it")
+}
+
 func TestResponseBoundDoesNotAllocate(t *testing.T) {
 	method := testHintMethod()
 	data := append(testBytesField(1, []byte("0123456789abcdef")), hintValue(4096)...)

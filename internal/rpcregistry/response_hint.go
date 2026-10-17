@@ -48,11 +48,14 @@ func hintedResponseBound(size uint64, maxBytes int, overhead int) int {
 	return int(size) + overhead
 }
 
-// responseSizeHint returns the value of the first top-level field number of data, which must be a varint field.
-// It reports false when the field is absent, is not a varint, or the message does not parse before it is found.
-// A field of another length is skipped by its length, so the cost is the number of fields before the hinted one.
+// responseSizeHint returns the value of the top-level field number of data, which must be a varint field. A scalar
+// field keeps its last occurrence when the backend decodes it, so the whole message is read and the last value is
+// returned. It reports false when the field is absent, is not a varint, the message does not parse, or it has more
+// than maxResponseHintTags fields. A field of another length is skipped by its length.
 func responseSizeHint(data []byte, field int) (uint64, bool) {
 	number := protowire.Number(field)
+	var value uint64
+	found := false
 	for tags := 0; len(data) > 0; tags++ {
 		if tags == maxResponseHintTags {
 			return 0, false
@@ -66,11 +69,14 @@ func responseSizeHint(data []byte, field int) (uint64, bool) {
 			if wireType != protowire.VarintType {
 				return 0, false
 			}
-			value, valueLen := protowire.ConsumeVarint(data)
+			last, valueLen := protowire.ConsumeVarint(data)
 			if valueLen < 0 {
 				return 0, false
 			}
-			return value, true
+			value = last
+			found = true
+			data = data[valueLen:]
+			continue
 		}
 		n = protowire.ConsumeFieldValue(fieldNumber, wireType, data)
 		if n < 0 {
@@ -78,5 +84,5 @@ func responseSizeHint(data []byte, field int) (uint64, bool) {
 		}
 		data = data[n:]
 	}
-	return 0, false
+	return value, found
 }

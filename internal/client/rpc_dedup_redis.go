@@ -5,6 +5,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -34,17 +35,20 @@ func (h *Handler) setupRPCDedupRedis() error {
 	// The error is logged by the connect log; the node runs on without Redis.
 	_ = connector.Connect()
 
-	shared := rpcdedup.NewShared(rpcdedup.SharedOptions{
-		Local:         h.rpcDedup.memory,
-		Backend:       rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
-		NodeID:        h.node.ID(),
-		TTL:           rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
-		MaxReplyBytes: dedup.ReplyLimit(),
-		FailOpen:      failOpen,
-		Notifier:      h.notifyRPCDedupCancel,
-		Observer:      h.rpcDedup.metrics,
-		IOTimeout:     redisConf.IOTimeout.ToDuration(),
-	})
+	opts := rpcdedup.SharedOptions{
+		Local:          h.rpcDedup.memory,
+		Backend:        rpcdedup.NewRedis(prefix, connector, redisConf.IOTimeout.ToDuration(), h.rpcDedup.metrics),
+		NodeID:         h.node.ID(),
+		TTL:            rpcdedup.RecordTTL(dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration()),
+		MaxReplyBytes:  dedup.ReplyLimit(),
+		FailOpen:       failOpen,
+		Notifier:       h.notifyRPCDedupCancel,
+		Observer:       h.rpcDedup.metrics,
+		IOTimeout:      redisConf.IOTimeout.ToDuration(),
+		Wakeup:         dedup.Redis.Wakeup.Enabled,
+		MaxWaiterNodes: dedup.Redis.Wakeup.MaxWaiterNodes,
+	}
+	shared := rpcdedup.NewShared(opts)
 	h.rpcDedup.store = shared
 	h.rpcDedup.shared = shared
 	h.rpcDedup.connector = connector
@@ -88,10 +92,12 @@ func rpcDedupConnectLog(failOpen bool) redisshard.ConnectLog {
 	return redisshard.LogConnect("exactly-once RPC", "tracked calls are answered with dedup_unavailable until it is reachable")
 }
 
-// notifyRPCDedupCancel asks the node nodeID to cancel the call of key, which runs there. A failure is logged at most
-// once per interval. The scope of the key is not logged.
+// notifyRPCDedupCancel asks the node nodeID to cancel the call of key, which runs there. The shared tier calls it from a
+// goroutine of its own, so it may wait for the publish, which is bounded by the broker's write timeout. A failure is
+// logged at most once per interval. The scope of the key is not logged.
 func (h *Handler) notifyRPCDedupCancel(nodeID string, key rpcdedup.Key) {
 	err := h.node.Notify(rpcdedup.CancelNotificationOp, rpcdedup.EncodeCancel(key), nodeID)
+	h.rpcDedup.metrics.Notified(metrics.RPCRegistryDedupNotifyCancel, err == nil)
 	if err == nil {
 		return
 	}
@@ -101,7 +107,8 @@ func (h *Handler) notifyRPCDedupCancel(nodeID string, key rpcdedup.Key) {
 }
 
 // NotificationHandlers returns the node notification handlers of the client handler, which the node registers. It has
-// the cancel of exactly-once RPC when the shared tier is on, and is empty otherwise.
+// the cancel of exactly-once RPC when the shared tier is on, and is empty otherwise. The wakes of the waits travel
+// through the wake streams of the shared tier, not as notifications.
 func (h *Handler) NotificationHandlers() map[string]centrifuge.NotificationHandler {
 	handlers := map[string]centrifuge.NotificationHandler{}
 	if h.rpcDedup == nil || h.rpcDedup.shared == nil {

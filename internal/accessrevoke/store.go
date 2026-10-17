@@ -37,10 +37,12 @@ const (
 	ReasonLoopGuard    Reason = "loop_guard"
 )
 
-// Result is an outcome of a token check together with its reason.
+// Result is an outcome of a token check together with its reason. Disconnect is the close of a session revoked with
+// one, nil for the default close.
 type Result struct {
-	Verdict Verdict
-	Reason  Reason
+	Verdict    Verdict
+	Reason     Reason
+	Disconnect *Disconnect
 }
 
 // CheckOptions selects revocation kinds to check. Kinds of disabled features are not checked.
@@ -58,8 +60,9 @@ type Sizes struct {
 }
 
 type sessionEntry struct {
-	expireAt  int64
-	revokedAt int64
+	expireAt   int64
+	revokedAt  int64
+	disconnect *Disconnect
 }
 
 type userEntry struct {
@@ -142,8 +145,9 @@ func (s *Store) UnblockUser(userID string) error {
 
 // RevokeSession revokes the session: tokens issued at or before revokedAt (Unix seconds) are rejected.
 // Zero revokedAt means now, zero expireAt means now plus default TTL. Repeated calls keep the
-// maximum of the stored and the new values.
-func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64) error {
+// maximum of the stored and the new values. A non-nil disconnect replaces the stored one, and a nil
+// one keeps it, so a repeated revocation does not weaken the close of an earlier one.
+func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64, disconnect *Disconnect) error {
 	key, ok := Key(sessionID)
 	if !ok {
 		return ErrEmptyID
@@ -159,8 +163,9 @@ func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64)
 		current = sessionEntry{}
 	}
 	s.sessions[key] = sessionEntry{
-		expireAt:  max(current.expireAt, expireAt),
-		revokedAt: max(current.revokedAt, revokedAt),
+		expireAt:   max(current.expireAt, expireAt),
+		revokedAt:  max(current.revokedAt, revokedAt),
+		disconnect: keptDisconnect(current.disconnect, disconnect),
 	}
 	return nil
 }
@@ -204,13 +209,13 @@ func (s *Store) Check(userID string, identity centrifuge.TokenIdentity, opts Che
 	}
 	if opts.Session && identity.Session != ([16]byte{}) {
 		if entry, ok := s.session(identity.Session, now); ok {
-			return revokedResult(identity.IssuedAt, entry.revokedAt, ReasonSession)
+			return revokedResult(identity.IssuedAt, entry.revokedAt, ReasonSession, entry.disconnect)
 		}
 	}
 	if opts.UserTokens && hasUser {
 		if entry, ok := s.user(userKey, now); ok {
 			if reason := userTokensReason(identity, entry); reason != "" {
-				return revokedResult(identity.IssuedAt, entry.revokedAt, reason)
+				return revokedResult(identity.IssuedAt, entry.revokedAt, reason, nil)
 			}
 		}
 	}
@@ -284,6 +289,15 @@ func (s *Store) session(key [16]byte, now int64) (sessionEntry, bool) {
 	return entry, ok && entry.expireAt > now
 }
 
+// sessionDisconnect returns the disconnect the active revocation of the session has, or nil.
+func (s *Store) sessionDisconnect(key [16]byte) *Disconnect {
+	entry, ok := s.session(key, s.nowUnix())
+	if !ok {
+		return nil
+	}
+	return entry.disconnect
+}
+
 func (s *Store) user(key [16]byte, now int64) (userEntry, bool) {
 	s.usersMu.RLock()
 	defer s.usersMu.RUnlock()
@@ -310,10 +324,20 @@ func userTokensReason(identity centrifuge.TokenIdentity, entry userEntry) Reason
 }
 
 // revokedResult returns Revoked, or LoopGuard when the token was issued after the revocation.
-// Equal seconds count as revoked.
-func revokedResult(issuedAt int64, revokedAt int64, reason Reason) Result {
+// Equal seconds count as revoked. The disconnect is kept only for Revoked.
+func revokedResult(issuedAt int64, revokedAt int64, reason Reason, disconnect *Disconnect) Result {
 	if issuedAt > revokedAt {
 		return Result{Verdict: LoopGuard, Reason: ReasonLoopGuard}
 	}
-	return Result{Verdict: Revoked, Reason: reason}
+	return Result{Verdict: Revoked, Reason: reason, Disconnect: disconnect}
+}
+
+// keptDisconnect returns the disconnect a session keeps after a revocation with next: a copy of next when it is set,
+// otherwise the stored one.
+func keptDisconnect(stored *Disconnect, next *Disconnect) *Disconnect {
+	if absentDisconnect(next) {
+		return stored
+	}
+	copied := *next
+	return &copied
 }

@@ -147,7 +147,7 @@ func TestRebindFailureRevokedOldSessionDisconnects(t *testing.T) {
 	next.identity = accessrevoke.Identity(revokeTestUUID, 0, now-10)
 	state.record.identity.Store(&next)
 	client.RebindFunc = func(centrifuge.RebindOptions) error {
-		require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+		require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0, nil))
 		return centrifuge.ErrRebindUserLimit
 	}
 
@@ -172,7 +172,7 @@ func TestRefreshRevokedAfterTrackExpiresConnection(t *testing.T) {
 	require.Empty(t, client.UserID())
 
 	hook := func(rebindableClient) {
-		require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0))
+		require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now, 0, nil))
 	}
 	testHookRefreshTracked.Store(&hook)
 	t.Cleanup(func() { testHookRefreshTracked.Store(nil) })

@@ -61,13 +61,14 @@ func CheckConnection(
 }
 
 // RejectDisconnect returns the disconnect of a check result which rejects a connection, and reports whether the result
-// rejects. A revoked connection gets revoked, which the caller chooses. An allowed result is not a rejection.
+// rejects. A revoked connection gets the close its session was revoked with, or revoked when the session has none, which
+// the caller chooses. An allowed result is not a rejection.
 func RejectDisconnect(result Result, revoked centrifuge.Disconnect) (centrifuge.Disconnect, bool) {
 	switch result.Verdict {
 	case Blocked:
 		return DisconnectUserBlocked, true
 	case Revoked:
-		return revoked, true
+		return closeWith(result.Disconnect, revoked), true
 	case LoopGuard:
 		return centrifuge.DisconnectInvalidToken, true
 	}

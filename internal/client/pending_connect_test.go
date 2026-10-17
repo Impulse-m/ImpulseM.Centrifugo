@@ -106,7 +106,7 @@ func TestPendingConnectionIsNotInUserIndexAndIsRevocableBySession(t *testing.T) 
 			sessionKey, _ := accessrevoke.Key(revokeTestUUID)
 			require.Len(t, store.SessionConnections().Connections(sessionKey), 1)
 
-			require.NoError(t, revoker.RevokeSession(tt.userID, revokeTestUUID, now, 0))
+			require.NoError(t, revoker.RevokeSession(tt.userID, revokeTestUUID, now, 0, nil))
 			require.Eventually(t, func() bool {
 				return len(node.Hub().Connections()) == 0
 			}, 5*time.Second, 5*time.Millisecond)
@@ -149,7 +149,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 	var revokeErr error
 	hook := func(rebindableClient) {
 		trackedAtHook = len(store.SessionConnections().Connections(sessionKey))
-		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0)
+		revokeErr = revoker.RevokeSession("", revokeTestUUID, now, 0, nil)
 	}
 	testHookConnectTracked.Store(&hook)
 	t.Cleanup(func() { testHookConnectTracked.Store(nil) })

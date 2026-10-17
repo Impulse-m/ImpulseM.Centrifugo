@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/rs/zerolog/log"
 )
 
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
@@ -22,6 +24,20 @@ const limiterUserCommand = "user_command"
 
 // limiterRedisUserCommand is a value of the limiter metric label for per-user Redis command limits.
 const limiterRedisUserCommand = "redis_user_command"
+
+// publishTypeMap is the publish request type of a map publication, see PublishRequest.Type.
+const publishTypeMap int32 = 1
+
+// subscriptionTypeSharedPoll is the subscription type of shared poll namespaces, see ChannelOptions.SubscriptionType.
+const subscriptionTypeSharedPoll = "shared_poll"
+
+// subRefreshTypeTrack and subRefreshTypeUntrack are the sub refresh request types of shared poll
+// track and untrack, see SubRefreshRequest.Type. Core uses the same values for typeTrack and typeUntrack
+// in client_keyed.go. Core exports no symbol for them, so a change of those values in Core must be made here too.
+const (
+	subRefreshTypeTrack   int32 = 1
+	subRefreshTypeUntrack int32 = 2
+)
 
 // setupRateLimit creates rate limiters and registers node hooks for client rate limits. Nothing is
 // created or registered when client_command, client_error, user_command and redis_user_command are all disabled.
@@ -59,7 +75,27 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
 	}
+	if rl.ClientCommand.Enabled {
+		warnDefaultFallback(limiterClientCommand, &rl.ClientCommand.RateLimitOperations)
+	}
+	if rl.UserCommand.Enabled {
+		warnDefaultFallback(limiterUserCommand, &rl.UserCommand.RateLimitOperations)
+	}
+	if rl.RedisUserCommand.Enabled {
+		warnDefaultFallback(limiterRedisUserCommand, &rl.RedisUserCommand.RateLimitOperations)
+	}
 	return nil
+}
+
+// warnDefaultFallback logs a warning for each operation which ratelimit.UnlimitedFallbacks reports for section.
+// Commands of namespaces with a namespace override are still limited, the others are not.
+func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
+	for _, op := range ratelimit.UnlimitedFallbacks(ops) {
+		log.Warn().
+			Str("section", section).
+			Str("operation", op.String()).
+			Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
+	}
 }
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit
@@ -90,7 +126,7 @@ func (h *Handler) rateLimitCommandRead(
 		if !checkCommands && userLimiter == nil && redisLimiter == nil {
 			return nil
 		}
-		op, name, ok := rateLimitOperation(e.Command)
+		op, name, ok := h.rateLimitOperation(e.Command)
 		if !ok {
 			return nil
 		}
@@ -225,7 +261,7 @@ func (h *Handler) rateLimitNamespace(channel string) string {
 // rateLimitOperation returns the rate limited operation of a command and the name which selects
 // its buckets: a channel for channel operations, a method for RPC. Commands which are not
 // rate limited (connect, ping, send) return false. The order of checks follows Core dispatch.
-func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, bool) {
+func (h *Handler) rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, bool) {
 	switch {
 	case cmd.Ping != nil:
 		return 0, "", false
@@ -234,7 +270,7 @@ func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, boo
 	case cmd.Unsubscribe != nil:
 		return ratelimit.OperationUnsubscribe, cmd.Unsubscribe.Channel, true
 	case cmd.Publish != nil:
-		return ratelimit.OperationPublish, cmd.Publish.Channel, true
+		return publishOperation(cmd.Publish), cmd.Publish.Channel, true
 	case cmd.Presence != nil:
 		return ratelimit.OperationPresence, cmd.Presence.Channel, true
 	case cmd.PresenceStats != nil:
@@ -246,7 +282,45 @@ func rateLimitOperation(cmd *protocol.Command) (ratelimit.Operation, string, boo
 	case cmd.Refresh != nil:
 		return ratelimit.OperationRefresh, "", true
 	case cmd.SubRefresh != nil:
-		return ratelimit.OperationSubRefresh, cmd.SubRefresh.Channel, true
+		return h.subRefreshOperation(cmd.SubRefresh), cmd.SubRefresh.Channel, true
 	}
 	return 0, "", false
+}
+
+// publishOperation returns the operation of a publish command: a map publish or a map remove for
+// map channels, a publish otherwise.
+func publishOperation(req *protocol.PublishRequest) ratelimit.Operation {
+	if req.Type != publishTypeMap {
+		return ratelimit.OperationPublish
+	}
+	if req.Removed {
+		return ratelimit.OperationMapRemove
+	}
+	return ratelimit.OperationMapPublish
+}
+
+// subRefreshOperation returns the operation of a sub refresh command: track or untrack keys of a
+// shared poll subscription, a subscription token refresh otherwise. Core reads the type only on a
+// shared poll channel. On any other channel the request refreshes the token whatever its type is.
+func (h *Handler) subRefreshOperation(req *protocol.SubRefreshRequest) ratelimit.Operation {
+	if req.Type == 0 || !h.isSharedPollChannel(req.Channel) {
+		return ratelimit.OperationSubRefresh
+	}
+	switch req.Type {
+	case subRefreshTypeTrack:
+		return ratelimit.OperationTrack
+	case subRefreshTypeUntrack:
+		return ratelimit.OperationUntrack
+	}
+	return ratelimit.OperationSubRefresh
+}
+
+// isSharedPollChannel reports whether the channel belongs to a shared poll namespace. Core takes the
+// keyed flag of a subscription from the same namespace options. The lookup does not allocate.
+func (h *Handler) isSharedPollChannel(channel string) bool {
+	chOpts, ok, err := h.cfgContainer.ChannelOptionsRef(channel)
+	if err != nil || !ok {
+		return false
+	}
+	return chOpts.SubscriptionType == subscriptionTypeSharedPoll
 }

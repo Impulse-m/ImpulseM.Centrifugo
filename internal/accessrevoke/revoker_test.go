@@ -117,7 +117,7 @@ func TestRevokerRevokeSessionDisconnectsMatchingSession(t *testing.T) {
 	connectTestClient(t, node, "user-2|"+testUUID+"|0|100")
 	waitConnections(t, node, "user-1", 2)
 
-	require.NoError(t, revoker.RevokeSession("user-1", testUUID, 0, 0))
+	require.NoError(t, revoker.RevokeSession("user-1", testUUID, 0, 0, nil))
 
 	waitConnections(t, node, "user-1", 1)
 	for _, client := range node.Hub().UserConnections("user-1") {
@@ -158,7 +158,7 @@ func TestRevokerRevokeSessionWithoutUserSweepsConnections(t *testing.T) {
 	waitConnections(t, node, "user-1", 1)
 	waitConnections(t, node, "user-2", 1)
 
-	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0))
+	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0, nil))
 
 	waitConnections(t, node, "user-1", 0)
 	waitConnections(t, node, "user-2", 1)
@@ -185,7 +185,7 @@ func TestRevokerRevokeSessionWithoutUserCoalescesSweeps(t *testing.T) {
 	waitConnections(t, node, "user-1", 1)
 
 	// The first sweep runs and then blocks, so the revocations below happen while a sweep is running.
-	require.NoError(t, revoker.RevokeSession("", "dummy-first", 0, 0))
+	require.NoError(t, revoker.RevokeSession("", "dummy-first", 0, 0, nil))
 	select {
 	case <-swept:
 	case <-time.After(5 * time.Second):
@@ -193,10 +193,10 @@ func TestRevokerRevokeSessionWithoutUserCoalescesSweeps(t *testing.T) {
 	}
 
 	for i := 0; i < 50; i++ {
-		require.NoError(t, revoker.RevokeSession("", fmt.Sprintf("dummy-%d", i), 0, 0))
+		require.NoError(t, revoker.RevokeSession("", fmt.Sprintf("dummy-%d", i), 0, 0, nil))
 	}
 	// The last revocation targets the connected session and happens after the sweep started.
-	require.NoError(t, revoker.RevokeSession("", testOtherUUID, 0, 0))
+	require.NoError(t, revoker.RevokeSession("", testOtherUUID, 0, 0, nil))
 	close(gate)
 
 	waitConnections(t, node, "user-1", 0)

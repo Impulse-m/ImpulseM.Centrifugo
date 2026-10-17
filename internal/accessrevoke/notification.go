@@ -29,6 +29,9 @@ type Notification struct {
 	IssuedBefore int64  `json:"issued_before,omitempty"`
 	RevokedAt    int64  `json:"revoked_at,omitempty"`
 	ExpireAt     int64  `json:"expire_at,omitempty"`
+	// Disconnect is the close of a revoke_token which has one. Nil otherwise. A node which does not know the field
+	// ignores it and closes with the default close.
+	Disconnect *Disconnect `json:"disconnect,omitempty"`
 }
 
 // EncodeNotification encodes Notification into the payload of NotifyOp.

@@ -4,6 +4,7 @@ package rpcdedup
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,24 +20,50 @@ type integrationNode struct {
 	shared    *Shared
 	local     *Memory
 	connector *redisshard.Connector
-	notified  []notifyCall
+	backend   *Redis
+	// backendObserver counts the errors and the wake watchers of the backend of the node.
+	backendObserver *integrationBackendObserver
+	// waits observes the shared tier of the node: its reads, the ends of its waits and its wakes.
+	waits *waitObserver
+	// notified are the cancel notifications of the node, which the notifier appends under notifiedMu.
+	notifiedMu sync.Mutex
+	notified   []notifyCall
+	// stop ends the Run of a node which has the wakeup, and done is closed when that Run returned.
+	stop context.CancelFunc
+	done chan struct{}
 }
 
-// newIntegrationNode returns a node with id nodeID, over the Redis of prefix.
+// notifiedCalls returns the cancel notifications of the node so far.
+func (node *integrationNode) notifiedCalls() []notifyCall {
+	node.notifiedMu.Lock()
+	defer node.notifiedMu.Unlock()
+	return append([]notifyCall(nil), node.notified...)
+}
+
+// notifier returns the cancel notifier of the node: it records the notification.
+func (node *integrationNode) notifier() func(owner string, key Key) {
+	return func(owner string, key Key) {
+		node.notifiedMu.Lock()
+		defer node.notifiedMu.Unlock()
+		node.notified = append(node.notified, notifyCall{nodeID: owner, key: key})
+	}
+}
+
+// newIntegrationNode returns a node with id nodeID, over the Redis of prefix, with the wakeup off.
 func newIntegrationNode(t *testing.T, prefix string, nodeID string) *integrationNode {
 	t.Helper()
 	local, _ := newTestMemory(1024)
 	connector := newIntegrationConnector(t, prefix)
-	node := &integrationNode{local: local, connector: connector}
+	node := &integrationNode{local: local, connector: connector, waits: &waitObserver{}}
+	node.backendObserver = &integrationBackendObserver{}
+	node.backend = NewRedis(prefix, connector, 0, node.backendObserver)
 	node.shared = NewShared(SharedOptions{
 		Local:         local,
-		Backend:       NewRedis(prefix, connector, 0, nil),
+		Backend:       node.backend,
 		NodeID:        nodeID,
 		TTL:           time.Minute,
 		MaxReplyBytes: 1024,
-		Notifier: func(owner string, key Key) {
-			node.notified = append(node.notified, notifyCall{nodeID: owner, key: key})
-		},
+		Notifier:      node.notifier(),
 		PollInitial:   time.Millisecond,
 		PollMax:       5 * time.Millisecond,
 		AckFlushEvery: 5 * time.Millisecond,
@@ -112,7 +139,10 @@ func TestSharedTwoNodesCancelNotifiesOwner(t *testing.T) {
 
 	// node-b has no flight of the call: the cancel reaches node-a by notification, and node-b records nothing.
 	require.NoError(t, nodeB.shared.Cancel(key, testCancelled))
-	require.Equal(t, []notifyCall{{nodeID: "node-a", key: key}}, nodeB.notified)
+	require.Eventually(t, func() bool {
+		return len(nodeB.notifiedCalls()) == 1
+	}, 5*time.Second, time.Millisecond)
+	require.Equal(t, []notifyCall{{nodeID: "node-a", key: key}}, nodeB.notifiedCalls())
 	require.True(t, testIsMiss(t, nodeB.local, key))
 
 	// The notification is handled by node-a, which cancels its call.

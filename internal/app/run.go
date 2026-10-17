@@ -142,7 +142,10 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error building proxy map")
 	}
 
+	engines := newNamespaceEngines(cfgContainer)
+
 	nodeCfg := centrifugeNodeConfig(build.Version, edition, cfgContainer, centrifugeLogHandler)
+	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error creating Centrifuge Node")
@@ -158,6 +161,11 @@ func Run(cmd *cobra.Command, configFile string) {
 	err = configureEngines(node, cfgContainer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("configure engines error")
+	}
+
+	err = engines.create(node, cfgContainer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("create namespace engines error")
 	}
 
 	err = configureMapBroker(node, cfgContainer)
@@ -302,6 +310,13 @@ func Run(cmd *cobra.Command, configFile string) {
 		log.Fatal().Err(err).Msg("error running node")
 	}
 
+	if err = engines.run(node); err != nil {
+		log.Fatal().Err(err).Msg("error running namespace engines")
+	}
+	if engines != nil {
+		serviceManager.Register(engines.service())
+	}
+
 	serviceDone := runServices(ctx, serviceManager)
 	ingestDone := runServices(ingestCtx, ingestManager)
 
@@ -331,7 +346,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	logStartWarnings(cfg, cfgMeta)
 
 	handleSignals(
-		cmd, configFile, node, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry,
+		cmd, configFile, node, cfgContainer, engines, tokenVerifier, subTokenVerifier, rpcRegistry,
 		httpServers, grpcAPIServer, grpcUniServer,
 		serviceDone, serviceCancel, ingestDone, ingestCancel,
 	)
@@ -398,6 +413,7 @@ func reloadConfig(
 
 func handleSignals(
 	cmd *cobra.Command, configFile string, n *centrifuge.Node, cfgContainer *config.Container,
+	engines *namespaceEngines,
 	tokenVerifier *jwtverify.VerifierJWT, subTokenVerifier *jwtverify.VerifierJWT, rpcRegistry *rpcregistry.Registry,
 	httpServers []*http.Server,
 	grpcAPIServer *grpc.Server, grpcUniServer *grpc.Server, serviceDone chan struct{},
@@ -424,10 +440,15 @@ func handleSignals(
 				log.Error().Msgf("error validating config: %v", err)
 				continue
 			}
+			if err = engines.checkReload(cfgContainer.Config(), newCfg); err != nil {
+				log.Error().Msgf("error reloading: %v", err)
+				continue
+			}
 			if err = reloadConfig(newCfg, cfgContainer, tokenVerifier, subTokenVerifier, rpcRegistry); err != nil {
 				log.Error().Msgf("error reloading: %v", err)
 				continue
 			}
+			engines.commitReload(newCfg)
 			log.Info().Msg("configuration successfully reloaded")
 		case syscall.SIGINT, os.Interrupt, syscall.SIGTERM:
 			log.Info().Msg("shutting down ...")

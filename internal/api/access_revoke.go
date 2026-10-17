@@ -85,11 +85,12 @@ func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *Revo
 		return resp
 	}
 	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
-		Kind:      accessrevoke.KindRevokeToken,
-		User:      cmd.User,
-		Session:   cmd.Uid,
-		RevokedAt: cmd.RevokedAt,
-		ExpireAt:  cmd.ExpireAt,
+		Kind:       accessrevoke.KindRevokeToken,
+		User:       cmd.User,
+		Session:    cmd.Uid,
+		RevokedAt:  cmd.RevokedAt,
+		ExpireAt:   cmd.ExpireAt,
+		Disconnect: accessrevoke.FromAPIDisconnect(cmd.Disconnect),
 	}, cfg.AccessRevoke.DefaultTTL)
 	if respErr != nil {
 		resp.Error = respErr
@@ -191,7 +192,8 @@ func (d *Dispatcher) dispatchAccessRevoke(ctx context.Context, method string, pa
 	case "unblock_user":
 		_, err = d.handler.handleUnblockUser(ctx, payload)
 	case "revoke_token":
-		_, err = d.handler.handleRevokeToken(ctx, payload)
+		// An invalid disconnect must not lose the revocation, so it is dropped from the payload first.
+		_, err = d.handler.handleRevokeToken(ctx, accessrevoke.SanitizeRevokeTokenBody(payload))
 	case "invalidate_user_tokens":
 		_, err = d.handler.handleInvalidateUserTokens(ctx, payload)
 	default:

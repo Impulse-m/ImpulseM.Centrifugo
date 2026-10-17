@@ -125,7 +125,7 @@ func TestAccessRevokeConnectBlockedUser(t *testing.T) {
 func TestAccessRevokeConnectRevokedSession(t *testing.T) {
 	h, store, _ := newRevokeTestHandler(t, config.DefaultConfig())
 	now := time.Now().Unix()
-	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0, nil))
 	before := rejectsCount(t, "session", "connect")
 
 	_, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
@@ -138,7 +138,7 @@ func TestAccessRevokeConnectRevokedSession(t *testing.T) {
 func TestAccessRevokeConnectLoopGuard(t *testing.T) {
 	h, store, _ := newRevokeTestHandler(t, config.DefaultConfig())
 	now := time.Now().Unix()
-	require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0, nil))
 	before := rejectsCount(t, "loop_guard", "connect")
 
 	// Token is issued after the revocation, auth service reissued it for a revoked session.
@@ -152,7 +152,7 @@ func TestAccessRevokeConnectLoopGuard(t *testing.T) {
 func TestAccessRevokeConnectAllowedSetsTokenIdentity(t *testing.T) {
 	h, store, _ := newRevokeTestHandler(t, config.DefaultConfig())
 	now := time.Now().Unix()
-	require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now-100, 0))
+	require.NoError(t, store.RevokeSession(revokeTestOtherUUID, now-100, 0, nil))
 
 	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
 		Token: getConnTokenWithClaims(t, map[string]any{"sub": "42", "jti": revokeTestUUID, "iat": now - 10, "gen": 3}),
@@ -170,7 +170,7 @@ func TestAccessRevokeConnectDisabledFeatures(t *testing.T) {
 	cfg.UserTokensInvalidate.Enabled = false
 	h, store, _ := newRevokeTestHandler(t, cfg)
 	require.NoError(t, store.BlockUser("42", 0))
-	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0, nil))
 	require.NoError(t, store.InvalidateUser("42", 5, 0, now, 0))
 
 	reply, err := h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{
@@ -226,7 +226,7 @@ func TestAccessRevokeRefresh(t *testing.T) {
 		{
 			name: "revoked session",
 			setup: func(store *accessrevoke.Store) {
-				require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+				require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0, nil))
 			},
 			claims: map[string]any{"sub": "42", "jti": revokeTestUUID, "iat": now - 10},
 			expectReply: func(t *testing.T, reply centrifuge.RefreshReply) {
@@ -236,7 +236,7 @@ func TestAccessRevokeRefresh(t *testing.T) {
 		{
 			name: "loop guard",
 			setup: func(store *accessrevoke.Store) {
-				require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0))
+				require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0, nil))
 			},
 			claims:        map[string]any{"sub": "42", "jti": revokeTestUUID, "iat": now},
 			expectedError: centrifuge.DisconnectInvalidToken,
@@ -292,7 +292,7 @@ func TestAccessRevokeRefreshProxyPathChecksBlockOnly(t *testing.T) {
 	activeClient := &rebindClientMock{}
 	activeClient.IDFunc = func() string { return "client-2" }
 	activeClient.UserIDFunc = func() string { return "43" }
-	require.NoError(t, store.RevokeSession(revokeTestUUID, time.Now().Unix(), 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, time.Now().Unix(), 0, nil))
 	_, _, err = h.OnRefresh(activeClient, centrifuge.RefreshEvent{}, refreshProxyHandler)
 	require.NoError(t, err)
 	require.Equal(t, 1, proxyCalls)
@@ -314,7 +314,7 @@ func TestAccessRevokeRecheckConnection(t *testing.T) {
 	require.Equal(t, centrifuge.Disconnect{}, disconnect)
 
 	// Session revoked after connect: the recheck decides with live disconnect code.
-	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, now, 0, nil))
 	disconnect, revoked = h.recheckConnection(client)
 	require.True(t, revoked)
 	require.Equal(t, centrifuge.DisconnectExpired, disconnect)
@@ -405,7 +405,7 @@ func TestAccessRevokeRecheckConnectionLoopGuard(t *testing.T) {
 		"jti": revokeTestUUID,
 		"iat": now,
 	}))
-	require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0))
+	require.NoError(t, store.RevokeSession(revokeTestUUID, now-100, 0, nil))
 
 	disconnect, revoked := h.recheckConnection(client)
 	require.True(t, revoked)

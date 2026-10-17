@@ -83,7 +83,7 @@ func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 				require.Empty(t, store.SessionConnections().Connections(connectSession))
 				require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(refreshSession))
 			}
-			require.NoError(t, revoker.RevokeSession("", tt.refreshID, now, 0))
+			require.NoError(t, revoker.RevokeSession("", tt.refreshID, now, 0, nil))
 			require.Eventually(t, func() bool {
 				return len(node.Hub().Connections()) == 0
 			}, 5*time.Second, 5*time.Millisecond)

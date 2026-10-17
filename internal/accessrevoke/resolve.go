@@ -16,6 +16,8 @@ type Operation struct {
 	Channel      string
 	RevokedAt    int64
 	ExpireAt     int64
+	// Disconnect is the close of a revoke_token. Other kinds ignore it.
+	Disconnect *Disconnect
 }
 
 // ValidationError is returned by Resolve when an Operation can't be turned into a Notification.
@@ -58,12 +60,17 @@ func Resolve(operation Operation, now time.Time, defaultTTL time.Duration) (Noti
 		if operation.Session == "" {
 			return Notification{}, &ValidationError{Message: "uid required for revoke_token"}
 		}
+		err := validateDisconnect(operation.Disconnect)
+		if err != nil {
+			return Notification{}, &ValidationError{Message: err.Error()}
+		}
 		return Notification{
-			Kind:      KindRevokeToken,
-			User:      operation.User,
-			Session:   operation.Session,
-			RevokedAt: resolveRevokedAt(operation.RevokedAt, now),
-			ExpireAt:  resolveExpireAt(operation.ExpireAt, now, defaultTTL),
+			Kind:       KindRevokeToken,
+			User:       operation.User,
+			Session:    operation.Session,
+			RevokedAt:  resolveRevokedAt(operation.RevokedAt, now),
+			ExpireAt:   resolveExpireAt(operation.ExpireAt, now, defaultTTL),
+			Disconnect: presentDisconnect(operation.Disconnect),
 		}, nil
 	case KindInvalidateUserTokens:
 		if operation.Channel != "" {

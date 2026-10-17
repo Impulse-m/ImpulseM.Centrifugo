@@ -331,6 +331,57 @@ func TestValidateRPCDedupRedis(t *testing.T) {
 			},
 			wantErr: "rpc.registry.dedup.redis.prefix: must not be empty",
 		},
+		{
+			name: "wakeup max waiter nodes of zero",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes = 0
+			},
+			wantErr: "rpc.registry.dedup.redis.wakeup.max_waiter_nodes: must be between 1 and 1024, got 0",
+		},
+		{
+			name: "wakeup max waiter nodes above 1024",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes = 1025
+			},
+			wantErr: "rpc.registry.dedup.redis.wakeup.max_waiter_nodes: must be between 1 and 1024, got 1025",
+		},
+		{
+			name: "wakeup max waiter nodes of one",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes = 1
+			},
+		},
+		{
+			name: "wakeup default max waiter nodes",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Wakeup = DefaultConfig().RPC.Registry.Dedup.Redis.Wakeup
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled = true
+			},
+		},
+		{
+			name: "wakeup max waiter nodes out of range while the wakeup is off",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.Enabled = true
+				cfg.RPC.Registry.Dedup.Redis.Address = []string{"localhost:6379"}
+				cfg.RPC.Registry.Dedup.Redis.Prefix = "centrifugo"
+				cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes = 0
+			},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,6 +401,8 @@ func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
 	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.False(t, cfg.RPC.Registry.Dedup.Redis.Enabled)
+	require.False(t, cfg.RPC.Registry.Dedup.Redis.Wakeup.Enabled)
+	require.Equal(t, 64, cfg.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
 	require.Equal(t, 120*time.Second, cfg.RPC.Registry.Dedup.Window.ToDuration())
 	require.Equal(t, 30*time.Second, cfg.RPC.Registry.Dedup.MaxSkew.ToDuration())
 	require.Equal(t, 2048, cfg.RPC.Registry.Dedup.MaxReplySize)

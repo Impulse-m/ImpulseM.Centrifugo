@@ -34,9 +34,35 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 	v.SetDefault(prefix+"result_evicted.message", "result expired")
 	v.SetDefault(prefix+"dedup_unavailable.code", 108)
 	v.SetDefault(prefix+"dedup_unavailable.message", "dedup unavailable")
-	// The wakeup is on by default. It is a default here and not a default tag, which would turn an explicit false back
-	// into true, see GetConfig.
-	v.SetDefault("rpc.registry.dedup.redis.wakeup.enabled", true)
+}
+
+// The key and the environment variable of the wakeup switch of the dedup Redis.
+const (
+	rpcDedupWakeupEnabledKey = "rpc.registry.dedup.redis.wakeup.enabled"
+	rpcDedupWakeupEnabledEnv = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
+	// defaultRPCDedupMaxWaiterNodes is the default of rpc.registry.dedup.redis.wakeup.max_waiter_nodes, which is the
+	// default tag of configtypes.RPCDedupWakeup.
+	defaultRPCDedupMaxWaiterNodes = 64
+)
+
+// fallbackRPCDedupWakeupCap replaces a waiter cap out of range with its default when neither the file nor the
+// environment sets the wakeup switch, so the wakeup is on by default only. The wakeup was off by default before, and a
+// cap set for it was never checked, so a config which loaded before must keep loading. Such a cap is replaced here, and
+// the replacement is returned as a warning. An explicit switch keeps the cap, which is then checked by validation.
+func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
+	if v.InConfig(rpcDedupWakeupEnabledKey) {
+		return nil
+	}
+	if _, set := os.LookupEnv(rpcDedupWakeupEnabledEnv); set {
+		return nil
+	}
+	wakeup := &conf.RPC.Registry.Dedup.Redis.Wakeup
+	if wakeup.MaxWaiterNodes >= minRPCDedupMaxWaiterNodes && wakeup.MaxWaiterNodes <= maxRPCDedupMaxWaiterNodes {
+		return nil
+	}
+	warning := fmt.Sprintf("rpc.registry.dedup.redis.wakeup.max_waiter_nodes is %d, out of range, and is set to %d, as the wakeup is on by default; set rpc.registry.dedup.redis.wakeup.enabled to choose", wakeup.MaxWaiterNodes, defaultRPCDedupMaxWaiterNodes)
+	wakeup.MaxWaiterNodes = defaultRPCDedupMaxWaiterNodes
+	return []string{warning}
 }
 
 // LoadRPCRegistryFile reads the RPC registry file at path. The format is chosen by the

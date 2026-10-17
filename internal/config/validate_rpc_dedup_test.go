@@ -397,7 +397,7 @@ func TestValidateRPCDedupRedis(t *testing.T) {
 	}
 }
 
-func TestDefaultsOfRPCDedupAreOff(t *testing.T) {
+func TestDefaultsOfRPCDedup(t *testing.T) {
 	cfg := DefaultConfig()
 	require.False(t, cfg.RPC.Registry.Dedup.Enabled)
 	require.False(t, cfg.RPC.Registry.Dedup.Redis.Enabled)

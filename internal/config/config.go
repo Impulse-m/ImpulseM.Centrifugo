@@ -192,12 +192,13 @@ func DefineFlags(rootCmd *cobra.Command) {
 func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	v := viper.NewWithOptions(viper.WithDecodeHook(decodeHooks()))
 
-	// Access revocation features are on by default. Defaults are set here rather than with
+	// Access revocation features and the dedup wakeup are on by default. Defaults are set here rather than with
 	// default tags: envconfig applies a default tag to any zero field, which would turn an
 	// explicit "enabled: false" back into true.
 	v.SetDefault("user_block.enabled", true)
 	v.SetDefault("token_revoke.enabled", true)
 	v.SetDefault("user_tokens_invalidate.enabled", true)
+	v.SetDefault(rpcDedupWakeupEnabledKey, true)
 	setRPCRegistryDefaults(v)
 
 	if cmd != nil {
@@ -299,9 +300,10 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	meta.UnknownEnvs = checkEnvironmentVars(knownEnvVars)
 	meta.KnownEnvVars = knownEnvVars
 
+	wakeupWarnings := fallbackRPCDedupWakeupCap(v, conf)
 	cfg := *conf
 	cfg, deprecationWarnings := applyConfigMigrations(cfg)
-	meta.DeprecationWarnings = deprecationWarnings
+	meta.DeprecationWarnings = append(deprecationWarnings, wakeupWarnings...)
 
 	return cfg, meta, nil
 }

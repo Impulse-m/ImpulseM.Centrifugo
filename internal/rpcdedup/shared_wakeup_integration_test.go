@@ -139,9 +139,12 @@ func TestSharedTwoNodesWakeupCompletesWithoutReadingTwice(t *testing.T) {
 	requireDoneWithin(t, duplicate, 200*time.Millisecond)
 	require.Equal(t, []byte("answer"), duplicate.Record().Reply)
 
-	reads, ends := nodeB.waits.counts()
+	reads, _ := nodeB.waits.counts()
 	require.Equal(t, 1, reads)
-	require.Equal(t, 1, ends[WatchEndWoken])
+	require.Eventually(t, func() bool {
+		_, ends := nodeB.waits.counts()
+		return ends[WatchEndWoken] == 1
+	}, 2*time.Second, 5*time.Millisecond, "the wait is counted as woken")
 }
 
 func TestSharedTwoNodesWakeupLostWakeIsChecked(t *testing.T) {
@@ -162,8 +165,10 @@ func TestSharedTwoNodesWakeupLostWakeIsChecked(t *testing.T) {
 	require.NoError(t, nodeA.shared.Complete(key, owner, Record{Reply: []byte("answer")}))
 	waitDone(t, duplicate)
 	require.Equal(t, []byte("answer"), duplicate.Record().Reply)
-	_, ends := nodeB.waits.counts()
-	require.Equal(t, 1, ends[WatchEndChecked])
+	require.Eventually(t, func() bool {
+		_, ends := nodeB.waits.counts()
+		return ends[WatchEndChecked] == 1
+	}, 2*time.Second, 5*time.Millisecond, "the wait is counted as checked")
 }
 
 func TestSharedTwoNodesWakeupOwnerCrash(t *testing.T) {
@@ -184,9 +189,12 @@ func TestSharedTwoNodesWakeupOwnerCrash(t *testing.T) {
 	// node-a died: its record stays in flight, the check reads it once, and the deadline ends the wait without a read.
 	waitDone(t, waiting)
 	require.True(t, waiting.Record().Abandoned)
-	reads, ends := nodeB.waits.counts()
+	reads, _ := nodeB.waits.counts()
 	require.Equal(t, 1, reads)
-	require.Equal(t, 1, ends[WatchEndDeadline])
+	require.Eventually(t, func() bool {
+		_, ends := nodeB.waits.counts()
+		return ends[WatchEndDeadline] == 1
+	}, 2*time.Second, 5*time.Millisecond, "the wait is counted as ended at its deadline")
 
 	// The record expires: a retransmit runs the call.
 	deleteRedisKey(nodeA.connector, RedisKey(prefix, key))
@@ -222,8 +230,10 @@ func TestSharedTwoNodesWakeupCancelThenDone(t *testing.T) {
 	require.NoError(t, nodeA.shared.Complete(key, owner, Record{Err: testCancelled}))
 	waitDone(t, duplicate)
 	require.Equal(t, testCancelled, duplicate.Record().Err)
-	_, ends := nodeB.waits.counts()
-	require.Equal(t, 1, ends[WatchEndWoken])
+	require.Eventually(t, func() bool {
+		_, ends := nodeB.waits.counts()
+		return ends[WatchEndWoken] == 1
+	}, 2*time.Second, 5*time.Millisecond, "the wait is counted as woken")
 }
 
 func TestSharedTwoNodesWakeupFullRefuses(t *testing.T) {
@@ -388,6 +398,15 @@ func measureLiveOwner(t *testing.T, wakeup bool, keys int) (int, map[string]int)
 		buckets[int(at.Sub(start)/(250*time.Millisecond))]++
 	}
 	t.Logf("live owner, wakeup %t: %d keys, reads per 250 ms bucket %v", wakeup, keys, buckets)
+	// Each wait is counted as ended after its flight is done, so the counts are waited for.
+	require.Eventually(t, func() bool {
+		_, ends := nodeB.waits.counts()
+		total := 0
+		for _, n := range ends {
+			total += n
+		}
+		return total == keys
+	}, 2*time.Second, 5*time.Millisecond, "every wait is counted as ended")
 	return nodeB.waits.counts()
 }
 
@@ -437,6 +456,10 @@ func TestSharedWakeupDeadOwnerReadCount(t *testing.T) {
 		for i := range keys {
 			waitDone(t, waiting[i])
 		}
+		require.Eventually(t, func() bool {
+			_, ends := nodeB.waits.counts()
+			return ends[WatchEndDeadline] == keys
+		}, 2*time.Second, 5*time.Millisecond, "every wait is counted as ended at its deadline")
 		reads, ends := nodeB.waits.counts()
 		t.Logf("dead owner, wakeup %t: %d keys, %.2f reads per wait, ends %v", wakeup, keys, float64(reads)/keys, ends)
 		if wakeup {

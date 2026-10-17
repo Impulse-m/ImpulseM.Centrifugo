@@ -178,7 +178,10 @@ func TestRPCDedupRedisRemoteJoinWakesThroughStream(t *testing.T) {
 	waiters, found := integrationWaiters(t, prefix, key)
 	require.True(t, found)
 	require.Equal(t, nodeB.node.ID(), waiters)
-	require.Equal(t, 1.0, testutil.ToFloat64(m.watchers))
+	// The watcher goroutine counts itself once it starts.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.watchers) == 1.0
+	}, 2*time.Second, 5*time.Millisecond, "the wake watcher of node-b runs")
 
 	released := time.Now()
 	backend.releaseGate()
@@ -192,7 +195,10 @@ func TestRPCDedupRedisRemoteJoinWakesThroughStream(t *testing.T) {
 	require.Len(t, backend.Calls(), 1)
 
 	require.Equal(t, 1.0, testutil.ToFloat64(m.reads))
-	require.Equal(t, 1.0, testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndWoken)))
+	// The duplicate is answered before its wait is counted as ended, so the end is waited for.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndWoken)) == 1.0
+	}, 2*time.Second, 5*time.Millisecond, "the wait of the duplicate is counted as woken")
 	require.Equal(t, 1.0, testutil.ToFloat64(m.wakes.WithLabelValues("ok")))
 }
 
@@ -220,7 +226,10 @@ func TestRPCDedupRedisRemoteJoinFullIsLater(t *testing.T) {
 
 	refused := dedupCallAsyncResult(t, nodeC, newDedupClient("c1", "42", nil, testInstance), "users.get", msgID, "gate")
 	requireRetrySignal(t, refused.err, rpcRetryLater)
-	require.Equal(t, 1.0, testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndRefused)))
+	// The refused duplicate is answered before its refusal is counted, so the count is waited for.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(m.waits.WithLabelValues(rpcdedup.WatchEndRefused)) == 1.0
+	}, 2*time.Second, 5*time.Millisecond, "the refused wait is counted as refused")
 	// The refused duplicate is counted too: the record was in flight on another node.
 	require.Equal(t, 2.0, testDedupCount(vec, "hit_inflight_remote"))
 

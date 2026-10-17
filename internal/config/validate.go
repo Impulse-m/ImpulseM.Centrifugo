@@ -46,6 +46,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateNamespaceEngines(c); err != nil {
+		return err
+	}
+
 	if err := validateRPCRegistry(c); err != nil {
 		return err
 	}

@@ -225,10 +225,14 @@ type PostgresStreamBroker struct {
 // In OSS, only "postgres" type is supported.
 type Controller struct {
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the Centrifugo controller used for multi-node cluster coordination."`
-	// Type of controller to use. Can be "postgres" in OSS. PRO also supports "redis" and "nats".
-	Type string `mapstructure:"type" json:"type" envconfig:"type" yaml:"type" toml:"type" expose:"full" doc:"Controller backend type. In OSS only <<postgres>> is supported; PRO also supports <<redis>> and <<nats>>."`
+	// Type of controller to use. Can be "postgres", "redis" or "nats".
+	Type string `mapstructure:"type" json:"type" envconfig:"type" yaml:"type" toml:"type" expose:"full" doc:"Controller backend type. Can be <<postgres>>, <<redis>> or <<nats>>."`
 	// Postgres is a configuration for "postgres" controller.
 	Postgres PostgresController `mapstructure:"postgres" json:"postgres" envconfig:"postgres" toml:"postgres" yaml:"postgres" doc:"PostgreSQL controller configuration, used when type is <<postgres>>."`
+	// Redis is a configuration for "redis" controller.
+	Redis RedisController `mapstructure:"redis" json:"redis" envconfig:"redis" toml:"redis" yaml:"redis" doc:"Redis controller configuration, used when type is <<redis>>."`
+	// Nats is a configuration for "nats" controller.
+	Nats NatsController `mapstructure:"nats" json:"nats" envconfig:"nats" toml:"nats" yaml:"nats" doc:"NATS controller configuration, used when type is <<nats>>."`
 }
 
 // PostgresController configures the PostgreSQL-based controller for multi-node

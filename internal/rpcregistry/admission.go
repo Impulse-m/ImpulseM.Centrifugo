@@ -31,7 +31,8 @@ const (
 )
 
 // Admission decides whether a registry call may run. It holds a node-wide budget of bytes in flight, and a watermark
-// of resident memory. The budget is charged before a call runs and released after its reply. The watermark is
+// of resident memory. The budget is charged before a call runs and released when its reply is returned to the client
+// handler, so the reply bytes queued on a connection are not in it. The watermark is
 // sampled lazily on the admission path, so no goroutine or timer runs for it. A refused call is answered with the
 // overloaded error and the retry signal later.
 type Admission struct {

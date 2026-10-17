@@ -245,14 +245,15 @@ func TestReloadWithRingHashWithoutAffinityHeaderKeepsOldTable(t *testing.T) {
 	require.NotNil(t, r.Lookup("user.get"))
 }
 
-func TestReloadWithChangedAdmissionKeysKeepsOldTable(t *testing.T) {
+func TestReloadWithChangedAdmissionKeysKeepsAdmissionAtStart(t *testing.T) {
 	r := New()
 	reloadWith(t, r, testRegistry())
+	require.Nil(t, r.Admission(), "both admission keys are off at start")
 
 	changed := testRegistry()
 	changed.MaxInflightBytes = 1 << 20
-	_, _, err := r.PrepareReload(changed)
-	require.ErrorContains(t, err, "max_inflight_bytes and memory_watermark_bytes are read at start")
+	reloadWith(t, r, changed)
+	require.Nil(t, r.Admission(), "the admission keys are read at start, a reload does not build one")
 	require.NotNil(t, r.Lookup(testGetUserMethod))
 }
 

@@ -1,0 +1,690 @@
+package client
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
+	"github.com/centrifugal/centrifugo/v6/internal/subsource"
+
+	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+)
+
+// TestServerTagsFilterTemplateRestoredPersonalRefusedIsPermissionDenied checks that a refusal of the template of a restored
+// personal channel is ErrorPermissionDenied, which a refresh returns to the client, and not the template error, which
+// Core turns into an internal error.
+func TestServerTagsFilterTemplateRestoredPersonalRefusedIsPermissionDenied(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client := newRegistryTestClient("c1", "12", nil, nil)
+	client.IsSubscribedFunc = func(string) bool { return false }
+	err := env.h.subscribeRestoredPersonal(client, "topic:room", centrifuge.SubscribeOptions{})
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+}
+
+// TestServerTagsFilterTemplateRebindUserChangeUnsubscribes checks a rebind which gives a connection without a user a
+// user unsubscribes its channels with a template, although the claims are the same: the template renders another user.
+func TestServerTagsFilterTemplateRebindUserChangeUnsubscribes(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Channel.Namespaces = append(cfg.Channel.Namespaces, configtypes.ChannelNamespace{
+		Name: "open",
+		ChannelOptions: configtypes.ChannelOptions{
+			SubscribeForAnonymous: true,
+			ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+				Filter:         configtypes.TagsFilterNode{"key": "audience", "cmp": "in", "vals": []any{"all", "user:{{user}}"}},
+				OnMissingValue: "skip",
+			},
+		},
+	})
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["open:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRebindReloadRemovesTemplate checks a reload which removes the template of a channel that an
+// anonymous connection subscribed under it, followed by a rebind to another identity, unsubscribes the channel. The channel
+// holds a filter rendered with the claims of the anonymous identity, and the config no longer shows that it has one.
+func TestServerTagsFilterTemplateRebindReloadRemovesTemplate(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+	storeFilterValues(client, filtertemplate.Values{
+		Claims: filtertemplate.Claims{Paths: []string{"sid"}, Values: []string{"s-X"}},
+	})
+	h.recordTemplatedChannel(client, "lenient:room")
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "lenient",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["lenient:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRefreshAfterTemplatesRemoved checks a connection which stored its values while the config had
+// templates is disconnected by its next refresh after a reload removed them: its channels keep the filters rendered with
+// the claims it had, and the refresh carries no claims to render them again. A connection made after the reload stores
+// no values, so its refresh is answered.
+func TestServerTagsFilterTemplateRefreshAfterTemplatesRemoved(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
+	require.NotNil(t, client)
+
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "topic",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	require.NoError(t, env.cfgContainer.Reload(cfg))
+
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"sid": "s-1"})},
+	})
+	disconnect := transport.waitDisconnect(t)
+	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
+
+	fresh, freshTransport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s-1"}))
+	require.NotNil(t, fresh)
+	sendRateLimitCommand(fresh, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"sid": "s-1"})},
+	})
+	require.Nil(t, freshTransport.waitReply(t, 2).Error)
+	require.False(t, freshTransport.disconnected())
+}
+
+// TestServerTagsFilterTemplateRebindRefusalKeepsIdentity checks a rebind whose token subscription a template refuses is
+// refused before the connection moves: the identity, the values and the channels stay as they were.
+func TestServerTagsFilterTemplateRebindRefusalKeepsIdentity(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	// The token has no sid claim, which the template of topic needs under reject.
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"topic:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+	require.Empty(t, state.rebinds)
+	require.Equal(t, "", state.user)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "lenient:room")
+}
+
+// TestServerTagsFilterTemplateRefreshWithoutClaims checks a refresh of a connection without a token keeps its
+// connection, also when the refresh token has values for the template claims: such a connection, like one made
+// through the connect proxy, has no claims bound, so its claims stay missing for its life. Disconnecting it would only
+// reconnect it through the proxy with the same missing claims, which loops on every refresh.
+func TestServerTagsFilterTemplateRefreshWithoutClaims(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	env := newTemplateEnv(t, cfg)
+	transport := newRecordingTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), env.node, transport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
+	require.Nil(t, transport.waitReply(t, 1).Error)
+
+	// Empty and absent claims are the same missing values, so the connection is kept.
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: getConnTokenWithClaims(t, map[string]any{"sid": ""})},
+	})
+	require.Nil(t, transport.waitReply(t, 2).Error)
+	require.False(t, transport.disconnected())
+
+	// A value where there was none is not bound to the connection: it is kept, and its claims stay missing.
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      3,
+		Refresh: &protocol.RefreshRequest{Token: getConnTokenWithClaims(t, map[string]any{"sid": "s-1"})},
+	})
+	require.Nil(t, transport.waitReply(t, 3).Error)
+	require.False(t, transport.disconnected())
+
+	storage, release := client.AcquireStorage()
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	require.True(t, unbound)
+}
+
+// TestServerTagsFilterTemplateRefreshUnboundDropsRefusedSub checks a refresh of a connection without a token which
+// carries a token subscription in a namespace whose template refuses it, since the token has no claim for it. The
+// connection is not disconnected: the subscription is dropped from the refresh, so it is not subscribed without its
+// template, and the refresh is answered.
+func TestServerTagsFilterTemplateRefreshUnboundDropsRefusedSub(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.AllowAnonymousConnectWithoutToken = true
+	env := newTemplateEnv(t, cfg)
+	transport := newRecordingTransport()
+	client, closeFn, err := centrifuge.NewClient(context.Background(), env.node, transport)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = closeFn() })
+	sendRateLimitCommand(client, &protocol.Command{Id: 1, Connect: &protocol.ConnectRequest{}})
+	require.Nil(t, transport.waitReply(t, 1).Error)
+
+	sendRateLimitCommand(client, &protocol.Command{
+		Id: 2,
+		Refresh: &protocol.RefreshRequest{
+			Token: getConnTokenWithClaims(t, map[string]any{"subs": map[string]any{"topic:srv": map[string]any{}}}),
+		},
+	})
+	require.Nil(t, transport.waitReply(t, 2).Error)
+	require.False(t, transport.disconnected())
+	require.False(t, client.IsSubscribed("topic:srv"))
+
+	storage, release := client.AcquireStorage()
+	unbound, _ := storage[serverTagsFilterUnboundKey].(bool)
+	release(storage)
+	require.True(t, unbound)
+}
+
+// TestServerTagsFilterTemplateReloadChangesClaimPaths checks a refresh after a reload which changes the union of the
+// claim paths disconnects a connection whose claims differ by name. The values line up by position, so a comparison
+// by position would keep the connection.
+func TestServerTagsFilterTemplateReloadChangesClaimPaths(t *testing.T) {
+	first := config.DefaultConfig()
+	first.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "topic",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "org", "cmp": "eq", "val": "{{claims.org}}"},
+				},
+			},
+		},
+		{
+			Name: "lenient",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter:         configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+					OnMissingValue: "skip",
+				},
+			},
+		},
+	}
+	env := newTemplateEnv(t, first)
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"org": "o1", "sid": "s1"}))
+	require.NotNil(t, client)
+
+	second := config.DefaultConfig()
+	second.Channel.Namespaces = configtypes.ChannelNamespaces{
+		first.Channel.Namespaces[0],
+		{
+			Name: "lenient",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter:         configtypes.TagsFilterNode{"key": "tenant", "cmp": "neq", "val": "{{claims.tenant}}"},
+					OnMissingValue: "skip",
+				},
+			},
+		},
+	}
+	require.NoError(t, env.cfgContainer.Reload(second))
+
+	// The union is now [org tenant], and the values by position are [o1 s1] as before. By name the session claim is gone.
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"org": "o1", "tenant": "s1"})},
+	})
+	disconnect := transport.waitDisconnect(t)
+	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
+}
+
+// TestServerTagsFilterTemplateRebindDisconnectsUntemplatedServerSide checks a rebind of a connection which holds a
+// uni-connect channel the connection got before a template was configured is refused by a disconnect with insufficient
+// state. Connect subscribed it without a template, so it has no stored filter to render again. The rebind does not move
+// the connection, so the reconnect subscribes the channel with the template.
+func TestServerTagsFilterTemplateRebindDisconnectsUntemplatedServerSide(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "lenient",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["lenient:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	// The templates are configured after the connect of the connection.
+	reloaded := templateTestConfig()
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
+	require.Empty(t, state.rebinds)
+	require.Equal(t, "", state.user)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "lenient:uni")
+}
+
+// TestServerTagsFilterTemplateRebindReloadAddsTemplate checks a reload which adds a template while a rebind runs, after the
+// rebind was checked against a config without templates, does not subscribe the token subscription of the new identity
+// without its template. The template refuses it, since the token has no sid claim, so the connection is disconnected.
+func TestServerTagsFilterTemplateRebindReloadAddsTemplate(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "topic",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		reloaded := templateTestConfig()
+		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+		reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+		require.NoError(t, cfgContainer.Reload(reloaded))
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"topic:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectPermissionDenied, err)
+	require.Equal(t, "42", state.user)
+	require.NotContains(t, state.subscribed, "topic:srv")
+	require.NotContains(t, state.channels, "topic:srv")
+}
+
+// TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects checks a reload which adds a template after a rebind was
+// checked against a config without templates does not lose the uni-connect channel of a templated namespace which the
+// connection holds. The rebind is refused by a disconnect with insufficient state, and the channel is not unsubscribed.
+func TestServerTagsFilterTemplateRebindReloadBeforeCommitDisconnects(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "topic",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["topic:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		reloaded := templateTestConfig()
+		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+		reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+		require.NoError(t, cfgContainer.Reload(reloaded))
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-1"}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
+	require.Equal(t, "42", state.user)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "topic:uni")
+}
+
+// TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection checks a reload which adds a template to the
+// namespace of a uni-connect channel after a rebind of a connection which stored values was checked. The channel has no
+// template to render, even when the claim values are the same, so the connection is disconnected with insufficient state
+// and the channel is kept.
+func TestServerTagsFilterTemplateRebindReloadAddsTemplateToStoredConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "topic",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+				},
+			},
+		},
+		{Name: "plain", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	// The anonymous connection stored its values on connect, with the claim it had then.
+	client, state := newRebindTestClient("", "anonymous")
+	storeFilterValues(client, filtertemplate.Values{Claims: filtertemplate.Claims{Paths: []string{"sid"}, Values: []string{"s-0"}}})
+	state.channels["plain:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+	state.beforeApply = func(centrifuge.RebindOptions) {
+		reloaded := config.DefaultConfig()
+		reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+			{
+				Name: "topic",
+				ChannelOptions: configtypes.ChannelOptions{
+					SubscribeForClient: true,
+					ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+						Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+					},
+				},
+			},
+			{
+				Name: "plain",
+				ChannelOptions: configtypes.ChannelOptions{
+					SubscribeForClient: true,
+					ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+						Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+					},
+				},
+			},
+		}
+		reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+		reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+		require.NoError(t, cfgContainer.Reload(reloaded))
+	}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{"sid": "s-0"}),
+	}, nil)
+	require.Equal(t, centrifuge.DisconnectInsufficientState, err)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "plain:uni")
+}
+
+// TestServerTagsFilterTemplateRefreshReloadHeldPersonalChannel checks a refresh with a claim value, after a reload added a
+// template to the namespace of the personal channel which the connection holds, disconnects the connection with
+// insufficient state. The held channel is not rendered again, so the refresh is not refused with a missing value.
+func TestServerTagsFilterTemplateRefreshReloadHeldPersonalChannel(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "topic", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	cfg.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "topic"
+	env := newTemplateEnv(t, cfg)
+	client, transport := connectWithConnToken(t, env.node, connTokenOf(t, nil))
+	require.True(t, client.IsSubscribed("topic:#12"))
+
+	// The templates are configured after the connect of the connection, which stored no values.
+	reloaded := templateTestConfig()
+	reloaded.Client.SubscribeToUserPersonalChannel.Enabled = true
+	reloaded.Client.SubscribeToUserPersonalChannel.PersonalChannelNamespace = "topic"
+	require.NoError(t, env.cfgContainer.Reload(reloaded))
+
+	// The refresh has a value for the template claim which the connection has no value for, and the held personal channel
+	// is not rendered again, so the connection is disconnected with insufficient state rather than refused.
+	sendRateLimitCommand(client, &protocol.Command{
+		Id:      2,
+		Refresh: &protocol.RefreshRequest{Token: connTokenOf(t, map[string]any{"sid": "s-1"})},
+	})
+	disconnect := transport.waitDisconnect(t)
+	require.Equal(t, centrifuge.DisconnectInsufficientState.Code, disconnect.Code)
+}
+
+// TestServerTagsFilterTemplateRebindStoresTokenFilters checks a rebind with other values stores the filters of the
+// connection token subscriptions it subscribes, so that a refresh with the same claims compares them with the filters
+// the channels have, and keeps the connection.
+func TestServerTagsFilterTemplateRebindStoresTokenFilters(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, map[string]any{
+			"sid":  "s-1",
+			"subs": map[string]any{"lenient:srv": map[string]any{}},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(sessionFilter("s-1"), state.subscribed["lenient:srv"].ServerTagsFilter))
+
+	storage, release := client.AcquireStorage()
+	filters, _ := storage[connectionTokenFiltersKey].(map[string]*protocol.FilterNode)
+	release(storage)
+	require.True(t, proto.Equal(sessionFilter("s-1"), filters["lenient:srv"]), "got %v", filters)
+}
+
+// TestServerTagsFilterTemplateStoresValuesOnConnect checks a connection stores the values its templates are rendered with
+// at connect, whether or not it has subscriptions of its own, so later subscriptions render the values of its token.
+func TestServerTagsFilterTemplateStoresValuesOnConnect(t *testing.T) {
+	env := newTemplateEnv(t, templateTestConfig())
+	client, _ := connectWithConnToken(t, env.node, connTokenOf(t, map[string]any{"sid": "s1"}))
+
+	storage, release := client.AcquireStorage()
+	stored, ok := storage[serverTagsFilterValuesKey].(filtertemplate.Values)
+	release(storage)
+	require.True(t, ok)
+	require.Equal(t, "12", stored.User)
+	require.Equal(t, "s1", stored.Claims.Value("sid"))
+}
+
+// TestServerTagsFilterTemplateRebindWhileTemplatesOff checks a connection which stored its template values keeps them on
+// a rebind made while the config has no templates. A later reload which adds the template renders the user the connection
+// has now, not the empty user it had when the templates were switched off.
+func TestServerTagsFilterTemplateRebindWhileTemplatesOff(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "owned",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForClient: true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
+				},
+			},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	// The anonymous connection stored its values on connect, with no user.
+	client, state := newRebindTestClient("", "anonymous")
+	storeFilterValues(client, filtertemplate.Values{})
+
+	// The templates are switched off, and the connection rebinds to a user.
+	off := config.DefaultConfig()
+	off.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "owned", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	off.Client.Rebind = configtypes.Rebind{Enabled: true}
+	off.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(off))
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "u2", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "u2", state.user)
+
+	// The templates come back, and a render uses the user the connection has now.
+	require.NoError(t, cfgContainer.Reload(cfg))
+	values := connectionFilterValues(client)
+	require.Equal(t, "u2", values.User)
+	rendered, err := h.templateOf("owned:room").Render(values)
+	require.NoError(t, err)
+	require.Equal(t, "u2", rendered.Val)
+}
+
+// TestServerTagsFilterTemplateRebindPendingToAnonymousAfterReload checks a pending connection which stored no values,
+// since the templates were off when it connected, does not keep a channel of a template which a reload added when it
+// rebinds to anonymous with the same empty claims. The channel was subscribed without the template, so it has no
+// rendered value to compare with, and it is unsubscribed with the resubscribe code.
+func TestServerTagsFilterTemplateRebindPendingToAnonymousAfterReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "open",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForAnonymous: true, SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
+	state.channels["open:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "open",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForAnonymous: true,
+				SubscribeForClient:    true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "session", "cmp": "neq", "val": "{{claims.sid}}"},
+				},
+			},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["open:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRebindAnonymousToPendingAfterReload checks an anonymous connection which stored no values,
+// subscribed to a channel of a namespace without a template, does not keep the channel when a reload adds a template
+// with {{user}} and it rebinds to a pending token. The Core user stays empty and the claims are empty, so the values
+// are the same as the fallback of an unstored connection, which is not a rendered value of the channel.
+func TestServerTagsFilterTemplateRebindAnonymousToPendingAfterReload(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name:           "owned",
+			ChannelOptions: configtypes.ChannelOptions{SubscribeForAnonymous: true, SubscribeForClient: true},
+		},
+	}
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, cfgContainer := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("", "anonymous")
+	state.channels["owned:room"] = centrifuge.ChannelContext{Source: subsource.ClientAllowed}
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{
+			Name: "owned",
+			ChannelOptions: configtypes.ChannelOptions{
+				SubscribeForAnonymous: true,
+				SubscribeForClient:    true,
+				ServerTagsFilterTemplate: configtypes.ServerTagsFilterTemplate{
+					Filter: configtypes.TagsFilterNode{"key": "owner", "cmp": "eq", "val": "{{user}}"},
+				},
+			},
+		},
+	}
+	reloaded.Client.Rebind = configtypes.Rebind{Enabled: true}
+	reloaded.RPC.Registry.AuthClassClaim = rebindTestClaim
+	require.NoError(t, cfgContainer.Reload(reloaded))
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "pending_2fa", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["owned:room"].Code)
+}
+
+// TestServerTagsFilterTemplateRebindToAnonymousDropsUniConnect checks a rebind to anonymous does not subscribe again a
+// stored uni-connect channel: the anonymous identity may not hold it, so the skip template never leaves it unfiltered.
+func TestServerTagsFilterTemplateRebindToAnonymousDropsUniConnect(t *testing.T) {
+	cfg := templateTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true, AllowDowngrade: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("42", "authenticated")
+	storage, release := client.AcquireStorage()
+	storage[serverTagsFilterServerSideKey] = map[string]centrifuge.SubscribeOptions{
+		"lenient:uni": {Source: subsource.UniConnect, ServerTagsFilter: sessionFilter("x")},
+	}
+	release(storage)
+	state.channels["lenient:uni"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.NotContains(t, state.subscribed, "lenient:uni")
+}

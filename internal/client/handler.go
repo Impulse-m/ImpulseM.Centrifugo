@@ -12,6 +12,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/clientstorage"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
@@ -237,7 +238,7 @@ func (h *Handler) Setup() error {
 					cb(reply, err)
 					return
 				}
-				if extra.CheckSubs && tokenChannelsChanged(client, extra.Subs) {
+				if extra.CheckSubs && h.tokenSubscriptionsChanged(client, extra) {
 					// Check whether server-side subscriptions changed. If yes – disconnect
 					// the client to make its token-based server-side subscriptions actual.
 					// Theoretically we could avoid disconnection here using Subscribe/Unsubscribe
@@ -262,7 +263,7 @@ func (h *Handler) Setup() error {
 		client.OnSubscribe(func(event centrifuge.SubscribeEvent, cb centrifuge.SubscribeCallback) {
 			started := h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubscribe(client, event, subscribeProxyHandler, proxySubscribeStreamHandler)
-				cb(reply, err)
+				h.answerSubscribe(client, event.Channel, reply, err, cb)
 			})
 			if !started {
 				// The callback must be invoked exactly once, also when the client
@@ -275,6 +276,7 @@ func (h *Handler) Setup() error {
 		client.OnSubRefresh(func(event centrifuge.SubRefreshEvent, cb centrifuge.SubRefreshCallback) {
 			h.runConcurrentlyIfNeeded(client.Context(), concurrency, semaphore, func() {
 				reply, _, err := h.OnSubRefresh(client, subRefreshProxyHandler, event)
+				reply, err = h.refreshFilterTemplate(client, event.Channel, reply, err)
 				cb(reply, err)
 			})
 		})
@@ -329,6 +331,7 @@ func (h *Handler) Setup() error {
 		})
 
 		client.OnUnsubscribe(func(e centrifuge.UnsubscribeEvent) {
+			h.forgetTemplatedChannel(client, e.Channel)
 			if len(h.proxyMap.SubscribeStreamProxies) > 0 {
 				storage, release := client.AcquireStorage()
 				streamCancelKey := "stream_cancel_" + e.Channel
@@ -503,10 +506,8 @@ func (h *Handler) OnClientConnecting(
 	}
 
 	// Handle single connection enforcement before establishing connection.
-	if credentials != nil && cfg.Client.SubscribeToUserPersonalChannel.Enabled && cfg.Client.SubscribeToUserPersonalChannel.SingleConnection && credentials.UserID != "" {
-		if err := h.enforceSingleUserConnection(e.ClientID, credentials.UserID); err != nil {
-			return centrifuge.ConnectReply{}, err
-		}
+	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, false); err != nil {
+		return centrifuge.ConnectReply{}, err
 	}
 
 	// Automatically subscribe on personal server-side channel.
@@ -605,6 +606,12 @@ func (h *Handler) OnClientConnecting(
 		}
 	}
 
+	if err := h.connectFilterTemplates(e.ClientID, credentials, verified, e.Token == "", subscriptions, storage); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
+	if err := h.enforceConnectSingleConnection(cfg, e.ClientID, credentials, true); err != nil {
+		return centrifuge.ConnectReply{}, err
+	}
 	storeConnectionTokenFilters(storage, subscriptions)
 	rec := h.connectRecord(cfg, storage, connectOriginOf(e.Token, connectProxyHandler != nil), e.Token, verified, credentials)
 	h.storeRPCConnection(storage, e.Instance)
@@ -635,8 +642,9 @@ func (h *Handler) OnClientConnecting(
 }
 
 type RefreshExtra struct {
-	Subs      map[string]centrifuge.SubscribeOptions
-	CheckSubs bool
+	Subs                 map[string]centrifuge.SubscribeOptions
+	CheckSubs            bool
+	FilterTemplateClaims filtertemplate.Claims
 }
 
 func getPerCallData(c Client) proxy.PerCallData {
@@ -1353,6 +1361,9 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 		return centrifuge.HistoryReply{}, centrifuge.ErrorUnknownChannel
 	}
 	if err = h.validateChannelName(c, rest, chOpts, e.Channel); err != nil {
+		return centrifuge.HistoryReply{}, err
+	}
+	if err = refusesHistory(&chOpts); err != nil {
 		return centrifuge.HistoryReply{}, err
 	}
 	if chOpts.HistorySize <= 0 || chOpts.HistoryTTL <= 0 {

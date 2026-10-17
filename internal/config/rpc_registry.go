@@ -34,6 +34,9 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 	v.SetDefault(prefix+"result_evicted.message", "result expired")
 	v.SetDefault(prefix+"dedup_unavailable.code", 108)
 	v.SetDefault(prefix+"dedup_unavailable.message", "dedup unavailable")
+	// The wakeup is on by default. It is a default here and not a default tag, which would turn an explicit false back
+	// into true, see GetConfig.
+	v.SetDefault("rpc.registry.dedup.redis.wakeup.enabled", true)
 }
 
 // LoadRPCRegistryFile reads the RPC registry file at path. The format is chosen by the

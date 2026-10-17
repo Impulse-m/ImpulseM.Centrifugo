@@ -186,11 +186,11 @@ func TestSharedTwoNodesWakeupOwnerCrash(t *testing.T) {
 	require.Equal(t, OutcomeInFlightRemote, lookup.Outcome)
 	waiting := lookup.Flight
 
-	// node-a died: its record stays in flight, the check reads it once, and the deadline ends the wait without a read.
+	// node-a died: its record stays in flight, so the check and the read at the deadline both find it in flight.
 	waitDone(t, waiting)
 	require.True(t, waiting.Record().Abandoned)
 	reads, _ := nodeB.waits.counts()
-	require.Equal(t, 1, reads)
+	require.Equal(t, 2, reads, "the check and the read at the deadline")
 	require.Eventually(t, func() bool {
 		_, ends := nodeB.waits.counts()
 		return ends[WatchEndDeadline] == 1
@@ -426,7 +426,7 @@ func TestSharedWakeupReadCount(t *testing.T) {
 
 // TestSharedWakeupDeadOwnerReadCount measures the reads of the waits whose owner dies after one second, with the wakeup
 // off and on. The in-flight TTL is three seconds, and the check of the wakeup is at 1.5 seconds, so with the wakeup on
-// each wait reads once, at the check, and ends at its deadline.
+// each wait reads at the check and once more at its deadline, where it ends.
 func TestSharedWakeupDeadOwnerReadCount(t *testing.T) {
 	const keys = 50
 	for _, wakeup := range []bool{false, true} {
@@ -463,7 +463,7 @@ func TestSharedWakeupDeadOwnerReadCount(t *testing.T) {
 		reads, ends := nodeB.waits.counts()
 		t.Logf("dead owner, wakeup %t: %d keys, %.2f reads per wait, ends %v", wakeup, keys, float64(reads)/keys, ends)
 		if wakeup {
-			require.Equal(t, keys, reads, "one read per wait, at the check")
+			require.Equal(t, 2*keys, reads, "two reads per wait, at the check and at the deadline")
 			require.Equal(t, keys, ends[WatchEndDeadline])
 		}
 	}

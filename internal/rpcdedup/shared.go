@@ -65,11 +65,13 @@ type SharedObserver interface {
 const (
 	// WatchEndWoken means a wake came, and the read which followed it found the answer, or the key gone.
 	WatchEndWoken = "woken"
-	// WatchEndChecked means the check found the answer, or the key gone, without a wake before it.
+	// WatchEndChecked means the check, or the last read at the deadline, found the answer, or the key gone, without a wake
+	// before it.
 	WatchEndChecked = "checked"
 	// WatchEndPolled means a poll found the answer, or the key gone, with the wakeup off.
 	WatchEndPolled = "polled"
-	// WatchEndDeadline means the in-flight TTL passed with the call still in flight, and no read after that.
+	// WatchEndDeadline means the in-flight TTL passed with no answer read: the last read at the deadline found the call
+	// still in flight, or failed.
 	WatchEndDeadline = "deadline"
 	// WatchEndRefused means the waiter list of the record was full: the wait did not start.
 	WatchEndRefused = "refused"
@@ -354,10 +356,10 @@ func (s *Shared) watchPolling(key Key, flight *Flight) {
 	}
 }
 
-// watchWake is the wait with the wakeup on. It reads the shared tier when the wake of the wait comes, once at the check,
-// which is wakeCheckDelay after the start jittered by a fifth, and never again: when the in-flight deadline passes with
-// no answer read, the wait ends without a read. One timer per wait, re-armed once at the check. A read which finds the
-// record in flight, or fails, keeps the wait.
+// watchWake is the wait with the wakeup on. It reads the shared tier when the wake of the wait comes, and at the check,
+// which is wakeCheckDelay after the start jittered by a fifth. When the in-flight deadline passes with no answer read,
+// the wait makes one last read, see readAtDeadline. One timer per wait, re-armed once at the check. A read which finds
+// the record in flight, or fails, keeps the wait.
 func (s *Shared) watchWake(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
@@ -376,7 +378,7 @@ func (s *Shared) watchWake(key Key, flight *Flight) {
 			}
 		case <-timer.C:
 			if checked {
-				s.endWatch(key, flight, PollResult{}, WatchEndDeadline)
+				s.readAtDeadline(key, flight)
 				return
 			}
 			checked = true
@@ -386,6 +388,19 @@ func (s *Shared) watchWake(key Key, flight *Flight) {
 			timer.Reset(deadline - time.Since(started))
 		}
 	}
+}
+
+// readAtDeadline makes the last read of a wait, once its deadline has passed with no answer read. A wake can be lost, or
+// never sent by a node which runs without the wakeup, so the answer may be in the shared tier already. The read has its
+// own IO timeout, as the deadline context of the wait is done. It ends the wait as WatchEndChecked when it finds the
+// answer, or the key gone, and as WatchEndDeadline otherwise, which abandons the flight.
+func (s *Shared) readAtDeadline(key Key, flight *Flight) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
+	defer cancel()
+	if s.read(ctx, key, flight, WatchEndChecked) {
+		return
+	}
+	s.endWatch(key, flight, PollResult{}, WatchEndDeadline)
 }
 
 // read makes one read of the shared tier for a wait, and reports whether the read ended the wait with end. A record which

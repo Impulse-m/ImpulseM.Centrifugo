@@ -174,3 +174,38 @@ func TestRequireReboundKeepsHeldChannel(t *testing.T) {
 	require.Contains(t, state.channels, "req:room")
 	require.EqualValues(t, subsource.ClientAllowed, state.channels["req:room"].Source)
 }
+
+// TestRequireAnonymousRebindRefusesHeldChannel checks a rebind to an anonymous identity whose subs entry has no filter for a
+// channel the connection holds from its token is refused before the connection moves: the rebind removes that channel and
+// subscribes it again from the token, so the subscription would be refused after the move. With the filter the rebind applies.
+func TestRequireAnonymousRebindRefusesHeldChannel(t *testing.T) {
+	cfg := requireTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true, AllowDowngrade: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	client, state := newRebindTestClient("42", "authenticated")
+	state.channels["req:room"] = centrifuge.ChannelContext{Source: subsource.ConnectionToken}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"req:room": map[string]any{}},
+		}),
+	}, nil)
+	require.Equal(t, centrifuge.ErrorPermissionDenied, err)
+	require.Equal(t, "42", state.user)
+	require.Empty(t, state.rebinds)
+	require.Empty(t, state.unsubscribed)
+	require.Contains(t, state.channels, "req:room")
+
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "", "anonymous", revokeTestOtherUUID, map[string]any{
+			"subs": map[string]any{"req:room": map[string]any{"server_tags_filter": testServerTagsFilter()}},
+		}),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "", state.user)
+	require.Contains(t, state.subscribed, "req:room")
+}

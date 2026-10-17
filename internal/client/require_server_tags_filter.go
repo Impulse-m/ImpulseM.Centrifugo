@@ -2,7 +2,6 @@ package client
 
 import (
 	"maps"
-	"slices"
 
 	"github.com/centrifugal/centrifugo/v6/internal/filterrequire"
 	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
@@ -95,7 +94,7 @@ func (h *Handler) requireReboundPrecheck(
 	if !h.cfgContainer.ConfigRef().RequiresServerTagsFilter() {
 		return nil, nil
 	}
-	kept := h.keptAtRebindPrecheck(c)
+	kept := h.keptAtRebindPrecheck(c, newUser)
 	checked := maps.Clone(subs)
 	if err := h.applyFilterTemplates(checked, values); err != nil {
 		return nil, centrifuge.ErrorPermissionDenied
@@ -138,14 +137,23 @@ func (h *Handler) requirePersonalRebind(
 
 // keptAtRebindPrecheck returns the channels which a rebind keeps and the pre-check skips: the channels the connection holds,
 // except the ones whose namespace has a template now or which were recorded with one. unsubscribeTemplated removes those
-// after the pre-check, and subscribeChannels subscribes them again from the subscriptions, so they are checked.
-func (h *Handler) keptAtRebindPrecheck(c rebindableClient) func(string) bool {
-	recorded := templatedChannelsOf(c)
+// after the pre-check, and subscribeChannels subscribes them again from the subscriptions, so they are checked. A rebind to
+// no user removes the held channels which keepsAnonymous does not allow, see unsubscribeNotAnonymous, so they are checked too.
+func (h *Handler) keptAtRebindPrecheck(c rebindableClient, newUser string) func(string) bool {
+	recorded := make(map[string]struct{})
+	for _, channel := range templatedChannelsOf(c) {
+		recorded[channel] = struct{}{}
+	}
+	held := c.ChannelsWithContext()
 	return func(channel string) bool {
-		if !c.IsSubscribed(channel) || h.templateOf(channel) != nil {
+		chCtx, ok := held[channel]
+		if !ok || h.templateOf(channel) != nil {
 			return false
 		}
-		return !slices.Contains(recorded, channel)
+		if _, wasRecorded := recorded[channel]; wasRecorded {
+			return false
+		}
+		return newUser != "" || h.keepsAnonymous(channel, chCtx.Source)
 	}
 }
 

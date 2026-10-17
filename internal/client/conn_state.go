@@ -116,6 +116,16 @@ func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Cl
 	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(client.UserID())
 }
 
+// adoptClientRecord adopts the record of a connecting client into its ext state, when clientNeedsConnState says the
+// client has one, and returns it. Without one nothing is read from storage. The record is a single assignment, so the
+// closures of trackConnect capture it by value and it does not escape on the default path.
+func (h *Handler) adoptClientRecord(client *centrifuge.Client) *connState {
+	if !h.clientNeedsConnState(h.cfgContainer.ConfigRef(), client) {
+		return nil
+	}
+	return adoptConnState(client)
+}
+
 // storeNeedsConnState reports whether the access store needs a record for a connection with userID: every connection
 // with no user, whether or not its token has a session, so the record is there when a refresh gives it one.
 func (h *Handler) storeNeedsConnState(userID string) bool {

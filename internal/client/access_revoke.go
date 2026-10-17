@@ -117,17 +117,17 @@ func (h *Handler) recheckConnection(client *centrifuge.Client) (centrifuge.Disco
 // the same decision connectRecord made at connect, so a connection with a user under the default config reads no
 // storage and allocates nothing.
 func (h *Handler) trackConnect(client *centrifuge.Client) (centrifuge.Disconnect, bool) {
-	var rec *connState
-	if h.clientNeedsConnState(h.cfgContainer.ConfigRef(), client) {
-		rec = adoptConnState(client)
-	}
+	rec := h.adoptClientRecord(client)
 	if rec != nil && (h.accessStore != nil || h.userLimiter != nil) {
 		client.OnDisconnect(func(centrifuge.DisconnectEvent) {
 			h.onClientDisconnect(client, rec)
 		})
 	}
 	if rec != nil && h.accessStore != nil && client.UserID() == "" {
-		h.trackSession(client, rec, rec.identity.Load().identity.Session)
+		session := rec.identity.Load().identity.Session
+		if session != ([16]byte{}) {
+			h.trackSession(client, rec, session)
+		}
 	}
 	runTestHook(&testHookConnectTracked, client)
 	return h.recheckConnection(client)

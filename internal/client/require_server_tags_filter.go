@@ -191,6 +191,18 @@ func (h *Handler) refusesRestoredPersonal(
 	return nil
 }
 
+// dropRebindChannels drops the channels which the require option dropped from the subscriptions of a rebind, after the rebind
+// is applied. A channel the connection holds is unsubscribed, so it does not stay on the connection without the filter, and
+// the records of the channels are forgotten.
+func dropRebindChannels(c rebindableClient, channels []string) {
+	for _, channel := range channels {
+		if c.IsSubscribed(channel) {
+			c.Unsubscribe(channel, unsubscribeInsufficientState)
+		}
+	}
+	forgetRebindRecords(c, channels)
+}
+
 // forgetRebindRecords removes the records of channels which a rebind dropped, see forgetDroppedRecords.
 func forgetRebindRecords(c rebindableClient, channels []string) {
 	if len(channels) == 0 {

@@ -10,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/filtertemplate"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
@@ -208,4 +209,34 @@ func TestRequireAnonymousRebindRefusesHeldChannel(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "", state.user)
 	require.Contains(t, state.subscribed, "req:room")
+}
+
+// TestRequireReboundUnsubscribesDroppedChannel checks a held uni-connect channel of a template namespace which a rebind drops
+// for the require option is unsubscribed. The rebind keeps the template values, so the template does not unsubscribe the
+// channel, and a channel the connection still held would stay on it without a filter.
+func TestRequireReboundUnsubscribesDroppedChannel(t *testing.T) {
+	cfg := requireTestConfig()
+	cfg.Client.Rebind = configtypes.Rebind{Enabled: true}
+	cfg.RPC.Registry.AuthClassClaim = rebindTestClaim
+	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
+	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.SetAccessRevoke(accessrevoke.NewStore(time.Minute), nil)
+
+	// The pending connection of user 42 stored its values with the user, and holds "tpl:room" which connect subscribed.
+	client, state := newRebindTestClientWithToken("", "42", "pending_2fa")
+	storeFilterValues(client, filtertemplate.Values{User: "42"})
+	storage, release := client.AcquireStorage()
+	storage[serverTagsFilterServerSideKey] = map[string]centrifuge.SubscribeOptions{
+		"tpl:room": {Source: subsource.UniConnect},
+	}
+	release(storage)
+	state.channels["tpl:room"] = centrifuge.ChannelContext{Source: subsource.UniConnect}
+
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{
+		Token: rebindTestToken(t, "42", "authenticated", revokeTestOtherUUID, nil),
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "42", state.user)
+	require.NotContains(t, state.channels, "tpl:room")
+	require.Equal(t, uint32(centrifuge.UnsubscribeCodeInsufficient), state.unsubscribed["tpl:room"].Code)
 }

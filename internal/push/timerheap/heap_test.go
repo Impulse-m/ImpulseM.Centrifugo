@@ -246,6 +246,26 @@ func TestHeapPeekReturnsTheEarliestEntry(t *testing.T) {
 	require.Equal(t, 2, h.Len())
 }
 
+func TestHeapCloseStopsTheArmedTimer(t *testing.T) {
+	clock := newFakeClock()
+	var fired int
+	h := New[int](clock, func(int) {
+		fired++
+	})
+	start := clock.Now()
+	h.Push(start.Add(time.Second), 1)
+
+	h.Close()
+	require.Empty(t, clock.armed())
+
+	h.Push(start.Add(2*time.Second), 2)
+	require.Empty(t, clock.armed())
+
+	clock.Advance(time.Hour)
+	require.Zero(t, fired)
+	require.Equal(t, 2, h.Len())
+}
+
 func TestHeapFiresWithTheSystemClock(t *testing.T) {
 	fired := make(chan int, 1)
 	h := New[int](SystemClock, func(value int) {

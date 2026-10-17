@@ -7,6 +7,7 @@ import (
 )
 
 // Clock is the time source of a Heap. SystemClock is the clock of the process, tests inject their own.
+// AfterFunc must not run f before it returns, because the Heap calls it with its lock held.
 type Clock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) Timer
@@ -48,6 +49,7 @@ type Heap[T any] struct {
 	items      entryHeap[T]
 	timer      Timer
 	generation uint64
+	closed     bool
 }
 
 // New returns an empty Heap which reads time from clock and hands every due entry to fire.
@@ -108,15 +110,30 @@ func (h *Heap[T]) Len() int {
 	return len(h.items)
 }
 
-// rearm stops the armed timer, if any, and arms a new one for the earliest deadline. An empty heap has no timer.
-// The caller holds mu.
+// Close stops the armed timer and keeps the Heap from arming another one, so no callback runs after Close unless a
+// firing had already started. The entries stay in the Heap: the owner removes them first when their callbacks must not
+// run.
+func (h *Heap[T]) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.closed = true
+	if h.timer != nil {
+		h.timer.Stop()
+		h.timer = nil
+	}
+	h.generation++
+}
+
+// rearm stops the armed timer, if any, and arms a new one for the earliest deadline. An empty or closed heap has no
+// timer. The caller holds mu.
 func (h *Heap[T]) rearm() {
 	if h.timer != nil {
 		h.timer.Stop()
 		h.timer = nil
 	}
 	h.generation++
-	if len(h.items) == 0 {
+	if h.closed || len(h.items) == 0 {
 		return
 	}
 	generation := h.generation

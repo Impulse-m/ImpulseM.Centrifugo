@@ -24,6 +24,9 @@ type rebindFilters struct {
 	previous filtertemplate.Values
 	values   filtertemplate.Values
 	subs     map[string]centrifuge.SubscribeOptions
+	// dropped are the server-side channels which the connection holds and the require option drops from subs, see
+	// requireReboundPrecheck. Their records are forgotten once the rebind is applied.
+	dropped []string
 }
 
 // prepareRebindFilters returns the template values of a rebind of c to newUser with the claims of its token. The values
@@ -57,8 +60,30 @@ func (h *Handler) prepareRebindFilters(c rebindableClient, claims filtertemplate
 // when a template of a subscription which the new identity gets has a missing value under reject, and disconnects the
 // connection when it holds a server-side channel of a template namespace which connect did not store with its template,
 // see untemplatedServerSide. The templates are rendered only to check them: the rebind renders them again once it is
-// applied. It does nothing when no config has templates and the connection stored no values.
+// applied. It does nothing when no config has templates and the connection stored no values. The require option is
+// checked last, see requireReboundPrecheck.
 func (h *Handler) checkReboundFilters(
+	c rebindableClient,
+	verified jwtverify.ConnectToken,
+	newUser string,
+) (rebindFilters, error) {
+	filters, err := h.checkReboundTemplates(c, verified, newUser)
+	if err != nil {
+		return rebindFilters{}, err
+	}
+	dropped, err := h.requireReboundPrecheck(c, filters.values, newUser, filters.subs)
+	if err != nil {
+		return rebindFilters{}, err
+	}
+	for _, channel := range dropped {
+		delete(filters.subs, channel)
+	}
+	filters.dropped = dropped
+	return filters, nil
+}
+
+// checkReboundTemplates is the template part of checkReboundFilters.
+func (h *Handler) checkReboundTemplates(
 	c rebindableClient,
 	verified jwtverify.ConnectToken,
 	newUser string,
@@ -259,6 +284,9 @@ func (h *Handler) subscribeRestoredPersonal(c rebindableClient, channel string, 
 	toSubscribe := map[string]centrifuge.SubscribeOptions{channel: opts}
 	if err := h.templateSubscriptions(c, toSubscribe); err != nil {
 		return centrifuge.ErrorPermissionDenied
+	}
+	if err := h.refusesRestoredPersonal(c, toSubscribe); err != nil {
+		return err
 	}
 	return subscribeChannels(c, toSubscribe)
 }

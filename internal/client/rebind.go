@@ -272,6 +272,8 @@ func (h *Handler) onRefreshRebind(
 	if err := h.commitRebindFilters(c, filters); err != nil {
 		return centrifuge.RefreshReply{}, RefreshExtra{}, err
 	}
+	// The channels which the require option dropped are not subscribed again, so their records go with the rebind.
+	forgetRebindRecords(c, filters.dropped)
 	// Channels which committed while the rebind ran are unsubscribed here, see unsubscribeNotAnonymous.
 	if newUser == "" {
 		h.unsubscribeNotAnonymous(c)
@@ -457,6 +459,9 @@ func (h *Handler) subscribeRebound(c rebindableClient, userID string, subs map[s
 		}
 	}
 	if err := h.reboundTemplateSubscriptions(c, toSubscribe); err != nil {
+		return err
+	}
+	if err := h.requireReboundFallback(c, userID, toSubscribe); err != nil {
 		return err
 	}
 	return subscribeChannels(c, toSubscribe)

@@ -52,6 +52,9 @@ const (
 // cap below the minimum becomes the default. The replacement is returned as a warning. An explicit switch keeps the
 // cap, which is then checked by validation.
 func fallbackRPCDedupWakeupCap(v *viper.Viper, conf *Config) []string {
+	if !conf.RPC.Registry.Dedup.Redis.Enabled {
+		return nil
+	}
 	if v.InConfig(rpcDedupWakeupSwitchPath) {
 		return nil
 	}

@@ -73,3 +73,15 @@ func TestRPCDedupWakeupCapOutOfRangeWithSwitchIsRefused(t *testing.T) {
 	require.Empty(t, meta.DeprecationWarnings)
 	require.ErrorContains(t, validateRPCDedupRedis(conf, conf.RPC.Registry.Dedup.Redis), "must be between 1 and 1024, got 2000")
 }
+
+// Without the dedup Redis the wakeup is ignored, so an out-of-range cap is kept as it is, with no warning.
+func TestRPCDedupWakeupCapOutOfRangeWithRedisDisabledIsQuiet(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.json")
+	content := `{"rpc": {"registry": {"dedup": {"redis": {"wakeup": {"max_waiter_nodes": 2000}}}}}}`
+	require.NoError(t, os.WriteFile(configFile, []byte(content), 0600))
+
+	conf, meta := getConfig(t, configFile)
+
+	require.Equal(t, 2000, conf.RPC.Registry.Dedup.Redis.Wakeup.MaxWaiterNodes)
+	require.Empty(t, meta.DeprecationWarnings)
+}

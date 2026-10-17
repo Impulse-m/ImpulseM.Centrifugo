@@ -45,9 +45,6 @@ func pendingLifetimeExceeded(
 // pendingLifetimeRefused reports whether a connection token of class of clientID is over the pending lifetime limit of
 // the config. It is checked at connect and at refresh, and it logs the refusal.
 func (h *Handler) pendingLifetimeRefused(clientID string, class rpcregistry.AuthClass, token jwtverify.ConnectToken) bool {
-	if class != rpcregistry.AuthClassPending2FA {
-		return false
-	}
 	maxLifetime := h.cfgContainer.ConfigRef().RPC.Registry.PendingMaxLifetime.ToDuration()
 	if !pendingLifetimeExceeded(class, token, maxLifetime, time.Now) {
 		return false

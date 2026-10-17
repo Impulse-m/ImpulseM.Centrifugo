@@ -66,6 +66,22 @@ func TestValidateRPCRegistryLimits(t *testing.T) {
 			},
 		},
 		{
+			name: "unhinted method is refused under a budget below its response limit",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.MaxInflightBytes = 4 << 20
+				cfg.RPC.Registry.Methods[0].MaxResponseBytes = 8 << 20
+			},
+			wantErr: `method "users.getUser": cost 8454144 bytes exceeds rpc.registry.max_inflight_bytes (4194304): the method can never run`,
+		},
+		{
+			name: "hinted method can run under a budget below its response limit",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.MaxInflightBytes = 4 << 20
+				cfg.RPC.Registry.Methods[0].MaxResponseBytes = 8 << 20
+				cfg.RPC.Registry.Methods[0].ResponseSizeHint = &configtypes.RPCResponseSizeHint{RequestField: 3}
+			},
+		},
+		{
 			name: "ring_hash without affinity_header is refused",
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry = validRingHashRegistry()

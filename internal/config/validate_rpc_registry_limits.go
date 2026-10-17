@@ -50,8 +50,8 @@ func rpcTargetsByName(file configtypes.RPCRegistryFile) map[string]configtypes.R
 	return targets
 }
 
-// validateRPCAdmissionBudget checks the admission keys. The budget must not be negative, and a method whose cost, its
-// request limit plus its response limit, is over the budget could never run.
+// validateRPCAdmissionBudget checks the admission keys. The budget must not be negative, and a method whose smallest
+// cost is over the budget could never run.
 func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RPCRegistryFile) error {
 	if reg.MaxInflightBytes < 0 {
 		return fmt.Errorf("rpc.registry.max_inflight_bytes: must not be negative, got %d", reg.MaxInflightBytes)
@@ -68,12 +68,27 @@ func validateRPCAdmissionBudget(reg configtypes.RPCRegistry, file configtypes.RP
 	targets := rpcTargetsByName(file)
 	for _, method := range file.Methods {
 		limits := configtypes.ResolveRPCMethodLimits(method, targets[method.Target], file.Defaults)
-		cost := int64(limits.MaxRequestBytes) + int64(limits.MaxResponseBytes)
+		cost := rpcSmallestAdmissionCost(method, limits)
 		if cost > reg.MaxInflightBytes {
 			return fmt.Errorf("rpc registry method %q: cost %d bytes exceeds rpc.registry.max_inflight_bytes (%d): the method can never run", method.Method, cost, reg.MaxInflightBytes)
 		}
 	}
 	return nil
+}
+
+// rpcSmallestAdmissionCost returns the smallest cost a call of method can be admitted with: its request limit plus its
+// response bound. A method without a response size hint always reserves its response limit. A hinted method reserves
+// the hint, so a call which reads one byte reserves the overhead and that byte, and the method can run under a budget
+// below its response limit.
+func rpcSmallestAdmissionCost(method configtypes.RPCMethod, limits configtypes.RPCMethodLimits) int64 {
+	response := limits.MaxResponseBytes
+	if method.ResponseSizeHint != nil {
+		hinted := configtypes.ResolvedResponseSizeOverhead(*method.ResponseSizeHint) + 1
+		if hinted < response {
+			response = hinted
+		}
+	}
+	return int64(limits.MaxRequestBytes) + int64(response)
 }
 
 // validateRPCAffinity checks the affinity routing of the targets: ring_hash and affinity_header come together, the
@@ -108,7 +123,11 @@ func validateRPCAffinityTarget(target configtypes.RPCTarget, methods []configtyp
 	if !rpcAffinityHeaderRe.MatchString(name) {
 		return fmt.Errorf("rpc registry target %q: affinity_header %q must match %s", target.Name, name, rpcAffinityHeaderRe.String())
 	}
-	if configtypes.IsRPCRegistryReservedHeader(name) || strings.HasSuffix(name, "-bin") {
+	err := validateRPCHeaderNames([]string{name}, "affinity_header")
+	if err != nil {
+		return fmt.Errorf("rpc registry target %q: %w", target.Name, err)
+	}
+	if strings.HasSuffix(name, "-bin") {
 		return fmt.Errorf("rpc registry target %q: affinity_header %q is reserved, or ends with -bin", target.Name, name)
 	}
 	forwarded := slices.ContainsFunc(methods, func(method configtypes.RPCMethod) bool {

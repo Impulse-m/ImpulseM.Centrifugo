@@ -492,14 +492,15 @@ func (h *Handler) reboundChannels(
 
 // reboundChannelsExceedLimit reports whether subscribeRebound would take c over client.channel_limit: the channels it
 // adds to c, which c is not subscribed to yet, on top of the channels c has. A personal channel which cannot be resolved
-// is not counted, as subscribeRebound disconnects for it. Without a limit it reports false.
+// is not counted, as subscribeRebound disconnects for it. The limit is the one the node runs with, read at Setup. Without
+// a limit it reports false.
 func (h *Handler) reboundChannelsExceedLimit(
 	c rebindableClient,
 	userID string,
 	subs map[string]centrifuge.SubscribeOptions,
 	cfg *config.Config,
 ) bool {
-	limit := cfg.Client.ChannelLimit
+	limit := h.runningChannelLimit
 	if limit <= 0 {
 		return false
 	}

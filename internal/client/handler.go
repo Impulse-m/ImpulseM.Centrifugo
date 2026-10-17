@@ -73,6 +73,9 @@ type Handler struct {
 
 	// runningConcurrency is the client.concurrency the handler runs with. It is read at Setup, and a reload does not change it.
 	runningConcurrency int
+	// runningChannelLimit is the client.channel_limit the node runs with. It is read at Setup, as Core keeps the limit it was
+	// given at node creation, so a reload does not change it.
+	runningChannelLimit int
 }
 
 // NewHandler creates new Handler.
@@ -214,6 +217,7 @@ func (h *Handler) Setup() error {
 	cfg := h.cfgContainer.ConfigRef()
 	concurrency := cfg.Client.Concurrency
 	h.runningConcurrency = concurrency
+	h.runningChannelLimit = cfg.Client.ChannelLimit
 
 	if err := h.setupRateLimit(cfg); err != nil {
 		return err

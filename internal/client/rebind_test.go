@@ -147,6 +147,7 @@ func newRebindTestHandlerWithConfig(t *testing.T, cfg config.Config) (*Handler, 
 	t.Helper()
 	h, _ := newRegistryTestHandlerWithClaim(t, cfg, nil, rebindTestClaim)
 	require.NoError(t, h.setupRateLimit(h.cfgContainer.ConfigRef()))
+	h.runningChannelLimit = cfg.Client.ChannelLimit
 	store := accessrevoke.NewStore(time.Minute)
 	h.SetAccessRevoke(store, nil)
 	return h, store

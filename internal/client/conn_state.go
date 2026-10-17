@@ -94,8 +94,8 @@ func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 // needsConnState reports whether a connection with userID and identity gets a record. A feature which reads the record
 // needs one: rebind, the registry, the auth class claim, or a user or client limiter. The access store needs one for a
 // connection with no user whose token has a session, see storeNeedsConnState. OnClientConnecting decides with it, from
-// the credentials of the connection. OnConnect adopts the record which OnClientConnecting stored, see trackConnect, so
-// no second decision is made there.
+// the credentials of the connection. OnConnect re-decides with clientNeedsConnState, which mirrors connectRecord, see
+// trackConnect.
 func (h *Handler) needsConnState(cfg *config.Config, userID string, identity centrifuge.TokenIdentity) bool {
 	return h.configNeedsConnState(cfg) || h.storeNeedsConnState(userID, identity)
 }

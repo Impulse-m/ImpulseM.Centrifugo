@@ -1,6 +1,7 @@
 package accessrevoke
 
 import (
+	"container/list"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +41,8 @@ type partitionProgress struct {
 	target      int64
 	reached     bool
 	behindSince time.Time
+	// behindElem is the place of the partition in ReadinessTracker.behindOrder, nil while it is not behind.
+	behindElem *list.Element
 }
 
 // lag returns the number of records between the consumed offset and the target offset of the partition.
@@ -78,6 +81,8 @@ type ReadinessTracker struct {
 	lagRecords   int64
 	behind       int
 	oldestBehind time.Time
+	// behindOrder holds the partitions which are behind, in the order they became behind, so its front is the oldest one.
+	behindOrder list.List
 }
 
 // NewReadinessTracker creates a ReadinessTracker. The clock is used for all timing decisions, so tests
@@ -127,44 +132,35 @@ func (t *ReadinessTracker) reachedLocked(progress *partitionProgress) {
 		progress.reached = true
 		t.notReached--
 	}
-	if progress.behindSince.IsZero() {
+	if progress.behindElem == nil {
 		return
 	}
-	t.behind--
-	wasOldest := progress.behindSince.Equal(t.oldestBehind)
+	t.behindOrder.Remove(progress.behindElem)
+	progress.behindElem = nil
 	progress.behindSince = time.Time{}
-	if wasOldest {
-		t.recomputeOldestBehindLocked()
-	}
+	t.behind--
+	t.updateOldestBehindLocked()
 }
 
 // behindLocked records that the partition is behind its target, starting its lag at now unless it is behind already.
-// The clock does not go back, so a partition which becomes behind is never older than the oldest one.
+// The clock does not go back, so a partition which becomes behind is never older than the ones before it in behindOrder.
 func (t *ReadinessTracker) behindLocked(progress *partitionProgress, now time.Time) {
-	if !progress.behindSince.IsZero() {
+	if progress.behindElem != nil {
 		return
 	}
 	progress.behindSince = now
+	progress.behindElem = t.behindOrder.PushBack(progress)
 	t.behind++
-	if t.oldestBehind.IsZero() {
-		t.oldestBehind = now
-	}
+	t.updateOldestBehindLocked()
 }
 
-// recomputeOldestBehindLocked finds the earliest behindSince of the partitions which are behind. It loops over the
-// partitions only when the oldest one has caught up, and not at all when none is behind.
-func (t *ReadinessTracker) recomputeOldestBehindLocked() {
+// updateOldestBehindLocked sets oldestBehind to the behindSince of the front of behindOrder, the partition which has
+// been behind the longest. Removing a partition from the middle of the order keeps the rest in time order, so this is
+// O(1) at every transition and no loop over the partitions is needed.
+func (t *ReadinessTracker) updateOldestBehindLocked() {
 	t.oldestBehind = time.Time{}
-	if t.behind == 0 {
-		return
-	}
-	for _, progress := range t.partitions {
-		if progress.behindSince.IsZero() {
-			continue
-		}
-		if t.oldestBehind.IsZero() || progress.behindSince.Before(t.oldestBehind) {
-			t.oldestBehind = progress.behindSince
-		}
+	if front := t.behindOrder.Front(); front != nil {
+		t.oldestBehind = front.Value.(*partitionProgress).behindSince
 	}
 }
 

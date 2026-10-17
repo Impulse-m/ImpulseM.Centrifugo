@@ -38,8 +38,8 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 
 // The key and the environment variable of the wakeup switch of the dedup Redis.
 const (
-	rpcDedupWakeupSwitchPath   = "rpc.registry.dedup.redis.wakeup.enabled"
-	rpcDedupWakeupSwitchVar    = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED"
+	rpcDedupWakeupSwitchPath   = "rpc.registry.dedup.redis.wakeup.enabled"            //nolint:gosec // A config key, not a credential.
+	rpcDedupWakeupSwitchVar    = "CENTRIFUGO_RPC_REGISTRY_DEDUP_REDIS_WAKEUP_ENABLED" //nolint:gosec // An environment variable name, not a credential.
 	rpcDedupMaxWaiterNodesPath = "rpc.registry.dedup.redis.wakeup.max_waiter_nodes"
 	// defaultRPCDedupMaxWaiterNodes is the default of rpc.registry.dedup.redis.wakeup.max_waiter_nodes, which is the
 	// default tag of configtypes.RPCDedupWakeup.

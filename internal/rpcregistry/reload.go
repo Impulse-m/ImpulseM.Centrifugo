@@ -79,6 +79,26 @@ func (r *Registry) initAdmission(cfg configtypes.RPCRegistry) {
 	r.admission.Store(NewAdmission(cfg, metrics.NewRPCRegistryAdmissionMetrics()))
 }
 
+// checkAdmissionKeys refuses a reload which changes the admission keys. The admission is built once, at start, so a
+// changed budget or watermark is not enforced, and the reload would be validated against values nothing enforces.
+// Before the first Prepare there is no admission, and nothing is checked.
+func (r *Registry) checkAdmissionKeys(cfg configtypes.RPCRegistry) error {
+	if !r.admissionInit.Load() {
+		return nil
+	}
+	var inEffectInflight int64
+	var inEffectWatermark int64
+	if admission := r.admission.Load(); admission != nil {
+		inEffectInflight = admission.maxInflight
+		inEffectWatermark = admission.watermark
+	}
+	if cfg.MaxInflightBytes == inEffectInflight && cfg.MemoryWatermarkBytes == inEffectWatermark {
+		return nil
+	}
+	return fmt.Errorf("rpc.registry: max_inflight_bytes and memory_watermark_bytes are read at start, a reload cannot change them: in effect %d and %d, got %d and %d",
+		inEffectInflight, inEffectWatermark, cfg.MaxInflightBytes, cfg.MemoryWatermarkBytes)
+}
+
 // Admission returns the admission of the calls, or nil when both its keys are off. A nil registry has none.
 func (r *Registry) Admission() *Admission {
 	if r == nil {
@@ -139,6 +159,10 @@ type prepared struct {
 // prepare builds the table for cfg. The caller holds reloadMu. A registry file is read into snap,
 // or read here when snap is nil.
 func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*prepared, error) {
+	err := r.checkAdmissionKeys(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var file configtypes.RPCRegistryFile
 	var source fileSource
 	switch {

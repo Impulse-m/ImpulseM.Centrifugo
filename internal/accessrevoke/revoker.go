@@ -189,7 +189,9 @@ func (r *Revoker) retry(key retryKey) {
 		// Every kind is checked, so a retry applies whatever the store still holds for the user.
 		opts := CheckOptions{Block: true, Session: true, UserTokens: true}
 		for _, client := range r.hub.UserConnections(key.user) {
-			if client.Closing() {
+			// A queued or closing connection needs no check: the queue holds it already, and a check would count it
+			// as a reject again on every pass.
+			if r.queue.pending(client) {
 				continue
 			}
 			disconnect, reason, revoked := CheckConnection(r.store, client, opts, stageRetry)

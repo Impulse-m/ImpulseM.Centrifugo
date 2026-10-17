@@ -159,18 +159,46 @@ func TestDisconnectQueueEnqueuesConnectionOnce(t *testing.T) {
 	require.ErrorIs(t, <-errCh, context.Canceled)
 }
 
-// TestDisconnectQueueSkipsClosingConnection enqueues a connection whose close has begun. The enqueue counts as handled:
-// nothing is queued, nothing is kept, and the drop counter does not move, even though the queue has no room.
+// TestDisconnectQueueTerminalReplacesReconnectable queues a connection with a reconnectable disconnect, then with a terminal
+// one, then with a reconnectable one again. The connection is disconnected once, with the terminal code, so a block which
+// arrives while the queue holds an expiry is not lost.
+func TestDisconnectQueueTerminalReplacesReconnectable(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 10)
+	conn := &fakeConnection{id: "upgrade"}
+
+	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.Enqueue(conn, DisconnectUserBlocked, ReasonBlocked))
+	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.Len(t, queue.items, 1)
+
+	cancel, errCh := runQueue(t, queue)
+	defer cancel()
+
+	require.Eventually(t, func() bool {
+		disconnects, _ := conn.snapshot()
+		return len(disconnects) == 1
+	}, 5*time.Second, 5*time.Millisecond)
+	disconnects, _ := conn.snapshot()
+	require.Equal(t, DisconnectUserBlocked, disconnects[0])
+
+	cancel()
+	require.ErrorIs(t, <-errCh, context.Canceled)
+}
+
+// TestDisconnectQueueSkipsClosingConnection enqueues a connection whose close has begun into a full queue. The enqueue
+// counts as handled: nothing is queued, nothing is kept, and the drop counter does not move.
 func TestDisconnectQueueSkipsClosingConnection(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 1)
+	filler := &fakeConnection{id: "filler"}
+	require.True(t, queue.Enqueue(filler, centrifuge.DisconnectExpired, ReasonSession))
 	closing := &fakeConnection{id: "closing"}
 	closing.markClosing()
 	dropped := counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total")
 
 	require.True(t, queue.enqueueKeyed(retryKey{user: "user-1"}, closing, centrifuge.DisconnectExpired, ReasonBlocked))
 
-	require.Len(t, queue.items, 0)
-	require.Equal(t, 0, queuedCount(queue))
+	require.Len(t, queue.items, 1)
+	require.Equal(t, 1, queuedCount(queue))
 	queue.mu.Lock()
 	require.Empty(t, queue.retry)
 	queue.mu.Unlock()

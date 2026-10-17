@@ -10,6 +10,10 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// disconnectTerminalCode is the lowest code of a terminal disconnect, which tells the client not to reconnect. A
+// queued disconnect is replaced by a terminal one, so a terminal disconnect is never lost to a reconnectable one.
+const disconnectTerminalCode uint32 = 4500
+
 // Connection is a local client connection which can be disconnected and indexed by its ID. Satisfied by
 // *centrifuge.Client. BeginDisconnect starts the close and Closing reports whether a close has begun, so the queue never
 // disconnects a connection twice and never spends a rate token on one which is closing already.
@@ -21,8 +25,8 @@ type Connection interface {
 
 var _ Connection = (*centrifuge.Client)(nil)
 
-type disconnectItem struct {
-	connection Connection
+// queuedDisconnect is the disconnect of a connection in the queue, and the reason it is counted with.
+type queuedDisconnect struct {
 	disconnect centrifuge.Disconnect
 	reason     Reason
 }
@@ -35,16 +39,17 @@ type retryKey struct {
 }
 
 // DisconnectQueue drains live disconnects caused by access revocation at a limited rate. The queue is bounded and holds
-// each connection at most once. It never queues or disconnects a connection whose close has begun. A disconnect which
-// finds the queue full is dropped and counted, and its key is kept. The queue goroutine re-evaluates kept keys through
-// the store once the queue is at most half full: one key per drained item while the queue holds items, and the next key
-// in a row while it is empty. The refresh check rejects a connection within the token lifetime in any case.
+// each connection at most once. It never queues or disconnects a connection whose close has begun. A connection which is
+// queued keeps the first disconnect it was queued with, except that a terminal disconnect replaces a reconnectable one.
+// A disconnect which finds the queue full is dropped and counted, and its key is kept. The queue goroutine re-evaluates
+// kept keys through the store once the queue is at most half full: one key per drained item while the queue holds items,
+// and the next key in a row while it is empty. The refresh check rejects a connection within the token lifetime in any case.
 type DisconnectQueue struct {
-	items   chan disconnectItem
+	items   chan Connection
 	limiter *rate.Limiter
 
 	mu       sync.Mutex
-	inflight map[string]struct{}
+	inflight map[string]queuedDisconnect
 	retry    map[retryKey]struct{}
 	retrier  func(key retryKey)
 }
@@ -53,7 +58,7 @@ type DisconnectQueue struct {
 // and holds at most size pending disconnects.
 func NewDisconnectQueue(ratePerSecond int, size int) *DisconnectQueue {
 	return &DisconnectQueue{
-		items:   make(chan disconnectItem, size),
+		items:   make(chan Connection, size),
 		limiter: rate.NewLimiter(rate.Limit(ratePerSecond), 1),
 	}
 }
@@ -88,16 +93,18 @@ func (q *DisconnectQueue) enqueue(
 		return true
 	}
 	id := connection.ID()
-	_, queued := q.inflight[id]
-	if queued {
+	if queued, ok := q.inflight[id]; ok {
+		if !isTerminal(queued.disconnect) && isTerminal(disconnect) {
+			q.inflight[id] = queuedDisconnect{disconnect: disconnect, reason: reason}
+		}
 		return true
 	}
 	select {
-	case q.items <- disconnectItem{connection: connection, disconnect: disconnect, reason: reason}:
+	case q.items <- connection:
 		if q.inflight == nil {
-			q.inflight = make(map[string]struct{})
+			q.inflight = make(map[string]queuedDisconnect)
 		}
-		q.inflight[id] = struct{}{}
+		q.inflight[id] = queuedDisconnect{disconnect: disconnect, reason: reason}
 		return true
 	default:
 	}
@@ -109,6 +116,14 @@ func (q *DisconnectQueue) enqueue(
 		q.retry[*key] = struct{}{}
 	}
 	return false
+}
+
+// pending reports whether the connection is closing or queued, so a pass which re-evaluates it has nothing to queue.
+func (q *DisconnectQueue) pending(connection Connection) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	_, queued := q.inflight[connection.ID()]
+	return queued || connection.Closing()
 }
 
 // setRetrier sets the function which re-evaluates a key of a dropped disconnect. It is called by the queue goroutine.
@@ -125,26 +140,32 @@ func (q *DisconnectQueue) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case item := <-q.items:
-			if !item.connection.Closing() {
+		case connection := <-q.items:
+			if !connection.Closing() {
 				err := q.limiter.Wait(ctx)
 				if err != nil {
 					return err
 				}
-				if item.connection.BeginDisconnect(item.disconnect) {
-					metrics.AccessRevokeDisconnectsTotal.WithLabelValues(string(item.reason)).Inc()
-				}
 			}
-			q.finish(item.connection.ID())
+			q.begin(connection)
 		}
 	}
 }
 
-// finish removes a dequeued connection from the queued set, then re-evaluates kept keys. The connection leaves the set
-// only after its close has begun, so it is never queued again while it is closing.
-func (q *DisconnectQueue) finish(id string) {
+// begin starts the close of a dequeued connection with the disconnect it is queued with, then removes it from the queued
+// set and re-evaluates kept keys. Both happen under mu, so a terminal disconnect which arrives meanwhile is not lost. The
+// connection leaves the set only after its close has begun, so it is never queued again while it is closing.
+func (q *DisconnectQueue) begin(connection Connection) {
 	q.mu.Lock()
+	id := connection.ID()
+	queued := q.inflight[id]
 	delete(q.inflight, id)
+	if len(q.inflight) == 0 {
+		q.inflight = nil
+	}
+	if !connection.Closing() && connection.BeginDisconnect(queued.disconnect) {
+		metrics.AccessRevokeDisconnectsTotal.WithLabelValues(string(queued.reason)).Inc()
+	}
 	q.mu.Unlock()
 	q.retryKept()
 }
@@ -172,13 +193,22 @@ func (q *DisconnectQueue) retryKept() {
 }
 
 // takeRetryLocked removes and returns one kept key with the retrier. It reports false when there is no key or no retrier.
+// The set is released when its last key is taken, so a saturated queue does not keep its map for the life of the process.
 func (q *DisconnectQueue) takeRetryLocked() (retryKey, func(retryKey), bool) {
 	if q.retrier == nil {
 		return retryKey{}, nil, false
 	}
 	for key := range q.retry {
 		delete(q.retry, key)
+		if len(q.retry) == 0 {
+			q.retry = nil
+		}
 		return key, q.retrier, true
 	}
 	return retryKey{}, nil, false
+}
+
+// isTerminal reports whether the disconnect is in the terminal range, so the client must not reconnect.
+func isTerminal(disconnect centrifuge.Disconnect) bool {
+	return disconnect.Code >= disconnectTerminalCode
 }

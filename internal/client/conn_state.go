@@ -112,7 +112,8 @@ func (h *Handler) configNeedsConnState(cfg *config.Config) bool {
 // clientNeedsConnState reports whether a connecting client has a record, as needsConnState decided at connect. It reads
 // the user and the token identity Core holds, which are the ones the connect credentials gave. The identity is read under
 // the client's lock only for a connection with no user while the access store is set, so a connection with a user under
-// the default config is decided without it.
+// the default config is decided without it. It mirrors connectRecord, which reads the same facts from the credentials,
+// because Core copies credentials.TokenIdentity into the client at connect.
 func (h *Handler) clientNeedsConnState(cfg *config.Config, client *centrifuge.Client) bool {
 	if h.configNeedsConnState(cfg) {
 		return true

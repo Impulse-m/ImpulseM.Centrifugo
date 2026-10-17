@@ -100,6 +100,8 @@ func TestClosedConnectionIsNotIndexedByRefresh(t *testing.T) {
 		name      string
 		connectID string
 	}{
+		// With no session at connect there is no record, so the index cannot reach the connection whatever the refresh
+		// does. This row checks only that no record exists; the race of a refresh with a record is in its own test.
 		{name: "no session at connect", connectID: ""},
 		{name: "session at connect", connectID: revokeTestUUID},
 	}

@@ -34,7 +34,8 @@ const (
 // of resident memory. The budget is charged before a call runs and released when its reply is returned to the client
 // handler, so the reply bytes queued on a connection are not in it. The watermark is
 // sampled lazily on the admission path, so no goroutine or timer runs for it. A refused call is answered with the
-// overloaded error and the retry signal later.
+// overloaded error and the retry signal later. The budget is measured against golang.org/x/sync/semaphore in
+// BenchmarkAdmissionSemaphore: the CAS loop is faster and allocates nothing.
 type Admission struct {
 	maxInflight int64
 	watermark   int64

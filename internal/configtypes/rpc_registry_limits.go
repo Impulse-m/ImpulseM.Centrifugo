@@ -1,6 +1,9 @@
 package configtypes
 
-import "time"
+import (
+	"cmp"
+	"time"
+)
 
 // Built-in limits. They apply when neither the method, its target nor the defaults set a value.
 const (
@@ -32,34 +35,23 @@ type RPCMethodLimits struct {
 // the built-in limits. The first value which is not zero wins.
 func ResolveRPCMethodLimits(method RPCMethod, target RPCTarget, defaults RPCMethodDefaults) RPCMethodLimits {
 	return RPCMethodLimits{
-		Timeout: firstNonZero(
+		Timeout: cmp.Or(
 			method.Timeout.ToDuration(),
 			target.Timeout.ToDuration(),
 			defaults.Timeout.ToDuration(),
 			DefaultTimeout,
 		),
-		MaxRequestBytes: firstNonZero(
+		MaxRequestBytes: cmp.Or(
 			method.MaxRequestBytes,
 			target.MaxRequestBytes,
 			defaults.MaxRequestBytes,
 			DefaultMaxRequestBytes,
 		),
-		MaxResponseBytes: firstNonZero(
+		MaxResponseBytes: cmp.Or(
 			method.MaxResponseBytes,
 			target.MaxResponseBytes,
 			defaults.MaxResponseBytes,
 			DefaultMaxResponseBytes,
 		),
 	}
-}
-
-// firstNonZero returns the first value which is not the zero value of its type.
-func firstNonZero[T comparable](values ...T) T {
-	var zero T
-	for _, value := range values {
-		if value != zero {
-			return value
-		}
-	}
-	return zero
 }

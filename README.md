@@ -1,6 +1,6 @@
 # ImpulseM.Centrifugo
 
-ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Centrifugo v6 plus features needed at messenger scale. Upstream is merged regularly (last sync: upstream master of 2026-10, v6.9.x), and a weekly check opens an issue when the fork falls behind. The features are implemented from the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview), keeping its config keys and API shapes. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
+A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Centrifugo v6 plus features for large deployments. Upstream is merged regularly (last sync: upstream master of 2026-10, v6.9.x), and a weekly check opens an issue when the fork falls behind. The features are implemented from the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview), keeping its config keys and API shapes. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
 ## Added on top of upstream
 
@@ -24,7 +24,7 @@ ImpulseM fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstre
   * API calls reach the other nodes over the broker at most once: a node that misses the message (a dropped PUB/SUB message, a restart) does not apply it. The opt-in [revocation source](#access-revocation-event-source) is the durable delivery path.
   * A live disconnect which finds the disconnect queue full (`access_revoke.disconnect_queue_size`) is dropped and retried by user or session once the queue has room, so a blocked user or an invalidated token is still disconnected. Each connection is queued at most once, and a connection whose close has begun is never queued again.
   * Differences from Centrifugo PRO:
-    * `revoke_token` without `user` triggers a full sweep of local connections, coalesced and run in the background. Pass `user` for a targeted, cheap disconnect.
+    * `revoke_token` without `user` triggers a full sweep of local connections, coalesced and run in the background. Pass `user` for a targeted, cheap disconnect. A disconnect which the sweep finds the queue full for has no retry key, so such a connection stays until its next refresh refuses the revoked session.
     * `expire_at` in the past is rejected with bad request.
     * Extensions: `user` and `revoked_at` on `revoke_token`; `disconnect` on `revoke_token`, a code in 4000-4999 and a reason of at most 123 bytes that every close of the revocation uses instead of 3005; `generation` and `revoked_at` on `invalidate_user_tokens`; `token_revoke.uid_claim` and `user_tokens_invalidate.generation_claim` config; disconnect code 4500 for blocked users; loop guard disconnects with 3500.
   * Not implemented:

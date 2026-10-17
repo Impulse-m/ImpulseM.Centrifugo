@@ -249,8 +249,9 @@ var RPCRegistryAdmissionRefusalsTotal *prometheus.CounterVec
 
 // RPCRegistryAdmissionMetrics holds the admission metrics, resolved once. A nil value does nothing.
 type RPCRegistryAdmissionMetrics struct {
-	inflightBytes prometheus.Gauge
-	refused       [len(rpcRegistryRefusedReasons)]prometheus.Counter
+	inflightBytes   prometheus.Gauge
+	refusedInflight prometheus.Counter
+	refusedMemory   prometheus.Counter
 }
 
 // NewRPCRegistryAdmissionMetrics resolves the admission metrics. It returns nil when the metrics are not initialised.
@@ -258,13 +259,11 @@ func NewRPCRegistryAdmissionMetrics() *RPCRegistryAdmissionMetrics {
 	if RPCRegistryAdmissionRefusalsTotal == nil || RPCRegistryInflightBytes == nil {
 		return nil
 	}
-	m := &RPCRegistryAdmissionMetrics{
-		inflightBytes: RPCRegistryInflightBytes,
+	return &RPCRegistryAdmissionMetrics{
+		inflightBytes:   RPCRegistryInflightBytes,
+		refusedInflight: RPCRegistryAdmissionRefusalsTotal.WithLabelValues(RPCRegistryRefusedInflight),
+		refusedMemory:   RPCRegistryAdmissionRefusalsTotal.WithLabelValues(RPCRegistryRefusedMemory),
 	}
-	for i, reason := range rpcRegistryRefusedReasons {
-		m.refused[i] = RPCRegistryAdmissionRefusalsTotal.WithLabelValues(reason)
-	}
-	return m
 }
 
 // AddInflight changes the bytes of calls in flight by delta. A delta is order-independent, so concurrent charges and
@@ -281,7 +280,7 @@ func (m *RPCRegistryAdmissionMetrics) RefusedInflight() {
 	if m == nil {
 		return
 	}
-	m.refused[0].Inc()
+	m.refusedInflight.Inc()
 }
 
 // RefusedMemory counts one call which the memory watermark refused.
@@ -289,7 +288,7 @@ func (m *RPCRegistryAdmissionMetrics) RefusedMemory() {
 	if m == nil {
 		return
 	}
-	m.refused[1].Inc()
+	m.refusedMemory.Inc()
 }
 
 // RPCRegistryDedupWaitSeconds is the time duplicates wait for the call they joined. It is set by the fork

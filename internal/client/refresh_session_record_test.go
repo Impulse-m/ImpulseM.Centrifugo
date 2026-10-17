@@ -55,7 +55,12 @@ func TestRefreshToSessionIndexesTheConnection(t *testing.T) {
 			require.True(t, centrifuge.HandleReadFrame(client, bytes.NewReader(data), 1<<20))
 			require.Len(t, node.Hub().Connections(), 1)
 			if !tt.wantIndexed {
-				require.Empty(t, store.SessionConnections().Connections([16]byte{}))
+				// The refresh token has no jti, so no session is derived from it. The connection must be in none of the
+				// sessions this test uses, which is what a bug indexing it under another claim would break.
+				for _, id := range []string{revokeTestUUID, revokeTestOtherUUID} {
+					session, _ := accessrevoke.Key(id)
+					require.Empty(t, store.SessionConnections().Connections(session))
+				}
 				return
 			}
 

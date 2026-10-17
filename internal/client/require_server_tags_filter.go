@@ -33,14 +33,16 @@ func (h *Handler) requireSubscribeFilter(c Client, channel string, reply *centri
 // connection, which the dropped channels are removed from. A channel the client asked for at connect (UniConnect) is
 // dropped, as a channel the client may not subscribe to is: the client chose it, and it is not subscribed. Any other
 // subscription which the backend asserted (connection token, connect proxy, personal channel) refuses the connection with
-// DisconnectPermissionDenied, the disconnect of a token the server refuses, so the SDK does not reconnect with it.
+// DisconnectPermissionDenied, the disconnect of a token the server refuses, so the SDK does not reconnect with it. required
+// is the require option as OnClientConnecting read it for its single connection gate, so both use one value.
 func (h *Handler) requireConnectFilters(
 	clientID string,
 	credentials *centrifuge.Credentials,
 	subscriptions map[string]centrifuge.SubscribeOptions,
 	storage map[string]any,
+	required bool,
 ) error {
-	if !h.cfgContainer.ConfigRef().RequiresServerTagsFilter() {
+	if !required {
 		return nil
 	}
 	dropped, refused := h.requireFilters(clientID, credentialsUserID(credentials), subscriptions, nil)
@@ -52,9 +54,10 @@ func (h *Handler) requireConnectFilters(
 }
 
 // requireFilters is the loop shared by connect, rebind and restore. kept reports a channel whose entry the caller does not
-// subscribe (nil keeps none); its entry is skipped. A UniConnect entry without a filter is deleted from subs and returned
-// as dropped; any other entry without a filter stops the loop with refused true. The first refusal wins. subs is a map, so
-// with several bad channels the one refused is not fixed, and tests use one bad channel per assertion.
+// subscribe (nil keeps none); it is asked only about an entry without a filter, and such an entry is skipped when it is
+// kept. A UniConnect entry without a filter is deleted from subs and returned as dropped; any other entry without a filter
+// stops the loop with refused true. The first refusal wins. subs is a map, so with several bad channels the one refused is
+// not fixed, and tests use one bad channel per assertion.
 func (h *Handler) requireFilters(
 	clientID string,
 	userID string,
@@ -62,11 +65,11 @@ func (h *Handler) requireFilters(
 	kept func(string) bool,
 ) (dropped []string, refused bool) {
 	for channel, opts := range subs {
-		if kept != nil && kept(channel) {
-			continue
-		}
 		chOpts, _, _ := h.cfgContainer.ChannelOptionsRef(channel)
 		if !filterrequire.Missing(chOpts, opts.ServerTagsFilter) {
+			continue
+		}
+		if kept != nil && kept(channel) {
 			continue
 		}
 		filterrequire.LogRefused(channel, clientID, userID, opts.Source)
@@ -82,22 +85,24 @@ func (h *Handler) requireFilters(
 
 // requireReboundPrecheck refuses a rebind before anything moves, when a subscription which the rebind makes carries no server
 // tags filter in a namespace which requires one. subs are the subscriptions of the rebind, and the personal channel of newUser
-// is checked too. The templates of the new identity are applied to a clone of them first, so a template-produced filter
-// counts. A held channel which the rebind keeps is skipped, see keptAtRebindPrecheck. It returns the UniConnect channels of
-// subs which are dropped, which the caller removes from subs, or ErrorPermissionDenied, which leaves the connection as it was.
+// is checked too. rendered is subs with the templates of the new identity applied, see checkFilterTemplates, so a
+// template-produced filter counts; nil means no template is rendered and subs are checked as they are. A held channel which
+// the rebind keeps is skipped, see keptAtRebindPrecheck. It returns the UniConnect channels of subs which are dropped, which
+// the caller removes from subs, or ErrorPermissionDenied, which leaves the connection as it was.
 func (h *Handler) requireReboundPrecheck(
 	c rebindableClient,
 	values filtertemplate.Values,
 	newUser string,
 	subs map[string]centrifuge.SubscribeOptions,
+	rendered map[string]centrifuge.SubscribeOptions,
 ) ([]string, error) {
 	if !h.cfgContainer.ConfigRef().RequiresServerTagsFilter() {
 		return nil, nil
 	}
 	kept := h.keptAtRebindPrecheck(c, newUser)
-	checked := maps.Clone(subs)
-	if err := h.applyFilterTemplates(checked, values); err != nil {
-		return nil, centrifuge.ErrorPermissionDenied
+	checked := rendered
+	if checked == nil {
+		checked = maps.Clone(subs)
 	}
 	dropped, refused := h.requireFilters(c.ID(), newUser, checked, kept)
 	if refused {
@@ -139,13 +144,23 @@ func (h *Handler) requirePersonalRebind(
 // except the ones whose namespace has a template now or which were recorded with one. unsubscribeTemplated removes those
 // after the pre-check, and subscribeChannels subscribes them again from the subscriptions, so they are checked. A rebind to
 // no user removes the held channels which keepsAnonymous does not allow, see unsubscribeNotAnonymous, so they are checked too.
+// The held channels are copied once, when the first subscription without a filter asks, so a rebind whose subscriptions all
+// have a filter copies none of them.
 func (h *Handler) keptAtRebindPrecheck(c rebindableClient, newUser string) func(string) bool {
-	recorded := make(map[string]struct{})
-	for _, channel := range templatedChannelsOf(c) {
-		recorded[channel] = struct{}{}
-	}
-	held := c.ChannelsWithContext()
+	var (
+		built    bool
+		held     map[string]centrifuge.ChannelContext
+		recorded map[string]struct{}
+	)
 	return func(channel string) bool {
+		if !built {
+			built = true
+			held = c.ChannelsWithContext()
+			recorded = make(map[string]struct{})
+			for _, templated := range templatedChannelsOf(c) {
+				recorded[templated] = struct{}{}
+			}
+		}
 		chCtx, ok := held[channel]
 		if !ok || h.templateOf(channel) != nil {
 			return false

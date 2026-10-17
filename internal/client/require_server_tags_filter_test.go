@@ -293,7 +293,7 @@ func TestRequireOffByDefault(t *testing.T) {
 
 	subs := map[string]centrifuge.SubscribeOptions{}
 	allocs = testing.AllocsPerRun(1000, func() {
-		_ = env.h.requireConnectFilters("c1", nil, subs, nil)
+		_ = env.h.requireConnectFilters("c1", nil, subs, nil, false)
 	})
 	require.Equal(t, float64(0), allocs)
 

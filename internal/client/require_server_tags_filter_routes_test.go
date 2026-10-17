@@ -278,3 +278,43 @@ func TestRequireConnectKeepsSingleConnection(t *testing.T) {
 	// The single connection disconnect of the first connection is asynchronous, so it is watched for a while.
 	require.Never(t, firstTransport.disconnected, 300*time.Millisecond, 10*time.Millisecond)
 }
+
+// TestRequireReloadInConnectProxyKeepsSingleConnection checks a reload which turns the option on while the connect proxy call
+// runs refuses the connect and keeps the other connection of its user: the single connection gate and the refusal read the
+// option once, so the refused connect does not disconnect the other connection.
+func TestRequireReloadInConnectProxyKeepsSingleConnection(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "req", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},
+	}
+	cfg.Client.SubscribeToUserPersonalChannel.Enabled = true
+	cfg.Client.SubscribeToUserPersonalChannel.SingleConnection = true
+	cfg.Channel.WithoutNamespace.Presence = true
+	env := newTemplateEnv(t, cfg)
+	_, firstTransport := connectWithConnToken(t, env.node, connTokenOf(t, nil))
+	personalChannel := env.cfgContainer.PersonalChannel("12")
+	require.Eventually(t, func() bool {
+		stats, err := env.node.PresenceStats(personalChannel)
+		return err == nil && stats.NumClients == 1
+	}, 5*time.Second, time.Millisecond)
+
+	reloaded := config.DefaultConfig()
+	reloaded.Channel.Namespaces = configtypes.ChannelNamespaces{
+		{Name: "req", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true, RequireServerTagsFilter: true}},
+	}
+	reloaded.Client.SubscribeToUserPersonalChannel.Enabled = true
+	reloaded.Client.SubscribeToUserPersonalChannel.SingleConnection = true
+	reloaded.Channel.WithoutNamespace.Presence = true
+	reloadingProxy := func(context.Context, centrifuge.ConnectEvent) (centrifuge.ConnectReply, proxy.ConnectExtra, error) {
+		require.NoError(t, env.cfgContainer.Reload(reloaded))
+		return centrifuge.ConnectReply{
+			Credentials: &centrifuge.Credentials{UserID: "12"},
+			Subscriptions: map[string]centrifuge.SubscribeOptions{
+				"req:room": {Source: subsource.ConnectProxy},
+			},
+		}, proxy.ConnectExtra{}, nil
+	}
+	_, err := env.h.OnClientConnecting(context.Background(), centrifuge.ConnectEvent{ClientID: "c2"}, reloadingProxy, false)
+	require.Equal(t, centrifuge.DisconnectPermissionDenied, err)
+	require.Never(t, firstTransport.disconnected, 300*time.Millisecond, 10*time.Millisecond)
+}

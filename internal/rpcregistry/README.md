@@ -173,7 +173,7 @@ When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the conn
 
 ### Cost of the record
 
-A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, which the defaults do, a connection with no user whose token carries a session gets a record at connect, anonymous ones included, and is indexed by that session from connect on. A connection with no user and no session at connect gets none: a refresh which gives it a session is kept by the core, and a revocation of that session reaches it through the sweep which `revoke_token` without `user` runs, or at its next refresh. A connection with every feature off, with or without a user, allocates nothing for the record.
+A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, which the defaults do, a connection with no user whose token carries a session gets a record at connect, anonymous ones included, and is indexed by that session from connect on. A connection with no user and no session at connect gets none: a refresh which gives it a session is kept by the core, and a revocation of that session reaches it through the sweep which `revoke_token` without `user` runs, or at its next refresh. With rebind, the registry, the auth class claim and the rate limiters off, a connection with no user and no session allocates nothing for the record, with or without a user.
 
 ### Token exchange over the connection
 

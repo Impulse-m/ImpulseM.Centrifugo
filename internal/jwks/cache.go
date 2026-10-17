@@ -24,4 +24,6 @@ type Cache interface {
 	// retryAfter more.
 	GetStale(cacheKey string, retryAfter time.Duration) (*JWK, error)
 	Len() (int, error)
+	// Stop stops the background work of the cache. The cache stays usable after it.
+	Stop() error
 }

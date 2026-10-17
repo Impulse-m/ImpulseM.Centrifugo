@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,7 +231,7 @@ func TestSharedWakeupStaleWakeKeepsWaiting(t *testing.T) {
 	requireEndCountEventually(t, fx, WatchEndWoken, 1)
 }
 
-func TestSharedWakeupOwnerCrashReadsOnceThenDeadline(t *testing.T) {
+func TestSharedWakeupOwnerCrashReadsAtCheckAndDeadline(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
 	fx.shared.checkDelay = 20 * time.Millisecond
 	fx.shared.inflightGrace = 50 * time.Millisecond
@@ -240,11 +241,39 @@ func TestSharedWakeupOwnerCrashReadsOnceThenDeadline(t *testing.T) {
 	_, err := fx.shared.Begin(sharedKey, owner)
 	require.NoError(t, err)
 
-	// The owner died: the record stays in flight, and the deadline abandons the wait without a read.
+	// The owner died: the record stays in flight. The check and the last read at the deadline find it in flight, and the
+	// deadline abandons the wait.
 	waitDone(t, owner)
 	require.True(t, owner.Record().Abandoned)
 	requireEndCountEventually(t, fx, WatchEndDeadline, 1)
-	require.Equal(t, 1, fx.pollCount())
+	require.Equal(t, 2, fx.pollCount())
+}
+
+// A wake which is lost does not leave the wait with no answer: the answer written after the check is read at the
+// deadline, so the duplicate gets it and not the dedup unavailable error.
+func TestSharedWakeupLostWakeReadsAtDeadline(t *testing.T) {
+	fx := newSharedFixtureWakeup(t)
+	fx.shared.checkDelay = 20 * time.Millisecond
+	fx.shared.inflightGrace = 200 * time.Millisecond
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+	// The check is the first read, and the owner writes its answer, with no wake, before the read at the deadline.
+	var reads atomic.Int32
+	fx.backend.beforeRead = func() {
+		if reads.Add(1) == 2 {
+			fx.backend.finish(sharedKey, sharedWakeupRecord)
+		}
+	}
+
+	owner := NewCallFlight(sharedFingerprintA, 10*time.Millisecond)
+	_, err := fx.shared.Begin(sharedKey, owner)
+	require.NoError(t, err)
+
+	waitDone(t, owner)
+	require.False(t, owner.Record().Abandoned)
+	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply)
+	require.Equal(t, 2, fx.pollCount())
+	requireEndCountEventually(t, fx, WatchEndChecked, 1)
+	require.Equal(t, 0, fx.endCount(WatchEndDeadline))
 }
 
 func TestSharedWakeupRecordMissingAfterWake(t *testing.T) {

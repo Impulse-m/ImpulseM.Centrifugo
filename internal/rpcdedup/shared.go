@@ -65,11 +65,13 @@ type SharedObserver interface {
 const (
 	// WatchEndWoken means a wake came, and the read which followed it found the answer, or the key gone.
 	WatchEndWoken = "woken"
-	// WatchEndChecked means the check found the answer, or the key gone, without a wake before it.
+	// WatchEndChecked means the check, or the last read at the deadline, found the answer, or the key gone, without a wake
+	// before it.
 	WatchEndChecked = "checked"
 	// WatchEndPolled means a poll found the answer, or the key gone, with the wakeup off.
 	WatchEndPolled = "polled"
-	// WatchEndDeadline means the in-flight TTL passed with the call still in flight, and no read after that.
+	// WatchEndDeadline means the in-flight TTL passed with no answer read: the last read at the deadline found the call
+	// still in flight, or failed.
 	WatchEndDeadline = "deadline"
 	// WatchEndRefused means the waiter list of the record was full: the wait did not start.
 	WatchEndRefused = "refused"
@@ -354,10 +356,10 @@ func (s *Shared) watchPolling(key Key, flight *Flight) {
 	}
 }
 
-// watchWake is the wait with the wakeup on. It reads the shared tier when the wake of the wait comes, once at the check,
-// which is wakeCheckDelay after the start jittered by a fifth, and never again: when the in-flight deadline passes with
-// no answer read, the wait ends without a read. One timer per wait, re-armed once at the check. A read which finds the
-// record in flight, or fails, keeps the wait.
+// watchWake is the wait with the wakeup on. It reads the shared tier when the wake of the wait comes, and at the check,
+// which is wakeCheckDelay after the start jittered by a fifth. When the in-flight deadline passes with no answer read,
+// the wait makes one last read, see readAtDeadline. One timer per wait, re-armed once at the check. A read which finds
+// the record in flight, or fails, keeps the wait.
 func (s *Shared) watchWake(key Key, flight *Flight) {
 	deadline := flight.timeout + s.inflightGrace
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
@@ -376,7 +378,7 @@ func (s *Shared) watchWake(key Key, flight *Flight) {
 			}
 		case <-timer.C:
 			if checked {
-				s.endWatch(key, flight, PollResult{}, WatchEndDeadline)
+				s.readAtDeadline(key, flight)
 				return
 			}
 			checked = true
@@ -386,6 +388,19 @@ func (s *Shared) watchWake(key Key, flight *Flight) {
 			timer.Reset(deadline - time.Since(started))
 		}
 	}
+}
+
+// readAtDeadline makes the last read of a wait, once its deadline has passed with no answer read. A wake can be lost, or
+// never sent by a node which runs without the wakeup, so the answer may be in the shared tier already. The read has its
+// own IO timeout, as the deadline context of the wait is done. It ends the wait as WatchEndChecked when it finds the
+// answer, or the key gone, and as WatchEndDeadline otherwise, which abandons the flight.
+func (s *Shared) readAtDeadline(key Key, flight *Flight) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
+	defer cancel()
+	if s.read(ctx, key, flight, WatchEndChecked) {
+		return
+	}
+	s.endWatch(key, flight, PollResult{}, WatchEndDeadline)
 }
 
 // read makes one read of the shared tier for a wait, and reports whether the read ended the wait with end. A record which
@@ -553,8 +568,11 @@ func (s *Shared) Wake(key Key) {
 // check makes a retry idempotent. All the writes of the call stay within ctx, which ends at the IO timeout or the
 // in-flight TTL of the call, counted from its begin, so the reply of the call is not held longer than that. When the
 // writes fail, the record is still kept locally, and a retransmit on another node runs the call again once the in-flight
-// record expires. A write which reports that this node does not own the in-flight record is not retried. It returns the
-// waiters of the write which took effect, and nil when none did.
+// record expires. A write which reports that this node does not own the in-flight record is not retried. A write which
+// finds no shard of the shared tier connected is not retried either, so the reply does not wait for the backoff. A retry
+// helps only when a shard connects within that backoff, so a node which starts while Redis is still connecting keeps such
+// a record locally, and a retransmit on another node may run the call again. It returns the waiters of the write which
+// took effect, and nil when none did.
 func (s *Shared) completeShared(ctx context.Context, key Key, flight *Flight, rec Record, errJSON string) []string {
 	stored := rec
 	if overReplyLimit(rec, errJSON, s.maxReplyBytes) {
@@ -565,7 +583,11 @@ func (s *Shared) completeShared(ctx context.Context, key Key, flight *Flight, re
 	var attempts int
 	res, err := backoff.Retry(ctx, func() (CompleteResult, error) {
 		attempts++
-		return s.backend.Complete(ctx, key, s.nodeID, stored, errJSON, s.ttl)
+		res, err := s.backend.Complete(ctx, key, s.nodeID, stored, errJSON, s.ttl)
+		if errors.Is(err, redisshard.ErrNotConnected) {
+			return res, backoff.Permanent(err)
+		}
+		return res, err
 	}, backoff.WithBackOff(newRetryBackOff(sharedCompleteBackoff, sharedCompleteMaxBackoff)), backoff.WithMaxTries(sharedCompleteAttempts), backoff.WithMaxElapsedTime(time.Until(limit)))
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to keep a record, a retransmit on another node may run the call again", err)
@@ -659,12 +681,16 @@ func (s *Shared) Stats() Stats {
 	return s.local.Stats()
 }
 
-// Run flushes the queued acks to the shared tier every AckFlushEvery, and as soon as a batch is full. When ctx is done
-// it stops the wake watcher, flushes what is queued once more and returns the context error. It starts no wake watcher
-// itself: those start with the first remote wait. It implements service.Service.
+// Run flushes the queued acks to the shared tier, as soon as a batch is full, and otherwise AckFlushEvery after the first
+// ack of the batch. The flush timer is armed only while a batch holds acks, so an idle node runs no timer. When ctx is
+// done it stops the wake watcher, flushes what is queued once more and returns the context error. It starts no wake
+// watcher itself: those start with the first remote wait. It implements service.Service.
 func (s *Shared) Run(ctx context.Context) error {
-	ticker := time.NewTicker(s.ackFlushEvery)
-	defer ticker.Stop()
+	flush := time.NewTimer(s.ackFlushEvery)
+	flush.Stop()
+	defer flush.Stop()
+	// flushC is the channel of flush while its batch holds acks, and nil otherwise, which blocks its case.
+	var flushC <-chan time.Time
 	batch := make([]Key, 0, s.ackBatch)
 	for {
 		select {
@@ -673,14 +699,21 @@ func (s *Shared) Run(ctx context.Context) error {
 			s.drainAcks(batch)
 			return ctx.Err()
 		case key := <-s.acks:
+			if len(batch) == 0 {
+				flush.Reset(s.ackFlushEvery)
+				flushC = flush.C
+			}
 			batch = append(batch, key)
 			if len(batch) >= s.ackBatch {
 				s.flushAcks(context.Background(), batch)
 				batch = batch[:0]
+				flush.Stop()
+				flushC = nil
 			}
-		case <-ticker.C:
+		case <-flushC:
 			s.flushAcks(context.Background(), batch)
 			batch = batch[:0]
+			flushC = nil
 		}
 	}
 }

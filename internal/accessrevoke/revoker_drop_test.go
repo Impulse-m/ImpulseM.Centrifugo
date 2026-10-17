@@ -14,26 +14,6 @@ const (
 	disconnectsMetric = "centrifugo_access_revoke_disconnects_total"
 )
 
-// labeledCounterValue returns the value of the counter of the test registry which has the label value.
-func labeledCounterValue(t *testing.T, name string, labelName string, labelValue string) float64 {
-	t.Helper()
-	families, err := testRegistry.Gather()
-	require.NoError(t, err)
-	for _, family := range families {
-		if family.GetName() != name {
-			continue
-		}
-		for _, metric := range family.GetMetric() {
-			for _, label := range metric.GetLabel() {
-				if label.GetName() == labelName && label.GetValue() == labelValue {
-					return metric.GetCounter().GetValue()
-				}
-			}
-		}
-	}
-	return 0
-}
-
 // newDroppingRevoker returns a revoker whose queue holds one disconnect. The queue does not run until start is called,
 // so the second disconnect of a revocation is dropped.
 func newDroppingRevoker(t *testing.T, hub Hub, store *Store) (*Revoker, func()) {

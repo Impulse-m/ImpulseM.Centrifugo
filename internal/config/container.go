@@ -38,6 +38,7 @@ func getPreparedConfig(config Config) (*Config, error) {
 		return &config, err
 	}
 	config.namespaceOptions = buildNamespaceOptions(&config)
+	config.requiresServerTagsFilter = anyRequireServerTagsFilter(&config)
 	return &config, nil
 }
 

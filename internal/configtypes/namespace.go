@@ -136,6 +136,10 @@ type ChannelOptions struct {
 	// with values of the connection token claims, user and client rendered in.
 	ServerTagsFilterTemplate ServerTagsFilterTemplate `mapstructure:"server_tags_filter_template" json:"server_tags_filter_template" envconfig:"server_tags_filter_template" yaml:"server_tags_filter_template" toml:"server_tags_filter_template" doc:"Server tags filter applied to every subscription in the namespace, with values of the connection token claims, the user and the client rendered in. Combined with an explicit server tags filter by and. The server API subscribe is refused on such channels."`
 
+	// RequireServerTagsFilter refuses every subscription to a channel of the namespace which carries no server tags
+	// filter, whichever route made it, and refuses client history calls on the namespace.
+	RequireServerTagsFilter bool `mapstructure:"require_server_tags_filter" json:"require_server_tags_filter" envconfig:"require_server_tags_filter" yaml:"require_server_tags_filter" toml:"require_server_tags_filter" doc:"Refuses every subscription to channels of this namespace which carries no server tags filter, whichever route made it, and refuses client history calls on the namespace, so a route which forgets the filter fails closed. A client subscribe gets permission denied (103); a connect-time server-side subscription of the connection token or the connect proxy refuses the connection (3507); a channel a client asks for at connect is dropped; the server API subscribe, which cannot carry a filter, gets not available (108). A filter produced by <<server_tags_filter_template>> counts; a template skipped under <<on_missing_value: skip>> leaves a subscription without an explicit filter refused, and a personal channel whose template was skipped refuses the connection (3507). Off by default."`
+
 	// DeltaPublish enables delta publish mechanism for all messages published in namespace channels
 	// without explicit flag usage in publish API request. Setting this option does not guarantee that
 	// publication will be compressed when going towards subscribers – it still depends on subscriber

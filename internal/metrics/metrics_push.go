@@ -54,7 +54,7 @@ func (m *Registry) initPushMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "push",
 		Name:        "notification_count",
-		Help:        "Number of push notifications sent to a provider, by provider, credential, recipient type, platform, kind, result and error code.",
+		Help:        "Number of push notifications sent to a provider, by provider, credential, recipient type, platform, kind, success and error code.",
 		ConstLabels: constLabels,
 	}, []string{"provider", "credential", "recipient_type", "platform", "kind", "success", "err_code"})
 

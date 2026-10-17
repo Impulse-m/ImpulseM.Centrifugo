@@ -198,7 +198,7 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	v.SetDefault("user_block.enabled", true)
 	v.SetDefault("token_revoke.enabled", true)
 	v.SetDefault("user_tokens_invalidate.enabled", true)
-	v.SetDefault(rpcDedupWakeupEnabledKey, true)
+	v.SetDefault(rpcDedupWakeupEnabledPath, true)
 	setRPCRegistryDefaults(v)
 
 	if cmd != nil {

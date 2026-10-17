@@ -104,7 +104,7 @@ const (
 // validateRPCDedupRedis checks the shared tier of exactly-once RPC: either it reuses the Redis of the engine, or its own
 // Redis configuration is valid and has a prefix. The wakeup checks its waiter cap only when it is on.
 func validateRPCDedupRedis(c Config, redis configtypes.RPCDedupRedis) error {
-	if redis.Wakeup.Enabled && (redis.Wakeup.MaxWaiterNodes < minRPCDedupMaxWaiterNodes || redis.Wakeup.MaxWaiterNodes > maxRPCDedupMaxWaiterNodes) {
+	if redis.Wakeup.Enabled && !isRPCDedupMaxWaiterNodesInRange(redis.Wakeup.MaxWaiterNodes) {
 		return fmt.Errorf("rpc.registry.dedup.redis.wakeup.max_waiter_nodes: must be between %d and %d, got %d", minRPCDedupMaxWaiterNodes, maxRPCDedupMaxWaiterNodes, redis.Wakeup.MaxWaiterNodes)
 	}
 	if redis.ReuseFromEngine {

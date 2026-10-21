@@ -446,6 +446,22 @@ Two constants are fixed. `E` is 1024 bytes, the envelope of one frame, and `K` i
 
 The SDKs close a connection with "no ping" after `ping_interval + maxServerPingDelay` without a ping. The JS SDK restarts that timer on any message, so the sum must cover one frame drain, `(R + E) ÷ S`. The Java SDK restarts it only on a ping, so its `maxServerPingDelay` must be at least `⌈client.queue_max_size ÷ S⌉ + 2 s`, the same figure as the pong timeout. The window `W` no longer appears in these keys: `W × (R + E) ÷ S` is the time for the replies of the window, not the bound on the queue. Raising these keys slows the detection of dead connections. A fleet that needs faster detection lowers `R`, the queue, or `W`.
 
+### With `client.pong_timeout_at_write: true`
+
+With this key on, the server starts the pong timeout when it writes the ping, not when it queues the ping. The pong term is then the smaller of the queue and the socket send buffer, `SNDBUF`, so the key-on `client.pong_timeout` is `max(⌈min(client.queue_max_size, SNDBUF) ÷ S⌉ + 2 s, 8 s)`. The 8 s floor keeps the value at or above the default. The figures assume `SNDBUF` of 4 MiB (4194304 bytes), the Linux default upper bound of `net.ipv4.tcp_wmem`. Measure the buffer with `ss -tmi`, field `tb`; other platforms are not measured. The key-on figures need `client.max_messages_in_frame` 1, as the table above sets.
+
+The SDK column is the frame drain, `⌈min(R + E, client.queue_max_size) ÷ S⌉ + 2 s`, the time to drain one frame of at most one reply. The SDK rule with this key on is `client.ping_interval + maxServerPingDelay` at least the frame drain. The JS SDK restarts that timer on any reply batch. The Java SDK restarts it on every decoded reply only from the release that carries that change; earlier Java releases restart it only on a ping and must not be used with this key. The default `maxServerPingDelay` of 10 s satisfies the rule for each profile:
+
+| Profile | key off `client.pong_timeout` | key on `client.pong_timeout` | frame drain, the SDK bound | default 10 s covers it |
+|---|---|---|---|---|
+| (a) S 125000 B/s, R 262144, queue 855040 (about 0.82 MiB) | 9 s | 9 s: the queue is below `SNDBUF`, so there is no gain | 5 s: ⌈263168 ÷ 125000⌉ = 3 s, + 2 s | yes: 25 s + 10 s ≥ 5 s |
+| (b) S 32000 B/s, R 1048576, queue 4263936 | 136 s | 134 s: ⌈4194304 ÷ 32000⌉ = 132 s, + 2 s | 35 s: ⌈1049600 ÷ 32000⌉ = 33 s, + 2 s | yes: 150 s + 10 s ≥ 35 s |
+| (c) S 1250000 B/s, R 4194304, queue 12651520 | 13 s | 8 s: ⌈4194304 ÷ 1250000⌉ = 4 s, + 2 s = 6 s, raised to the 8 s floor | 6 s: ⌈4195328 ÷ 1250000⌉ = 4 s, + 2 s | yes: 25 s + 10 s ≥ 6 s |
+
+The pong timeout starts when the ping is written. The send buffer, not the queue, bounds the server-side wait for the ping, and client receive and decode time are outside that bound. With the key on, `client.ping_interval` stays above `client.pong_timeout`. For profile (b), server-side dead-peer detection is between 134 s and 284 s after a peer stops answering (136 s to 286 s with the key off).
+
+The send buffer is the `net.ipv4.tcp_wmem` maximum, which is per network namespace. An operator lowers it with `sysctl`, per host, or per pod where the platform allows the `net.ipv4.tcp_wmem` sysctl. No server key is needed for it. With the maximum at 262144 bytes, profile (b) has a pong term of ⌈262144 ÷ 32000⌉ + 2 = 11 s, and a connection's throughput is bounded by about `SNDBUF` ÷ RTT (about 2.6 MB/s at 100 ms). Measure the buffer with `ss -tmi` before choosing the value.
+
 Two checks close the derivation. The transient of the budget must fit under the watermark: `3 × max_inflight_bytes ≤ memory_watermark_bytes`. And the budget must cover one full-size write, `max_request_bytes + max_response_bytes`, or it refuses that write at any load. If the first check fails, lower the rate or the latency the budget is sized for, or raise the memory limit.
 
 ### Worked examples

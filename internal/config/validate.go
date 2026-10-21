@@ -30,6 +30,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validatePongAtWrite(c); err != nil {
+		return err
+	}
+
 	if !slices.Contains(knownBrokers, c.Broker.Type) {
 		return fmt.Errorf("unknown broker: %s", c.Broker.Type)
 	}

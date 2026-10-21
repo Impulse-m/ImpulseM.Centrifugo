@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/api"
+	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
@@ -126,16 +128,14 @@ func TestNextIdentityKeepsTokenExpiry(t *testing.T) {
 func TestRPCRegistryRefusesExpiredToken(t *testing.T) {
 	backend := newRegistryTestBackend(t)
 	h, _ := expiryTestHandler(t, backend, expiryTestRegistry(true))
-	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", time.Now().Unix()+60, 0), "")
 	exp := time.Now().Unix() + 2
-	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{Token: expiryTestToken(t, "42", exp, 0)}, nil)
-	require.NoError(t, err)
+	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", exp, 0), "")
 	waitUntilUnix(t, exp)
 
 	callsBefore := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultExpired))
 	errorsBefore := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "none"))
 
-	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(109), protoErr.Code)
 	require.Equal(t, "token expired", protoErr.Message)
@@ -218,16 +218,21 @@ func TestRPCRegistryExpireAtDoesNotDecide(t *testing.T) {
 }
 
 // TestRPCRegistryAPIRefreshDoesNotRenewToken pins that the expiry of the forwarded token decides, not the expiry of the
-// connection: a connection whose expire_at is later than the token's exp is refused once exp has passed. A server API
-// refresh moves only the connection's expiry in Core, and never reaches the handler, so the record stays as connected.
+// connection: a connection whose expire_at is later than the token's exp is refused once exp has passed. The server API
+// refresh runs through the API executor, as TestRefreshAPI runs it. It moves only the connection's expiry in Core, and
+// never reaches the handler, so the record stays as connected.
 func TestRPCRegistryAPIRefreshDoesNotRenewToken(t *testing.T) {
 	backend := newRegistryTestBackend(t)
-	h, _ := expiryTestHandler(t, backend, expiryTestRegistry(true))
+	h, cfgContainer := expiryTestHandler(t, backend, expiryTestRegistry(true))
 	now := time.Now().Unix()
 	exp := now + 2
 	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", exp, now+600), "")
 	before := connStateOf(client).identity.Load().exp
 	require.Equal(t, exp, before)
+
+	executor := api.NewExecutor(h.node, cfgContainer, nil, api.ExecutorConfig{Protocol: "test"})
+	refresh := executor.Refresh(context.Background(), &apiproto.RefreshRequest{User: "42", ExpireAt: now + 600})
+	require.Nil(t, refresh.Error)
 
 	waitUntilUnix(t, exp)
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)

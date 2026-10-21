@@ -148,6 +148,15 @@ func TestMapGRPCRegistryErrorTransformAppFields(t *testing.T) {
 			err:         status.Error(codes.ResourceExhausted, "quota"),
 			wantDisconn: 3600,
 		},
+		{
+			name:        "first of two matching rules wins with its app fields",
+			err:         status.Error(codes.Unavailable, "connection refused"),
+			wantCode:    100,
+			wantMessage: "backend unavailable",
+			wantTemp:    true,
+			wantAppCode: 503,
+			wantAppType: "BACKEND_UNAVAILABLE",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

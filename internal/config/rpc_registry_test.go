@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeRegistryFile(t *testing.T, name string, content string) string {
+func writeConfigFile(t *testing.T, name string, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
@@ -36,7 +36,7 @@ func TestLoadRPCRegistryFileJSONAndYAMLAreEquivalent(t *testing.T) {
 }
 
 func TestLoadRPCRegistryFileRejectsUnknownKeys(t *testing.T) {
-	path := writeRegistryFile(t, "registry.json", `{
+	path := writeConfigFile(t, "registry.json", `{
 		"version": 1,
 		"methodz": [],
 		"targets": [{"name": "users", "endpoint": "dns:///users:9000", "gpc": {}}]
@@ -49,7 +49,7 @@ func TestLoadRPCRegistryFileRejectsUnknownKeys(t *testing.T) {
 }
 
 func TestLoadRPCRegistryFileRejectsUnsupportedExtension(t *testing.T) {
-	path := writeRegistryFile(t, "registry.txt", `{"version": 1}`)
+	path := writeConfigFile(t, "registry.txt", `{"version": 1}`)
 
 	_, err := LoadRPCRegistryFile(path)
 	require.ErrorContains(t, err, "extension must be .json, .yaml or .yml")

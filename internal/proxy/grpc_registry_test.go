@@ -199,7 +199,7 @@ func TestRegistryMessageTooLarge(t *testing.T) {
 			reply:      true,
 		},
 		{
-			name:       "reply over the bound on a 32-bit build",
+			name:       "reply over the bound with the largest int named",
 			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 9223372036854775807)"),
 			requestLen: 100,
 			bound:      1024,

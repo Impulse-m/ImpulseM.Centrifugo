@@ -49,7 +49,7 @@ func TestValidateRPCRegistryRefuseExpiredTokens(t *testing.T) {
 }
 
 func TestRPCRegistryTokenExpiredDefaults(t *testing.T) {
-	path := writeRegistryFile(t, "config.json", "{}")
+	path := writeConfigFile(t, "config.json", "{}")
 	conf, _, err := GetConfig(nil, path)
 	require.NoError(t, err)
 	require.Equal(t, configtypes.RPCRegistryError{

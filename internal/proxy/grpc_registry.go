@@ -131,9 +131,10 @@ func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call Registr
 
 // registryMessageTooLarge classifies a grpc-go "larger than max" error of a call whose request has requestLen
 // bytes, whose reply bound is bound, and whose target is compressed or not. tooLarge reports that the error is
-// one of these. reply reports that the reply was over bound: the message names bound, or maxInt, which grpc-go
-// uses on 32-bit builds. Otherwise a grpc-go target refused the request. A compressed target reports the
-// compressed size, which the request size cannot match, so it always counts as a refused request.
+// one of these. reply reports that the reply was over bound: the message names bound, or math.MaxInt, the largest
+// int, which grpc-go names when a length does not fit in an int. Otherwise a grpc-go target refused the request. A
+// compressed target reports the compressed size, which the request size cannot match, so it always counts as a refused
+// request.
 func registryMessageTooLarge(err error, requestLen int, bound int, compressed bool) (tooLarge bool, reply bool) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.ResourceExhausted || !strings.Contains(st.Message(), "larger than max") {

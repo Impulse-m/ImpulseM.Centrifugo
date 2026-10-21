@@ -517,11 +517,11 @@ Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout
 * The server logs a warning at start, on a configuration reload and in `checkconfig` when a method's `max_request_bytes` is over a served transport's request bound (`websocket.message_size_limit`, `webtransport.message_size_limit`, or `emulation.max_request_body_size` with HTTP-stream or SSE), when its `max_response_bytes` is over `client.queue_max_size`, or when a method without `response_size_hint` costs more at full size (`max_request_bytes` plus `max_response_bytes`) than `max_inflight_bytes`. It keeps loading: the method still serves every request under the transport limit, and every reply under the queue size. A registry file shared by fleets with different limits is the expected case of that warning.
 * At the default `client.concurrency` of `0`, calls run one at a time on the read loop, so a window of one is what a socket carries without blocking it. A larger window needs the concurrency raised, or the read loop blocks on the semaphore and reads no pongs, and the connection can be closed as not answering pings once a call outlives the pong timeout.
 * No channel namespaces, and no personal channel on the fleet. Client subscriptions are refused by default, and the fleet runs no broker. A personal channel would let `single_connection` close the user's other pooled connections.
-* Tokens presented to the fleet carry neither `channels` nor `subs`.
-* At connect and at refresh, the fleet resolves `subs`, or `channels` when `subs` is empty, against its own namespaces. An entry in a namespace the fleet does not configure refuses the connect with 102 `unknown channel`. That error is not temporary and is logged at error level. Any other entry becomes a server-side subscription.
-* The fleet must also accept the token's key, audience and issuer.
-* A deployment whose main token carries such claims gives the pool a credential without them, through the pool's `connection.getToken` (JS) or `tokenGetter` (Java), and closes its pools at logout or account switch.
-* A deployment can also keep server-side channels out of the token, for example with `client.subscribe_to_user_personal_channel` on the main cluster only. `tokenFrom` then works.
+* A token presented to a backend of the registry carries neither `channels` nor `subs`, unless the node configures every namespace it names.
+* At connect and at refresh, the node resolves `subs`, or `channels` when `subs` is empty, against its own namespaces. An entry in a namespace the node does not configure refuses the connect with 102 `unknown channel`. That error is not temporary and is logged at error level. Any other entry becomes a server-side subscription.
+* The node must also accept the token's key, audience and issuer. A refused key, audience or issuer closes the connection with 3500 (invalid token).
+* A token with channels or subs is refused with 102 when the node has no such namespace, so give such clients a token without them.
+* Server-side channels can be kept out of the token, for example with `client.subscribe_to_user_personal_channel` on one cluster only.
 
 ### Moves and redirects
 
@@ -594,4 +594,6 @@ Not implemented yet:
 * A way for the connect proxy to return the auth class, so that connections made through it can have a class when `auth_class_claim` is set.
 * Restricting what a `pending_2fa` connection can do outside the registry. Such a connection still keeps its user for channels and personal subscriptions. Restricting that comes with the auth upgrade work.
 * The `after` field, which orders a call after other `msg_id`s.
+Not planned:
+
 * A switch which ignores the `channels` and `subs` claims of a fleet token: not planned.

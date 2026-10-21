@@ -377,21 +377,21 @@ func TestValidateRPCRegistryChecksFileWhenEnabled(t *testing.T) {
 }
 
 func TestValidateRPCRegistryFileVersion(t *testing.T) {
-	path := writeRegistryFile(t, "registry.yaml", "version: 2\ntargets: []\nmethods: []\n")
+	path := writeConfigFile(t, "registry.yaml", "version: 2\ntargets: []\nmethods: []\n")
 	reg := configtypes.RPCRegistry{Enabled: true, File: path}
 	err := configWithRegistry(reg).Validate()
 	require.ErrorContains(t, err, "rpc registry: version must be 1, got 2")
 }
 
 func TestValidateRPCRegistryFileUnknownKeyFailsValidate(t *testing.T) {
-	path := writeRegistryFile(t, "registry.yaml", "version: 1\nmethodz: []\n")
+	path := writeConfigFile(t, "registry.yaml", "version: 1\nmethodz: []\n")
 	reg := configtypes.RPCRegistry{Enabled: true, File: path}
 	err := configWithRegistry(reg).Validate()
 	require.ErrorContains(t, err, "methodz")
 }
 
 func TestValidateRPCRegistryFileNamesMethodOnError(t *testing.T) {
-	path := writeRegistryFile(t, "registry.yaml", `version: 1
+	path := writeConfigFile(t, "registry.yaml", `version: 1
 defaults:
   auth_class: authenticated
 targets:
@@ -494,7 +494,7 @@ func TestRPCTransformAppFieldsDecode(t *testing.T) {
 		{name: "yaml", file: "config.yaml", content: yamlContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := writeRegistryFile(t, tc.file, tc.content)
+			path := writeConfigFile(t, tc.file, tc.content)
 			conf, meta, err := GetConfig(nil, path)
 			require.NoError(t, err)
 			require.Empty(t, meta.UnknownKeys)

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -65,7 +66,22 @@ func rpcRateLimitCommand(id uint32, method string) *protocol.Command {
 	return &protocol.Command{Id: id, Rpc: &protocol.RPCRequest{Method: method}}
 }
 
-// The wait of 1.2 s is a little under 1.2 s on the wire, so the retry-after value is 2: the rounding up is seen here.
+// requireRetryAfterShape checks the metadata of a configured refusal without pinning the wait: the wait is measured
+// from the command read on the real clock, so its exact value is pinned in the unit tests with an explicit wait.
+// The value must be an integer from 1 to maxSeconds, and no other key may be set.
+func requireRetryAfterShape(t *testing.T, metadata map[string]string, maxSeconds int) {
+	t.Helper()
+	require.Len(t, metadata, 1)
+	require.NotContains(t, metadata, "x-centrifugo-retry")
+	value, ok := metadata["x-centrifugo-retry-after"]
+	require.True(t, ok)
+	seconds, err := strconv.Atoi(value)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, seconds, 1)
+	require.LessOrEqual(t, seconds, maxSeconds)
+}
+
+// The wait is at most 1.2 s, so the retry-after value is at most 2 whatever the time between the two commands.
 func TestRPCRefusalConfiguredError(t *testing.T) {
 	reg := rateLimitedRegistry()
 	reg.Errors.RateLimited.Code = 400
@@ -83,10 +99,10 @@ func TestRPCRefusalConfiguredError(t *testing.T) {
 	require.True(t, reply.Error.Temporary)
 	require.Equal(t, int32(17), reply.Error.AppCode)
 	require.Equal(t, "example.throttle", reply.Error.AppType)
-	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "2"}, reply.Error.Metadata)
+	requireRetryAfterShape(t, reply.Error.Metadata, 2)
 }
 
-// A whole-minute wait keeps its exact value on the wire.
+// The wait is at most a minute, so the retry-after value is at most 60 whatever the time between the two commands.
 func TestRPCRefusalWholeMinuteWait(t *testing.T) {
 	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), rateLimitedRegistry())
 	client, transport, _ := connectTestClient(t, node, 0)
@@ -102,8 +118,7 @@ func TestRPCRefusalWholeMinuteWait(t *testing.T) {
 	require.True(t, reply.Error.Temporary)
 	require.Equal(t, int32(17), reply.Error.AppCode)
 	require.Equal(t, "example.throttle", reply.Error.AppType)
-	// The bucket refills one call per minute, so the wait is a little under a minute, rounded up to a minute.
-	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "60"}, reply.Error.Metadata)
+	requireRetryAfterShape(t, reply.Error.Metadata, 60)
 }
 
 func TestRPCRefusalDefaultIs111(t *testing.T) {
@@ -196,6 +211,16 @@ func TestRPCRefusalErrorIsFresh(t *testing.T) {
 	require.NotContains(t, second.Metadata, "kept-key")
 }
 
+// The metadata of a refusal is pinned with an explicit wait, so no clock is read.
+func TestRPCRefusalMetadataValue(t *testing.T) {
+	h := newDedupHandler(t, rateLimitedRegistry(), newDedupBackend(t))
+	refused := h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", 1200*time.Millisecond).(*centrifuge.Error)
+	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "2"}, refused.Metadata)
+
+	minute := h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", time.Minute).(*centrifuge.Error)
+	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "60"}, minute.Metadata)
+}
+
 func TestRPCRefusalRetryAfterRounding(t *testing.T) {
 	require.Equal(t, int64(1), retryAfterSeconds(1))
 	require.Equal(t, int64(1), retryAfterSeconds(time.Second))
@@ -228,7 +253,7 @@ func TestRegistryReplayStripsReservedPrefix(t *testing.T) {
 		Message:  "boom",
 		Metadata: map[string]string{"x-centrifugo-retry-after": "2", "kept-key": "v"},
 	}
-	replayed := withoutRetrySignal(stored)
+	replayed := withoutReservedMetadata(stored)
 	require.Equal(t, map[string]string{"kept-key": "v"}, replayed.Metadata)
 	require.Len(t, stored.Metadata, 2)
 }

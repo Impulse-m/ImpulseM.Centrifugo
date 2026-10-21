@@ -1,6 +1,7 @@
 package configtypes
 
 import (
+	"maps"
 	"slices"
 	"strings"
 )
@@ -20,6 +21,28 @@ const RPCRegistryReservedHeaderPrefix = "x-centrifugo-"
 // IsRPCRegistryReservedHeader reports whether name, in lower case, is a header the registry sets itself.
 func IsRPCRegistryReservedHeader(name string) bool {
 	return slices.Contains(rpcRegistryReservedHeaders, name) || strings.HasPrefix(name, RPCRegistryReservedHeaderPrefix)
+}
+
+// isRPCRegistryReservedMetadataKey reports whether a metadata key has the reserved prefix of the registry.
+func isRPCRegistryReservedMetadataKey(key string) bool {
+	return strings.HasPrefix(key, RPCRegistryReservedHeaderPrefix)
+}
+
+// HasRPCRegistryReservedMetadata reports whether metadata holds a key with the reserved prefix of the registry.
+func HasRPCRegistryReservedMetadata(metadata map[string]string) bool {
+	for key := range metadata {
+		if isRPCRegistryReservedMetadataKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteRPCRegistryReservedMetadata removes the keys with the reserved prefix of the registry from metadata.
+func DeleteRPCRegistryReservedMetadata(metadata map[string]string) {
+	maps.DeleteFunc(metadata, func(key string, _ string) bool {
+		return isRPCRegistryReservedMetadataKey(key)
+	})
 }
 
 // Auth classes a registry method can require. The empty string means the method

@@ -197,7 +197,7 @@ func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, c
 	}
 	// The keys with the reserved prefix are set by the server only, the retry signal among them. A trailer of the backend
 	// never carries them, even under a config which names them in error_metadata.
-	deleteReservedMetadata(protoErr.Metadata)
+	configtypes.DeleteRPCRegistryReservedMetadata(protoErr.Metadata)
 	return protoErr
 }
 

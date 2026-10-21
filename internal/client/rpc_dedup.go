@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -30,6 +29,11 @@ const rpcInstanceKey = "instance"
 // and may be sent again. The server sets it itself: the runtime removes it from every error built from a backend
 // trailer, even when the error_metadata of a method names it.
 const rpcRetryMetadataKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry"
+
+// rpcRetryAfterMetadataKey is the error metadata key of a rate limit refusal: the wait in whole seconds. It is not a
+// retry signal, SDKs do not resend on it, see rpc.registry.errors.rate_limited. It is kept here with
+// rpcRetryMetadataKey, so the reserved keys are listed in one file.
+const rpcRetryAfterMetadataKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry-after"
 
 // The values of rpcRetryMetadataKey. rpcRetryNewMsgID means the msg_id of the call was refused: the call is sent
 // again with a new msg_id, after the client re-syncs its clock. rpcRetryLater means the msg_id is still good: the
@@ -409,47 +413,25 @@ func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegis
 		return centrifuge.RPCReply{}, registryError(cfg.Errors.ResultEvicted)
 	}
 	if rec.Err != nil {
-		return centrifuge.RPCReply{Cached: true}, withoutRetrySignal(rec.Err)
+		return centrifuge.RPCReply{Cached: true}, withoutReservedMetadata(rec.Err)
 	}
 	return centrifuge.RPCReply{Data: rec.Reply, Cached: true}, nil
 }
 
-// withoutRetrySignal returns err without the keys with the reserved prefix, the retry signal among them. An error which
-// does not carry such a key is returned as it is. Otherwise the copy holds the other metadata, and a nil map when none
-// is left.
-func withoutRetrySignal(err *centrifuge.Error) *centrifuge.Error {
-	if !hasReservedMetadata(err.Metadata) {
+// withoutReservedMetadata returns err without the keys with the reserved prefix of the registry, the retry signal
+// among them. An error which does not carry such a key is returned as it is. Otherwise the copy holds the other
+// metadata, and a nil map when none is left.
+func withoutReservedMetadata(err *centrifuge.Error) *centrifuge.Error {
+	if !configtypes.HasRPCRegistryReservedMetadata(err.Metadata) {
 		return err
 	}
 	stripped := *err
 	stripped.Metadata = maps.Clone(err.Metadata)
-	deleteReservedMetadata(stripped.Metadata)
+	configtypes.DeleteRPCRegistryReservedMetadata(stripped.Metadata)
 	if len(stripped.Metadata) == 0 {
 		stripped.Metadata = nil
 	}
 	return &stripped
-}
-
-// isReservedMetadataKey reports whether a metadata key has the reserved prefix of the registry, which the server sets.
-func isReservedMetadataKey(key string) bool {
-	return strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix)
-}
-
-// hasReservedMetadata reports whether metadata holds a key with the reserved prefix of the registry.
-func hasReservedMetadata(metadata map[string]string) bool {
-	for key := range metadata {
-		if isReservedMetadataKey(key) {
-			return true
-		}
-	}
-	return false
-}
-
-// deleteReservedMetadata removes the keys with the reserved prefix of the registry from metadata.
-func deleteReservedMetadata(metadata map[string]string) {
-	maps.DeleteFunc(metadata, func(key string, _ string) bool {
-		return isReservedMetadataKey(key)
-	})
 }
 
 // registryRetryError is the protocol error of a dedup failure, sent as temporary or not. A non-empty retry is the

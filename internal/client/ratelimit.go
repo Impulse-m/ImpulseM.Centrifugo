@@ -17,10 +17,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// rpcRetryAfterMetadataKey is the error metadata key of a rate limit refusal: the wait in whole seconds. It is not a
-// retry signal, SDKs do not resend on it, see rpc.registry.errors.rate_limited.
-const rpcRetryAfterMetadataKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry-after"
-
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
 const limiterClientCommand = "client_command"
 

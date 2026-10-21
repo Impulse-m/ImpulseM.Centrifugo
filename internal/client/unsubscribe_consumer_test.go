@@ -20,7 +20,9 @@ func TestConsumingUnsubscribeInvalidCodeAppliesDefault(t *testing.T) {
 	var logBuf syncBuffer
 	savedLogger := log.Logger
 	log.Logger = zerolog.New(&logBuf)
-	defer func() { log.Logger = savedLogger }()
+	defer func() {
+		log.Logger = savedLogger
+	}()
 
 	h, node := newRateLimitHandlerWithNamespaces(t, configtypes.RateLimit{}, []configtypes.ChannelNamespace{
 		{Name: "ns", ChannelOptions: configtypes.ChannelOptions{SubscribeForClient: true}},

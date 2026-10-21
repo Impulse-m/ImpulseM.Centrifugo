@@ -36,7 +36,9 @@ func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 			queue := accessrevoke.NewDisconnectQueue(10000, 100)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			go func() { _ = queue.Run(ctx) }()
+			go func() {
+				_ = queue.Run(ctx)
+			}()
 			revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
 
 			connectClaims := map[string]any{"iat": now}
@@ -241,7 +243,9 @@ func TestRefreshedSessionRevokedBeforeCoreStoresIdentity(t *testing.T) {
 	queue := accessrevoke.NewDisconnectQueue(10000, 100)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = queue.Run(ctx) }()
+	go func() {
+		_ = queue.Run(ctx)
+	}()
 	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
 	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"iat": now}))
 
@@ -249,7 +253,9 @@ func TestRefreshedSessionRevokedBeforeCoreStoresIdentity(t *testing.T) {
 		require.NoError(t, revoker.RevokeSession("", revokeTestOtherUUID, now, 0, nil))
 	}
 	testHookRefreshTracked.Store(&hook)
-	t.Cleanup(func() { testHookRefreshTracked.Store(nil) })
+	t.Cleanup(func() {
+		testHookRefreshTracked.Store(nil)
+	})
 
 	reply := refreshWithClaims(t, h, client, map[string]any{"iat": now, "jti": revokeTestOtherUUID})
 	require.True(t, reply.Expired)

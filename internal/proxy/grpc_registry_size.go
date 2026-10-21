@@ -43,7 +43,7 @@ func registryMessageTooLarge(err error, requestLen int, bound int, compressed bo
 		if limit == bound || limit == math.MaxInt {
 			return true, true
 		}
-		return false, false
+		return true, false
 	}
 	named := strings.HasSuffix(message, " "+strconv.Itoa(bound)) || strings.HasSuffix(message, " "+strconv.Itoa(math.MaxInt))
 	return true, named

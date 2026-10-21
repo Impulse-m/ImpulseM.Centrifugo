@@ -107,6 +107,7 @@ func TestRegistryMessageTooLarge(t *testing.T) {
 			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (2000 vs. 4096)"),
 			requestLen: 100,
 			bound:      1024,
+			tooLarge:   true,
 		},
 		{
 			name:       "other code with the size text",

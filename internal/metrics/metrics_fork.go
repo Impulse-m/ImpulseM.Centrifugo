@@ -239,7 +239,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "errors_total",
-		Help:        "Number of RPC method registry calls which failed with an application error, by method and application error type.",
+		Help:        "Number of failed RPC method registry calls by method and application error type. Cancelled calls are not counted. A trailing _<digits> in the type becomes _X, an error without a type counts as none, and types beyond 256 per process count as other.",
 		ConstLabels: constLabels,
 	}, []string{"rpc_method", "app_type"})
 

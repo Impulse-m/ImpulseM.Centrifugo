@@ -396,9 +396,12 @@ func TestKafkaSourceReportsCaughtUpOnce(t *testing.T) {
 		s.tracker.Observe(0, 10, 10)
 
 		s.reportTransitions(s.tracker.Snapshot())
-		s.reportTransitions(s.tracker.Snapshot())
 		require.Equal(t, 12.0, counterValue(t, "centrifugo_access_revoke_source_catch_up_duration_seconds"))
 		require.True(t, s.caughtUpReported.Load())
+
+		// A second caught-up snapshot, with another duration, must not set the gauge again.
+		s.reportTransitions(ReadinessSnapshot{Ready: true, CaughtUp: true, CatchUpDuration: 30 * time.Second})
+		require.Equal(t, 12.0, counterValue(t, "centrifugo_access_revoke_source_catch_up_duration_seconds"))
 	})
 }
 

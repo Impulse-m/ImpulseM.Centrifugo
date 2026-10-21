@@ -41,7 +41,7 @@ methods:
     target: users
     auth_class: pending_2fa
   - method: files.uploadPart
-    grpc_method: /example.v1.FileService/SaveFilePart
+    grpc_method: /example.v1.FileService/UploadPart
     target: files
     idempotent: true
     max_request_bytes: 524288

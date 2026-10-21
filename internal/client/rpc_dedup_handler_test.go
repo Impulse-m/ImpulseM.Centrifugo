@@ -557,7 +557,7 @@ func TestRPCDedupAckRemovesRecord(t *testing.T) {
 	require.NoError(t, first.err)
 
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{
-		Method: "help.config",
+		Method: "system.config",
 		Data:   []byte("ack"),
 		Call:   centrifuge.RPCCallOptions{Ack: []uint64{msgID}},
 	}, nil)
@@ -723,9 +723,9 @@ func TestRPCDedupCancelWhileSemaphoreIsFull(t *testing.T) {
 	first := dedupMsgID(20)
 	second := dedupMsgID(21)
 	// The client protocol is JSON, so the payload is a JSON string, which the backend matches as gate.
-	sendRateLimitCommand(client, &protocol.Command{Id: 2, Rpc: &protocol.RPCRequest{Method: "help.config", Data: []byte(`"gate"`), MsgId: first}})
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Rpc: &protocol.RPCRequest{Method: "system.config", Data: []byte(`"gate"`), MsgId: first}})
 	backend.waitEntered(t)
-	sendRateLimitCommand(client, &protocol.Command{Id: 3, Rpc: &protocol.RPCRequest{Method: "help.config", Data: []byte(`"gate"`), MsgId: second}})
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, Rpc: &protocol.RPCRequest{Method: "system.config", Data: []byte(`"gate"`), MsgId: second}})
 	backend.waitEntered(t)
 
 	// Both slots are taken by gated calls. The cancel must still be answered.

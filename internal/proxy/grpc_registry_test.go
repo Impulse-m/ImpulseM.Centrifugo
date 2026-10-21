@@ -82,7 +82,7 @@ func registryTestConfig() configtypes.RPCRegistry {
 				MaxResponseBytes: 100,
 			},
 			{
-				Method:     "help.config",
+				Method:     "system.config",
 				GRPCMethod: "/example.v1.HelpService/GetConfig",
 				Target:     "backend",
 				AuthClass:  configtypes.RPCAuthClassAnonymous,
@@ -313,7 +313,7 @@ func TestRegistryCallMetadataOmitsMsgIDAndAuthorization(t *testing.T) {
 	r := startRegistryTest(t, registryTestConfig(), registryTestConn(t, backend))
 
 	// An anonymous method never gets the token, even on a connection which has one.
-	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("help.config"), RegistryCall{
+	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("system.config"), RegistryCall{
 		ClientID: "client-1",
 		Token:    "token-1",
 	})

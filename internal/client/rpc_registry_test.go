@@ -99,7 +99,7 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 				MaxResponseBytes: 100,
 			},
 			{
-				Method:     "help.config",
+				Method:     "system.config",
 				GRPCMethod: "/example.v1.HelpService/GetConfig",
 				Target:     "backend",
 				AuthClass:  configtypes.RPCAuthClassAnonymous,
@@ -232,7 +232,7 @@ func TestRPCRegistryCallChecks(t *testing.T) {
 	require.Empty(t, backend.Calls())
 
 	// An anonymous method is callable by everyone, and the raw bytes come back.
-	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
+	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "system.config", Data: []byte("raw")}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("raw"), reply.Data)
 	require.Len(t, backend.Calls(), 1)
@@ -336,7 +336,7 @@ func TestRPCRegistryAuthorizationFollowsConnectionToken(t *testing.T) {
 	client := newRegistryTestClient("c1", "42", reply.Context, reply.Storage)
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.NoError(t, err)
-	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "help.config", Data: []byte("x")}, nil)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "system.config", Data: []byte("x")}, nil)
 	require.NoError(t, err)
 
 	calls := backend.Calls()
@@ -511,7 +511,7 @@ func TestRPCRegistryConnectionWithoutStoredClassFallsBackToUser(t *testing.T) {
 	anonymous := newRegistryTestClient("c2", "", nil, nil)
 	_, err = h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
-	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
+	reply, err := h.OnRPC(anonymous, centrifuge.RPCEvent{Method: "system.config", Data: []byte("raw")}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("raw"), reply.Data)
 	require.Len(t, backend.Calls(), 2)
@@ -524,7 +524,7 @@ func TestRPCRegistryConnectionWithoutStoredClassIsAnonymousWithClaim(t *testing.
 	user := newRegistryTestClient("c1", "42", nil, nil)
 	_, err := h.OnRPC(user, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
-	reply, err := h.OnRPC(user, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
+	reply, err := h.OnRPC(user, centrifuge.RPCEvent{Method: "system.config", Data: []byte("raw")}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("raw"), reply.Data)
 	require.Len(t, backend.Calls(), 1)
@@ -585,7 +585,7 @@ func TestRPCRegistryClaimSetByReloadMakesOldConnectionsAnonymous(t *testing.T) {
 	// Until a refresh, the connection is anonymous: it cannot call a method of its user's class.
 	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	require.Equal(t, uint32(103), requireProtocolError(t, err).Code)
-	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "help.config", Data: []byte("raw")}, nil)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "system.config", Data: []byte("raw")}, nil)
 	require.NoError(t, err)
 	require.Len(t, backend.Calls(), 2)
 

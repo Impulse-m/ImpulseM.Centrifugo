@@ -446,6 +446,8 @@ type Client struct {
 	ChannelLimit int `mapstructure:"channel_limit" json:"channel_limit" envconfig:"channel_limit" default:"128" yaml:"channel_limit" toml:"channel_limit" doc:"Maximum number of channels a single client can subscribe to simultaneously. Default <<128>>."`
 	// QueueMaxSize is a maximum size of message queue for client connection in bytes.
 	QueueMaxSize int `mapstructure:"queue_max_size" json:"queue_max_size" envconfig:"queue_max_size" default:"1048576" yaml:"queue_max_size" toml:"queue_max_size" doc:"Maximum size of the outgoing message queue per client connection in bytes. Default <<1048576>> (1 MB)."`
+	// MaxMessagesInFrame is the maximum number of messages joined into one transport frame.
+	MaxMessagesInFrame int `mapstructure:"max_messages_in_frame" json:"max_messages_in_frame" envconfig:"max_messages_in_frame" default:"16" yaml:"max_messages_in_frame" toml:"max_messages_in_frame" doc:"Maximum number of messages joined into one transport frame. Default <<16>>. <<-1>> means no limit. <<1>> writes each message in its own frame, so each frame has websocket.write_timeout to itself."`
 	// PresenceUpdateInterval is a period of time how often to update presence info for subscriptions of connected client.
 	PresenceUpdateInterval Duration `mapstructure:"presence_update_interval" json:"presence_update_interval" envconfig:"presence_update_interval" default:"27s" yaml:"presence_update_interval" toml:"presence_update_interval" doc:"How often a client updates its presence information in subscribed channels. Default <<27s>>."`
 	// Concurrency is a maximum number of concurrent operations for client connection. If not set only one operation can be processed at a time.

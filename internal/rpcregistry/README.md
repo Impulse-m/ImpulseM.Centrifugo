@@ -437,6 +437,11 @@ Two constants are fixed. `E` is 1024 bytes, the envelope of one frame, and `K` i
 | `rpc.registry.max_inflight_bytes` | `2 × λ × T`, rounded up to a power of two in MiB | twice the bytes in flight at the tail (see Sizing the admission) |
 | `rpc.registry.memory_watermark_bytes` | `0.75 × M` | the watermark sits at 75% of the memory limit |
 | `response_size_hint.overhead_bytes` | `O`, 1024 | a read of `h` bytes reserves `h + O`, and the full `R + E` from `h = R` on |
+| `client.max_messages_in_frame` | `1` | each reply leaves in its own frame, so the write timeout covers one reply |
+| `client.pong_timeout` | `⌈client.queue_max_size ÷ S⌉ + 2 s` | the server queues its ping behind everything queued on the connection, and starts the pong timeout when it queues the ping; the 2 s covers the round trip and the socket send buffer |
+| `client.ping_interval` | greater than `client.pong_timeout` | the server does not start otherwise |
+
+The SDKs close a connection with "no ping" after `ping_interval + maxServerPingDelay` without a ping. The JS SDK restarts that timer on any message, so the sum must cover one frame drain, `(R + E) ÷ S`. The Java SDK restarts it only on a ping, so its `maxServerPingDelay` must be at least `⌈client.queue_max_size ÷ S⌉ + 2 s`, the same figure as the pong timeout. The window `W` no longer appears in these keys: `W × (R + E) ÷ S` is the time for the replies of the window, not the bound on the queue. Raising these keys slows the detection of dead connections. A fleet that needs faster detection lowers `R`, the queue, or `W`.
 
 Two checks close the derivation. The transient of the budget must fit under the watermark: `3 × max_inflight_bytes ≤ memory_watermark_bytes`. And the budget must cover one full-size write, `max_request_bytes + max_response_bytes`, or it refuses that write at any load. If the first check fails, lower the rate or the latency the budget is sized for, or raise the memory limit.
 
@@ -459,6 +464,10 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 262144 |
 | `rpc.registry.max_inflight_bytes` | 16777216 (16 MiB) | 2 × 12500000 × 0.5 = 12500000 = 11.9 MiB, rounded up to 16 MiB |
 | `rpc.registry.memory_watermark_bytes` | 603979776 (576 MiB) | 0.75 × 805306368; the transient 3 × 16 MiB = 48 MiB fits under it |
+| `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
+| `client.pong_timeout` | 9s | ⌈855040 ÷ 125000⌉ = 7 s, plus 2 s; the default 8s leaves only 1.2 s over a full queue, less than the margin |
+| `client.ping_interval` | 25s | greater than the pong timeout |
+| Java SDK `maxServerPingDelay` | 10s | the default, which covers 9 s |
 
 **(b) 512 KiB parts with 1 MiB reads, 2 GiB node with `GOMEMLIMIT` 1.6 GiB.** Inputs: `P` = 524288, `R` = 1048576, `W` = 3, `S` = 32000 (256 kbit/s), `λ` = 62500000 (500 Mbit/s), `T` = 2 s, `M` = 1.6 GiB.
 
@@ -475,6 +484,12 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 1048576 |
 | `rpc.registry.max_inflight_bytes` | 268435456 (256 MiB) | 2 × 62500000 × 2 = 250000000 = 238.4 MiB, rounded up to 256 MiB; the transient 3 × 256 MiB = 768 MiB fits under the watermark |
 | `rpc.registry.memory_watermark_bytes` | 1288490189 (1.2 GiB) | 0.75 × 1.6 GiB, rounded to the byte |
+| `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
+| `client.pong_timeout` | 136s | ⌈4263936 ÷ 32000⌉ = 134 s, plus 2 s |
+| `client.ping_interval` | 150s | greater than the pong timeout |
+| Java SDK `maxServerPingDelay` | 136s | the same figure as the pong timeout |
+
+Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout` after they stop answering: up to about 4 min 45 s on this profile.
 
 **(c) Large-object tier: 4 MiB parts and 4 MiB reads, 8 GiB node with `GOMEMLIMIT` 6 GiB.** Inputs: `P` = 4194304, `R` = 4194304, `W` = 2, `S` = 1250000 (10 Mbit/s), `λ` = 125000000 (1 Gbit/s), `T` = 4 s, `M` = 6 GiB (6442450944).
 
@@ -491,6 +506,10 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `response_size_hint` on reads | `request_field` 2 (example field), `overhead_bytes` 1024 | the full bound from `h` = 4194304 |
 | `rpc.registry.max_inflight_bytes` | 1073741824 (1 GiB) | 2 × 125000000 × 4 = 1000000000 = 953.7 MiB, rounded up to 1 GiB; the transient 3 GiB fits under the watermark |
 | `rpc.registry.memory_watermark_bytes` | 4831838208 (4.5 GiB) | 0.75 × 6442450944 |
+| `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
+| `client.pong_timeout` | 13s | ⌈12651520 ÷ 1250000⌉ = 11 s, plus 2 s; the default 10s would not cover a full queue |
+| `client.ping_interval` | 25s | greater than the pong timeout |
+| Java SDK `maxServerPingDelay` | 13s | the default 10s is too short |
 
 ### Fleet rules
 

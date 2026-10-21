@@ -441,26 +441,28 @@ Two constants are fixed. `E` is 1024 bytes, the envelope of one frame, and `K` i
 | `rpc.registry.memory_watermark_bytes` | `0.75 × M` | the watermark sits at 75% of the memory limit |
 | `response_size_hint.overhead_bytes` | `O`, 1024 | a read of `h` bytes reserves `h + O`, and the full `R + E` from `h = R` on |
 | `client.max_messages_in_frame` | `1` | each reply leaves in its own frame, so the write timeout covers one reply |
-| `client.pong_timeout` | `⌈client.queue_max_size ÷ S⌉ + 2 s` | the server queues its ping behind everything queued on the connection, and starts the pong timeout when it queues the ping; the 2 s covers the round trip and the socket send buffer |
+| `client.pong_timeout` | `⌈(client.queue_max_size + SNDBUF) ÷ S⌉ + 2 s` | the server queues its ping behind everything queued on the connection and the bytes the kernel send buffer already holds, and starts the pong timeout when it queues the ping; the 2 s is a margin for the round trip. `SNDBUF` is the measured socket send buffer, defined under the key below |
 | `client.ping_interval` | greater than `client.pong_timeout` | the server does not start otherwise |
 
-The SDKs close a connection with "no ping" after `ping_interval + maxServerPingDelay` without a ping. The JS SDK restarts that timer on any message, so the sum must cover one frame drain, `(R + E) ÷ S`. The Java SDK restarts it only on a ping, so its `maxServerPingDelay` must be at least `⌈client.queue_max_size ÷ S⌉ + 2 s`, the same figure as the pong timeout. The window `W` no longer appears in these keys: `W × (R + E) ÷ S` is the time for the replies of the window, not the bound on the queue. Raising these keys slows the detection of dead connections. A fleet that needs faster detection lowers `R`, the queue, or `W`.
+The SDKs close a connection with "no ping" after `ping_interval + maxServerPingDelay` without a ping. The JS SDK restarts that timer on any message. The Java SDK restarts it only on a ping in releases before the watchdog change, so their `maxServerPingDelay` must be at least `⌈(client.queue_max_size + SNDBUF) ÷ S⌉ + 2 s`, the same figure as the key-off pong timeout. Releases with the watchdog change, and the JS SDK, need `ping_interval + maxServerPingDelay` at least one frame drain, `⌈min(client.max_messages_in_frame × (R + E), client.queue_max_size) ÷ S⌉ + 2 s`. The window `W` no longer appears in these keys: `W × (R + E) ÷ S` is the time for the replies of the window, not the bound on the queue. Raising these keys slows the detection of dead connections. A fleet that needs faster detection lowers `R`, the queue, or `W`.
 
 ### With `client.pong_timeout_at_write: true`
 
-With this key on, the server starts the pong timeout when it writes the ping, not when it queues the ping. The pong term is then the smaller of the queue and the socket send buffer, `SNDBUF`, so the key-on `client.pong_timeout` is `max(⌈min(client.queue_max_size, SNDBUF) ÷ S⌉ + 2 s, 8 s)`. The 8 s floor keeps the value at or above the default. The figures assume `SNDBUF` of 4 MiB (4194304 bytes), the Linux default upper bound of `net.ipv4.tcp_wmem`. Measure the buffer with `ss -tmi`, field `tb`; other platforms are not measured. The key-on figures need `client.max_messages_in_frame` 1, as the table above sets.
+With this key on, the server starts the pong timeout when it writes the ping, not when it queues the ping. The bytes ahead of the ping are then only what the kernel send buffer holds, whatever the queue size, so the key-on `client.pong_timeout` is `max(⌈SNDBUF ÷ S⌉ + 2 s, 8 s)`. `SNDBUF` is the measured socket send buffer: the bytes it holds under load, measured with `ss -tmi`, field `tb`; other platforms are not measured. Linux autotuning is bounded by the `net.ipv4.tcp_wmem` maximum, 4194304 bytes by default, so the table gives two values: 4194304 (the default bound) and 262144 (a fleet that caps `tcp_wmem`). The 8 s floor keeps the value at or above the default. The SDK figures need `client.max_messages_in_frame` 1, as the table above sets.
 
-The SDK column is the frame drain, `⌈min(R + E, client.queue_max_size) ÷ S⌉ + 2 s`, the time to drain one frame of at most one reply. The SDK rule with this key on is `client.ping_interval + maxServerPingDelay` at least the frame drain. The JS SDK restarts that timer on any reply batch. The Java SDK restarts it on every decoded reply only from the Java release that is cut with this server release, which carries that change; earlier Java releases restart it only on a ping and must not be used with this key. The default `maxServerPingDelay` of 10 s satisfies the rule for each profile:
+The SDK column is one frame drain, `⌈min(R + E, client.queue_max_size) ÷ S⌉ + 2 s`, the time to drain one frame of at most one reply. The SDK rule with this key on is `client.ping_interval + maxServerPingDelay` at least the frame drain. The JS SDK restarts that timer on any reply batch. The Java SDK restarts it on every decoded reply only from the Java release that is cut with this server release, which carries that change; earlier Java releases restart it only on a ping and must not be used with this key. The default `maxServerPingDelay` of 10 s satisfies the rule for each profile:
 
-| Profile | key off `client.pong_timeout` | key on `client.pong_timeout` | frame drain, the SDK bound | default 10 s covers it |
+| Profile | key off `client.pong_timeout`, SNDBUF 4 MiB / 256 KiB | key on `client.pong_timeout`, SNDBUF 4 MiB / 256 KiB | frame drain, the SDK bound | default 10 s covers it |
 |---|---|---|---|---|
-| (a) S 125000 B/s, R 262144, queue 855040 (about 0.82 MiB) | 9 s | 9 s: the queue is below `SNDBUF`, so there is no gain | 5 s: ⌈263168 ÷ 125000⌉ = 3 s, + 2 s | yes: 25 s + 10 s ≥ 5 s |
-| (b) S 32000 B/s, R 1048576, queue 4263936 | 136 s | 134 s: ⌈4194304 ÷ 32000⌉ = 132 s, + 2 s | 35 s: ⌈1049600 ÷ 32000⌉ = 33 s, + 2 s | yes: 150 s + 10 s ≥ 35 s |
-| (c) S 1250000 B/s, R 4194304, queue 12651520 | 13 s | 8 s: ⌈4194304 ÷ 1250000⌉ = 4 s, + 2 s = 6 s, raised to the 8 s floor | 6 s: ⌈4195328 ÷ 1250000⌉ = 4 s, + 2 s | yes: 25 s + 10 s ≥ 6 s |
+| (a) S 125000 B/s, R 262144, queue 855040 (about 0.82 MiB) | 43 s / 11 s: ⌈(855040 + 4194304) ÷ 125000⌉ = 41 s, + 2 s; ⌈(855040 + 262144) ÷ 125000⌉ = 9 s, + 2 s | 36 s / 8 s: ⌈4194304 ÷ 125000⌉ = 34 s, + 2 s; ⌈262144 ÷ 125000⌉ = 3 s, + 2 s = 5 s, raised to the 8 s floor | 5 s: ⌈263168 ÷ 125000⌉ = 3 s, + 2 s | yes: 25 s + 10 s ≥ 5 s |
+| (b) S 32000 B/s, R 1048576, queue 4263936 | 267 s / 144 s: ⌈(4263936 + 4194304) ÷ 32000⌉ = 265 s, + 2 s; ⌈(4263936 + 262144) ÷ 32000⌉ = 142 s, + 2 s | 134 s / 11 s: ⌈4194304 ÷ 32000⌉ = 132 s, + 2 s; ⌈262144 ÷ 32000⌉ = 9 s, + 2 s | 35 s: ⌈1049600 ÷ 32000⌉ = 33 s, + 2 s | yes: 150 s + 10 s ≥ 35 s |
+| (c) S 1250000 B/s, R 4194304, queue 12651520 | 16 s / 13 s: ⌈(12651520 + 4194304) ÷ 1250000⌉ = 14 s, + 2 s; ⌈(12651520 + 262144) ÷ 1250000⌉ = 11 s, + 2 s | 8 s / 8 s: ⌈4194304 ÷ 1250000⌉ = 4 s, + 2 s = 6 s, raised to the 8 s floor; ⌈262144 ÷ 1250000⌉ = 1 s, + 2 s = 3 s, raised to the 8 s floor | 6 s: ⌈4195328 ÷ 1250000⌉ = 4 s, + 2 s | yes: 25 s + 10 s ≥ 6 s |
 
-The pong timeout starts when the ping is written. The send buffer, not the queue, bounds the server-side wait for the ping, and client receive and decode time are outside that bound. With the key on, `client.ping_interval` stays above `client.pong_timeout`. For profile (b), server-side dead-peer detection is between 134 s and 284 s after a peer stops answering (136 s to 286 s with the key off).
+`client.ping_interval` must stay above the key-off pong timeout of its row as well as the key-on one. For profile (a) it is 45 s with the key off and 4 MiB, 40 s with the key on and 4 MiB, and 25 s otherwise. For profile (b) it is 270 s with the key off and 4 MiB, and 150 s otherwise. For profile (c) it is 25 s in every row.
 
-The send buffer is the `net.ipv4.tcp_wmem` maximum, which is per network namespace. An operator lowers it with `sysctl`, per host, or per pod where the platform allows the `net.ipv4.tcp_wmem` sysctl. No server key is needed for it. With the maximum at 262144 bytes, profile (b) has a pong term of ⌈262144 ÷ 32000⌉ + 2 = 11 s, and a connection's throughput is bounded by about `SNDBUF` ÷ RTT (about 2.6 MB/s at 100 ms). Measure the buffer with `ss -tmi` before choosing the value.
+The pong timeout starts when the ping is written. The send buffer, not the queue, bounds the server-side wait for the ping, and client receive and decode time are outside that bound. For profile (b), with `client.ping_interval` at 150 s, server-side dead-peer detection is between 134 s and 284 s after a peer stops answering with the key on and 4 MiB, and between 11 s and 161 s with the key on and 256 KiB. With the key off it is between 144 s and 294 s at 256 KiB, and between 267 s and 537 s at 4 MiB with `client.ping_interval` at 270 s.
+
+The send buffer is the `net.ipv4.tcp_wmem` maximum, which is per network namespace. An operator lowers it with `sysctl`, per host, or per pod where the platform allows the `net.ipv4.tcp_wmem` sysctl. No server key is needed for it. With the maximum at 262144 bytes, profile (b) has a key-on pong term of ⌈262144 ÷ 32000⌉ + 2 = 11 s, and a connection's throughput is bounded by about `SNDBUF` ÷ RTT (about 2.6 MB/s at 100 ms). Measure the buffer with `ss -tmi` before choosing the value.
 
 Two checks close the derivation. The transient of the budget must fit under the watermark: `3 × max_inflight_bytes ≤ memory_watermark_bytes`. And the budget must cover one full-size write, `max_request_bytes + max_response_bytes`, or it refuses that write at any load. If the first check fails, lower the rate or the latency the budget is sized for, or raise the memory limit.
 
@@ -484,9 +486,9 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `rpc.registry.max_inflight_bytes` | 16777216 (16 MiB) | 2 × 12500000 × 0.5 = 12500000 = 11.9 MiB, rounded up to 16 MiB |
 | `rpc.registry.memory_watermark_bytes` | 603979776 (576 MiB) | 0.75 × 805306368; the transient 3 × 16 MiB = 48 MiB fits under it |
 | `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
-| `client.pong_timeout` | 9s | ⌈855040 ÷ 125000⌉ = 7 s, plus 2 s; the default 8s leaves only 1.2 s over a full queue, less than the margin |
-| `client.ping_interval` | 25s | greater than the pong timeout |
-| Java SDK `maxServerPingDelay` | 10s | the default, which covers 9 s |
+| `client.pong_timeout` | key off: 11s at SNDBUF 256 KiB, 43s at 4 MiB; key on: 8s at 256 KiB, 36s at 4 MiB | key off: ⌈(855040 + SNDBUF) ÷ 125000⌉ + 2 s, 9 s + 2 s = 11 s or 41 s + 2 s = 43 s; key on: ⌈SNDBUF ÷ 125000⌉ + 2 s, at least 8 s, so 5 s raised to 8 s or 34 s + 2 s = 36 s |
+| `client.ping_interval` | 25s at 256 KiB; 45s with the key off at 4 MiB, 40s with the key on at 4 MiB | greater than the pong timeout |
+| Java SDK `maxServerPingDelay`, releases before the watchdog change | 11s at 256 KiB, 43s at 4 MiB (key off) | the key-off pong figure; the watchdog release needs 5 s, which the default 10s covers |
 
 **(b) 512 KiB parts with 1 MiB reads, 2 GiB node with `GOMEMLIMIT` 1.6 GiB.** Inputs: `P` = 524288, `R` = 1048576, `W` = 3, `S` = 32000 (256 kbit/s), `λ` = 62500000 (500 Mbit/s), `T` = 2 s, `M` = 1.6 GiB.
 
@@ -504,11 +506,11 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `rpc.registry.max_inflight_bytes` | 268435456 (256 MiB) | 2 × 62500000 × 2 = 250000000 = 238.4 MiB, rounded up to 256 MiB; the transient 3 × 256 MiB = 768 MiB fits under the watermark |
 | `rpc.registry.memory_watermark_bytes` | 1288490189 (1.2 GiB) | 0.75 × 1.6 GiB, rounded to the byte |
 | `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
-| `client.pong_timeout` | 136s | ⌈4263936 ÷ 32000⌉ = 134 s, plus 2 s |
-| `client.ping_interval` | 150s | greater than the pong timeout |
-| Java SDK `maxServerPingDelay` | 136s | the same figure as the pong timeout |
+| `client.pong_timeout` | key off: 144s at 256 KiB, 267s at 4 MiB; key on: 11s at 256 KiB, 134s at 4 MiB | key off: ⌈(4263936 + SNDBUF) ÷ 32000⌉ + 2 s, 142 s + 2 s = 144 s or 265 s + 2 s = 267 s; key on: ⌈SNDBUF ÷ 32000⌉ + 2 s, 9 s + 2 s = 11 s or 132 s + 2 s = 134 s |
+| `client.ping_interval` | 150s; 270s with the key off at 4 MiB | greater than the pong timeout |
+| Java SDK `maxServerPingDelay`, releases before the watchdog change | 144s at 256 KiB, 267s at 4 MiB (key off) | the key-off pong figure; the watchdog release needs 35 s, which the default 10s covers |
 
-Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout` after they stop answering: up to about 4 min 46 s (286 s) on this profile.
+Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout` after they stop answering. With `ping_interval` 150 s, that is up to 284 s with the key on at 4 MiB, 161 s with the key on at 256 KiB, and 294 s with the key off at 256 KiB. With the key off at 4 MiB and `ping_interval` 270 s, it is up to 537 s.
 
 **(c) Large-object tier: 4 MiB parts and 4 MiB reads, 8 GiB node with `GOMEMLIMIT` 6 GiB.** Inputs: `P` = 4194304, `R` = 4194304, `W` = 2, `S` = 1250000 (10 Mbit/s), `λ` = 125000000 (1 Gbit/s), `T` = 4 s, `M` = 6 GiB (6442450944).
 
@@ -526,9 +528,9 @@ Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout
 | `rpc.registry.max_inflight_bytes` | 1073741824 (1 GiB) | 2 × 125000000 × 4 = 1000000000 = 953.7 MiB, rounded up to 1 GiB; the transient 3 GiB fits under the watermark |
 | `rpc.registry.memory_watermark_bytes` | 4831838208 (4.5 GiB) | 0.75 × 6442450944 |
 | `client.max_messages_in_frame` | 1 | each reply leaves in its own frame |
-| `client.pong_timeout` | 13s | ⌈12651520 ÷ 1250000⌉ = 11 s, plus 2 s; the default 10s would not cover a full queue |
+| `client.pong_timeout` | key off: 13s at 256 KiB, 16s at 4 MiB; key on: 8s (the floor) | key off: ⌈(12651520 + SNDBUF) ÷ 1250000⌉ + 2 s, 11 s + 2 s = 13 s or 14 s + 2 s = 16 s; key on: ⌈SNDBUF ÷ 1250000⌉ + 2 s, at least 8 s, so 3 s raised to 8 s or 6 s raised to 8 s |
 | `client.ping_interval` | 25s | greater than the pong timeout |
-| Java SDK `maxServerPingDelay` | 13s | the default 10s is too short |
+| Java SDK `maxServerPingDelay`, releases before the watchdog change | 13s at 256 KiB, 16s at 4 MiB (key off) | the default 10s is too short; the watchdog release needs 6 s, which the default covers |
 
 ### Fleet rules
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -15,6 +16,10 @@ import (
 	"github.com/centrifugal/protocol"
 	"github.com/rs/zerolog/log"
 )
+
+// rpcRetryAfterMetadataKey is the error metadata key of a rate limit refusal: the wait in whole seconds. It is not a
+// retry signal, SDKs do not resend on it, see rpc.registry.errors.rate_limited.
+const rpcRetryAfterMetadataKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry-after"
 
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
 const limiterClientCommand = "client_command"
@@ -140,20 +145,53 @@ func (h *Handler) rateLimitCommandRead(
 		// The client and user limits keep their state in the record, so a connection without one passes them. The Redis
 		// limit needs only the user, so it checks a connection without a record too.
 		st := rateLimitStateOf(c)
-		if st != nil && checkCommands && limiter.CommandAllowed(st, e.Started, op, key) > 0 {
-			metrics.RateLimitRejectsTotal.WithLabelValues(limiterClientCommand, op.String()).Inc()
-			return centrifuge.ErrorTooManyRequests
+		if st != nil && checkCommands {
+			if wait := limiter.CommandAllowed(st, e.Started, op, key); wait > 0 {
+				metrics.RateLimitRejectsTotal.WithLabelValues(limiterClientCommand, op.String()).Inc()
+				return h.rateLimitRefusal(op, name, wait)
+			}
 		}
-		if st != nil && userLimiter != nil && userLimiter.CommandAllowed(st, e.Started, op, key) > 0 {
-			metrics.RateLimitRejectsTotal.WithLabelValues(limiterUserCommand, op.String()).Inc()
-			return centrifuge.ErrorTooManyRequests
+		if st != nil && userLimiter != nil {
+			if wait := userLimiter.CommandAllowed(st, e.Started, op, key); wait > 0 {
+				metrics.RateLimitRejectsTotal.WithLabelValues(limiterUserCommand, op.String()).Inc()
+				return h.rateLimitRefusal(op, name, wait)
+			}
 		}
-		if redisLimiter != nil && redisLimiter.CommandAllowed(c.UserID(), op, key) > 0 {
-			metrics.RateLimitRejectsTotal.WithLabelValues(limiterRedisUserCommand, op.String()).Inc()
-			return centrifuge.ErrorTooManyRequests
+		if redisLimiter != nil {
+			if wait := redisLimiter.CommandAllowed(c.UserID(), op, key); wait > 0 {
+				metrics.RateLimitRejectsTotal.WithLabelValues(limiterRedisUserCommand, op.String()).Inc()
+				return h.rateLimitRefusal(op, name, wait)
+			}
 		}
 		return nil
 	}
+}
+
+// rateLimitRefusal returns the error of a command which a rate limit refused with the given wait. An RPC of a method in
+// the registry gets rpc.registry.errors.rate_limited when its code is set: a temporary error whose metadata holds the
+// wait in whole seconds. Every other refusal is 111 too many requests. The error is read from the running config per
+// refusal, and a new error value is built each time.
+func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait time.Duration) error {
+	if op != ratelimit.OperationRPC || !h.rpcRegistry.Enabled() || h.rpcRegistry.Lookup(name) == nil {
+		return centrifuge.ErrorTooManyRequests
+	}
+	cfg := h.registryErrors().RateLimited
+	if cfg.Code == 0 {
+		return centrifuge.ErrorTooManyRequests
+	}
+	protoErr := registryErrorValue(cfg)
+	protoErr.Temporary = true
+	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: strconv.FormatInt(retryAfterSeconds(wait), 10)}
+	return protoErr
+}
+
+// retryAfterSeconds returns wait in whole seconds, rounded up, and at least one.
+func retryAfterSeconds(wait time.Duration) int64 {
+	secs := int64(wait / time.Second)
+	if wait%time.Second != 0 {
+		secs++
+	}
+	return max(secs, 1)
 }
 
 // Services returns background services of rate limits: the user state eviction when user_command is enabled,

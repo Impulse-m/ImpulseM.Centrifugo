@@ -17,6 +17,7 @@ import (
 // setRPCRegistryDefaults sets the defaults of the registry errors. They are set on viper
 // rather than with default tags, because the four errors share one struct type and each
 // needs its own code and message.
+// errors.rate_limited has no default on purpose: unset, a rate limit refusal is 111 too many requests with no metadata.
 func setRPCRegistryDefaults(v *viper.Viper) {
 	const prefix = "rpc.registry.errors."
 	v.SetDefault(prefix+"unknown_method.code", 104)

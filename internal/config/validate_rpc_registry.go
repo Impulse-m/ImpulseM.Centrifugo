@@ -41,6 +41,10 @@ func validateRPCRegistry(c Config) error {
 	if err != nil {
 		return fmt.Errorf("in rpc.registry: %w", err)
 	}
+	// Codes 0 to 399 are reserved by Core. Zero keeps the default of a rate limit refusal, 111 with no metadata.
+	if code := c.RPC.Registry.Errors.RateLimited.Code; code != 0 && (code < 400 || code > 1999) {
+		return fmt.Errorf("rpc.registry.errors.rate_limited.code: must be 0 or between 400 and 1999, got %d", code)
+	}
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}

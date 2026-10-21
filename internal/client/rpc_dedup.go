@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -413,19 +414,39 @@ func (h *Handler) rpcRecordedReply(rec rpcdedup.Record, cfg configtypes.RPCRegis
 	return centrifuge.RPCReply{Data: rec.Reply, Cached: true}, nil
 }
 
-// withoutRetrySignal returns err without the retry signal. An error which does not carry the signal is returned as it
-// is. Otherwise the copy holds the other metadata, and a nil map when none is left.
+// withoutRetrySignal returns err without the keys with the reserved prefix, the retry signal among them. An error which
+// does not carry such a key is returned as it is. Otherwise the copy holds the other metadata, and a nil map when none
+// is left.
 func withoutRetrySignal(err *centrifuge.Error) *centrifuge.Error {
-	if _, found := err.Metadata[rpcRetryMetadataKey]; !found {
+	if !hasReservedMetadata(err.Metadata) {
 		return err
 	}
 	stripped := *err
 	stripped.Metadata = maps.Clone(err.Metadata)
-	delete(stripped.Metadata, rpcRetryMetadataKey)
+	deleteReservedMetadata(stripped.Metadata)
 	if len(stripped.Metadata) == 0 {
 		stripped.Metadata = nil
 	}
 	return &stripped
+}
+
+// hasReservedMetadata reports whether metadata holds a key with the reserved prefix of the registry.
+func hasReservedMetadata(metadata map[string]string) bool {
+	for key := range metadata {
+		if strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteReservedMetadata removes the keys with the reserved prefix of the registry from metadata. The server sets them.
+func deleteReservedMetadata(metadata map[string]string) {
+	for key := range metadata {
+		if strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix) {
+			delete(metadata, key)
+		}
+	}
 }
 
 // registryRetryError is the protocol error of a dedup failure, sent as temporary or not. A non-empty retry is the

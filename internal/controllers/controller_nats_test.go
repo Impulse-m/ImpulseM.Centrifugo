@@ -6,12 +6,14 @@ import (
 	"context"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,4 +57,76 @@ func TestNatsControllerTwoNodes(t *testing.T) {
 	require.NoError(t, controller2.Close(ctx))
 	requireGoroutinesAtMost(t, goroutinesBefore)
 	t.Logf("goroutines before %d, after closing controllers %d", goroutinesBefore, runtime.NumGoroutine())
+}
+
+// unsubscribePushTransport records the unsubscribe pushes written to a client.
+type unsubscribePushTransport struct {
+	*testTransport
+	mu     sync.Mutex
+	pushes []*protocol.Unsubscribe
+}
+
+// Write records the unsubscribe pushes of the message.
+func (t *unsubscribePushTransport) Write(message []byte) error {
+	return t.WriteMany(message)
+}
+
+// WriteMany records the unsubscribe pushes of the messages.
+func (t *unsubscribePushTransport) WriteMany(messages ...[]byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, message := range messages {
+		decoder := protocol.NewJSONReplyDecoder(message)
+		for {
+			reply, err := decoder.Decode()
+			if err != nil {
+				break
+			}
+			if reply.Push != nil && reply.Push.Unsubscribe != nil {
+				t.pushes = append(t.pushes, reply.Push.Unsubscribe)
+			}
+		}
+	}
+	return nil
+}
+
+// unsubscribePushes returns the unsubscribe pushes received so far.
+func (t *unsubscribePushTransport) unsubscribePushes() []*protocol.Unsubscribe {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]*protocol.Unsubscribe(nil), t.pushes...)
+}
+
+func TestNatsControllerUnsubscribeCodeTwoNodes(t *testing.T) {
+	ctx := context.Background()
+	prefix := "t-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	node1, controller1 := newNatsControlledNode(t, prefix)
+	node2, controller2 := newNatsControlledNode(t, prefix)
+	requireTwoNodes(t, node1, node2)
+
+	// The client is connected to node2 only. node1 unsubscribes it with a resubscribe code, so node2 must send the
+	// client the code and reason of the unsubscribe.
+	transport := &unsubscribePushTransport{testTransport: newTestTransport()}
+	client, _, err := centrifuge.NewClient(ctx, node2, transport)
+	require.NoError(t, err)
+	client.Connect(centrifuge.ConnectRequest{Token: "user-nats"})
+	require.Equal(t, "user-nats", client.UserID())
+	require.NoError(t, node2.Subscribe("user-nats", "unsub:room"))
+
+	require.NoError(t, node1.Unsubscribe("user-nats", "unsub:room", centrifuge.WithCustomUnsubscribe(centrifuge.Unsubscribe{
+		Code:   2600,
+		Reason: "resubscribe",
+	})))
+	require.Eventually(t, func() bool {
+		return len(transport.unsubscribePushes()) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	push := transport.unsubscribePushes()[0]
+	require.Equal(t, uint32(2600), push.Code)
+	require.Equal(t, "resubscribe", push.Reason)
+
+	require.NoError(t, node1.Shutdown(ctx))
+	require.NoError(t, node2.Shutdown(ctx))
+	require.NoError(t, controller1.Close(ctx))
+	require.NoError(t, controller2.Close(ctx))
 }

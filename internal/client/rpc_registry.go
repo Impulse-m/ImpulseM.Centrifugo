@@ -169,11 +169,16 @@ func (h *Handler) invokeRPCRegistry(ctx context.Context, c Client, e centrifuge.
 }
 
 // registryCallError maps the error of a failed registry call to the error the client receives. It
-// is the one place where the mapping lives. A response over the limit and a cancelled call come from
-// the registry config. Any other error goes through the gRPC status mapping, which fills the
-// application fields from the trailers, and may give a disconnect.
+// is the one place where the mapping lives. A response over the limit, a request the target refused
+// as too large, and a cancelled call come from the registry config. A response over the limit gets
+// errors.response_too_large when it is set, else errors.request_too_large. Any other error goes
+// through the gRPC status mapping, which fills the application fields from the trailers, and may give
+// a disconnect.
 func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, cfg configtypes.RPCRegistry, cancelled bool) error {
-	if errors.Is(err, proxy.ErrRPCResponseTooLarge) {
+	if errors.Is(err, proxy.ErrRPCResponseTooLarge) && cfg.Errors.ResponseTooLarge.Code != 0 {
+		return registryError(cfg.Errors.ResponseTooLarge)
+	}
+	if errors.Is(err, proxy.ErrRPCResponseTooLarge) || errors.Is(err, proxy.ErrRPCTargetRequestTooLarge) {
 		return registryError(cfg.Errors.RequestTooLarge)
 	}
 	if cancelled {

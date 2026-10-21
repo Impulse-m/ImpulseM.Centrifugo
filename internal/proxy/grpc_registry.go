@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +25,10 @@ import (
 // ErrRPCResponseTooLarge is returned by CallRegistryMethod when the target answers with a message
 // over the response limit of the method.
 var ErrRPCResponseTooLarge = errors.New("rpc registry response too large")
+
+// ErrRPCTargetRequestTooLarge is returned by CallRegistryMethod when a grpc-go target refused the request with
+// its own receive limit.
+var ErrRPCTargetRequestTooLarge = errors.New("rpc registry target refused the request as too large")
 
 // RegistryCall is one client call through the RPC method registry.
 type RegistryCall struct {
@@ -85,7 +90,8 @@ func registryServiceConfig(target configtypes.RPCTarget) string {
 // CallRegistryMethod calls the gRPC method of m with the payload of call. The context carries the
 // client connection, which is the source of connect-time headers, and the call timeout is applied
 // here. It returns the reply payload and the trailers. Errors are gRPC status errors, or
-// ErrRPCResponseTooLarge when the reply is over the response limit.
+// ErrRPCResponseTooLarge when the reply is over the response limit, or ErrRPCTargetRequestTooLarge
+// when the target refused the request as too large.
 func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call RegistryCall) ([]byte, metadata.MD, error) {
 	conn, ok := m.Target.Conn().(*grpc.ClientConn)
 	if !ok || conn == nil {
@@ -111,18 +117,52 @@ func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call Registr
 		grpc.Trailer(&trailer),
 	)
 	if err != nil {
-		if isRegistryResponseTooLarge(err) {
+		tooLarge, reply := registryMessageTooLarge(err, len(call.Data), maxResponseBytes, m.Target.Config.GRPC.Compression)
+		switch {
+		case reply:
 			return nil, trailer, ErrRPCResponseTooLarge
+		case tooLarge:
+			return nil, trailer, ErrRPCTargetRequestTooLarge
 		}
 		return nil, trailer, err
 	}
 	return out, trailer, nil
 }
 
-// isRegistryResponseTooLarge reports whether err is the gRPC error for a message over the receive limit.
-func isRegistryResponseTooLarge(err error) bool {
+// registryMessageTooLarge classifies a grpc-go "larger than max" error of a call whose request has requestLen
+// bytes, whose reply bound is bound, and whose target is compressed or not. tooLarge reports that the error is
+// one of these. reply reports that the reply was over bound: the message names bound, or maxInt, which grpc-go
+// uses on 32-bit builds. Otherwise a grpc-go target refused the request. A compressed target reports the
+// compressed size, which the request size cannot match, so it always counts as a refused request.
+func registryMessageTooLarge(err error, requestLen int, bound int, compressed bool) (tooLarge bool, reply bool) {
 	st, ok := status.FromError(err)
-	return ok && st.Code() == codes.ResourceExhausted && strings.Contains(st.Message(), "larger than max")
+	if !ok || st.Code() != codes.ResourceExhausted || !strings.Contains(st.Message(), "larger than max") {
+		return false, false
+	}
+	if compressed || reportedSize(st.Message()) == requestLen {
+		return true, false
+	}
+	msg := strings.TrimSuffix(st.Message(), ")")
+	named := strings.HasSuffix(msg, " "+strconv.Itoa(bound)) || strings.HasSuffix(msg, " "+strconv.Itoa(math.MaxInt))
+	return true, named
+}
+
+// reportedSize returns the size in the first parenthesis of a grpc-go message, as in "(2000 vs. 1024)". It
+// returns -1 when the message has none.
+func reportedSize(message string) int {
+	_, after, found := strings.Cut(message, "(")
+	if !found {
+		return -1
+	}
+	fields := strings.Fields(after)
+	if len(fields) == 0 {
+		return -1
+	}
+	size, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return -1
+	}
+	return size
 }
 
 // registryRequestMetadata builds the outgoing metadata of a registry call. Sources later in the

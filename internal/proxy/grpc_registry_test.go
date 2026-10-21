@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -145,6 +146,132 @@ func TestRegistryCallResponseOverLimitIsReported(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, []byte("ok"), data)
+}
+
+func TestRegistryMessageTooLarge(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		requestLen int
+		bound      int
+		compressed bool
+		tooLarge   bool
+		reply      bool
+	}{
+		{
+			name:       "reply over the bound",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (2000 vs. 1024)"),
+			requestLen: 100,
+			bound:      1024,
+			tooLarge:   true,
+			reply:      true,
+		},
+		{
+			name:       "reply over the bound after decompression",
+			err:        status.Error(codes.ResourceExhausted, "grpc: message after decompression larger than max (2000 vs. 1024)"),
+			requestLen: 100,
+			bound:      1024,
+			tooLarge:   true,
+			reply:      true,
+		},
+		{
+			name:       "reply over the bound without a size",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message after decompression larger than max 1024"),
+			requestLen: 100,
+			bound:      1024,
+			tooLarge:   true,
+			reply:      true,
+		},
+		{
+			name:       "target limit equal to the bound refuses an echo of the request",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 4194304)"),
+			requestLen: 5000,
+			bound:      4194304,
+			tooLarge:   true,
+			reply:      false,
+		},
+		{
+			name:       "reply over a large bound",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 4194304)"),
+			requestLen: 100,
+			bound:      4194304,
+			tooLarge:   true,
+			reply:      true,
+		},
+		{
+			name:       "reply over the bound on a 32-bit build",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 9223372036854775807)"),
+			requestLen: 100,
+			bound:      1024,
+			tooLarge:   true,
+			reply:      true,
+		},
+		{
+			name:       "echo whose reply bound is below its request is a refused request",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (20480 vs. 16384)"),
+			requestLen: 20480,
+			bound:      16384,
+			tooLarge:   true,
+			reply:      false,
+		},
+		{
+			name:       "compressed target is taken as a refused request",
+			err:        status.Error(codes.ResourceExhausted, "grpc: received message larger than max (2000 vs. 1024)"),
+			requestLen: 100,
+			bound:      1024,
+			compressed: true,
+			tooLarge:   true,
+			reply:      false,
+		},
+		{
+			name:       "quota is not a message size",
+			err:        status.Error(codes.ResourceExhausted, "quota exceeded"),
+			requestLen: 100,
+			bound:      1024,
+		},
+		{
+			name:       "other code with the size text",
+			err:        status.Error(codes.Unavailable, "grpc: received message larger than max (2000 vs. 1024)"),
+			requestLen: 100,
+			bound:      1024,
+		},
+		{
+			name:       "not a status",
+			err:        errors.New("grpc: received message larger than max (2000 vs. 1024)"),
+			requestLen: 100,
+			bound:      1024,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tooLarge, reply := registryMessageTooLarge(tt.err, tt.requestLen, tt.bound, tt.compressed)
+			require.Equal(t, tt.tooLarge, tooLarge)
+			require.Equal(t, tt.reply, reply)
+		})
+	}
+}
+
+func TestRegistryCallTargetRefusingRequestIsReported(t *testing.T) {
+	backend := newRegistryTestBackend(t)
+	cfg := registryTestConfig()
+	cfg.Methods = append(cfg.Methods, configtypes.RPCMethod{
+		Method:           "users.refuse",
+		GRPCMethod:       "/example.v1.UserService/Refuse",
+		Target:           "backend",
+		MaxRequestBytes:  8192,
+		MaxResponseBytes: 4194304,
+	})
+	backend.FailMethod("/example.v1.UserService/Refuse", tools.GRPCBytesFailure{
+		Err: status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 4194304)"),
+	})
+	r := startRegistryTest(t, cfg, registryTestConn(t, backend))
+
+	_, _, err := CallRegistryMethod(context.Background(), r.Lookup("users.refuse"), RegistryCall{
+		ClientID: "client-1",
+		Data:     make([]byte, 5000),
+	})
+	require.ErrorIs(t, err, ErrRPCTargetRequestTooLarge)
+	require.NotErrorIs(t, err, ErrRPCResponseTooLarge)
 }
 
 func TestRegistryCallMetadataLaterSourcesWin(t *testing.T) {

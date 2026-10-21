@@ -102,6 +102,8 @@ type RPCRegistryErrors struct {
 	AuthClass RPCRegistryError `mapstructure:"auth_class" json:"auth_class" envconfig:"auth_class" yaml:"auth_class" toml:"auth_class" doc:"Error returned when the connection does not satisfy the auth class of the method."`
 	// RequestTooLarge is returned when the request data exceeds the method limit.
 	RequestTooLarge RPCRegistryError `mapstructure:"request_too_large" json:"request_too_large" envconfig:"request_too_large" yaml:"request_too_large" toml:"request_too_large" doc:"Error returned when the request exceeds the max request size of the method."`
+	// ResponseTooLarge is returned when the backend's reply is over the response bound of the call. Unset, request_too_large is returned instead.
+	ResponseTooLarge RPCRegistryError `mapstructure:"response_too_large" json:"response_too_large" envconfig:"response_too_large" yaml:"response_too_large" toml:"response_too_large" doc:"Error returned when the backend's reply is over the response bound of the call. The call ran, so the error is not temporary, carries no retry signal, and is kept as the answer of a recorded call. A zero code means request_too_large is returned instead."`
 	// Cancelled is returned when the client cancels a call.
 	Cancelled RPCRegistryError `mapstructure:"cancelled" json:"cancelled" envconfig:"cancelled" yaml:"cancelled" toml:"cancelled" doc:"Error returned when the client cancels the call."`
 	// MsgIDInvalid is returned when the msg_id of a call is outside the dedup window.

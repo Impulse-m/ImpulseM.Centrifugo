@@ -430,23 +430,26 @@ func withoutRetrySignal(err *centrifuge.Error) *centrifuge.Error {
 	return &stripped
 }
 
+// isReservedMetadataKey reports whether a metadata key has the reserved prefix of the registry, which the server sets.
+func isReservedMetadataKey(key string) bool {
+	return strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix)
+}
+
 // hasReservedMetadata reports whether metadata holds a key with the reserved prefix of the registry.
 func hasReservedMetadata(metadata map[string]string) bool {
 	for key := range metadata {
-		if strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix) {
+		if isReservedMetadataKey(key) {
 			return true
 		}
 	}
 	return false
 }
 
-// deleteReservedMetadata removes the keys with the reserved prefix of the registry from metadata. The server sets them.
+// deleteReservedMetadata removes the keys with the reserved prefix of the registry from metadata.
 func deleteReservedMetadata(metadata map[string]string) {
-	for key := range metadata {
-		if strings.HasPrefix(key, configtypes.RPCRegistryReservedHeaderPrefix) {
-			delete(metadata, key)
-		}
-	}
+	maps.DeleteFunc(metadata, func(key string, _ string) bool {
+		return isReservedMetadataKey(key)
+	})
 }
 
 // registryRetryError is the protocol error of a dedup failure, sent as temporary or not. A non-empty retry is the

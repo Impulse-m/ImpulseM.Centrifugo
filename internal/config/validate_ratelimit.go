@@ -3,9 +3,18 @@ package config
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+)
+
+// Window algorithms (sliding_window and fixed_window) take intervals from windowMinInterval to windowMaxInterval, in
+// whole milliseconds, and rates up to windowMaxRate. The caps keep every product of a window algorithm exact.
+const (
+	windowMinInterval = time.Second
+	windowMaxInterval = time.Hour
+	windowMaxRate     = 1 << 21
 )
 
 // rateLimitBucketsEntry is a named non-channel operation buckets container.
@@ -29,6 +38,8 @@ type rateLimitSection struct {
 	plain    []rateLimitBucketsEntry
 	channels []rateLimitChannelEntry
 	rpc      *configtypes.RateLimitRPCBuckets
+	// tokenBucketOnly is set for sections which support the token bucket algorithm only.
+	tokenBucketOnly bool
 }
 
 // rateLimitOperationsSection returns the validation view of a section with the shared operation buckets.
@@ -95,8 +106,9 @@ func validateRateLimit(c Config) error {
 	}
 
 	if err := validateRateLimitSection(rateLimitSection{
-		name:  "client_error",
-		total: &rl.ClientError.Total,
+		name:            "client_error",
+		total:           &rl.ClientError.Total,
+		tokenBucketOnly: true,
 	}, nsNames); err != nil {
 		return err
 	}
@@ -108,22 +120,25 @@ func validateRateLimit(c Config) error {
 
 func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 	if s.total != nil {
-		if err := validateRateLimitBuckets(s.total.Enabled, s.total.Buckets, true); err != nil {
+		if s.tokenBucketOnly && s.total.Enabled && s.total.Algorithm != "" && s.total.Algorithm != tokenBucketName {
+			return fmt.Errorf("%s.total: algorithm %q is not supported, client_error uses token_bucket only", s.name, s.total.Algorithm)
+		}
+		if err := validateRateLimitBuckets(s.total.Enabled, s.total.Algorithm, s.total.Buckets, true); err != nil {
 			return fmt.Errorf("%s.total: %v", s.name, err)
 		}
 	}
 	if s.defaults != nil {
-		if err := validateRateLimitBuckets(s.defaults.Enabled, s.defaults.Buckets, true); err != nil {
+		if err := validateRateLimitBuckets(s.defaults.Enabled, s.defaults.Algorithm, s.defaults.Buckets, true); err != nil {
 			return fmt.Errorf("%s.default: %v", s.name, err)
 		}
 	}
 	for _, entry := range s.plain {
-		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Buckets, true); err != nil {
+		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Algorithm, entry.buckets.Buckets, true); err != nil {
 			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
 		}
 	}
 	for _, entry := range s.channels {
-		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Buckets, true); err != nil {
+		if err := validateRateLimitBuckets(entry.buckets.Enabled, entry.buckets.Algorithm, entry.buckets.Buckets, true); err != nil {
 			return fmt.Errorf("%s.%s: %v", s.name, entry.name, err)
 		}
 		if err := validateRateLimitNamespaceOverrides(entry.buckets.NamespaceOverrides, nsNames); err != nil {
@@ -131,17 +146,20 @@ func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 		}
 	}
 	if s.rpc != nil {
-		if err := validateRateLimitBuckets(s.rpc.Enabled, s.rpc.Buckets, true); err != nil {
+		if err := validateRateLimitBuckets(s.rpc.Enabled, s.rpc.Algorithm, s.rpc.Buckets, true); err != nil {
 			return fmt.Errorf("%s.rpc: %v", s.name, err)
 		}
 		if len(s.rpc.MethodOverride) > 0 && len(s.rpc.MethodOverrides) > 0 {
 			return fmt.Errorf("%s.rpc: method_override and method_overrides cannot be used together", s.name)
 		}
+		if err := validateRateLimitMethodNames(s.rpc.MethodOverrides); err != nil {
+			return err
+		}
 		if err := validateRateLimitMethodOverrides(s.rpc.MethodOverrides); err != nil {
 			return fmt.Errorf("%s.rpc: %v", s.name, err)
 		}
 		for method, override := range s.rpc.MethodOverride {
-			if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+			if err := validateRateLimitBuckets(override.Enabled, override.Algorithm, override.Buckets, false); err != nil {
 				return fmt.Errorf("%s.rpc.method_override.%s: %v", s.name, method, err)
 			}
 		}
@@ -149,15 +167,22 @@ func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 	return nil
 }
 
-// validateRateLimitBuckets validates bucket values of an enabled container. An enabled container
-// without buckets is an error when requireBuckets is set.
-func validateRateLimitBuckets(enabled bool, buckets configtypes.RateLimitBucketList, requireBuckets bool) error {
+// tokenBucketName is the configuration value of the token bucket algorithm, the default.
+const tokenBucketName = "token_bucket"
+
+// validateRateLimitBuckets validates bucket values and the algorithm of an enabled container. An enabled container
+// without buckets is an error when requireBuckets is set. Window algorithms have their own limits on buckets.
+func validateRateLimitBuckets(enabled bool, algorithm string, buckets configtypes.RateLimitBucketList, requireBuckets bool) error {
 	if !enabled {
 		return nil
+	}
+	if err := validateRateLimitAlgorithm(algorithm); err != nil {
+		return err
 	}
 	if requireBuckets && len(buckets) == 0 {
 		return fmt.Errorf("enabled buckets must not be empty")
 	}
+	window := algorithm == "sliding_window" || algorithm == "fixed_window"
 	for _, bucket := range buckets {
 		if bucket.Interval.ToDuration() <= 0 {
 			return fmt.Errorf("bucket interval must be greater than 0")
@@ -168,6 +193,38 @@ func validateRateLimitBuckets(enabled bool, buckets configtypes.RateLimitBucketL
 		if bucket.Interval.ToDuration() < time.Duration(bucket.Rate) {
 			return fmt.Errorf("bucket interval %s is too small for rate %d", bucket.Interval.ToDuration(), bucket.Rate)
 		}
+		if window {
+			if err := validateWindowBucket(bucket, algorithm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateRateLimitAlgorithm reports an unknown algorithm. The empty name is the token bucket.
+func validateRateLimitAlgorithm(algorithm string) error {
+	switch algorithm {
+	case "", tokenBucketName, "sliding_window", "fixed_window":
+		return nil
+	}
+	return fmt.Errorf("algorithm %q is unknown, use token_bucket, sliding_window or fixed_window", algorithm)
+}
+
+// validateWindowBucket validates the interval and rate of a bucket of a window algorithm.
+func validateWindowBucket(bucket configtypes.RateLimitBucket, algorithm string) error {
+	interval := bucket.Interval.ToDuration()
+	if interval < windowMinInterval {
+		return fmt.Errorf("bucket interval must be at least 1s for algorithm %s", algorithm)
+	}
+	if interval > windowMaxInterval {
+		return fmt.Errorf("bucket interval must not be greater than 1h for algorithm %s", algorithm)
+	}
+	if interval%time.Millisecond != 0 {
+		return fmt.Errorf("bucket interval must be a whole number of milliseconds for algorithm %s", algorithm)
+	}
+	if bucket.Rate > windowMaxRate {
+		return fmt.Errorf("bucket rate must not be greater than %d for algorithm %s", windowMaxRate, algorithm)
 	}
 	return nil
 }
@@ -181,10 +238,21 @@ func validateRateLimitNamespaceOverrides(overrides configtypes.RateLimitNamespac
 		if !slices.Contains(nsNames, override.NamespaceName) {
 			return fmt.Errorf("namespace_name %s in namespace_overrides not found in channel.namespaces", override.NamespaceName)
 		}
-		if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+		if err := validateRateLimitBuckets(override.Enabled, override.Algorithm, override.Buckets, false); err != nil {
 			return fmt.Errorf("namespace override %s: %v", override.NamespaceName, err)
 		}
 		seen = append(seen, override.NamespaceName)
+	}
+	return nil
+}
+
+// validateRateLimitMethodNames refuses method names with a tilde: the tilde separates the scope name from the algorithm
+// suffix in Redis keys, so a method name with a tilde could collide with another scope.
+func validateRateLimitMethodNames(overrides configtypes.RateLimitMethodOverrides) error {
+	for _, override := range overrides {
+		if strings.Contains(override.Method, "~") {
+			return fmt.Errorf("client.rate_limit method_overrides: method name %q must not contain \"~\"", override.Method)
+		}
 	}
 	return nil
 }
@@ -195,7 +263,7 @@ func validateRateLimitMethodOverrides(overrides configtypes.RateLimitMethodOverr
 		if slices.Contains(seen, override.Method) {
 			return fmt.Errorf("duplicate method in method_overrides: %s", override.Method)
 		}
-		if err := validateRateLimitBuckets(override.Enabled, override.Buckets, false); err != nil {
+		if err := validateRateLimitBuckets(override.Enabled, override.Algorithm, override.Buckets, false); err != nil {
 			return fmt.Errorf("method override %s: %v", override.Method, err)
 		}
 		seen = append(seen, override.Method)

@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+
+	"github.com/redis/rueidis"
 )
 
 // defaultScopeName names the scope shared by all operations which fall back to default buckets.
@@ -55,36 +57,57 @@ func (o Operation) String() string {
 
 // slotBucket is a bucket with a static index of its state in connection slots.
 type slotBucket struct {
-	slot   int
-	bucket Bucket
+	slot int
+	lim  limit
 }
 
-// scope is a list of buckets which must all allow an operation. Nil scope means no limit.
-// name and argv are used by Redis limits only: name is a part of the Redis key and argv holds
-// the arguments of the rate limit script for the buckets.
+// scope is a list of buckets which must all allow an operation, all of one algorithm. Nil scope means no limit.
+// name, redisName, script and argv are used by Redis limits only: redisName is a part of the Redis key, script
+// and argv are the Redis script of the algorithm and its arguments for the buckets.
 type scope struct {
-	name    string
-	buckets []slotBucket
-	argv    []string
+	name      string
+	redisName string
+	algo      Algorithm
+	script    *rueidis.Lua
+	// words is the number of state words of one bucket, see Algorithm.stateWords.
+	words int
+	// tokenOnly is set at compile time when algo is the token bucket. Such a scope calls the token bucket directly.
+	tokenOnly bool
+	buckets   []slotBucket
+	argv      []string
 }
 
-// allowed reports whether all buckets of the scope allow an operation at now. It does not change state.
-func (s *scope) allowed(slots []int64, now int64) bool {
-	for i := range s.buckets {
-		sb := &s.buckets[i]
-		if _, ok := sb.bucket.next(now, slots[sb.slot]); !ok {
-			return false
+// wait returns the largest wait of the buckets of the scope at now, 0 when all of them allow an operation. It does not
+// change state. Token bucket scopes call the token bucket directly, the others call their algorithm.
+func (s *scope) wait(slots []int64, now int64) int64 {
+	var worst int64
+	if s.tokenOnly {
+		for i := range s.buckets {
+			sb := &s.buckets[i]
+			_, wait := gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+			worst = max(worst, wait)
 		}
+		return worst
 	}
-	return true
-}
-
-// commit consumes one operation from all buckets of the scope. Must be called only after allowed returned true.
-func (s *scope) commit(slots []int64, now int64) {
 	for i := range s.buckets {
 		sb := &s.buckets[i]
-		newTAT, _ := sb.bucket.next(now, slots[sb.slot])
-		slots[sb.slot] = newTAT
+		worst = max(worst, s.algo.wait(&sb.lim, slots[sb.slot:sb.slot+s.words], now))
+	}
+	return worst
+}
+
+// commit consumes one operation from all buckets of the scope. Must be called only after wait returned 0.
+func (s *scope) commit(slots []int64, now int64) {
+	if s.tokenOnly {
+		for i := range s.buckets {
+			sb := &s.buckets[i]
+			slots[sb.slot], _ = gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+		}
+		return
+	}
+	for i := range s.buckets {
+		sb := &s.buckets[i]
+		s.algo.take(&sb.lim, slots[sb.slot:sb.slot+s.words], now)
 	}
 }
 
@@ -172,34 +195,52 @@ func channelLimitSet(cfg configtypes.RateLimitChannelBuckets) bool {
 	return false
 }
 
-// compileScope compiles enabled buckets into a scope named name. Returns nil when there is nothing to limit.
-func (a *slotAllocator) compileScope(name string, enabled bool, buckets configtypes.RateLimitBucketList) *scope {
+// compileScope compiles enabled buckets of the algorithm named algorithm into a scope named name. Returns nil when
+// there is nothing to limit. Validation runs before, so the algorithm name is known.
+func (a *slotAllocator) compileScope(
+	name string,
+	enabled bool,
+	buckets configtypes.RateLimitBucketList,
+	algorithm string,
+) *scope {
 	if !HasBuckets(enabled, buckets) {
 		return nil
 	}
-	s := &scope{name: name, buckets: make([]slotBucket, 0, len(buckets))}
+	algo := algorithmNamed(algorithm)
+	_, tokenOnly := algo.(tokenBucket)
+	s := &scope{
+		name:      name,
+		algo:      algo,
+		script:    algo.redisScript(),
+		words:     algo.stateWords(),
+		tokenOnly: tokenOnly,
+		buckets:   make([]slotBucket, 0, len(buckets)),
+	}
+	lims := make([]limit, 0, len(buckets))
 	var maxInterval time.Duration
 	for _, item := range buckets {
 		interval := item.Interval.ToDuration()
-		if interval > maxInterval {
-			maxInterval = interval
-		}
-		s.buckets = append(s.buckets, slotBucket{
-			slot:   a.next,
-			bucket: NewBucket(interval, item.Rate),
-		})
-		a.next++
+		maxInterval = max(maxInterval, interval)
+		lim := algo.newLimit(interval, item.Rate)
+		lims = append(lims, lim)
+		s.buckets = append(s.buckets, slotBucket{slot: a.next, lim: lim})
+		a.next += s.words
 	}
-	if maxInterval > a.maxInterval {
-		a.maxInterval = maxInterval
-	}
-	s.argv = redisScriptArgs(s.buckets, maxInterval)
+	a.maxInterval = max(a.maxInterval, maxInterval)
+	s.redisName = name + algo.redisSuffix(lims)
+	s.argv = algo.redisArgs(lims, maxInterval)
 	return s
 }
 
 // baseScope returns buckets of the operation, or the default scope when the operation has none.
-func (a *slotAllocator) baseScope(name string, enabled bool, buckets configtypes.RateLimitBucketList, def *scope) *scope {
-	if s := a.compileScope(name, enabled, buckets); s != nil {
+func (a *slotAllocator) baseScope(
+	name string,
+	enabled bool,
+	buckets configtypes.RateLimitBucketList,
+	algorithm string,
+	def *scope,
+) *scope {
+	if s := a.compileScope(name, enabled, buckets, algorithm); s != nil {
 		return s
 	}
 	return def
@@ -210,32 +251,32 @@ func (a *slotAllocator) baseScope(name string, enabled bool, buckets configtypes
 // the same as no override, so the base operation buckets apply, or default when there are none.
 func (a *slotAllocator) channelLimit(op Operation, cfg configtypes.RateLimitChannelBuckets, def *scope) opLimit {
 	name := op.String()
-	limit := opLimit{base: a.baseScope(name, cfg.Enabled, cfg.Buckets, def)}
+	ol := opLimit{base: a.baseScope(name, cfg.Enabled, cfg.Buckets, cfg.Algorithm, def)}
 	for _, override := range cfg.NamespaceOverrides {
 		if !HasBuckets(override.Enabled, override.Buckets) {
 			continue
 		}
-		if limit.overrides == nil {
-			limit.overrides = make(map[string]*scope)
+		if ol.overrides == nil {
+			ol.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.NamespaceName] = a.compileScope(name+".ns."+override.NamespaceName, true, override.Buckets)
+		ol.overrides[override.NamespaceName] = a.compileScope(name+".ns."+override.NamespaceName, true, override.Buckets, override.Algorithm)
 	}
-	return limit
+	return ol
 }
 
 // rpcLimit compiles RPC buckets with method overrides, same resolution as channelLimit.
 func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope) opLimit {
-	limit := opLimit{base: a.baseScope(OperationRPC.String(), cfg.Enabled, cfg.Buckets, def)}
+	ol := opLimit{base: a.baseScope(OperationRPC.String(), cfg.Enabled, cfg.Buckets, cfg.Algorithm, def)}
 	for _, override := range cfg.MethodOverrides {
 		if !HasBuckets(override.Enabled, override.Buckets) {
 			continue
 		}
-		if limit.overrides == nil {
-			limit.overrides = make(map[string]*scope)
+		if ol.overrides == nil {
+			ol.overrides = make(map[string]*scope)
 		}
-		limit.overrides[override.Method] = a.compileScope(OperationRPC.String()+".m."+override.Method, true, override.Buckets)
+		ol.overrides[override.Method] = a.compileScope(OperationRPC.String()+".m."+override.Method, true, override.Buckets, override.Algorithm)
 	}
-	return limit
+	return ol
 }
 
 // newCommandPlan compiles client command rate limits. Configuration must be validated before.
@@ -245,8 +286,8 @@ func (a *slotAllocator) rpcLimit(cfg configtypes.RateLimitRPCBuckets, def *scope
 func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 	alloc := &slotAllocator{}
 	p := &CommandPlan{}
-	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
-	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
+	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets, cfg.Total.Algorithm)
+	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets, cfg.Default.Algorithm)
 	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 
 	p.numSlots = alloc.next
@@ -269,7 +310,7 @@ func wireOperations(
 	ops[OperationPresence] = alloc.channelLimit(OperationPresence, cfg.Presence, def)
 	ops[OperationPresenceStats] = alloc.channelLimit(OperationPresenceStats, cfg.PresenceStats, def)
 	ops[OperationSubRefresh] = alloc.channelLimit(OperationSubRefresh, cfg.SubRefresh, def)
-	ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, def)}
+	ops[OperationRefresh] = opLimit{base: alloc.baseScope(OperationRefresh.String(), cfg.Refresh.Enabled, cfg.Refresh.Buckets, cfg.Refresh.Algorithm, def)}
 	ops[OperationRPC] = alloc.rpcLimit(cfg.RPC, def)
 	ops[OperationMapPublish] = alloc.channelLimit(OperationMapPublish, cfg.MapPublish, def)
 	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
@@ -282,9 +323,9 @@ func wireOperations(
 func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 	alloc := &slotAllocator{}
 	p := &CommandPlan{}
-	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets)
-	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
-	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
+	p.total = alloc.compileScope("total", cfg.Total.Enabled, cfg.Total.Buckets, cfg.Total.Algorithm)
+	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets, cfg.Default.Algorithm)
+	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, cfg.Connect.Algorithm, def)}
 	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 
 	p.numSlots = alloc.next
@@ -303,15 +344,20 @@ func (p *CommandPlan) needsKey(op Operation) bool {
 	return p.ops[op].needsKey()
 }
 
-// allow checks the operation against its buckets and then against total. Nothing is consumed
-// unless both allow it: a rejected command does not count against total.
-func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) bool {
+// allow checks the operation against its buckets and then against total. It returns 0 when the operation is allowed
+// and consumes it from both. Otherwise it returns the largest wait of the two, and nothing is consumed: a rejected
+// command does not count against total.
+func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) int64 {
+	var wait int64
 	s := p.resolve(op, key)
-	if s != nil && !s.allowed(slots, now) {
-		return false
+	if s != nil {
+		wait = s.wait(slots, now)
 	}
-	if p.total != nil && !p.total.allowed(slots, now) {
-		return false
+	if p.total != nil {
+		wait = max(wait, p.total.wait(slots, now))
+	}
+	if wait > 0 {
+		return wait
 	}
 	if s != nil {
 		s.commit(slots, now)
@@ -319,7 +365,7 @@ func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) 
 	if p.total != nil {
 		p.total.commit(slots, now)
 	}
-	return true
+	return 0
 }
 
 // allowConnect checks and consumes one connect of a user. Only connect buckets apply, total does not.
@@ -328,7 +374,7 @@ func (p *CommandPlan) allowConnect(slots []int64, now int64) bool {
 	if s == nil {
 		return true
 	}
-	if !s.allowed(slots, now) {
+	if s.wait(slots, now) > 0 {
 		return false
 	}
 	s.commit(slots, now)

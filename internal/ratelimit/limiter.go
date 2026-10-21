@@ -65,13 +65,13 @@ func (l *ClientLimiter) NeedsKey(op Operation) bool {
 }
 
 // CommandAllowed checks and consumes one command of operation op at time at. key is a namespace
-// name for channel operations and a method name for RPC. It returns false when the command is over
-// the limit, in which case nothing is consumed.
-func (l *ClientLimiter) CommandAllowed(st *ConnState, at time.Time, op Operation, key string) bool {
+// name for channel operations and a method name for RPC. It returns 0 when the command is allowed.
+// Otherwise it returns the wait until the command is allowed, and nothing is consumed.
+func (l *ClientLimiter) CommandAllowed(st *ConnState, at time.Time, op Operation, key string) time.Duration {
 	if l.commands == nil {
-		return true
+		return 0
 	}
-	return l.commands.allow(st.slots, nowNano(at), op, key)
+	return time.Duration(l.commands.allow(st.slots, nowNano(at), op, key))
 }
 
 // ErrorAllowed counts one protocol error of a connection. It returns false when the error limit

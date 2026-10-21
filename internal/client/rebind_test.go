@@ -439,7 +439,7 @@ func rebindBudgetUserCommand() configtypes.RateLimitUserCommand {
 // budgetAllowed takes one unsubscribe from the user budget of the connection state. It is allowed when the state
 // has no user, and when the user budget has a command left.
 func budgetAllowed(h *Handler, st *ratelimit.ConnState) bool {
-	return h.userLimiter.CommandAllowed(st, time.Now(), ratelimit.OperationUnsubscribe, "")
+	return h.userLimiter.CommandAllowed(st, time.Now(), ratelimit.OperationUnsubscribe, "") == 0
 }
 
 // TestRebindRateLimitStateFollowsUser checks that the rate limit state of a connection draws on the budget of its

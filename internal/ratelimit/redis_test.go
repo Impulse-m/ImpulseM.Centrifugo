@@ -16,6 +16,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/redis/rueidis"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
@@ -119,20 +120,20 @@ func TestRedisPlanDefaultScopeIsShared(t *testing.T) {
 
 func TestRedisScriptArgs(t *testing.T) {
 	// Interval 1500ms with rate 10: emission 150ms, burst tolerance 1500ms, TTL 1500ms.
-	args := redisScriptArgs([]slotBucket{
-		{bucket: NewBucket(1500*time.Millisecond, 10)},
-		{bucket: NewBucket(time.Second, 4)},
+	args := tokenBucket{}.redisArgs([]limit{
+		tokenBucket{}.newLimit(1500*time.Millisecond, 10),
+		tokenBucket{}.newLimit(time.Second, 4),
 	}, 1500*time.Millisecond)
 	require.Equal(t, []string{"1500", "2", "150000", "1500000", "250000", "1000000"}, args)
 
 	// Sub-microsecond emission is raised to one microsecond, tolerance is never below emission.
-	args = redisScriptArgs([]slotBucket{
-		{bucket: NewBucket(time.Millisecond, 1000000)},
+	args = tokenBucket{}.redisArgs([]limit{
+		tokenBucket{}.newLimit(time.Millisecond, 1000000),
 	}, time.Millisecond)
 	require.Equal(t, []string{"1", "1", "1", "1000"}, args)
 
 	// TTL is rounded up to milliseconds.
-	args = redisScriptArgs([]slotBucket{{bucket: NewBucket(1500*time.Microsecond, 1)}}, 1500*time.Microsecond)
+	args = tokenBucket{}.redisArgs([]limit{tokenBucket{}.newLimit(1500*time.Microsecond, 1)}, 1500*time.Microsecond)
 	require.Equal(t, "2", args[0])
 }
 
@@ -141,11 +142,15 @@ func TestRedisKeyFormat(t *testing.T) {
 	require.Equal(t, "app.rl.{a:b}.publish.ns.chat", redisKey("app", "a:b", "publish.ns.chat"))
 }
 
-// fakeRedisRunner returns a runner which records calls and returns allowed and err.
+// fakeRedisRunner returns a runner which records calls. It reports no wait when allowed, else a wait of one second,
+// and returns err.
 func fakeRedisRunner(allowed bool, err error, calls *[]string) redisScriptRunner {
-	return func(_ context.Context, _ *redisshard.RedisShard, key string, _ []string) (bool, error) {
+	return func(_ context.Context, _ *redisshard.RedisShard, _ *rueidis.Lua, key string, _ []string) (time.Duration, error) {
 		*calls = append(*calls, key)
-		return allowed, err
+		if allowed {
+			return 0, err
+		}
+		return time.Second, err
 	}
 }
 
@@ -184,12 +189,12 @@ func newFakeRedisLimiter(cfg configtypes.RateLimitRedisUserCommand, run redisScr
 func TestRedisLimiterCommandDecision(t *testing.T) {
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, nil, &calls))
-	require.False(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.Equal(t, []string{"p.rl.{42}.publish.ns.chat"}, calls)
 
 	calls = nil
 	l = newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(true, nil, &calls))
-	require.True(t, l.CommandAllowed("42", OperationRPC, "slow"))
+	require.Zero(t, l.CommandAllowed("42", OperationRPC, "slow"))
 	require.Equal(t, []string{"p.rl.{42}.rpc.m.slow"}, calls)
 }
 
@@ -197,7 +202,7 @@ func TestRedisLimiterNoLimitNoRedisCall(t *testing.T) {
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, nil, &calls))
 	// History has no buckets and default is set, so it is limited; unlimited op needs a config without default.
-	require.False(t, l.CommandAllowed("42", OperationHistory, ""))
+	require.NotZero(t, l.CommandAllowed("42", OperationHistory, ""))
 
 	noDefault := configtypes.RateLimitRedisUserCommand{
 		Enabled: true,
@@ -207,14 +212,14 @@ func TestRedisLimiterNoLimitNoRedisCall(t *testing.T) {
 	}
 	calls = nil
 	l = newFakeRedisLimiter(noDefault, fakeRedisRunner(false, nil, &calls))
-	require.True(t, l.CommandAllowed("42", OperationHistory, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationHistory, ""))
 	require.Empty(t, calls)
 }
 
 func TestRedisLimiterAnonymousBypass(t *testing.T) {
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, nil, &calls))
-	require.True(t, l.CommandAllowed("", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("", OperationPublish, ""))
 	require.True(t, l.ConnectAllowed(""))
 	require.Empty(t, calls)
 }
@@ -244,7 +249,7 @@ func TestRedisLimiterFailOpen(t *testing.T) {
 
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, errors.New("redis is down"), &calls))
-	require.True(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.True(t, l.ConnectAllowed("42"))
 	require.Len(t, calls, 2)
 
@@ -371,7 +376,7 @@ func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
 	require.False(t, l.connected())
 
 	before := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
-	require.True(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.True(t, l.ConnectAllowed("42"))
 	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
 	require.Equal(t, float64(2), after-before)
@@ -382,6 +387,6 @@ func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
 	connector.failFor = 0
 	l.Connect()
 	require.True(t, l.connected())
-	require.False(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.Equal(t, []string{"p.rl.{42}.publish.ns.chat"}, calls)
 }

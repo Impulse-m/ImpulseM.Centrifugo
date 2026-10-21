@@ -41,6 +41,8 @@ func (d *RateLimitBucketList) Decode(value string) error {
 type RateLimitBuckets struct {
 	// Enabled enables the buckets.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the buckets."`
+	// Algorithm of the buckets, see the doc of the field in RateLimitChannelBuckets.
+	Algorithm string `mapstructure:"algorithm" json:"algorithm" envconfig:"algorithm" yaml:"algorithm" toml:"algorithm" doc:"Algorithm of the buckets: token_bucket (the default, GCRA), sliding_window (sliding window counter) or fixed_window. Empty means token_bucket. Each algorithm keeps its own state, so changing it starts the counters again. Window algorithms need an interval from 1s to 1h, in whole milliseconds, and a rate of at most 2097152. Read at start."`
 	// Buckets is a list of token buckets. All of them must allow the operation.
 	Buckets RateLimitBucketList `mapstructure:"buckets" json:"buckets" envconfig:"buckets" yaml:"buckets" toml:"buckets" doc:"A list of token buckets. All of them must allow the operation."`
 }
@@ -51,6 +53,8 @@ type RateLimitNamespaceOverride struct {
 	NamespaceName string `mapstructure:"namespace_name" json:"namespace_name" envconfig:"namespace_name" yaml:"namespace_name" toml:"namespace_name" doc:"A name of channel namespace to apply override to."`
 	// Enabled enables the override.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the override."`
+	// Algorithm of the buckets of the override, see RateLimitBuckets.
+	Algorithm string `mapstructure:"algorithm" json:"algorithm" envconfig:"algorithm" yaml:"algorithm" toml:"algorithm" doc:"Algorithm of the buckets: token_bucket (the default, GCRA), sliding_window (sliding window counter) or fixed_window. Empty means token_bucket. Each algorithm keeps its own state, so changing it starts the counters again. Window algorithms need an interval from 1s to 1h, in whole milliseconds, and a rate of at most 2097152. Read at start."`
 	// Buckets is a list of token buckets used instead of base buckets for the namespace.
 	Buckets RateLimitBucketList `mapstructure:"buckets" json:"buckets" envconfig:"buckets" yaml:"buckets" toml:"buckets" doc:"A list of token buckets used instead of base buckets for the namespace."`
 }
@@ -72,6 +76,8 @@ func (d *RateLimitNamespaceOverrides) Decode(value string) error {
 type RateLimitChannelBuckets struct {
 	// Enabled enables the buckets.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the buckets."`
+	// Algorithm of the buckets, see RateLimitBuckets.
+	Algorithm string `mapstructure:"algorithm" json:"algorithm" envconfig:"algorithm" yaml:"algorithm" toml:"algorithm" doc:"Algorithm of the buckets: token_bucket (the default, GCRA), sliding_window (sliding window counter) or fixed_window. Empty means token_bucket. Each algorithm keeps its own state, so changing it starts the counters again. Window algorithms need an interval from 1s to 1h, in whole milliseconds, and a rate of at most 2097152. Read at start."`
 	// Buckets is a list of token buckets. All of them must allow the operation.
 	Buckets RateLimitBucketList `mapstructure:"buckets" json:"buckets" envconfig:"buckets" yaml:"buckets" toml:"buckets" doc:"A list of token buckets. All of them must allow the operation."`
 	// NamespaceOverrides allows replacing buckets for channels of specific namespaces.
@@ -84,6 +90,8 @@ type RateLimitMethodOverride struct {
 	Method string `mapstructure:"method" json:"method" envconfig:"method" yaml:"method" toml:"method" doc:"An RPC method name to apply override to."`
 	// Enabled enables the override.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the override."`
+	// Algorithm of the buckets of the override, see RateLimitBuckets.
+	Algorithm string `mapstructure:"algorithm" json:"algorithm" envconfig:"algorithm" yaml:"algorithm" toml:"algorithm" doc:"Algorithm of the buckets: token_bucket (the default, GCRA), sliding_window (sliding window counter) or fixed_window. Empty means token_bucket. Each algorithm keeps its own state, so changing it starts the counters again. Window algorithms need an interval from 1s to 1h, in whole milliseconds, and a rate of at most 2097152. Read at start."`
 	// Buckets is a list of token buckets used instead of base RPC buckets for the method.
 	Buckets RateLimitBucketList `mapstructure:"buckets" json:"buckets" envconfig:"buckets" yaml:"buckets" toml:"buckets" doc:"A list of token buckets used instead of base RPC buckets for the method."`
 }
@@ -119,6 +127,8 @@ func (d *RateLimitMethodOverrideMap) Decode(value string) error {
 type RateLimitRPCBuckets struct {
 	// Enabled enables the buckets.
 	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" yaml:"enabled" toml:"enabled" doc:"Enables the buckets."`
+	// Algorithm of the buckets, see RateLimitBuckets.
+	Algorithm string `mapstructure:"algorithm" json:"algorithm" envconfig:"algorithm" yaml:"algorithm" toml:"algorithm" doc:"Algorithm of the buckets: token_bucket (the default, GCRA), sliding_window (sliding window counter) or fixed_window. Empty means token_bucket. Each algorithm keeps its own state, so changing it starts the counters again. Window algorithms need an interval from 1s to 1h, in whole milliseconds, and a rate of at most 2097152. Read at start."`
 	// Buckets is a list of token buckets. All of them must allow the operation.
 	Buckets RateLimitBucketList `mapstructure:"buckets" json:"buckets" envconfig:"buckets" yaml:"buckets" toml:"buckets" doc:"A list of token buckets. All of them must allow the operation."`
 	// MethodOverrides allows replacing buckets for specific RPC methods.

@@ -106,17 +106,17 @@ func (l *UserLimiter) NeedsKey(op Operation) bool {
 }
 
 // CommandAllowed checks and consumes one command of the connection user. Connections without an
-// attached user are not limited. It returns false when the command is over the limit, in which case
-// nothing is consumed.
-func (l *UserLimiter) CommandAllowed(st *ConnState, at time.Time, op Operation, key string) bool {
+// attached user are not limited. It returns 0 when the command is allowed. Otherwise it returns the wait
+// until the command is allowed, and nothing is consumed.
+func (l *UserLimiter) CommandAllowed(st *ConnState, at time.Time, op Operation, key string) time.Duration {
 	us := st.user.Load()
 	if us == nil {
-		return true
+		return 0
 	}
 	us.mu.Lock()
-	allowed := l.plan.allow(us.slots, nowNano(at), op, key)
+	wait := l.plan.allow(us.slots, nowNano(at), op, key)
 	us.mu.Unlock()
-	return allowed
+	return time.Duration(wait)
 }
 
 // ConnectAllowed checks and consumes one connect of userID. The state is referenced only while the
@@ -144,7 +144,8 @@ func (l *UserLimiter) Run(ctx context.Context) error {
 }
 
 // userIdleTimeout returns how long a state without references is kept: twice the longest bucket
-// interval, but at least userMinIdle.
+// interval, but at least userMinIdle. After that much idle time a state equals a fresh one for every
+// algorithm: a token bucket TAT is in the past, and a window state is two windows old, see windowAt.
 func userIdleTimeout(maxInterval time.Duration) time.Duration {
 	return max(2*maxInterval, userMinIdle)
 }

@@ -58,24 +58,24 @@ func TestUserBucketsSharedBetweenConnections(t *testing.T) {
 		limiter.Detach(second)
 	})
 
-	require.True(t, limiter.CommandAllowed(first, time.Time{}, OperationPublish, ""))
-	require.True(t, limiter.CommandAllowed(second, time.Time{}, OperationPublish, ""))
+	require.Zero(t, limiter.CommandAllowed(first, time.Time{}, OperationPublish, ""))
+	require.Zero(t, limiter.CommandAllowed(second, time.Time{}, OperationPublish, ""))
 	// The user budget of 2 is spent, both connections are rejected.
-	require.False(t, limiter.CommandAllowed(first, time.Time{}, OperationPublish, ""))
-	require.False(t, limiter.CommandAllowed(second, time.Time{}, OperationPublish, ""))
+	require.NotZero(t, limiter.CommandAllowed(first, time.Time{}, OperationPublish, ""))
+	require.NotZero(t, limiter.CommandAllowed(second, time.Time{}, OperationPublish, ""))
 
 	// Another user has its own budget.
 	other := &ConnState{}
 	limiter.Attach(other, "other")
 	t.Cleanup(func() { limiter.Detach(other) })
-	require.True(t, limiter.CommandAllowed(other, time.Time{}, OperationPublish, ""))
+	require.Zero(t, limiter.CommandAllowed(other, time.Time{}, OperationPublish, ""))
 }
 
 func TestUserAnonymousConnectionBypasses(t *testing.T) {
 	limiter := NewUserLimiter(userConfig(time.Hour, 1))
 	st := &ConnState{}
 	for i := 0; i < 10; i++ {
-		require.True(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
+		require.Zero(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
 	}
 	// Detach of a connection which was never attached is a no-op.
 	limiter.Detach(st)
@@ -98,8 +98,8 @@ func TestUserConnectLimit(t *testing.T) {
 	limiter.Attach(st, "user")
 	t.Cleanup(func() { limiter.Detach(st) })
 	// total was not consumed by connects, so the first command passes it.
-	require.True(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
-	require.False(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
+	require.Zero(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
+	require.NotZero(t, limiter.CommandAllowed(st, time.Time{}, OperationPublish, ""))
 }
 
 func TestUserConnectFallsBackToDefault(t *testing.T) {
@@ -551,7 +551,7 @@ func TestUserConcurrentChecksOfOneUser(t *testing.T) {
 			limiter.Attach(st, "same")
 			defer limiter.Detach(st)
 			for i := 0; i < perWorker; i++ {
-				if limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") {
+				if limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") == 0 {
 					allowed.Add(1)
 				}
 			}

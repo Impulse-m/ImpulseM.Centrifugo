@@ -2,7 +2,8 @@ package ratelimit
 
 import (
 	"context"
-	"strconv"
+	"errors"
+	"math"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -14,43 +15,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// rateLimitScript is the rate limit check which runs in Redis. KEYS[1] is a hash with one theoretical
-// arrival time (TAT, microseconds) per bucket of a scope, fields are bucket indexes starting from 0.
-// ARGV is described in redisScriptArgs. All buckets are checked first and TATs are written only when
-// every bucket allows the operation, so a rejected operation consumes nothing. TIME is the Redis clock,
-// the same for all nodes. Scripts replicate effects, so TIME is allowed.
-var rateLimitScript = rueidis.NewLuaScript(`
-local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000000 + tonumber(t[2])
-local n = tonumber(ARGV[2])
-local fields = {}
-for i = 1, n do
-	fields[i] = tostring(i - 1)
-end
-local stored = redis.call('HMGET', KEYS[1], unpack(fields))
-local updates = {}
-for i = 1, n do
-	local emission = tonumber(ARGV[2 * i + 1])
-	local tolerance = tonumber(ARGV[2 * i + 2])
-	local tat = tonumber(stored[i]) or 0
-	if tat < now then
-		tat = now
-	end
-	tat = tat + emission
-	if tat - now > tolerance then
-		return 0
-	end
-	updates[2 * i - 1] = fields[i]
-	updates[2 * i] = string.format('%.0f', tat)
-end
-redis.call('HSET', KEYS[1], unpack(updates))
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-return 1
-`)
+// errMalformedWait is returned for a script result which is neither allowed, refused nor a refusal with a wait.
+var errMalformedWait = errors.New("rate limit script returned a malformed result")
 
-// redisScriptRunner runs the rate limit script for key on shard with argv. It returns true when the
-// operation is allowed. It is a field of RedisUserLimiter so tests can replace Redis.
-type redisScriptRunner func(ctx context.Context, shard *redisshard.RedisShard, key string, argv []string) (bool, error)
+// redisScriptRunner runs script for key on shard with argv. It returns the wait of the operation, 0 when it is allowed.
+// It is a field of RedisUserLimiter so tests can replace Redis.
+type redisScriptRunner func(ctx context.Context, shard *redisshard.RedisShard, script *rueidis.Lua, key string, argv []string) (time.Duration, error)
 
 // RedisUserLimiter holds compiled redis_user_command limits. Limits of a user are kept in Redis, on the
 // shard chosen by consistent hash of the user ID, so all nodes sharing Redis share the limits.
@@ -101,15 +71,15 @@ func (l *RedisUserLimiter) NeedsKey(op Operation) bool {
 }
 
 // CommandAllowed checks and consumes one command of op of userID. key is a namespace name for channel
-// operations and a method name for RPC. Anonymous users (empty user ID) are not limited. On Redis errors
-// and while not connected the command is allowed.
-func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key string) bool {
+// operations and a method name for RPC. It returns 0 when the command is allowed, else the wait until it is.
+// Anonymous users (empty user ID) are not limited. On Redis errors and while not connected the command is allowed.
+func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key string) time.Duration {
 	if userID == "" {
-		return true
+		return 0
 	}
 	s := l.plan.ops[op].resolve(key)
 	if s == nil {
-		return true
+		return 0
 	}
 	return l.check(userID, s)
 }
@@ -124,7 +94,7 @@ func (l *RedisUserLimiter) ConnectAllowed(userID string) bool {
 	if s == nil {
 		return true
 	}
-	return l.check(userID, s)
+	return l.check(userID, s) == 0
 }
 
 // Connect makes one attempt to connect to all shards. The attempt is all-or-nothing: on failure nothing is
@@ -148,30 +118,30 @@ func (l *RedisUserLimiter) connected() bool {
 	return l.connector.Shards() != nil
 }
 
-// check runs the script for scope s of userID. Redis errors are counted and logged, and allow the operation.
-// While not connected, the operation is allowed and counted as an error.
-func (l *RedisUserLimiter) check(userID string, s *scope) bool {
+// check runs the script of scope s for userID and returns its wait. Redis errors are counted and logged, and allow the
+// operation. While not connected, the operation is allowed and counted as an error.
+func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 	list := l.connector.Shards()
 	if list == nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(redisshard.ErrNotConnected)
-		return true
+		return 0
 	}
-	key := redisKey(l.prefix, userID, s.name)
+	key := redisKey(l.prefix, userID, s.redisName)
 	shard := list[redisshard.ShardIndex(userID, len(list))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	start := time.Now()
-	allowed, err := l.run(ctx, shard, key, s.argv)
+	wait, err := l.run(ctx, shard, s.script, key, s.argv)
 	metrics.RateLimitRedisDuration.Observe(time.Since(start).Seconds())
 	cancel()
 
 	if err != nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(err)
-		return true
+		return 0
 	}
-	return allowed
+	return wait
 }
 
 // logError logs a Redis error at most once per redisshard.ErrorLogInterval.
@@ -181,47 +151,37 @@ func (l *RedisUserLimiter) logError(err error) {
 	}
 }
 
-// runRedisScript runs the rate limit script on shard.
-func runRedisScript(ctx context.Context, shard *redisshard.RedisShard, key string, argv []string) (bool, error) {
+// runRedisScript runs the rate limit script on shard and returns the wait it reports.
+func runRedisScript(ctx context.Context, shard *redisshard.RedisShard, script *rueidis.Lua, key string, argv []string) (time.Duration, error) {
 	keys := []string{key}
 	res := shard.RunOp(func(client rueidis.Client) rueidis.RedisResult {
-		return rateLimitScript.Exec(ctx, client, keys, argv)
+		return script.Exec(ctx, client, keys, argv)
 	})
-	allowed, err := res.AsInt64()
+	v, err := res.AsInt64()
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	return allowed == 1, nil
+	return waitOf(v)
+}
+
+// waitOf converts the result of a rate limit script to a wait. 1 is allowed. A negative number is a refusal, its
+// absolute value is the wait in microseconds, clamped so that it fits in a duration. 0 is a refusal from a script
+// which reports no wait, as older nodes do, and waits one nanosecond. Any other value is a malformed result.
+func waitOf(v int64) (time.Duration, error) {
+	switch {
+	case v == 1:
+		return 0, nil
+	case v == 0:
+		return time.Nanosecond, nil
+	case v < 0 && v != math.MinInt64:
+		us := min(-v, math.MaxInt64/int64(time.Microsecond))
+		return time.Duration(us) * time.Microsecond, nil
+	}
+	return 0, errMalformedWait
 }
 
 // redisKey returns the key of a scope of userID: {prefix}.rl.{userID}.{scope}. Braces around the user ID
 // make it the Redis Cluster hash tag, so all scopes of a user live in one slot.
 func redisKey(prefix string, userID string, scopeName string) string {
 	return prefix + ".rl.{" + userID + "}." + scopeName
-}
-
-// redisScriptArgs returns arguments of the rate limit script for a scope with buckets. The arguments
-// are: key TTL in milliseconds (the longest interval of the scope, rounded up), number of buckets,
-// then emission interval and burst tolerance of every bucket in microseconds, the clock of the script.
-// Microsecond resolution is used because Redis TIME returns microseconds; sub-microsecond parts of
-// emission intervals are truncated, but never below one microsecond.
-func redisScriptArgs(buckets []slotBucket, maxInterval time.Duration) []string {
-	ttlMs := int64((maxInterval + time.Millisecond - 1) / time.Millisecond)
-	if ttlMs < 1 {
-		ttlMs = 1
-	}
-	args := make([]string, 0, 2+2*len(buckets))
-	args = append(args, strconv.FormatInt(ttlMs, 10), strconv.Itoa(len(buckets)))
-	for i := range buckets {
-		emission := int64(buckets[i].bucket.emission / int64(time.Microsecond))
-		if emission < 1 {
-			emission = 1
-		}
-		tolerance := int64(buckets[i].bucket.tolerance / int64(time.Microsecond))
-		if tolerance < emission {
-			tolerance = emission
-		}
-		args = append(args, strconv.FormatInt(emission, 10), strconv.FormatInt(tolerance, 10))
-	}
-	return args
 }

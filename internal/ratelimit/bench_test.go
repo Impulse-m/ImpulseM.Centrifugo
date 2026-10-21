@@ -48,7 +48,7 @@ func BenchmarkClientBucketCheck(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				now += 1000
-				if !p.allow(slots, now, OperationPublish, "") {
+				if p.allow(slots, now, OperationPublish, "") != 0 {
 					b.Fatal("unexpected rejection in benchmark")
 				}
 			}

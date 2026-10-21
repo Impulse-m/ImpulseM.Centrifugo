@@ -140,15 +140,15 @@ func (h *Handler) rateLimitCommandRead(
 		// The client and user limits keep their state in the record, so a connection without one passes them. The Redis
 		// limit needs only the user, so it checks a connection without a record too.
 		st := rateLimitStateOf(c)
-		if st != nil && checkCommands && !limiter.CommandAllowed(st, e.Started, op, key) {
+		if st != nil && checkCommands && limiter.CommandAllowed(st, e.Started, op, key) > 0 {
 			metrics.RateLimitRejectsTotal.WithLabelValues(limiterClientCommand, op.String()).Inc()
 			return centrifuge.ErrorTooManyRequests
 		}
-		if st != nil && userLimiter != nil && !userLimiter.CommandAllowed(st, e.Started, op, key) {
+		if st != nil && userLimiter != nil && userLimiter.CommandAllowed(st, e.Started, op, key) > 0 {
 			metrics.RateLimitRejectsTotal.WithLabelValues(limiterUserCommand, op.String()).Inc()
 			return centrifuge.ErrorTooManyRequests
 		}
-		if redisLimiter != nil && !redisLimiter.CommandAllowed(c.UserID(), op, key) {
+		if redisLimiter != nil && redisLimiter.CommandAllowed(c.UserID(), op, key) > 0 {
 			metrics.RateLimitRejectsTotal.WithLabelValues(limiterRedisUserCommand, op.String()).Inc()
 			return centrifuge.ErrorTooManyRequests
 		}

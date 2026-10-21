@@ -75,7 +75,7 @@ func BenchmarkUserCommandCheck(b *testing.B) {
 			limiter.Attach(st, "user")
 			defer limiter.Detach(st)
 			for pb.Next() {
-				if !limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") {
+				if limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") != 0 {
 					rejected.Add(1)
 				}
 			}
@@ -96,7 +96,7 @@ func BenchmarkUserCommandCheck(b *testing.B) {
 			limiter.Attach(st, userID)
 			defer limiter.Detach(st)
 			for pb.Next() {
-				if !limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") {
+				if limiter.CommandAllowed(st, time.Time{}, OperationPublish, "") != 0 {
 					rejected.Add(1)
 				}
 			}

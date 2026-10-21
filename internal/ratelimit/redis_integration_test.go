@@ -66,28 +66,28 @@ func TestRedisLimiterSharedBetweenNodes(t *testing.T) {
 	nodeA := newIntegrationLimiter(t, cfg, prefix)
 	nodeB := newIntegrationLimiter(t, cfg, prefix)
 
-	require.True(t, nodeA.CommandAllowed("42", OperationPublish, ""))
-	require.True(t, nodeB.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, nodeA.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, nodeB.CommandAllowed("42", OperationPublish, ""))
 	// The budget of 2 is shared by both nodes.
-	require.False(t, nodeA.CommandAllowed("42", OperationPublish, ""))
-	require.False(t, nodeB.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, nodeA.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, nodeB.CommandAllowed("42", OperationPublish, ""))
 
 	// Another user has its own budget.
-	require.True(t, nodeB.CommandAllowed("43", OperationPublish, ""))
+	require.Zero(t, nodeB.CommandAllowed("43", OperationPublish, ""))
 }
 
 func TestRedisLimiterBurstThenRefill(t *testing.T) {
 	prefix := uniquePrefix()
 	l := newIntegrationLimiter(t, redisIntegrationConfig(time.Second, 2), prefix)
 
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.False(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, ""))
 
 	// One operation is refilled every 500ms (interval 1s, rate 2).
 	time.Sleep(600 * time.Millisecond)
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.False(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, ""))
 }
 
 func TestRedisLimiterMultiBucketAllOrNothing(t *testing.T) {
@@ -108,7 +108,7 @@ func TestRedisLimiterMultiBucketAllOrNothing(t *testing.T) {
 	l := newIntegrationLimiter(t, cfg, prefix)
 	key := redisKey(prefix, "42", "publish")
 
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
 	before := runOnShard(l, func(c rueidis.Client) rueidis.Completed {
 		return c.B().Hgetall().Key(key).Build()
 	})
@@ -117,8 +117,8 @@ func TestRedisLimiterMultiBucketAllOrNothing(t *testing.T) {
 	require.Len(t, beforeFields, 2)
 
 	// The second bucket rejects, so the first bucket must not be consumed either.
-	require.False(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.False(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, ""))
 	after := runOnShard(l, func(c rueidis.Client) rueidis.Completed {
 		return c.B().Hgetall().Key(key).Build()
 	})
@@ -132,7 +132,7 @@ func TestRedisLimiterKeyTTLIsSet(t *testing.T) {
 	l := newIntegrationLimiter(t, redisIntegrationConfig(time.Minute, 5), prefix)
 	key := redisKey(prefix, "42", "publish")
 
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
 	pttl, err := runOnShard(l, func(c rueidis.Client) rueidis.Completed {
 		return c.B().Pttl().Key(key).Build()
 	}).AsInt64()
@@ -150,8 +150,8 @@ func TestRedisLimiterFailOpenOnClosedShard(t *testing.T) {
 
 	// Every call fails on the closed shard, and the commands and the connect are allowed.
 	firstShard(l).Close()
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
 	require.True(t, l.ConnectAllowed("42"))
 
 	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
@@ -168,8 +168,8 @@ func TestRedisLimiterRunClosesShards(t *testing.T) {
 	require.False(t, l.connected())
 
 	// Limiter without shards fails open.
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
-	require.True(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, ""))
 }
 
 // BenchmarkRedisUserCommandCheck64Goroutines checks commands of 64 users from 64 goroutines, one user each.

@@ -87,19 +87,19 @@ func TestCommandPlanMultiBucketAllOrNothing(t *testing.T) {
 
 	// Short bucket allows 5 at once, long bucket allows 6 in total.
 	for i := 0; i < 5; i++ {
-		require.True(t, p.allow(slots, nowNano(base), OperationPublish, ""))
+		require.Zero(t, p.allow(slots, nowNano(base), OperationPublish, ""))
 	}
 	before := append([]int64(nil), slots...)
 
 	// Rejected by the short bucket: nothing is consumed from the long one either.
-	require.False(t, p.allow(slots, nowNano(base), OperationPublish, ""))
+	require.NotZero(t, p.allow(slots, nowNano(base), OperationPublish, ""))
 	require.Equal(t, before, slots)
 
 	// After one second the short bucket refills and the 6th publish is allowed. The long bucket
 	// (6 per 10s) then has no tokens left, so the 7th publish is rejected by it.
 	later := nowNano(testNow(base, time.Second))
-	require.True(t, p.allow(slots, later, OperationPublish, ""))
-	require.False(t, p.allow(slots, later, OperationPublish, ""))
+	require.Zero(t, p.allow(slots, later, OperationPublish, ""))
+	require.NotZero(t, p.allow(slots, later, OperationPublish, ""))
 }
 
 func TestCommandPlanTotalOrdering(t *testing.T) {
@@ -117,18 +117,18 @@ func TestCommandPlanTotalOrdering(t *testing.T) {
 	now := nowNano(base)
 
 	// Publish is limited to 1 per second by its own bucket.
-	require.True(t, p.allow(slots, now, OperationPublish, ""))
-	require.False(t, p.allow(slots, now, OperationPublish, ""))
-	require.False(t, p.allow(slots, now, OperationPublish, ""))
+	require.Zero(t, p.allow(slots, now, OperationPublish, ""))
+	require.NotZero(t, p.allow(slots, now, OperationPublish, ""))
+	require.NotZero(t, p.allow(slots, now, OperationPublish, ""))
 
 	// Only one publish has consumed total so far, the two rejected publishes did not.
-	require.True(t, p.allow(slots, now, OperationHistory, ""))
-	require.True(t, p.allow(slots, now, OperationHistory, ""))
+	require.Zero(t, p.allow(slots, now, OperationHistory, ""))
+	require.Zero(t, p.allow(slots, now, OperationHistory, ""))
 
 	// Total is exhausted now. A rejected by total command must not consume its default bucket.
 	defaultSlot := p.ops[OperationHistory].base.buckets[0].slot
 	before := slots[defaultSlot]
-	require.False(t, p.allow(slots, now, OperationHistory, ""))
+	require.NotZero(t, p.allow(slots, now, OperationHistory, ""))
 	require.Equal(t, before, slots[defaultSlot])
 }
 
@@ -145,9 +145,9 @@ func TestCommandPlanDefaultIsShared(t *testing.T) {
 	now := nowNano(base)
 
 	// Default is one bucket for all operations which fall back to it.
-	require.True(t, p.allow(slots, now, OperationSubscribe, ""))
-	require.True(t, p.allow(slots, now, OperationHistory, ""))
-	require.False(t, p.allow(slots, now, OperationPublish, ""))
+	require.Zero(t, p.allow(slots, now, OperationSubscribe, ""))
+	require.Zero(t, p.allow(slots, now, OperationHistory, ""))
+	require.NotZero(t, p.allow(slots, now, OperationPublish, ""))
 }
 
 func TestCommandPlanResolution(t *testing.T) {
@@ -217,11 +217,7 @@ func TestCommandPlanResolution(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := p.resolve(tt.op, tt.key)
 			require.NotNil(t, s)
-			got := make([]Bucket, 0, len(s.buckets))
-			for _, sb := range s.buckets {
-				got = append(got, sb.bucket)
-			}
-			require.Equal(t, tt.want, got)
+			require.Equal(t, tt.want, scopeBuckets(s))
 		})
 	}
 }
@@ -243,7 +239,7 @@ func TestCommandPlanResolutionUnlimited(t *testing.T) {
 	require.Nil(t, p.resolve(OperationPublish, "chat"))
 	require.Nil(t, p.resolve(OperationRPC, "any"))
 	require.Nil(t, p.resolve(OperationRefresh, ""))
-	require.True(t, p.allow(make([]int64, p.numSlots), 0, OperationPublish, "chat"))
+	require.Zero(t, p.allow(make([]int64, p.numSlots), 0, OperationPublish, "chat"))
 }
 
 func TestCommandPlanNamespaceOverrideReplacesBase(t *testing.T) {
@@ -266,14 +262,14 @@ func TestCommandPlanNamespaceOverrideReplacesBase(t *testing.T) {
 
 	// Base bucket (2) is not checked for chat: 5 publishes are allowed there.
 	for i := 0; i < 5; i++ {
-		require.True(t, p.allow(slots, now, OperationPublish, "chat"))
+		require.Zero(t, p.allow(slots, now, OperationPublish, "chat"))
 	}
-	require.False(t, p.allow(slots, now, OperationPublish, "chat"))
+	require.NotZero(t, p.allow(slots, now, OperationPublish, "chat"))
 
 	// Other namespaces are limited by base buckets.
-	require.True(t, p.allow(slots, now, OperationPublish, ""))
-	require.True(t, p.allow(slots, now, OperationPublish, ""))
-	require.False(t, p.allow(slots, now, OperationPublish, ""))
+	require.Zero(t, p.allow(slots, now, OperationPublish, ""))
+	require.Zero(t, p.allow(slots, now, OperationPublish, ""))
+	require.NotZero(t, p.allow(slots, now, OperationPublish, ""))
 }
 
 func TestCommandPlanSlotsAreStaticAndUnique(t *testing.T) {
@@ -324,7 +320,7 @@ func TestClientLimiterDisabled(t *testing.T) {
 	l := NewClientLimiter(configtypes.RateLimit{})
 	st := l.NewConnState()
 	require.Nil(t, st.slots)
-	require.True(t, l.CommandAllowed(st, time.Now(), OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed(st, time.Now(), OperationPublish, ""))
 	require.True(t, l.ErrorAllowed(st, time.Now()))
 	require.False(t, l.NeedsKey(OperationPublish))
 }
@@ -397,12 +393,12 @@ func TestClientLimiterCommandAllowedAndNeedsKey(t *testing.T) {
 	require.False(t, l.NeedsKey(OperationHistory))
 
 	st := l.NewConnState()
-	require.True(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
-	require.True(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
-	require.False(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
-	require.True(t, l.CommandAllowed(st, base, OperationPublish, ""))
-	require.False(t, l.CommandAllowed(st, base, OperationPublish, ""))
-	require.True(t, l.CommandAllowed(st, base, OperationHistory, ""))
+	require.Zero(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
+	require.NotZero(t, l.CommandAllowed(st, base, OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed(st, base, OperationPublish, ""))
+	require.NotZero(t, l.CommandAllowed(st, base, OperationPublish, ""))
+	require.Zero(t, l.CommandAllowed(st, base, OperationHistory, ""))
 }
 
 func TestOperationString(t *testing.T) {
@@ -491,11 +487,11 @@ func TestMapAndTrackOperationsBucketsInClientPlan(t *testing.T) {
 	require.Equal(t, []Bucket{NewBucket(time.Second, 10)}, scopeBuckets(p.resolve(OperationUntrack, "")))
 }
 
-// scopeBuckets returns the buckets of a scope in their order.
+// scopeBuckets returns the token buckets of a scope in their order.
 func scopeBuckets(s *scope) []Bucket {
 	buckets := make([]Bucket, 0, len(s.buckets))
 	for _, sb := range s.buckets {
-		buckets = append(buckets, sb.bucket)
+		buckets = append(buckets, Bucket{emission: sb.lim.emission, tolerance: sb.lim.tolerance})
 	}
 	return buckets
 }

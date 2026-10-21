@@ -14,9 +14,9 @@ type redisPlan struct {
 // Wiring mirrors newUserPlan: the same operations, overrides and fallbacks, only scopes differ.
 func newRedisUserPlan(cfg configtypes.RateLimitRedisUserCommand) *redisPlan {
 	alloc := &slotAllocator{}
-	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets)
+	def := alloc.compileScope(defaultScopeName, cfg.Default.Enabled, cfg.Default.Buckets, cfg.Default.Algorithm)
 	p := &redisPlan{}
-	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, def)}
+	p.ops[OperationConnect] = opLimit{base: alloc.baseScope(OperationConnect.String(), cfg.Connect.Enabled, cfg.Connect.Buckets, cfg.Connect.Algorithm, def)}
 	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 	return p
 }

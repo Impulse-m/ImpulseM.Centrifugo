@@ -16,9 +16,9 @@ import (
 )
 
 // TestRefreshToSessionReachesTheConnection checks how the session of a refresh reaches a connection with no user. A
-// connection whose token had no session at connect has no record, so its refresh indexes nothing: a revocation of that
-// session reaches it through the sweep which a revocation without a user runs. A connection whose token had a session at
-// connect is moved to the session of its refresh in the index.
+// connection whose token had no session at connect has no record, and its refresh indexes it by a session track, so a
+// revocation of that session reaches it through the index. A connection whose token had a session at connect is moved
+// to the session of its refresh in the index.
 func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -36,7 +36,9 @@ func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 			queue := accessrevoke.NewDisconnectQueue(10000, 100)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			go func() { _ = queue.Run(ctx) }()
+			go func() {
+				_ = queue.Run(ctx)
+			}()
 			revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
 
 			connectClaims := map[string]any{"iat": now}
@@ -77,7 +79,9 @@ func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 			refreshSession, _ := accessrevoke.Key(tt.refreshID)
 			if tt.connectID == "" {
 				require.Equal(t, refreshSession, client.TokenIdentity().Session, "Core keeps the identity of the refresh")
-				require.Empty(t, store.SessionConnections().Connections(refreshSession))
+				require.Nil(t, connStateOf(client), "the refresh gives no record")
+				require.NotNil(t, sessionTrackOf(client))
+				require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(refreshSession))
 			} else {
 				connectSession, _ := accessrevoke.Key(tt.connectID)
 				require.Empty(t, store.SessionConnections().Connections(connectSession))
@@ -100,8 +104,8 @@ func TestClosedConnectionIsNotIndexedByRefresh(t *testing.T) {
 		name      string
 		connectID string
 	}{
-		// With no session at connect there is no record, so the index cannot reach the connection whatever the refresh
-		// does. This row checks only that no record exists; the race of a refresh with a record is in its own test.
+		// With no session at connect there is no record, so the refresh sets the session track of the connection, which
+		// Core refuses for a closed connection. The race of a refresh with a disconnect is in its own test.
 		{name: "no session at connect", connectID: ""},
 		{name: "session at connect", connectID: revokeTestUUID},
 	}
@@ -137,7 +141,9 @@ func TestClosedConnectionIsNotIndexedByRefresh(t *testing.T) {
 				}),
 			}, nil)
 			require.Empty(t, store.SessionConnections().Connections(refreshSession))
-			if tt.connectID != "" {
+			if tt.connectID == "" {
+				require.Nil(t, client.ExtState(), "a closed connection gets no session track")
+			} else {
 				connectSession, _ := accessrevoke.Key(tt.connectID)
 				require.Empty(t, store.SessionConnections().Connections(connectSession))
 			}
@@ -145,39 +151,134 @@ func TestClosedConnectionIsNotIndexedByRefresh(t *testing.T) {
 	}
 }
 
-// TestRefreshRacingDisconnectIndexesNothing runs a refresh to a token with a session and the disconnect of a connection
-// whose token has another session at connect, many times. Such a connection has a record and its disconnect handler from
-// connect, so it is the only kind which can be in the index. Whichever of the two comes first, neither session holds the
-// connection once it is gone.
+// TestRefreshRacingDisconnectIndexesNothing runs a refresh to a token with a session and the disconnect of a connection,
+// many times. A connection whose token had another session at connect has a record and its disconnect handler from
+// connect. A connection with no session at connect has no record: its refresh sets its session track and the disconnect
+// handler of the track. Whichever of the two comes first, neither session holds the connection once it is gone.
 func TestRefreshRacingDisconnectIndexesNothing(t *testing.T) {
+	tests := []struct {
+		name       string
+		connectID  string
+		iterations int
+	}{
+		{name: "record from connect", connectID: revokeTestUUID, iterations: 50},
+		{name: "no record at connect", connectID: "", iterations: 200},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
+			now := time.Now().Unix()
+			connectSession, _ := accessrevoke.Key(revokeTestUUID)
+			refreshSession, _ := accessrevoke.Key(revokeTestOtherUUID)
+			refreshToken := getConnTokenWithClaims(t, map[string]any{
+				"iat": now,
+				"jti": revokeTestOtherUUID,
+			})
+			connectClaims := map[string]any{"iat": now}
+			if tt.connectID != "" {
+				connectClaims["jti"] = tt.connectID
+			}
+			for i := 0; i < tt.iterations; i++ {
+				client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, connectClaims))
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_, _, _ = h.OnRefresh(client, centrifuge.RefreshEvent{Token: refreshToken}, nil)
+				}()
+				client.Disconnect(centrifuge.DisconnectForceNoReconnect)
+				wg.Wait()
+				// The hub drops a connection before its disconnect handler runs, so the index is checked until the handler
+				// has released the connection, not at once.
+				require.Eventually(t, func() bool {
+					return len(store.SessionConnections().Connections(connectSession)) == 0 &&
+						len(store.SessionConnections().Connections(refreshSession)) == 0
+				}, 5*time.Second, 5*time.Millisecond)
+			}
+		})
+	}
+}
+
+// refreshWithClaims refreshes the connection with a token of claims, and fails the test when the refresh errs.
+func refreshWithClaims(t *testing.T, h *Handler, client *centrifuge.Client, claims map[string]any) centrifuge.RefreshReply {
+	t.Helper()
+	reply, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{Token: getConnTokenWithClaims(t, claims)}, nil)
+	require.NoError(t, err)
+	return reply
+}
+
+// TestRefreshedSessionMovesAndLeaves refreshes a connection with no record to one session, then to another, then to a
+// token without a session. The connection is indexed under the session of its last refresh only, and one session track
+// serves the three refreshes.
+func TestRefreshedSessionMovesAndLeaves(t *testing.T) {
 	h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
 	now := time.Now().Unix()
-	connectSession, _ := accessrevoke.Key(revokeTestUUID)
-	refreshSession, _ := accessrevoke.Key(revokeTestOtherUUID)
-	refreshToken := getConnTokenWithClaims(t, map[string]any{
-		"iat": now,
-		"jti": revokeTestOtherUUID,
-	})
-	for i := 0; i < 50; i++ {
-		client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
-			"iat": now,
-			"jti": revokeTestUUID,
-		}))
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _, _ = h.OnRefresh(client, centrifuge.RefreshEvent{Token: refreshToken}, nil)
-		}()
-		client.Disconnect(centrifuge.DisconnectForceNoReconnect)
-		wg.Wait()
-		// The hub drops a connection before its disconnect handler runs, so the index is checked until the handler has
-		// released the connection, not at once.
-		require.Eventually(t, func() bool {
-			return len(store.SessionConnections().Connections(connectSession)) == 0 &&
-				len(store.SessionConnections().Connections(refreshSession)) == 0
-		}, 5*time.Second, 5*time.Millisecond)
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"iat": now}))
+	firstSession, _ := accessrevoke.Key(revokeTestUUID)
+	secondSession, _ := accessrevoke.Key(revokeTestOtherUUID)
+
+	refreshWithClaims(t, h, client, map[string]any{"iat": now, "jti": revokeTestUUID})
+	track := sessionTrackOf(client)
+	require.NotNil(t, track)
+	require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(firstSession))
+	require.Empty(t, store.SessionConnections().Connections(secondSession))
+
+	refreshWithClaims(t, h, client, map[string]any{"iat": now, "jti": revokeTestOtherUUID})
+	require.Same(t, track, sessionTrackOf(client))
+	require.Empty(t, store.SessionConnections().Connections(firstSession))
+	require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(secondSession))
+
+	refreshWithClaims(t, h, client, map[string]any{"iat": now})
+	require.Same(t, track, sessionTrackOf(client))
+	require.Empty(t, store.SessionConnections().Connections(firstSession))
+	require.Empty(t, store.SessionConnections().Connections(secondSession))
+}
+
+// TestRefreshedSessionRevokedBeforeCoreStoresIdentity revokes the session of a refresh, through a revoker on the same
+// store, after the session is tracked and before the check. The check sees the revocation, the refresh expires, and the
+// connection goes, whatever identity Core held for it at that moment.
+func TestRefreshedSessionRevokedBeforeCoreStoresIdentity(t *testing.T) {
+	h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
+	now := time.Now().Unix()
+	queue := accessrevoke.NewDisconnectQueue(10000, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = queue.Run(ctx)
+	}()
+	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"iat": now}))
+
+	hook := func(_ rebindableClient) {
+		require.NoError(t, revoker.RevokeSession("", revokeTestOtherUUID, now, 0, nil))
 	}
+	testHookRefreshTracked.Store(&hook)
+	t.Cleanup(func() {
+		testHookRefreshTracked.Store(nil)
+	})
+
+	reply := refreshWithClaims(t, h, client, map[string]any{"iat": now, "jti": revokeTestOtherUUID})
+	require.True(t, reply.Expired)
+	require.Eventually(t, func() bool {
+		return len(node.Hub().Connections()) == 0
+	}, 5*time.Second, 5*time.Millisecond)
+}
+
+// TestRefreshedSessionReleasedOnDisconnect checks that the disconnect of a connection with no record releases the session
+// track it got at a refresh: it leaves the session it was refreshed into.
+func TestRefreshedSessionReleasedOnDisconnect(t *testing.T) {
+	h, store, node := newAuthClassTestHandler(t, config.DefaultConfig())
+	now := time.Now().Unix()
+	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"iat": now}))
+	session, _ := accessrevoke.Key(revokeTestUUID)
+
+	refreshWithClaims(t, h, client, map[string]any{"iat": now, "jti": revokeTestUUID})
+	require.Equal(t, []accessrevoke.Connection{client}, store.SessionConnections().Connections(session))
+
+	client.Disconnect(centrifuge.DisconnectForceNoReconnect)
+	require.Eventually(t, func() bool {
+		return len(node.Hub().Connections()) == 0 && len(store.SessionConnections().Connections(session)) == 0
+	}, 5*time.Second, 5*time.Millisecond)
 }
 
 // TestDefaultConnectAllocatesNothing checks that the connect of a connection, under the defaults, makes no record and

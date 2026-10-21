@@ -78,7 +78,7 @@ func (h *Handler) onRefreshProxy(
 // account, the origin, the class and the token of the record stay as they are: the proxy has no token of this server.
 // The moves of one connection are ordered by moveMu, which is held across the load, the store and the sync of the
 // session index, so the index ends on the session the record holds. The record holds the new identity, so the revoker
-// and the sweep check the new session. The dedup scope follows it too, since each call computes its scope from the
+// and the recheck check the new session. The dedup scope follows it too, since each call computes its scope from the
 // identity of the record.
 func (h *Handler) moveProxyIdentity(c rebindableClient, rec *connState, identity centrifuge.TokenIdentity) {
 	if rec == nil {
@@ -104,6 +104,13 @@ func (h *Handler) refreshWithoutRecord(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	identity := tokenIdentityOf(token)
+	// The session is tracked before the check, as refreshSameIdentity does. A revocation applied after the check then finds
+	// the connection in the index, and one applied before it is seen by the check, whose rejection closes the connection,
+	// which releases the track.
+	if h.accessStore != nil && c.UserID() == "" {
+		h.trackRefreshedSession(c, identity.Session)
+	}
+	runTestHook(&testHookRefreshTracked, c)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)

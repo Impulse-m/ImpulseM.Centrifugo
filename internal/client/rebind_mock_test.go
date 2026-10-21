@@ -26,6 +26,15 @@ func (m *rebindClientMock) ExtState() any {
 	return m.ExtStateFunc()
 }
 
+// SetExtState does nothing, as the mock keeps no extension state unless ExtStateFunc is set.
+func (m *rebindClientMock) SetExtState(v any) {
+}
+
+// OnDisconnectIfConnected reports that the connection is connected. The handler is not kept, as no test fires it.
+func (m *rebindClientMock) OnDisconnectIfConnected(_ centrifuge.DisconnectHandler) bool {
+	return true
+}
+
 func (m *rebindClientMock) Rebind(opts centrifuge.RebindOptions) error {
 	if m.RebindFunc == nil {
 		return nil

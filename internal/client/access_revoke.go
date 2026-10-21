@@ -15,8 +15,8 @@ import (
 // connection is rechecked. Tests use it to apply a revocation at that point.
 var testHookConnectTracked atomic.Pointer[func(c rebindableClient)]
 
-// testHookRefreshTracked, if set, runs in refreshSameIdentity after the session of a refreshed connection is tracked and
-// before the check. Tests use it to apply a revocation at that point.
+// testHookRefreshTracked, if set, runs in refreshSameIdentity and refreshWithoutRecord after the session of a refreshed
+// connection is tracked and before the check. Tests use it to apply a revocation at that point.
 var testHookRefreshTracked atomic.Pointer[func(c rebindableClient)]
 
 // testHookRebound, if set, runs in onRefreshRebind after the connection is rebound and before its session is tracked.

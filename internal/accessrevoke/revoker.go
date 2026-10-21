@@ -2,7 +2,6 @@ package accessrevoke
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
@@ -29,12 +28,6 @@ type Revoker struct {
 	store *Store
 	hub   Hub
 	queue *DisconnectQueue
-	// sweep checks all local connections. It is a field so tests can observe and block sweeps.
-	sweep func()
-
-	sweepMu      sync.Mutex
-	sweeping     bool
-	sweepPending bool
 }
 
 // NewRevoker creates a Revoker.
@@ -43,10 +36,6 @@ func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 		store: store,
 		hub:   hub,
 		queue: queue,
-	}
-	revoker.sweep = func() {
-		// Session is the only revocation kind changed by revoke_token, so only it is checked.
-		SweepConnections(hub, store, queue, CheckOptions{Session: true})
 	}
 	queue.setRetrier(revoker.retry)
 	return revoker
@@ -69,14 +58,13 @@ func (r *Revoker) UnblockUser(userID string) error {
 	return r.store.UnblockUser(userID)
 }
 
-// RevokeSession revokes the session and disconnects local connections of userID which have this
-// session. Connections without a user which have this session are disconnected through the session
-// index, with or without userID. Empty userID also runs a sweep of all local connections in the
-// background, which disconnects the connections with this session that the index does not hold. The
-// sweep is O(local connections), so passing userID is strongly preferred at scale. A disconnect the
-// queue drops is retried by its user or session once the queue has room. Every disconnect closes with
-// the disconnect the session is revoked with, see Store.RevokeSession, or with centrifuge.DisconnectExpired
-// when it has none.
+// RevokeSession revokes the session and disconnects local connections which have this session. Connections
+// with no user are disconnected through the session index, with or without userID. Connections of userID are
+// disconnected through the user index of the hub, so only a call which names the user reaches them at once; a
+// connection of a user which is passed no user is refused at its next refresh. Nothing scans the local
+// connections. A disconnect the queue drops is retried by its user or session once the queue has room. Every
+// disconnect closes with the disconnect the session is revoked with, see Store.RevokeSession, or with
+// centrifuge.DisconnectExpired when it has none.
 func (r *Revoker) RevokeSession(
 	userID string,
 	sessionID string,
@@ -92,9 +80,6 @@ func (r *Revoker) RevokeSession(
 	closeConn := closeWith(r.store.sessionDisconnect(sessionKey), centrifuge.DisconnectExpired)
 	r.disconnectSessionConnections(sessionKey, closeConn)
 	if userID == "" {
-		// The sweep also finds the indexed connections, and a disconnect is idempotent, so a connection hit by both is
-		// disconnected once in effect.
-		r.requestSweep()
 		return nil
 	}
 	r.disconnectMatching(userID, func(identity centrifuge.TokenIdentity) Reason {
@@ -208,34 +193,4 @@ func (r *Revoker) retry(key retryKey) {
 	}
 	closeConn := closeWith(r.store.sessionDisconnect(key.session), centrifuge.DisconnectExpired)
 	r.disconnectSessionConnections(key.session, closeConn)
-}
-
-// requestSweep starts a sweep in the background. If a sweep is already running, it marks one more
-// sweep to run after the current one, so revocations applied during the run are not missed, and
-// no more than one sweep is pending at a time.
-func (r *Revoker) requestSweep() {
-	r.sweepMu.Lock()
-	if r.sweeping {
-		r.sweepPending = true
-		r.sweepMu.Unlock()
-		return
-	}
-	r.sweeping = true
-	r.sweepMu.Unlock()
-	go r.runSweeps()
-}
-
-// runSweeps runs sweeps until no sweep is pending.
-func (r *Revoker) runSweeps() {
-	for {
-		r.sweep()
-		r.sweepMu.Lock()
-		if !r.sweepPending {
-			r.sweeping = false
-			r.sweepMu.Unlock()
-			return
-		}
-		r.sweepPending = false
-		r.sweepMu.Unlock()
-	}
 }

@@ -25,6 +25,8 @@ type rebindableClient interface {
 	BeginDisconnect(disconnect centrifuge.Disconnect) bool
 	Closing() bool
 	ExtState() any
+	SetExtState(v any)
+	OnDisconnectIfConnected(h centrifuge.DisconnectHandler) bool
 	Rebind(opts centrifuge.RebindOptions) error
 	Subscribe(channel string, opts ...centrifuge.SubscribeOption) error
 	ChannelsWithContext() map[string]centrifuge.ChannelContext
@@ -84,7 +86,7 @@ func rateLimitStateOf(c rebindableClient) *ratelimit.ConnState {
 }
 
 // AccessIdentity implements accessrevoke.Identified. It returns the user and the token identity of the connection, which
-// the revoker, the recheck and the sweep check it against.
+// the revoker, the recheck and the catch-up sweep check it against.
 func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 	id := s.identity.Load()
 	if id == nil {
@@ -138,8 +140,8 @@ func (h *Handler) adoptClientRecord(client *centrifuge.Client) *connState {
 
 // storeNeedsConnState reports whether the access store needs a record for a connection with userID and identity: a
 // connection with no user whose token has a session. The session index holds only such connections. A connection with
-// no user and no session at connect has none; a refresh which gives it a session is kept by Core, and a revocation of
-// that session reaches it through the sweep, see the README of rpcregistry.
+// no user and no session at connect has none; a refresh which gives it a session indexes it by its sessionTrack, see
+// session_track.go.
 func (h *Handler) storeNeedsConnState(userID string, identity centrifuge.TokenIdentity) bool {
 	return h.accessStore != nil && userID == "" && identity.Session != ([16]byte{})
 }

@@ -121,14 +121,14 @@ func BenchmarkRPCRegistryAppTypeLabelParallel(b *testing.B) {
 
 func TestNormalizeNumericSuffix(t *testing.T) {
 	tests := map[string]string{
-		"QUOTA_EXCEEDED_17":   "QUOTA_EXCEEDED_X",
-		"QUOTA_EXCEEDED_0":    "QUOTA_EXCEEDED_X",
-		"PLAIN":           "PLAIN",
-		"TRAILING_":       "TRAILING_",
-		"MIXED_1A":        "MIXED_1A",
-		"NO_DIGITS_AB_1B": "NO_DIGITS_AB_1B",
-		"_42":             "_X",
-		"ONLY_NUMBERS_12": "ONLY_NUMBERS_X",
+		"QUOTA_EXCEEDED_17": "QUOTA_EXCEEDED_X",
+		"QUOTA_EXCEEDED_0":  "QUOTA_EXCEEDED_X",
+		"PLAIN":             "PLAIN",
+		"TRAILING_":         "TRAILING_",
+		"MIXED_1A":          "MIXED_1A",
+		"NO_DIGITS_AB_1B":   "NO_DIGITS_AB_1B",
+		"_42":               "_X",
+		"ONLY_NUMBERS_12":   "ONLY_NUMBERS_X",
 	}
 	for input, want := range tests {
 		require.Equal(t, want, normalizeNumericSuffix(input), input)

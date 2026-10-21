@@ -8,8 +8,8 @@ import (
 	"unicode/utf8"
 )
 
-// maxReasonSize is the longest reason of a close. The reason of a WebSocket close frame is limited to 123 bytes.
-const maxReasonSize int = 123
+// MaxReasonSize is the longest reason of a close. The reason of a WebSocket close frame is limited to 123 bytes.
+const MaxReasonSize int = 123
 
 // Range is an inclusive range of close codes.
 type Range struct {
@@ -22,7 +22,7 @@ func Absent(code uint32, reason string) bool {
 	return code == 0 && reason == ""
 }
 
-// Validate returns an error when the code lies in none of the ranges or the reason is longer than maxReasonSize.
+// Validate returns an error when the code lies in none of the ranges or the reason is longer than MaxReasonSize.
 // The caller checks Absent first: an absent close is not validated.
 func Validate(code uint32, reason string, ranges ...Range) error {
 	inRange := false
@@ -35,8 +35,8 @@ func Validate(code uint32, reason string, ranges ...Range) error {
 	if !inRange {
 		return fmt.Errorf("close code %d is not in the allowed ranges", code)
 	}
-	if len(reason) > maxReasonSize {
-		return fmt.Errorf("close reason is longer than %d bytes", maxReasonSize)
+	if len(reason) > MaxReasonSize {
+		return fmt.Errorf("close reason is longer than %d bytes", MaxReasonSize)
 	}
 	return nil
 }

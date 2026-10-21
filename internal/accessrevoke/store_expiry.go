@@ -195,6 +195,10 @@ func (s *Store) stopExpiry() {
 
 // armExpiry arms the expiry timer, while it is on, for an entry which expires at expireAt (Unix seconds): for that
 // time, or expiryGap after the start of the previous run if that is later. A timer armed for an earlier time stays.
+// The delay is read from the wall clock once, at arm time, and then runs on the monotonic clock. After a forward step
+// of the wall clock, or a suspend of the host during which timers do not advance, an entry which expired by the wall
+// clock stays in memory until the armed instant, which maxExpiryDelaySeconds bounds. This is a known limit: only memory
+// and store_size see it, because Check compares with nowUnix and ignores expired entries.
 func (s *Store) armExpiry(expireAt int64) {
 	s.expiryMu.Lock()
 	defer s.expiryMu.Unlock()

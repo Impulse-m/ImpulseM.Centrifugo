@@ -65,7 +65,29 @@ func rpcRateLimitCommand(id uint32, method string) *protocol.Command {
 	return &protocol.Command{Id: id, Rpc: &protocol.RPCRequest{Method: method}}
 }
 
-func TestRPCRateLimitRefusalConfiguredError(t *testing.T) {
+// The wait of 1.2 s is a little under 1.2 s on the wire, so the retry-after value is 2: the rounding up is seen here.
+func TestRPCRefusalConfiguredError(t *testing.T) {
+	reg := rateLimitedRegistry()
+	reg.Errors.RateLimited.Code = 400
+	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(1200*time.Millisecond, 1), reg)
+	client, transport, _ := connectTestClient(t, node, 0)
+
+	sendRateLimitCommand(client, rpcRateLimitCommand(2, "users.get"))
+	sendRateLimitCommand(client, rpcRateLimitCommand(3, "users.get"))
+	transport.waitReply(t, 2)
+	reply := transport.waitReply(t, 3)
+
+	require.NotNil(t, reply.Error)
+	require.Equal(t, uint32(400), reply.Error.Code)
+	require.Equal(t, "throttled", reply.Error.Message)
+	require.True(t, reply.Error.Temporary)
+	require.Equal(t, int32(17), reply.Error.AppCode)
+	require.Equal(t, "example.throttle", reply.Error.AppType)
+	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "2"}, reply.Error.Metadata)
+}
+
+// A whole-minute wait keeps its exact value on the wire.
+func TestRPCRefusalWholeMinuteWait(t *testing.T) {
 	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), rateLimitedRegistry())
 	client, transport, _ := connectTestClient(t, node, 0)
 
@@ -84,7 +106,7 @@ func TestRPCRateLimitRefusalConfiguredError(t *testing.T) {
 	require.Equal(t, map[string]string{"x-centrifugo-retry-after": "60"}, reply.Error.Metadata)
 }
 
-func TestRPCRateLimitRefusalDefaultIs111(t *testing.T) {
+func TestRPCRefusalDefaultIs111(t *testing.T) {
 	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), registryTestRegistryConfig())
 	client, transport, _ := connectTestClient(t, node, 0)
 
@@ -97,7 +119,7 @@ func TestRPCRateLimitRefusalDefaultIs111(t *testing.T) {
 	require.Empty(t, reply.Error.Metadata)
 }
 
-func TestRPCRateLimitRefusalNotRegisteredMethod(t *testing.T) {
+func TestRPCRefusalNotRegisteredMethod(t *testing.T) {
 	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), rateLimitedRegistry())
 	client, transport, _ := connectTestClient(t, node, 0)
 
@@ -110,7 +132,7 @@ func TestRPCRateLimitRefusalNotRegisteredMethod(t *testing.T) {
 	require.Empty(t, reply.Error.Metadata)
 }
 
-func TestRPCRateLimitRefusalRegistryDisabled(t *testing.T) {
+func TestRPCRefusalRegistryDisabled(t *testing.T) {
 	reg := rateLimitedRegistry()
 	reg.Enabled = false
 	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), reg)
@@ -125,7 +147,7 @@ func TestRPCRateLimitRefusalRegistryDisabled(t *testing.T) {
 	require.Empty(t, reply.Error.Metadata)
 }
 
-func TestRPCRateLimitRefusalNonRPCUnchanged(t *testing.T) {
+func TestRPCRefusalNonRPCUnchanged(t *testing.T) {
 	rl := configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
@@ -150,7 +172,7 @@ func TestRPCRateLimitRefusalNonRPCUnchanged(t *testing.T) {
 }
 
 // The configured error is read from the running config at each refusal, so a reload applies to the next one.
-func TestRPCRateLimitRefusalReadsRunningConfig(t *testing.T) {
+func TestRPCRefusalReloadAppliesNext(t *testing.T) {
 	h, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Minute, 1), rateLimitedRegistry())
 	client, transport, _ := connectTestClient(t, node, 0)
 
@@ -181,6 +203,7 @@ func TestRPCRefusalRetryAfterRounding(t *testing.T) {
 	require.Equal(t, int64(2), retryAfterSeconds(1200*time.Millisecond))
 	require.Equal(t, int64(60), retryAfterSeconds(59999*time.Millisecond))
 	require.Equal(t, int64(1), retryAfterSeconds(0))
+	require.Equal(t, int64(1), retryAfterSeconds(-time.Second))
 }
 
 // A backend trailer named with the reserved prefix is dropped, the other trailers are kept.

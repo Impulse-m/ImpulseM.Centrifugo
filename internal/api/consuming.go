@@ -209,7 +209,8 @@ func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, p
 		}
 		return nil
 	case "unsubscribe":
-		_, err := d.handler.handleUnsubscribe(ctx, payload)
+		// An invalid unsubscribe must not lose the unsubscribe, so it is dropped from the payload first.
+		_, err := d.handler.handleUnsubscribe(ctx, sanitizeUnsubscribeBody(payload))
 		if err != nil {
 			var apiError *apiproto.Error
 			if errors.As(err, &apiError) && apiError.Temporary {

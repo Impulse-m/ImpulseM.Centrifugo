@@ -113,6 +113,9 @@ func TestNatsControllerUnsubscribeCodeTwoNodes(t *testing.T) {
 	client.Connect(centrifuge.ConnectRequest{Token: "user-nats"})
 	require.Equal(t, "user-nats", client.UserID())
 	require.NoError(t, node2.Subscribe("user-nats", "unsub:room"))
+	// node2 must hold the subscription before node1 unsubscribes it, so a failed subscribe is not taken for a lost
+	// control message.
+	require.Equal(t, 1, node2.Hub().NumSubscribers("unsub:room"), "node2 holds no subscriber of the channel before the unsubscribe")
 
 	require.NoError(t, node1.Unsubscribe("user-nats", "unsub:room", centrifuge.WithCustomUnsubscribe(centrifuge.Unsubscribe{
 		Code:   2600,
@@ -120,7 +123,7 @@ func TestNatsControllerUnsubscribeCodeTwoNodes(t *testing.T) {
 	})))
 	require.Eventually(t, func() bool {
 		return len(transport.unsubscribePushes()) == 1
-	}, 5*time.Second, 10*time.Millisecond)
+	}, 5*time.Second, 10*time.Millisecond, "node2 sent no unsubscribe push for the unsubscribe control message of node1")
 	push := transport.unsubscribePushes()[0]
 	require.Equal(t, uint32(2600), push.Code)
 	require.Equal(t, "resubscribe", push.Reason)

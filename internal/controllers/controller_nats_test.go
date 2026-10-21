@@ -3,7 +3,9 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"runtime"
 	"strconv"
 	"sync"
@@ -71,19 +73,21 @@ func (t *unsubscribePushTransport) Write(message []byte) error {
 	return t.WriteMany(message)
 }
 
-// WriteMany records the unsubscribe pushes of the messages.
+// WriteMany records the unsubscribe pushes of the messages. A push is written as a bare push object, not wrapped in
+// a reply, so each object is decoded as a push.
 func (t *unsubscribePushTransport) WriteMany(messages ...[]byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, message := range messages {
-		decoder := protocol.NewJSONReplyDecoder(message)
+		decoder := json.NewDecoder(bytes.NewReader(message))
 		for {
-			reply, err := decoder.Decode()
+			var push protocol.Push
+			err := decoder.Decode(&push)
 			if err != nil {
 				break
 			}
-			if reply.Push != nil && reply.Push.Unsubscribe != nil {
-				t.pushes = append(t.pushes, reply.Push.Unsubscribe)
+			if push.Unsubscribe != nil {
+				t.pushes = append(t.pushes, push.Unsubscribe)
 			}
 		}
 	}

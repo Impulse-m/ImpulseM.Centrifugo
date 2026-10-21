@@ -71,3 +71,8 @@ func TestValidatePongAtWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestClientPongAtWriteDefaultsOff(t *testing.T) {
+	cfg := DefaultConfig()
+	require.False(t, cfg.Client.PongTimeoutAtWrite)
+}

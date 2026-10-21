@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,17 +13,9 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
-
-func TestMain(m *testing.M) {
-	_ = metrics.Init(metrics.Config{
-		Registerer: prometheus.NewRegistry(),
-	})
-	os.Exit(m.Run())
-}
 
 // userConfig returns user command limits with the given default bucket.
 func userConfig(interval time.Duration, rate int) configtypes.RateLimitUserCommand {

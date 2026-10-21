@@ -12,14 +12,11 @@ import (
 // behave as a connection with nothing to change.
 type rebindClientMock struct {
 	tools.TestClientMock
-	ExtStateFunc func() any
-	NotConnected bool
-	// DisconnectHandler is the handler OnDisconnectIfConnected sets.
-	DisconnectHandler centrifuge.DisconnectHandler
-	RebindFunc        func(opts centrifuge.RebindOptions) error
-	SubscribeFunc     func(channel string, opts ...centrifuge.SubscribeOption) error
-	ChannelsFunc      func() map[string]centrifuge.ChannelContext
-	UnsubscribeFunc   func(ch string, unsubscribe ...centrifuge.Unsubscribe)
+	ExtStateFunc    func() any
+	RebindFunc      func(opts centrifuge.RebindOptions) error
+	SubscribeFunc   func(channel string, opts ...centrifuge.SubscribeOption) error
+	ChannelsFunc    func() map[string]centrifuge.ChannelContext
+	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
 }
 
 func (m *rebindClientMock) ExtState() any {
@@ -33,13 +30,8 @@ func (m *rebindClientMock) ExtState() any {
 func (m *rebindClientMock) SetExtState(v any) {
 }
 
-// OnDisconnectIfConnected reports whether the handler was set: false when NotConnected is set, else true. The handler is
-// kept in DisconnectHandler.
-func (m *rebindClientMock) OnDisconnectIfConnected(h centrifuge.DisconnectHandler) bool {
-	if m.NotConnected {
-		return false
-	}
-	m.DisconnectHandler = h
+// OnDisconnectIfConnected reports that the connection is connected. The handler is not kept, as no test fires it.
+func (m *rebindClientMock) OnDisconnectIfConnected(_ centrifuge.DisconnectHandler) bool {
 	return true
 }
 

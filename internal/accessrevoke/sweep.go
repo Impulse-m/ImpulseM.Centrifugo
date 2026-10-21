@@ -68,13 +68,14 @@ func (s *CatchUpSweeper) Run(ctx context.Context) error {
 	return nil
 }
 
-// Sweeper periodically removes expired entries from the Store and updates store size metrics.
+// Sweeper removes expired entries from the Store with its expiry timer, at most once per interval, and exports the store
+// size at scrape.
 type Sweeper struct {
 	store    *Store
 	interval time.Duration
 }
 
-// NewSweeper creates a Sweeper which runs every interval.
+// NewSweeper creates a Sweeper. interval is the shortest time between two removals.
 func NewSweeper(store *Store, interval time.Duration) *Sweeper {
 	return &Sweeper{
 		store:    store,
@@ -82,20 +83,22 @@ func NewSweeper(store *Store, interval time.Duration) *Sweeper {
 	}
 }
 
-// Run sweeps the Store every interval until ctx is done.
+// Run removes expired entries of the Store until ctx is done. It binds the store size gauges while it runs.
 func (s *Sweeper) Run(ctx context.Context) error {
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			s.store.Sweep()
-			sizes := s.store.Sizes()
-			metrics.AccessRevokeStoreSize.WithLabelValues("blocked").Set(float64(sizes.Blocked))
-			metrics.AccessRevokeStoreSize.WithLabelValues("session").Set(float64(sizes.Sessions))
-			metrics.AccessRevokeStoreSize.WithLabelValues("user").Set(float64(sizes.Users))
-		}
+	s.store.startExpiry(s.interval)
+	metrics.BindAccessRevokeStoreSizes(s.storeSizes)
+	<-ctx.Done()
+	metrics.BindAccessRevokeStoreSizes(nil)
+	s.store.stopExpiry()
+	return ctx.Err()
+}
+
+// storeSizes returns the store size of each kind, read by the gauges at scrape.
+func (s *Sweeper) storeSizes() metrics.AccessRevokeStoreSizes {
+	sizes := s.store.Sizes()
+	return metrics.AccessRevokeStoreSizes{
+		Blocked:  sizes.Blocked,
+		Sessions: sizes.Sessions,
+		Users:    sizes.Users,
 	}
 }

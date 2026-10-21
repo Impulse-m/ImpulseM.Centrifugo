@@ -12,7 +12,9 @@ type forkRegistry struct {
 	accessRevokeDisconnectsTotal        *prometheus.CounterVec
 	accessRevokeDisconnectsDroppedTotal prometheus.Counter
 	accessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
-	accessRevokeStoreSize               *prometheus.GaugeVec
+	accessRevokeStoreSizeBlocked        prometheus.GaugeFunc
+	accessRevokeStoreSizeSessions       prometheus.GaugeFunc
+	accessRevokeStoreSizeUsers          prometheus.GaugeFunc
 
 	// Access revocation source metrics
 	accessRevokeSourceReady              prometheus.Gauge
@@ -89,13 +91,33 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"kind"})
 
-	m.accessRevokeStoreSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	m.accessRevokeStoreSizeBlocked = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
 		Name:        "store_size",
 		Help:        "Number of entries in access revocation store by kind.",
-		ConstLabels: constLabels,
-	}, []string{"kind"})
+		ConstLabels: withLabel(constLabels, "kind", "blocked"),
+	}, func() float64 {
+		return float64(accessRevokeStoreSizes.Read().Blocked)
+	})
+	m.accessRevokeStoreSizeSessions = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "store_size",
+		Help:        "Number of entries in access revocation store by kind.",
+		ConstLabels: withLabel(constLabels, "kind", "session"),
+	}, func() float64 {
+		return float64(accessRevokeStoreSizes.Read().Sessions)
+	})
+	m.accessRevokeStoreSizeUsers = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "store_size",
+		Help:        "Number of entries in access revocation store by kind.",
+		ConstLabels: withLabel(constLabels, "kind", "user"),
+	}, func() float64 {
+		return float64(accessRevokeStoreSizes.Read().Users)
+	})
 
 	m.accessRevokeSourceReady = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
@@ -387,7 +409,9 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
 		m.accessRevokeDisconnectRetriesTotal,
-		m.accessRevokeStoreSize,
+		m.accessRevokeStoreSizeBlocked,
+		m.accessRevokeStoreSizeSessions,
+		m.accessRevokeStoreSizeUsers,
 		m.accessRevokeSourceReady,
 		m.accessRevokeSourceLagging,
 		m.accessRevokeSourceLagRecords,
@@ -454,7 +478,6 @@ func (m *Registry) setForkMetrics() {
 	AccessRevokeDisconnectsTotal = m.accessRevokeDisconnectsTotal
 	AccessRevokeDisconnectsDroppedTotal = m.accessRevokeDisconnectsDroppedTotal
 	AccessRevokeDisconnectRetriesTotal = m.accessRevokeDisconnectRetriesTotal
-	AccessRevokeStoreSize = m.accessRevokeStoreSize
 
 	AccessRevokeSourceReady = m.accessRevokeSourceReady
 	AccessRevokeSourceLagging = m.accessRevokeSourceLagging

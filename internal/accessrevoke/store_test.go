@@ -317,7 +317,7 @@ func TestStoreSweepRemovesExpiredEntries(t *testing.T) {
 	require.Equal(t, Sizes{Blocked: 2, Sessions: 1, Users: 1}, store.Sizes())
 
 	clock = 1200
-	store.Sweep()
+	store.runExpiry()
 	require.Equal(t, Sizes{Blocked: 1, Sessions: 0, Users: 0}, store.Sizes())
 	require.Equal(t, Blocked, store.Check("user-2", centrifuge.TokenIdentity{}, CheckOptions{Block: true}).Verdict)
 }
@@ -344,7 +344,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 				_ = store.RevokeSession(testUUID, 0, 0, nil)
 				_ = store.InvalidateUser("user-1", 1, 0, 0, 0)
 				_ = store.Check("user-1", Identity(testUUID, 0, 1), CheckOptions{Block: true, Session: true, UserTokens: true})
-				store.Sweep()
+				store.runExpiry()
 				_ = store.Sizes()
 			}
 		}()

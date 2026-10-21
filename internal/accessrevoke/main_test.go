@@ -53,9 +53,13 @@ func labeledCounterValue(t *testing.T, name string, labelName string, labelValue
 		}
 		for _, metric := range family.GetMetric() {
 			for _, label := range metric.GetLabel() {
-				if label.GetName() == labelName && label.GetValue() == labelValue {
-					return metric.GetCounter().GetValue()
+				if label.GetName() != labelName || label.GetValue() != labelValue {
+					continue
 				}
+				if counter := metric.GetCounter(); counter != nil {
+					return counter.GetValue()
+				}
+				return metric.GetGauge().GetValue()
 			}
 		}
 	}

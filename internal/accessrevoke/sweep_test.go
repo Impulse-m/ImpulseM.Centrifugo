@@ -2,8 +2,8 @@ package accessrevoke
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -95,24 +95,64 @@ func TestCatchUpSweeperStopsOnContextDone(t *testing.T) {
 }
 
 func TestSweeperRemovesExpiredEntries(t *testing.T) {
-	var clock atomic.Int64
-	clock.Store(testNow)
-	store := NewStore(time.Minute)
-	store.nowUnix = clock.Load
-	require.NoError(t, store.BlockUser("user-1", testNow+100))
+	synctest.Test(t, func(t *testing.T) {
+		store := NewStore(20 * time.Minute)
+		t0 := time.Now().Unix()
+		require.NoError(t, store.BlockUser("user-1", t0+100))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- NewSweeper(store, 5*time.Millisecond).Run(ctx)
-	}()
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- NewSweeper(store, 5*time.Millisecond).Run(ctx)
+		}()
+		synctest.Wait()
 
-	clock.Store(testNow + 200)
-	require.Eventually(t, func() bool {
-		return store.Sizes().Blocked == 0
-	}, 5*time.Second, 5*time.Millisecond)
+		time.Sleep(99 * time.Second)
+		synctest.Wait()
+		require.Equal(t, 1, store.Sizes().Blocked)
 
-	cancel()
-	require.ErrorIs(t, <-errCh, context.Canceled)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		require.Equal(t, 0, store.Sizes().Blocked)
+
+		cancel()
+		require.ErrorIs(t, <-errCh, context.Canceled)
+	})
+}
+
+func TestSweeperExportsStoreSizeAtScrape(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := NewStore(20 * time.Minute)
+		t0 := time.Now().Unix()
+		require.NoError(t, store.BlockUser("user-1", t0+1000))
+		require.NoError(t, store.BlockUser("user-2", t0+1000))
+		require.NoError(t, store.RevokeSession(testUUID, 0, t0+1000, nil))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- NewSweeper(store, time.Second).Run(ctx)
+		}()
+		synctest.Wait()
+
+		require.Equal(t, 2.0, storeSizeValue(t, "blocked"))
+		require.Equal(t, 1.0, storeSizeValue(t, "session"))
+		require.Equal(t, 0.0, storeSizeValue(t, "user"))
+
+		require.NoError(t, store.BlockUser("user-3", t0+1000))
+		require.Equal(t, 3.0, storeSizeValue(t, "blocked"))
+
+		cancel()
+		require.ErrorIs(t, <-errCh, context.Canceled)
+		synctest.Wait()
+		require.Equal(t, 0.0, storeSizeValue(t, "blocked"))
+		require.Equal(t, 0.0, storeSizeValue(t, "session"))
+		require.Equal(t, 0.0, storeSizeValue(t, "user"))
+	})
+}
+
+// storeSizeValue returns the access_revoke store_size gauge of the kind from the test registry.
+func storeSizeValue(t *testing.T, kind string) float64 {
+	t.Helper()
+	return labeledCounterValue(t, "centrifugo_access_revoke_store_size", "kind", kind)
 }

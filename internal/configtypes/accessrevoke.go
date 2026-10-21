@@ -43,8 +43,8 @@ type AccessRevoke struct {
 	NotifyRate int `mapstructure:"notify_rate" default:"100" json:"notify_rate" envconfig:"notify_rate" yaml:"notify_rate" toml:"notify_rate" doc:"A maximum number of access revocation notifications sent to other nodes per second."`
 	// DefaultTTL is how long a revocation entry is kept when the request does not set expiration time.
 	DefaultTTL Duration `mapstructure:"default_ttl" default:"20m" json:"default_ttl" envconfig:"default_ttl" yaml:"default_ttl" toml:"default_ttl" doc:"How long a revocation entry is kept when the request does not set expiration time."`
-	// SweepInterval is how often expired revocation entries are removed from memory.
-	SweepInterval Duration `mapstructure:"sweep_interval" default:"30s" json:"sweep_interval" envconfig:"sweep_interval" yaml:"sweep_interval" toml:"sweep_interval" doc:"How often expired revocation entries are removed from memory."`
+	// SweepInterval is the shortest time between two removals of expired revocation entries from memory.
+	SweepInterval Duration `mapstructure:"sweep_interval" default:"30s" json:"sweep_interval" envconfig:"sweep_interval" yaml:"sweep_interval" toml:"sweep_interval" doc:"The shortest time between two removals of expired revocation entries from memory. An expired entry is removed at most this long after it expires; nothing runs while no entry is due."`
 	// Source is a source of access revocation events for this node. Empty type means no source.
 	Source AccessRevokeSource `mapstructure:"source" json:"source" envconfig:"source" yaml:"source" toml:"source" doc:"A source of access revocation events for this node. Empty type means no source."`
 }

@@ -73,22 +73,42 @@ type userEntry struct {
 }
 
 // Store keeps revocation entries in memory. Expired entries are ignored on read and removed by
-// Sweep. Apply methods are idempotent: replaying an event does not change the result. Store is
-// safe for concurrent use.
+// the expiry timer while the Sweeper runs, at most sweep_interval after they expire (store_expiry.go).
+// Apply methods are idempotent: replaying an event does not change the result. Store is safe for
+// concurrent use.
 type Store struct {
 	defaultTTL time.Duration
 	nowUnix    func() int64
 
 	blockedMu sync.RWMutex
 	blocked   map[[16]byte]int64
+	// blockedExpiry is guarded by blockedMu and holds an item for every blocked key.
+	blockedExpiry expiryHeap
 
 	sessionsMu sync.RWMutex
 	sessions   map[[16]byte]sessionEntry
+	// sessionsExpiry is guarded by sessionsMu and holds an item for every session.
+	sessionsExpiry expiryHeap
 
 	usersMu sync.RWMutex
 	users   map[[16]byte]userEntry
+	// usersExpiry is guarded by usersMu and holds an item for every user.
+	usersExpiry expiryHeap
 
 	sessionConns *SessionConnections
+
+	// expiryMu guards the expiry timer fields below.
+	expiryMu sync.Mutex
+	// expiryOn is set while the Sweeper runs.
+	expiryOn bool
+	// expiryGap is the shortest time between two runs of the expiry timer.
+	expiryGap time.Duration
+	// expiryTimer is created by the first arm.
+	expiryTimer *time.Timer
+	// expiryAt is the time the timer is armed for, zero while it is not armed.
+	expiryAt time.Time
+	// expiryLast is the start of the previous run.
+	expiryLast time.Time
 }
 
 // NewStore creates an empty Store. defaultTTL is used for entries which come without expiration time.
@@ -122,12 +142,19 @@ func (s *Store) BlockUser(userID string, expireAt int64) error {
 	expireAt = s.expireAtOrDefault(expireAt, now)
 
 	s.blockedMu.Lock()
-	defer s.blockedMu.Unlock()
-	current := s.blocked[key]
+	current, existed := s.blocked[key]
 	if current <= now {
 		current = 0
 	}
-	s.blocked[key] = max(current, expireAt)
+	stored := max(current, expireAt)
+	s.blocked[key] = stored
+	if !existed {
+		s.blockedExpiry.push(expiryItem{expireAt: stored, key: key})
+	}
+	s.blockedMu.Unlock()
+	if !existed {
+		s.armExpiry(stored)
+	}
 	return nil
 }
 
@@ -140,6 +167,7 @@ func (s *Store) UnblockUser(userID string) error {
 	s.blockedMu.Lock()
 	defer s.blockedMu.Unlock()
 	delete(s.blocked, key)
+	compactIfStale(&s.blocked, &s.blockedExpiry, blockedExpireAt)
 	return nil
 }
 
@@ -157,15 +185,22 @@ func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64,
 	expireAt = s.expireAtOrDefault(expireAt, now)
 
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	current, exists := s.sessions[key]
 	if !exists || current.expireAt <= now {
 		current = sessionEntry{}
 	}
-	s.sessions[key] = sessionEntry{
+	entry := sessionEntry{
 		expireAt:   max(current.expireAt, expireAt),
 		revokedAt:  max(current.revokedAt, revokedAt),
 		disconnect: keptDisconnect(current.disconnect, disconnect),
+	}
+	s.sessions[key] = entry
+	if !exists {
+		s.sessionsExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
+	}
+	s.sessionsMu.Unlock()
+	if !exists {
+		s.armExpiry(entry.expireAt)
 	}
 	return nil
 }
@@ -183,16 +218,23 @@ func (s *Store) InvalidateUser(userID string, minGeneration uint64, issuedBefore
 	expireAt = s.expireAtOrDefault(expireAt, now)
 
 	s.usersMu.Lock()
-	defer s.usersMu.Unlock()
 	current, exists := s.users[key]
 	if !exists || current.expireAt <= now {
 		current = userEntry{}
 	}
-	s.users[key] = userEntry{
+	entry := userEntry{
 		minGeneration: max(current.minGeneration, minGeneration),
 		issuedBefore:  max(current.issuedBefore, issuedBefore),
 		revokedAt:     max(current.revokedAt, revokedAt),
 		expireAt:      max(current.expireAt, expireAt),
+	}
+	s.users[key] = entry
+	if !exists {
+		s.usersExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
+	}
+	s.usersMu.Unlock()
+	if !exists {
+		s.armExpiry(entry.expireAt)
 	}
 	return nil
 }
@@ -222,36 +264,7 @@ func (s *Store) Check(userID string, identity centrifuge.TokenIdentity, opts Che
 	return Result{Verdict: Allowed}
 }
 
-// Sweep removes expired entries from all maps.
-func (s *Store) Sweep() {
-	now := s.nowUnix()
-
-	s.blockedMu.Lock()
-	for key, expireAt := range s.blocked {
-		if expireAt <= now {
-			delete(s.blocked, key)
-		}
-	}
-	s.blockedMu.Unlock()
-
-	s.sessionsMu.Lock()
-	for key, entry := range s.sessions {
-		if entry.expireAt <= now {
-			delete(s.sessions, key)
-		}
-	}
-	s.sessionsMu.Unlock()
-
-	s.usersMu.Lock()
-	for key, entry := range s.users {
-		if entry.expireAt <= now {
-			delete(s.users, key)
-		}
-	}
-	s.usersMu.Unlock()
-}
-
-// Sizes returns number of stored entries by kind, expired entries included until swept.
+// Sizes returns number of stored entries by kind, expired entries included until removed.
 func (s *Store) Sizes() Sizes {
 	s.blockedMu.RLock()
 	blocked := len(s.blocked)

@@ -515,6 +515,12 @@ message UnsubscribeRequest {
     FilterNode label_filter = 5;
     // all_users works as SubscribeRequest.all_users. Centrifugo PRO only.
     bool all_users = 6;
+    // unsubscribe is a custom unsubscribe code and reason. Code must be in
+    // 2100-2499 or 2600-2999, reason at most 123 bytes. A code in 2100-2499
+    // leaves clients unsubscribed. A code in 2600-2999 makes clients subscribe
+    // again at once: the subscribe proxy runs again, so a changed server tags
+    // filter applies. If not set, clients are unsubscribed with code 2000.
+    Unsubscribe unsubscribe = 7;
 }
 
 // UnsubscribeResponse is the response to an UnsubscribeRequest.
@@ -528,6 +534,14 @@ message UnsubscribeResponse {
 // UnsubscribeResult is the result of an unsubscribe call. Empty at the
 // moment.
 message UnsubscribeResult {}
+
+// Unsubscribe describes the code and reason clients are unsubscribed with.
+message Unsubscribe {
+    // code is the unsubscribe code.
+    uint32 code = 1;
+    // reason is the unsubscribe reason.
+    string reason = 2;
+}
 
 // Disconnect describes the code and reason clients are disconnected with.
 message Disconnect {

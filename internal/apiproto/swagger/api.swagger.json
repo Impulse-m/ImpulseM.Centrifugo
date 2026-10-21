@@ -4580,6 +4580,10 @@
         "all_users": {
           "type": "boolean",
           "description": "all_users works as SubscribeRequest.all_users. Centrifugo PRO only."
+        },
+        "unsubscribe": {
+          "$ref": "#/definitions/api.Unsubscribe",
+          "description": "unsubscribe is a custom unsubscribe code and reason. Code must be in\n2100-2499 or 2600-2999, reason at most 123 bytes. A code in 2100-2499\nleaves clients unsubscribed. A code in 2600-2999 makes clients subscribe\nagain at once: the subscribe proxy runs again, so a changed server tags\nfilter applies. If not set, clients are unsubscribed with code 2000."
         }
       },
       "description": "UnsubscribeRequest unsubscribes a user from a channel."
@@ -4870,6 +4874,21 @@
         }
       },
       "description": "Disconnect describes the code and reason clients are disconnected with."
+    },
+    "api.Unsubscribe": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int64",
+          "description": "code is the unsubscribe code."
+        },
+        "reason": {
+          "type": "string",
+          "description": "reason is the unsubscribe reason."
+        }
+      },
+      "description": "Unsubscribe describes the code and reason clients are unsubscribed with."
     }
   },
   "securityDefinitions": {

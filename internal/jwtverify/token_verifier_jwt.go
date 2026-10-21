@@ -729,15 +729,11 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 		info = claims.Info
 	}
 
-	var tokenExp int64
-	if claims.ExpiresAt != nil {
-		tokenExp = claims.ExpiresAt.Unix()
-	}
 	ct := ConnectToken{
 		Info:     info,
 		Subs:     subs,
 		ExpireAt: expireAt,
-		TokenExp: tokenExp,
+		TokenExp: tokenExpOf(claims),
 		Meta:     claims.Meta,
 	}
 	if verifier.userIDClaim != "" {

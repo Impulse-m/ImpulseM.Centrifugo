@@ -1,6 +1,7 @@
 package configtypes
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -127,6 +128,9 @@ type RPCRegistryError struct {
 	AppType string `mapstructure:"app_type" json:"app_type" envconfig:"app_type" yaml:"app_type" toml:"app_type" expose:"full" doc:"Application-level error type. Empty means not set."`
 }
 
+// RPCAppErrorTypePattern is the format of an application error type, from a trailer, a status message or a transform.
+var RPCAppErrorTypePattern = regexp.MustCompile(`^[A-Z0-9_]{1,64}$`)
+
 // RPCRegistryAppError names the gRPC trailers carrying application error details.
 type RPCRegistryAppError struct {
 	// CodeKey is the name of the trailer with the application error code.
@@ -143,9 +147,19 @@ type RPCGRPCStatusToCodeTransform struct {
 	// Status is a gRPC status code name, for example UNAUTHENTICATED.
 	Status string `mapstructure:"status" json:"status" envconfig:"status" yaml:"status" toml:"status" expose:"full" doc:"gRPC status code name to match, for example <<UNAUTHENTICATED>>."`
 	// ToError is a transform to protocol error.
-	ToError TransformError `mapstructure:"to_error" json:"to_error" envconfig:"to_error" yaml:"to_error" toml:"to_error" doc:"Protocol error to return when the gRPC status matches."`
+	ToError RPCTransformError `mapstructure:"to_error" json:"to_error" envconfig:"to_error" yaml:"to_error" toml:"to_error" doc:"Protocol error to return when the gRPC status matches."`
 	// ToDisconnect is a transform to protocol disconnect.
 	ToDisconnect TransformDisconnect `mapstructure:"to_disconnect" json:"to_disconnect" envconfig:"to_disconnect" yaml:"to_disconnect" toml:"to_disconnect" doc:"Disconnect to send when the gRPC status matches."`
+}
+
+// RPCTransformError is the protocol error of a gRPC status transform. Besides the fields of TransformError it
+// sets the application code and type. They fill what the backend did not send: its trailers win.
+type RPCTransformError struct {
+	TransformError `mapstructure:",squash" yaml:",inline"`
+	// AppCode is the application error code used when the backend sends no valid code trailer. Zero means the default code of the status.
+	AppCode int32 `mapstructure:"app_code" json:"app_code" envconfig:"app_code" yaml:"app_code" toml:"app_code" doc:"Application error code when the backend sends no valid code trailer. Zero means the default code of the status. Needs <<to_error.code>>."`
+	// AppType is the application error type used when the backend gives none. Empty means none.
+	AppType string `mapstructure:"app_type" json:"app_type" envconfig:"app_type" yaml:"app_type" toml:"app_type" expose:"full" doc:"Application error type when the backend gives none, neither in the type trailer nor as a status message matching ^[A-Z0-9_]{1,64}$. Must match that pattern. Empty means none. Needs <<to_error.code>>."`
 }
 
 // RPCMethodDefaults are defaults for registry methods and targets.

@@ -13,7 +13,7 @@ func TestValidateRPCRegistryGRPCStatusNames(t *testing.T) {
 	validNames := []string{"UNAUTHENTICATED", "DATA_LOSS", "CANCELLED", "RESOURCE_EXHAUSTED"}
 	for _, name := range validNames {
 		transforms := configtypes.RPCGRPCStatusToCodeTransforms{
-			{Status: name, ToError: configtypes.TransformError{Code: 101}},
+			{Status: name, ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 101}}},
 		}
 		require.NoError(t, validateRPCRegistryTransforms(transforms), name)
 	}
@@ -22,7 +22,7 @@ func TestValidateRPCRegistryGRPCStatusNames(t *testing.T) {
 	invalidNames := []string{"unauthenticated", "Unauthenticated", "16", "1", "OK", "NOT_A_STATUS", ""}
 	for _, name := range invalidNames {
 		transforms := configtypes.RPCGRPCStatusToCodeTransforms{
-			{Status: name, ToError: configtypes.TransformError{Code: 101}},
+			{Status: name, ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 101}}},
 		}
 		require.Error(t, validateRPCRegistryTransforms(transforms), name)
 	}
@@ -30,7 +30,7 @@ func TestValidateRPCRegistryGRPCStatusNames(t *testing.T) {
 
 func TestValidateRPCRegistryTransformTextLimits(t *testing.T) {
 	nonASCII := configtypes.RPCGRPCStatusToCodeTransforms{
-		{Status: "UNAUTHENTICATED", ToError: configtypes.TransformError{Code: 101, Message: "café"}},
+		{Status: "UNAUTHENTICATED", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 101, Message: "café"}}},
 	}
 	require.ErrorContains(t, validateRPCRegistryTransforms(nonASCII), "grpc_status_to_code_transforms[0] error message must be ASCII")
 

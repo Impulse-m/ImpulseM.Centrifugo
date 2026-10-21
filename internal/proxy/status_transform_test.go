@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -55,38 +56,116 @@ func TestTransformHTTPStatusErrorSkipsEmptyTransformAndIgnoresOtherErrors(t *tes
 
 func TestTransformGRPCStatus(t *testing.T) {
 	transforms := configtypes.RPCGRPCStatusToCodeTransforms{
-		{Status: "UNAUTHENTICATED", ToError: configtypes.TransformError{Code: 150, Message: "login again"}},
+		{Status: "UNAUTHENTICATED", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 150, Message: "login again"}}},
 		{Status: "RESOURCE_EXHAUSTED", ToDisconnect: configtypes.TransformDisconnect{Code: 3600, Reason: "quota"}},
-		{Status: "UNKNOWN", ToError: configtypes.TransformError{Code: 160}},
+		{Status: "UNKNOWN", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 160}}},
 	}
 
-	protocolError, protocolDisconnect, ok := transformGRPCStatus(codes.Unauthenticated, transforms)
+	rule, ok := transformGRPCStatus(codes.Unauthenticated, transforms)
 	require.True(t, ok)
+	protocolError, protocolDisconnect := statusRuleResult(rule)
 	require.Equal(t, uint32(150), protocolError.Code)
 	require.Equal(t, "login again", protocolError.Message)
 	require.Nil(t, protocolDisconnect)
 
-	protocolError, protocolDisconnect, ok = transformGRPCStatus(codes.ResourceExhausted, transforms)
+	rule, ok = transformGRPCStatus(codes.ResourceExhausted, transforms)
 	require.True(t, ok)
+	protocolError, protocolDisconnect = statusRuleResult(rule)
 	require.Nil(t, protocolError)
 	require.Equal(t, uint32(3600), protocolDisconnect.Code)
 	require.Equal(t, "quota", protocolDisconnect.Reason)
 
-	_, _, ok = transformGRPCStatus(codes.Internal, transforms)
+	_, ok = transformGRPCStatus(codes.Internal, transforms)
 	require.False(t, ok)
 
-	_, _, ok = transformGRPCStatus(codes.Unauthenticated, nil)
+	_, ok = transformGRPCStatus(codes.Unauthenticated, nil)
 	require.False(t, ok)
 }
 
 func TestTransformGRPCStatusNamesMatchExactly(t *testing.T) {
 	// Names are matched exactly; a lower case name never matches a status.
 	transforms := configtypes.RPCGRPCStatusToCodeTransforms{
-		{Status: "unauthenticated", ToError: configtypes.TransformError{Code: 150}},
-		{Status: "NOT_A_STATUS", ToError: configtypes.TransformError{Code: 151}},
+		{Status: "unauthenticated", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 150}}},
+		{Status: "NOT_A_STATUS", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 151}}},
 	}
-	_, _, ok := transformGRPCStatus(codes.Unauthenticated, transforms)
+	_, ok := transformGRPCStatus(codes.Unauthenticated, transforms)
 	require.False(t, ok)
+}
+
+func TestMapGRPCRegistryErrorTransformAppFields(t *testing.T) {
+	transforms := configtypes.RPCGRPCStatusToCodeTransforms{
+		{Status: "UNAVAILABLE", ToError: configtypes.RPCTransformError{
+			TransformError: configtypes.TransformError{Code: 100, Message: "backend unavailable", Temporary: true},
+			AppCode:        503,
+			AppType:        "BACKEND_UNAVAILABLE",
+		}},
+		{Status: "RESOURCE_EXHAUSTED", ToDisconnect: configtypes.TransformDisconnect{Code: 3600, Reason: "quota"}},
+		{Status: "UNAVAILABLE", ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 101}}},
+	}
+	trailersWithApp := metadata.Pairs("app-code", "429", "app-type", "QUOTA_EXCEEDED_17")
+	appKeys := configtypes.RPCRegistryAppError{CodeKey: "app-code", TypeKey: "app-type"}
+
+	tests := []struct {
+		name        string
+		err         error
+		trailers    metadata.MD
+		wantCode    uint32
+		wantMessage string
+		wantTemp    bool
+		wantAppCode int32
+		wantAppType string
+		wantDisconn uint32
+	}{
+		{
+			name:        "rule fills missing app fields",
+			err:         status.Error(codes.Unavailable, "connection refused"),
+			wantCode:    100,
+			wantMessage: "backend unavailable",
+			wantTemp:    true,
+			wantAppCode: 503,
+			wantAppType: "BACKEND_UNAVAILABLE",
+		},
+		{
+			name:        "trailers win over the rule",
+			err:         status.Error(codes.Unavailable, "connection refused"),
+			trailers:    trailersWithApp,
+			wantCode:    100,
+			wantMessage: "backend unavailable",
+			wantTemp:    true,
+			wantAppCode: 429,
+			wantAppType: "QUOTA_EXCEEDED_17",
+		},
+		{
+			name:        "no rule keeps the default table",
+			err:         status.Error(codes.DeadlineExceeded, "deadline"),
+			wantCode:    100,
+			wantMessage: "deadline",
+			wantTemp:    true,
+			wantAppCode: 500,
+		},
+		{
+			name:        "disconnect rule",
+			err:         status.Error(codes.ResourceExhausted, "quota"),
+			wantDisconn: 3600,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocolError, disconnect := MapGRPCRegistryError(tt.err, tt.trailers, transforms, appKeys, nil)
+			if tt.wantDisconn != 0 {
+				require.Nil(t, protocolError)
+				require.NotNil(t, disconnect)
+				require.Equal(t, tt.wantDisconn, disconnect.Code)
+				return
+			}
+			require.Nil(t, disconnect)
+			require.Equal(t, tt.wantCode, protocolError.Code)
+			require.Equal(t, tt.wantMessage, protocolError.Message)
+			require.Equal(t, tt.wantTemp, protocolError.Temporary)
+			require.Equal(t, tt.wantAppCode, protocolError.AppCode)
+			require.Equal(t, tt.wantAppType, protocolError.AppType)
+		})
+	}
 }
 
 func TestGRPCStatusByName(t *testing.T) {

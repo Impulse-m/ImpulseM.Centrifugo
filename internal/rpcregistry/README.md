@@ -244,16 +244,17 @@ A failed gRPC call becomes a protocol error with the default mapping below. The 
 | `INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `NOT_FOUND`, `ALREADY_EXISTS`, `ABORTED`, `OUT_OF_RANGE` | 400 | no |
 
 * A `CANCELLED` status which the backend sends on a live connection is not a client cancel. It maps like `INTERNAL`, to code 100.
-* `grpc_status_to_code_transforms` replaces the row of a status. Each rule has `status` (a gRPC status name, exact match) and `to_error` or `to_disconnect`, the same as `status_to_code_transforms` for HTTP proxies:
+* `grpc_status_to_code_transforms` replaces the row of a status. Each rule has `status` (a gRPC status name, exact match) and `to_error` or `to_disconnect`, the same as `status_to_code_transforms` for HTTP proxies. `to_error` also takes `app_code` and `app_type`, which fill the application fields the backend does not send. They need `to_error.code`, and `app_type` must match `^[A-Z0-9_]{1,64}$`:
 
   ```json
   "grpc_status_to_code_transforms": [
-    {"status": "UNAUTHENTICATED", "to_error": {"code": 150, "message": "sign in again"}}
+    {"status": "UNAUTHENTICATED", "to_error": {"code": 150, "message": "sign in again"}},
+    {"status": "UNAVAILABLE", "to_error": {"code": 100, "message": "backend unavailable", "temporary": true, "app_code": 503, "app_type": "BACKEND_UNAVAILABLE"}}
   ]
   ```
 * With the default mapping, the protocol error `message` is the gRPC status message, cut to 256 bytes.
-* The application error code comes from the `app_error.code_key` trailer as a decimal `int32`. Without it, the code is 401 for `UNAUTHENTICATED`, 403 for `PERMISSION_DENIED`, 420 for `RESOURCE_EXHAUSTED`, 400 for `INVALID_ARGUMENT`, and 500 otherwise.
-* The application error type comes from the `app_error.type_key` trailer and must match `^[A-Z0-9_]{1,64}$`. Without a valid trailer, the status message is used when it matches that pattern.
+* The application error code comes from the `app_error.code_key` trailer as a decimal `int32`. Without a valid trailer, a transform's `app_code` applies when it is set. Otherwise the code is 401 for `UNAUTHENTICATED`, 403 for `PERMISSION_DENIED`, 420 for `RESOURCE_EXHAUSTED`, 400 for `INVALID_ARGUMENT`, and 500 otherwise.
+* The application error type comes from the `app_error.type_key` trailer and must match `^[A-Z0-9_]{1,64}$`. Without a valid trailer, the status message is used when it matches that pattern, and then a transform's `app_type` applies. A transport fault has a lower-case message, so it takes the rule's type. The rule fills each field separately: a valid trailer always wins, and the rule fills only what the backend did not send.
 * Protocol error `metadata` holds only the trailers listed in the method's `error_metadata`, and the `x-centrifugo-retry` key the server sets itself, see [Exactly-once calls](#exactly-once-calls). A listed `x-centrifugo-retry` trailer is dropped: a backend cannot set the key.
 
 Check the registry in CI with the usual config check. It validates the registry file too, when `rpc.registry.enabled` is true:

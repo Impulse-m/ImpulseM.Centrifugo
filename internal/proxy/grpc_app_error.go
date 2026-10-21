@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -10,9 +9,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 )
-
-// appErrorTypePattern is the format of application error types, from a trailer or from a status message.
-var appErrorTypePattern = regexp.MustCompile(`^[A-Z0-9_]{1,64}$`)
 
 // grpcAppError is the application part of a protocol error built from a failed gRPC call.
 type grpcAppError struct {
@@ -25,19 +21,23 @@ type grpcAppError struct {
 }
 
 // extractGRPCAppError reads the application error code and type from the trailers of a failed gRPC call.
-// The code comes from the keys.CodeKey trailer as a decimal int32. The type comes from the keys.TypeKey
-// trailer when it matches appErrorTypePattern. Otherwise the type is the status message when the message
-// matches, and the code falls back to the default of the status. Metadata holds only the trailers named
-// in metadataKeys.
+// The code comes from the keys.CodeKey trailer as a decimal int32, else from the fallback code when it is
+// set, else from the default of the status. The type comes from the keys.TypeKey trailer when it matches
+// RPCAppErrorTypePattern. Otherwise the type is the status message when the message matches, else the
+// fallback type. Metadata holds only the trailers named in metadataKeys.
 func extractGRPCAppError(
 	trailers metadata.MD,
 	status codes.Code,
 	message string,
 	keys configtypes.RPCRegistryAppError,
 	metadataKeys []string,
+	fallback configtypes.RPCTransformError,
 ) grpcAppError {
 	result := grpcAppError{
 		AppCode: defaultAppErrorCode(status),
+	}
+	if fallback.AppCode != 0 {
+		result.AppCode = fallback.AppCode
 	}
 
 	codeValue, ok := trailerValue(trailers, keys.CodeKey)
@@ -49,10 +49,13 @@ func extractGRPCAppError(
 	}
 
 	typeValue, ok := trailerValue(trailers, keys.TypeKey)
-	if ok && appErrorTypePattern.MatchString(typeValue) {
+	switch {
+	case ok && configtypes.RPCAppErrorTypePattern.MatchString(typeValue):
 		result.AppType = typeValue
-	} else if appErrorTypePattern.MatchString(message) {
+	case configtypes.RPCAppErrorTypePattern.MatchString(message):
 		result.AppType = message
+	default:
+		result.AppType = fallback.AppType
 	}
 
 	for _, key := range metadataKeys {

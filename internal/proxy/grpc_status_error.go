@@ -13,13 +13,13 @@ import (
 // grpcErrorMessageMaxLength limits the message of protocol errors built from gRPC statuses.
 const grpcErrorMessageMaxLength = 256
 
-// transformGRPCStatus maps a gRPC status code to a protocol error or disconnect with the configured
-// transforms. ok is false when no transform matches the code.
-func transformGRPCStatus(code codes.Code, transforms configtypes.RPCGRPCStatusToCodeTransforms) (*proxyproto.Error, *proxyproto.Disconnect, bool) {
+// transformGRPCStatus returns the first transform rule which matches a gRPC status code. ok is false when
+// no transform matches the code.
+func transformGRPCStatus(code codes.Code, transforms configtypes.RPCGRPCStatusToCodeTransforms) (statusRule[codes.Code], bool) {
 	if len(transforms) == 0 {
-		return nil, nil, false
+		return statusRule[codes.Code]{}, false
 	}
-	return matchStatusRule(code, grpcStatusRules(transforms))
+	return findStatusRule(code, grpcStatusRules(transforms))
 }
 
 // grpcStatusRules converts gRPC status transforms to status rules. Status names which are not gRPC

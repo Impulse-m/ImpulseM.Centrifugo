@@ -375,9 +375,15 @@ func validateRPCRegistryTransforms(transforms configtypes.RPCGRPCStatusToCodeTra
 		if code == codes.OK {
 			return fmt.Errorf("grpc_status_to_code_transforms[%d]: %s cannot be transformed", i, transform.Status)
 		}
-		err = validateStatusToCodeTarget(rpcStatusToCodeTransformsKey, i, transform.ToError, transform.ToDisconnect)
+		err = validateStatusToCodeTarget(rpcStatusToCodeTransformsKey, i, transform.ToError.TransformError, transform.ToDisconnect)
 		if err != nil {
 			return err
+		}
+		if (transform.ToError.AppCode != 0 || transform.ToError.AppType != "") && transform.ToError.Code == 0 {
+			return fmt.Errorf("grpc_status_to_code_transforms[%d]: to_error.app_code and to_error.app_type need to_error.code", i)
+		}
+		if transform.ToError.AppType != "" && !configtypes.RPCAppErrorTypePattern.MatchString(transform.ToError.AppType) {
+			return fmt.Errorf("grpc_status_to_code_transforms[%d]: to_error.app_type must match ^[A-Z0-9_]{1,64}$, got %q", i, transform.ToError.AppType)
 		}
 	}
 	return nil

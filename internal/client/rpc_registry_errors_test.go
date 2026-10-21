@@ -133,7 +133,7 @@ func TestRegistryStatusTransformOverridesDefault(t *testing.T) {
 	cfg.GRPCStatusToCodeTransforms = configtypes.RPCGRPCStatusToCodeTransforms{
 		{
 			Status:  "UNAUTHENTICATED",
-			ToError: configtypes.TransformError{Code: 150, Message: "custom unauthorized", Temporary: true},
+			ToError: configtypes.RPCTransformError{TransformError: configtypes.TransformError{Code: 150, Message: "custom unauthorized", Temporary: true}},
 		},
 	}
 	h := registryErrorTestHandler(t, backend, cfg)

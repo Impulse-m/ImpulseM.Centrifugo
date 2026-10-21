@@ -118,6 +118,7 @@ func TestValidateMethodOverrideNameWithTilde(t *testing.T) {
 	require.EqualError(t, validateRateLimit(cfg), `client.rate_limit method_overrides: method name "a~b" must not contain "~"`)
 }
 
+// A brace in a method name starts the scope name after the closing brace of the escaped user ID, so it passes.
 func TestValidateMethodOverrideNameWithBrace(t *testing.T) {
 	cfg := algorithmConfig("", testRateLimitBuckets(time.Second, 10))
 	cfg.Client.RateLimit.ClientCommand.RPC = configtypes.RateLimitRPCBuckets{
@@ -127,5 +128,5 @@ func TestValidateMethodOverrideNameWithBrace(t *testing.T) {
 			{Method: "a}.refresh", Enabled: true, Buckets: testRateLimitBuckets(time.Second, 5)},
 		},
 	}
-	require.EqualError(t, validateRateLimit(cfg), `client.rate_limit method_overrides: method name "a}.refresh" must not contain "{" or "}"`)
+	require.NoError(t, validateRateLimit(cfg))
 }

@@ -188,7 +188,7 @@ var userIDEscaper = strings.NewReplacer("%", "%25", "}", "%7D")
 
 // redisKey returns the key of a scope of userID: {prefix}.rl.{userID}.{scope}. Braces around the user ID
 // make it the Redis Cluster hash tag, so all scopes of a user live in one slot. The user ID is escaped, so the
-// first closing brace ends it, and the scope name (which has no brace, see validation) cannot shift the key.
+// first closing brace ends it, and the scope name after it, which may hold braces, cannot shift the key.
 func redisKey(prefix string, userID string, scopeName string) string {
 	return prefix + ".rl.{" + userIDEscaper.Replace(userID) + "}." + scopeName
 }

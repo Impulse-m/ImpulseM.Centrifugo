@@ -65,7 +65,7 @@ type slotBucket struct {
 // name, redisName, script and argv are used by Redis limits only: redisName is a part of the Redis key, script
 // and argv are the Redis script of the algorithm and its arguments for the buckets.
 type scope struct {
-	// redisName is the scope name, with the algorithm suffix of the Redis key. Tests read it to find the scope.
+	// redisName is the scope name with the algorithm suffix. The Redis key is built from it, see redisKey.
 	redisName string
 	algo      Algorithm
 	script    *rueidis.Lua
@@ -136,7 +136,7 @@ func (l *opLimit) needsKey() bool {
 // and is safe for concurrent use: all mutable state is kept in ConnState.
 type CommandPlan struct {
 	numSlots int
-	// maxInterval is the longest interval of all buckets in the plan.
+	// maxInterval is the longest interval of all buckets. Only the user plan sets and reads it, for userIdleTimeout.
 	maxInterval time.Duration
 	total       *scope
 	ops         [operationCount]opLimit
@@ -290,7 +290,6 @@ func newCommandPlan(cfg configtypes.RateLimitClientCommand) *CommandPlan {
 	wireOperations(alloc, &p.ops, &cfg.RateLimitOperations, def)
 
 	p.numSlots = alloc.next
-	p.maxInterval = alloc.maxInterval
 	return p
 }
 

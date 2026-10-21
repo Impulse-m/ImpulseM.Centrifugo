@@ -242,16 +242,12 @@ func validateRateLimitNamespaceOverrides(overrides configtypes.RateLimitNamespac
 	return nil
 }
 
-// validateRateLimitMethodNames refuses method names with a tilde or a brace. The tilde separates the scope name from
-// the algorithm suffix in Redis keys, so a method name with a tilde could collide with another scope. Braces are
-// refused so that a scope name never holds the closing brace of the user ID in a key.
+// validateRateLimitMethodNames refuses method names with a tilde. The tilde separates the scope name from the
+// algorithm suffix in Redis keys, so a method name with a tilde could collide with another scope.
 func validateRateLimitMethodNames(overrides configtypes.RateLimitMethodOverrides) error {
 	for _, override := range overrides {
 		if strings.Contains(override.Method, "~") {
 			return fmt.Errorf("client.rate_limit method_overrides: method name %q must not contain \"~\"", override.Method)
-		}
-		if strings.ContainsAny(override.Method, "{}") {
-			return fmt.Errorf("client.rate_limit method_overrides: method name %q must not contain \"{\" or \"}\"", override.Method)
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"hash/maphash"
 	"sync"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
@@ -11,6 +12,9 @@ import (
 // sessionTrackStripeCount is the number of locks which serialize the refreshes of connections with no record. A
 // connection picks its lock by a hash of its ID, so the locks cost a fixed amount per handler and nothing per connection.
 const sessionTrackStripeCount = 64
+
+// sessionTrackSeed seeds the hash which picks the stripe of a connection.
+var sessionTrackSeed maphash.Seed = maphash.MakeSeed()
 
 // sessionTrackStripes holds the locks of the stripes. The refreshes of one connection take the same lock, so the session
 // of each refresh is tracked in the order the refreshes run.
@@ -55,13 +59,8 @@ func (h *Handler) trackRefreshedSession(c rebindableClient, session [16]byte) {
 	h.accessStore.SessionConnections().Track(c, &st.track, session)
 }
 
-// sessionTrackStripeOf returns the stripe of the connection with ID id. The FNV-1a hash is written out, so picking a
+// sessionTrackStripeOf returns the stripe of the connection with ID id. maphash.String does not allocate, so picking a
 // stripe allocates nothing.
 func sessionTrackStripeOf(id string) int {
-	var hash uint32 = 2166136261
-	for i := 0; i < len(id); i++ {
-		hash ^= uint32(id[i])
-		hash *= 16777619
-	}
-	return int(hash % sessionTrackStripeCount)
+	return int(maphash.String(sessionTrackSeed, id) % sessionTrackStripeCount)
 }

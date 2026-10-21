@@ -126,14 +126,16 @@ func TestNextIdentityKeepsTokenExpiry(t *testing.T) {
 func TestRPCRegistryRefusesExpiredToken(t *testing.T) {
 	backend := newRegistryTestBackend(t)
 	h, _ := expiryTestHandler(t, backend, expiryTestRegistry(true))
+	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", time.Now().Unix()+60, 0), "")
 	exp := time.Now().Unix() + 2
-	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", exp, 0), "")
+	_, _, err := h.OnRefresh(client, centrifuge.RefreshEvent{Token: expiryTestToken(t, "42", exp, 0)}, nil)
+	require.NoError(t, err)
 	waitUntilUnix(t, exp)
 
 	callsBefore := testutil.ToFloat64(metrics.RPCRegistryCallsTotal.WithLabelValues("users.get", metrics.RPCRegistryResultExpired))
 	errorsBefore := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "none"))
 
-	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
+	_, err = h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
 	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(109), protoErr.Code)
 	require.Equal(t, "token expired", protoErr.Message)
@@ -281,14 +283,16 @@ func TestRPCRegistryExpiredRetransmitGetsCachedAfterRefresh(t *testing.T) {
 	reg := dedupRegistryConfig()
 	reg.RefuseExpiredTokens = true
 	h := newExpiryDedupHandler(t, reg, backend)
-	exp := time.Now().Unix() + 2
-	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", exp, 0), testInstance)
+	client := expiryTestClient(t, h, "c1", expiryTestToken(t, "42", time.Now().Unix()+60, 0), testInstance)
 	msgID := dedupMsgID(8)
 
 	first, err := dedupCall(h, client, "users.get", msgID, "x")
 	require.NoError(t, err)
 	require.Equal(t, []byte("reply:x"), first.Data)
 
+	exp := time.Now().Unix() + 2
+	_, _, err = h.OnRefresh(client, centrifuge.RefreshEvent{Token: expiryTestToken(t, "42", exp, 0)}, nil)
+	require.NoError(t, err)
 	waitUntilUnix(t, exp)
 	_, err = dedupCall(h, client, "users.get", msgID, "x")
 	protoErr := requireProtocolError(t, err)

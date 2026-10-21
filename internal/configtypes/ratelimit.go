@@ -4,6 +4,22 @@ import (
 	"encoding/json"
 )
 
+// Names of the rate limit algorithms, the values of the algorithm field. The ratelimit package registers one
+// implementation per name, and a test there checks that both sides list the same names.
+const (
+	RateLimitAlgorithmTokenBucket   = "token_bucket"
+	RateLimitAlgorithmSlidingWindow = "sliding_window"
+	RateLimitAlgorithmFixedWindow   = "fixed_window"
+)
+
+// RateLimitAlgorithmWindows maps each algorithm name to whether it is a window algorithm. Window algorithms take the
+// interval and rate caps of validation. A name missing from this map is unknown.
+var RateLimitAlgorithmWindows = map[string]bool{
+	RateLimitAlgorithmTokenBucket:   false,
+	RateLimitAlgorithmSlidingWindow: true,
+	RateLimitAlgorithmFixedWindow:   true,
+}
+
 // RateLimit is a configuration of operation rate limits. See PRO docs for details.
 type RateLimit struct {
 	// ClientCommand is a per-connection rate limit of client commands.

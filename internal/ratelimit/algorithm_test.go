@@ -52,6 +52,16 @@ func TestAlgorithmRegistry(t *testing.T) {
 	require.Panics(t, func() { algorithmNamed("leaky") })
 }
 
+func TestAlgorithmNamesMatchConfig(t *testing.T) {
+	require.Len(t, algorithms, len(configtypes.RateLimitAlgorithmWindows))
+	for name, window := range configtypes.RateLimitAlgorithmWindows {
+		algo, ok := algorithms[name]
+		require.True(t, ok, name)
+		_, isToken := algo.(tokenBucket)
+		require.Equal(t, window, !isToken, name)
+	}
+}
+
 func TestAlgorithmResolvedAtCompile(t *testing.T) {
 	p := newCommandPlan(configtypes.RateLimitClientCommand{
 		Enabled: true,

@@ -120,7 +120,7 @@ func validateRateLimit(c Config) error {
 
 func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 	if s.total != nil {
-		if s.tokenBucketOnly && s.total.Enabled && s.total.Algorithm != "" && s.total.Algorithm != tokenBucketName {
+		if s.tokenBucketOnly && s.total.Enabled && s.total.Algorithm != "" && s.total.Algorithm != configtypes.RateLimitAlgorithmTokenBucket {
 			return fmt.Errorf("%s.total: algorithm %q is not supported, client_error uses token_bucket only", s.name, s.total.Algorithm)
 		}
 		if err := validateRateLimitBuckets(s.total.Enabled, s.total.Algorithm, s.total.Buckets, true); err != nil {
@@ -167,9 +167,6 @@ func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 	return nil
 }
 
-// tokenBucketName is the configuration value of the token bucket algorithm, the default.
-const tokenBucketName = "token_bucket"
-
 // validateRateLimitBuckets validates bucket values and the algorithm of an enabled container. An enabled container
 // without buckets is an error when requireBuckets is set. Window algorithms have their own limits on buckets.
 func validateRateLimitBuckets(enabled bool, algorithm string, buckets configtypes.RateLimitBucketList, requireBuckets bool) error {
@@ -182,7 +179,7 @@ func validateRateLimitBuckets(enabled bool, algorithm string, buckets configtype
 	if requireBuckets && len(buckets) == 0 {
 		return fmt.Errorf("enabled buckets must not be empty")
 	}
-	window := algorithm == "sliding_window" || algorithm == "fixed_window"
+	window := configtypes.RateLimitAlgorithmWindows[algorithm]
 	for _, bucket := range buckets {
 		if bucket.Interval.ToDuration() <= 0 {
 			return fmt.Errorf("bucket interval must be greater than 0")
@@ -204,8 +201,7 @@ func validateRateLimitBuckets(enabled bool, algorithm string, buckets configtype
 
 // validateRateLimitAlgorithm reports an unknown algorithm. The empty name is the token bucket.
 func validateRateLimitAlgorithm(algorithm string) error {
-	switch algorithm {
-	case "", tokenBucketName, "sliding_window", "fixed_window":
+	if _, ok := configtypes.RateLimitAlgorithmWindows[algorithm]; ok || algorithm == "" {
 		return nil
 	}
 	return fmt.Errorf("algorithm %q is unknown, use token_bucket, sliding_window or fixed_window", algorithm)

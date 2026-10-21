@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/redis/rueidis"
+
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
 // slidingWindow is the sliding window counter (the rule of Cloudflare): the count of the previous window, weighted by
@@ -22,7 +24,7 @@ var slidingWindowScript = rueidis.NewLuaScript(luaDivisions + slidingWindowSourc
 
 // Name returns the configuration value of the sliding window.
 func (slidingWindow) Name() string {
-	return "sliding_window"
+	return configtypes.RateLimitAlgorithmSlidingWindow
 }
 
 // stateWords returns three: the window index, its count and the count of the previous window.

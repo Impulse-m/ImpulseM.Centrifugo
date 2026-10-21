@@ -9,7 +9,8 @@ import (
 )
 
 // Algorithm is a rate limit algorithm. One Algorithm decides all buckets of a scope, in memory and in Redis.
-// Adding an algorithm: one file with its type and methods, one embedded Lua script, one entry in algorithms.
+// Adding an algorithm: one file with its type and methods, one embedded Lua script, one entry in algorithms, and
+// its name in configtypes.RateLimitAlgorithmWindows, which validation reads. TestAlgorithmNamesMatchConfig checks both.
 type Algorithm interface {
 	// Name is the configuration value of the algorithm.
 	Name() string
@@ -96,11 +97,6 @@ func floorDiv(a int64, b int64) int64 {
 // ceilDiv returns a divided by b, rounded toward positive infinity. b must be positive.
 func ceilDiv(a int64, b int64) int64 {
 	return -floorDiv(-a, b)
-}
-
-// formatInt returns v in decimal, the form of Redis script arguments.
-func formatInt(v int64) string {
-	return strconv.FormatInt(v, 10)
 }
 
 // ttlMillis returns d in whole milliseconds rounded up, at least one, as Redis key TTLs are given.

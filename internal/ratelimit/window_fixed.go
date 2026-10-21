@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/redis/rueidis"
+
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
 // fixedWindow is the fixed window counter: rate operations are allowed per window of the wall clock, and the count
@@ -21,7 +23,7 @@ var fixedWindowScript = rueidis.NewLuaScript(luaDivisions + fixedWindowSource)
 
 // Name returns the configuration value of the fixed window.
 func (fixedWindow) Name() string {
-	return "fixed_window"
+	return configtypes.RateLimitAlgorithmFixedWindow
 }
 
 // stateWords returns two: the window index and its count.

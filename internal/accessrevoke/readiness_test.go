@@ -99,7 +99,7 @@ func TestReadinessCaughtUpAfterFailOpenSignalsOnce(t *testing.T) {
 	tracker, clock := newReadinessTest(false)
 	tracker.Observe(0, 0, 10)
 	clock.Advance(2 * time.Minute)
-	// Time based transitions are published by Snapshot, which the watch loop calls every tick.
+	// Time based transitions are published by Snapshot, which the source's readiness timer calls at each transition.
 	tracker.Snapshot()
 	require.True(t, tracker.Ready())
 	require.False(t, channelClosed(tracker.CaughtUpAfterFailOpen()))
@@ -179,7 +179,7 @@ func TestReadinessLaggingWhenNoSuccessfulFetch(t *testing.T) {
 	require.False(t, tracker.Lagging())
 
 	clock.Advance(2 * time.Second)
-	// Time based transitions are published by Snapshot, which the watch loop calls every tick.
+	// Time based transitions are published by Snapshot, which the source's readiness timer calls at each transition.
 	tracker.Snapshot()
 	require.True(t, tracker.Lagging())
 
@@ -297,6 +297,108 @@ func TestReadinessOldestBehindRecomputedWhenItClears(t *testing.T) {
 	clock.Advance(time.Second)
 	tracker.FetchSucceeded()
 	require.True(t, tracker.Lagging())
+}
+
+func TestReadinessNextCheckFollowsTransitions(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	tracker.Observe(0, 0, 10)
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 30*time.Second+time.Nanosecond, next)
+
+	clock.Advance(31 * time.Second)
+	snapshot, next := tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Lagging)
+	require.Equal(t, 29*time.Second, next)
+
+	clock.Advance(29 * time.Second)
+	snapshot, next = tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Ready)
+	require.True(t, snapshot.FailedOpen)
+	require.Equal(t, 30*time.Second, next)
+}
+
+func TestReadinessNextCheckSilenceBeforeStartup(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 30*time.Second+time.Nanosecond, next)
+
+	clock.Advance(30*time.Second + time.Nanosecond)
+	snapshot, next := tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Lagging)
+	require.False(t, snapshot.Ready)
+	require.Equal(t, 29*time.Second+999999999*time.Nanosecond, next)
+}
+
+func TestReadinessNextCheckKeepsPartitionTermWhileSilent(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	clock.Advance(20 * time.Second)
+	tracker.Observe(0, 0, 10)
+
+	clock.Advance(11 * time.Second)
+	snapshot, next := tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Lagging)
+	require.Equal(t, 19*time.Second+time.Nanosecond, next)
+
+	clock.Advance(4 * time.Second)
+	tracker.FetchSucceeded()
+	require.False(t, tracker.Lagging())
+
+	clock.Advance(15*time.Second + time.Nanosecond)
+	snapshot, _ = tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Lagging)
+}
+
+func TestReadinessNextCheckMovesWithFetch(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	clock.Advance(10 * time.Second)
+	tracker.FetchSucceeded()
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 30*time.Second+time.Nanosecond, next)
+}
+
+func TestReadinessNextCheckUsesOldestBehind(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	tracker.Observe(0, 10, 10)
+	clock.Advance(5 * time.Second)
+	tracker.Observe(1, 0, 10)
+	clock.Advance(15 * time.Second)
+	tracker.FetchSucceeded()
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 15*time.Second+time.Nanosecond, next)
+}
+
+func TestReadinessNextCheckStrictHasNoStartupTerm(t *testing.T) {
+	tracker, clock := newReadinessTest(true)
+	tracker.Observe(0, 0, 10)
+	clock.Advance(31 * time.Second)
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 30*time.Second, next)
+}
+
+func TestReadinessNextCheckHasFloor(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	tracker.Observe(0, 10, 10)
+	clock.Advance(30 * time.Second)
+	snapshot, next := tracker.snapshotWithNextCheck()
+	require.False(t, snapshot.Lagging)
+	require.Equal(t, time.Millisecond, next)
+}
+
+func TestReadinessFailOpenIsSetByAnyRefresh(t *testing.T) {
+	tracker, clock := newReadinessTest(false)
+	clock.Advance(61 * time.Second)
+	tracker.FetchSucceeded()
+	require.True(t, tracker.Ready())
+
+	snapshot := tracker.Snapshot()
+	require.True(t, snapshot.FailedOpen)
+}
+
+func TestReadinessLagRecordsIsLockFree(t *testing.T) {
+	tracker, _ := newReadinessTest(false)
+	tracker.Observe(0, 2, 5)
+	tracker.Observe(1, 7, 10)
+	require.Equal(t, int64(6), tracker.LagRecords())
 }
 
 func BenchmarkReadinessObserve(b *testing.B) {

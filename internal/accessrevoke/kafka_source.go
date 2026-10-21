@@ -3,6 +3,8 @@ package accessrevoke
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -27,6 +29,16 @@ type KafkaSource struct {
 	revoker      *Revoker
 	tracker      *ReadinessTracker
 	clock        func() time.Time
+
+	// readinessMu guards the readiness timer fields below.
+	readinessMu sync.Mutex
+	// readinessTimer is created by the first arm.
+	readinessTimer *time.Timer
+	// readinessStopped is set when Run returns, so that a running callback arms nothing.
+	readinessStopped bool
+	// failOpenReported and caughtUpReported make each transition be reported once.
+	failOpenReported atomic.Bool
+	caughtUpReported atomic.Bool
 }
 
 // NewKafkaSource creates a KafkaSource for the given source configuration. The configuration must be
@@ -83,14 +95,18 @@ func (s *KafkaSource) Run(ctx context.Context) error {
 	}
 	defer client.Close()
 
-	// Watch starts before seeding: when Kafka is unreachable seeding retries until the startup
+	metrics.BindAccessRevokeSource(s.sourceState)
+	defer metrics.BindAccessRevokeSource(nil)
+	defer s.stopReadiness()
+	// The readiness timer starts before seeding: when Kafka is unreachable seeding retries until the startup
 	// timeout, and the fail-open transition must still be logged and exported.
-	go s.watch(ctx)
+	s.onReadinessTimer()
 
 	adm := kadm.NewClient(client)
 	if err := s.seed(ctx, adm, startMilli); err != nil {
 		return err
 	}
+	s.reportTransitions(s.tracker.Snapshot())
 
 	for {
 		fetches := client.PollFetches(ctx)
@@ -102,6 +118,9 @@ func (s *KafkaSource) Run(ctx context.Context) error {
 				Msg("error fetching access revocation events")
 		}
 		fetches.EachPartition(s.handlePartition)
+		if !s.caughtUpReported.Load() {
+			s.reportTransitions(s.tracker.Snapshot())
+		}
 	}
 }
 
@@ -257,32 +276,51 @@ func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method 
 		Msg("skip access revocation event")
 }
 
-// watch keeps readiness metrics up to date and logs readiness transitions until ctx is done.
-func (s *KafkaSource) watch(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var failOpenReported bool
-	var caughtUpReported bool
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		snapshot := s.tracker.Snapshot()
-		metrics.AccessRevokeSourceReady.Set(boolToFloat(snapshot.Ready))
-		metrics.AccessRevokeSourceLagging.Set(boolToFloat(snapshot.Lagging))
-		metrics.AccessRevokeSourceLagRecords.Set(float64(snapshot.LagRecords))
-		if snapshot.FailedOpen && !failOpenReported {
-			failOpenReported = true
-			metrics.AccessRevokeSourceFailOpenTotal.Inc()
-			log.Error().Msg("access revocation source startup timeout reached before catch up, node is ready without full state")
-		}
-		if snapshot.CaughtUp && !caughtUpReported {
-			caughtUpReported = true
-			metrics.AccessRevokeSourceCatchUpDuration.Set(snapshot.CatchUpDuration.Seconds())
-			log.Info().Dur("duration", snapshot.CatchUpDuration).Msg("access revocation source caught up")
-		}
+// sourceState returns the readiness of the source which the gauges read at scrape.
+func (s *KafkaSource) sourceState() metrics.AccessRevokeSourceState {
+	return metrics.AccessRevokeSourceState{
+		Ready:      s.tracker.Ready(),
+		Lagging:    s.tracker.Lagging(),
+		LagRecords: s.tracker.LagRecords(),
+	}
+}
+
+// reportTransitions logs and counts the fail-open and catch-up transitions of the snapshot, each once.
+func (s *KafkaSource) reportTransitions(snapshot ReadinessSnapshot) {
+	if snapshot.FailedOpen && s.failOpenReported.CompareAndSwap(false, true) {
+		metrics.AccessRevokeSourceFailOpenTotal.Inc()
+		log.Error().Msg("access revocation source startup timeout reached before catch up, node is ready without full state")
+	}
+	if snapshot.CaughtUp && s.caughtUpReported.CompareAndSwap(false, true) {
+		metrics.AccessRevokeSourceCatchUpDuration.Set(snapshot.CatchUpDuration.Seconds())
+		log.Info().Dur("duration", snapshot.CatchUpDuration).Msg("access revocation source caught up")
+	}
+}
+
+// onReadinessTimer publishes the time based readiness transitions, reports them once, and arms the readiness timer for
+// the next one. Run calls it once before seeding; afterwards only the timer calls it.
+func (s *KafkaSource) onReadinessTimer() {
+	snapshot, next := s.tracker.snapshotWithNextCheck()
+	s.reportTransitions(snapshot)
+	s.readinessMu.Lock()
+	defer s.readinessMu.Unlock()
+	if s.readinessStopped {
+		return
+	}
+	if s.readinessTimer == nil {
+		s.readinessTimer = time.AfterFunc(next, s.onReadinessTimer)
+		return
+	}
+	s.readinessTimer.Reset(next)
+}
+
+// stopReadiness stops the readiness timer for good; a run which has started completes and arms nothing.
+func (s *KafkaSource) stopReadiness() {
+	s.readinessMu.Lock()
+	defer s.readinessMu.Unlock()
+	s.readinessStopped = true
+	if s.readinessTimer != nil {
+		s.readinessTimer.Stop()
 	}
 }
 
@@ -323,11 +361,4 @@ func recordHeader(record *kgo.Record, key string) string {
 		}
 	}
 	return ""
-}
-
-func boolToFloat(value bool) float64 {
-	if value {
-		return 1
-	}
-	return 0
 }

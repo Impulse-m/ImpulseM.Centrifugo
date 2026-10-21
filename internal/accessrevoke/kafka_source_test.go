@@ -5,10 +5,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -291,6 +293,100 @@ func TestKafkaSourceDecodeOperationErrors(t *testing.T) {
 }
 
 // appliedCount returns the number of applied events of the kind.
+// failOpenCount returns the number of fail-open transitions of the sources of the test registry.
+func failOpenCount(t *testing.T) float64 {
+	t.Helper()
+	return counterValue(t, "centrifugo_access_revoke_source_fail_open_total")
+}
+
+func TestKafkaSourceReadinessTimerFollowsTransitions(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+		before := failOpenCount(t)
+		s.onReadinessTimer()
+
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		require.False(t, s.tracker.Lagging())
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.True(t, s.tracker.Lagging())
+		require.False(t, s.tracker.Ready())
+
+		time.Sleep(30*time.Second - 2*time.Nanosecond)
+		synctest.Wait()
+		require.False(t, s.tracker.Ready())
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.True(t, s.tracker.Ready())
+		require.Equal(t, before+1, failOpenCount(t))
+
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		require.Equal(t, before+1, failOpenCount(t))
+		s.stopReadiness()
+	})
+}
+
+func TestKafkaSourceDetectsSilenceOnTimeWithLazyRearm(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+		s.onReadinessTimer()
+		for range 30 {
+			time.Sleep(10 * time.Second)
+			synctest.Wait()
+			s.tracker.FetchSucceeded()
+		}
+		synctest.Wait()
+		require.False(t, s.tracker.Lagging())
+
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		require.False(t, s.tracker.Lagging())
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.True(t, s.tracker.Lagging())
+		s.stopReadiness()
+	})
+}
+
+func TestKafkaSourceReportsCaughtUpOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+		s.tracker.Observe(0, 0, 10)
+		time.Sleep(12 * time.Second)
+		synctest.Wait()
+		s.tracker.Observe(0, 10, 10)
+
+		s.reportTransitions(s.tracker.Snapshot())
+		s.reportTransitions(s.tracker.Snapshot())
+		require.Equal(t, 12.0, counterValue(t, "centrifugo_access_revoke_source_catch_up_duration_seconds"))
+		require.True(t, s.caughtUpReported.Load())
+	})
+}
+
+func TestKafkaSourceGaugesReadAtScrape(t *testing.T) {
+	s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+	metrics.BindAccessRevokeSource(s.sourceState)
+	defer metrics.BindAccessRevokeSource(nil)
+
+	s.tracker.Observe(0, 2, 5)
+	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_source_lag_records"))
+	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_ready"))
+	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_lagging"))
+
+	s.tracker.Observe(0, 5, 5)
+	require.Equal(t, 1.0, counterValue(t, "centrifugo_access_revoke_source_ready"))
+
+	metrics.BindAccessRevokeSource(nil)
+	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_lag_records"))
+	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_ready"))
+	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_lagging"))
+}
+
 func appliedCount(t *testing.T, kind string) float64 {
 	t.Helper()
 	return metricWithLabel(t, "source_events_applied_total", "kind", kind)

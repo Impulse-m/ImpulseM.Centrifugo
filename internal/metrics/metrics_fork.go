@@ -17,9 +17,9 @@ type forkRegistry struct {
 	accessRevokeStoreSizeUsers          prometheus.GaugeFunc
 
 	// Access revocation source metrics
-	accessRevokeSourceReady              prometheus.Gauge
-	accessRevokeSourceLagging            prometheus.Gauge
-	accessRevokeSourceLagRecords         prometheus.Gauge
+	accessRevokeSourceReady              prometheus.GaugeFunc
+	accessRevokeSourceLagging            prometheus.GaugeFunc
+	accessRevokeSourceLagRecords         prometheus.GaugeFunc
 	accessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
 	accessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
 	accessRevokeSourceEventsBeyondWindow prometheus.Counter
@@ -119,28 +119,34 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		return float64(accessRevokeStoreSizes.Read().Users)
 	})
 
-	m.accessRevokeSourceReady = prometheus.NewGauge(prometheus.GaugeOpts{
+	m.accessRevokeSourceReady = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
 		Name:        "source_ready",
 		Help:        "1 when the access revocation source is ready (caught up or failed open), 0 otherwise.",
 		ConstLabels: constLabels,
+	}, func() float64 {
+		return boolToFloat(accessRevokeSource.Read().Ready)
 	})
 
-	m.accessRevokeSourceLagging = prometheus.NewGauge(prometheus.GaugeOpts{
+	m.accessRevokeSourceLagging = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
 		Name:        "source_lagging",
 		Help:        "1 when the access revocation source is lagging behind, 0 otherwise.",
 		ConstLabels: constLabels,
+	}, func() float64 {
+		return boolToFloat(accessRevokeSource.Read().Lagging)
 	})
 
-	m.accessRevokeSourceLagRecords = prometheus.NewGauge(prometheus.GaugeOpts{
+	m.accessRevokeSourceLagRecords = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
 		Name:        "source_lag_records",
 		Help:        "Number of records between the consumed offsets and last stable offsets of the access revocation source.",
 		ConstLabels: constLabels,
+	}, func() float64 {
+		return float64(accessRevokeSource.Read().LagRecords)
 	})
 
 	m.accessRevokeSourceEventsAppliedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -479,9 +485,6 @@ func (m *Registry) setForkMetrics() {
 	AccessRevokeDisconnectsDroppedTotal = m.accessRevokeDisconnectsDroppedTotal
 	AccessRevokeDisconnectRetriesTotal = m.accessRevokeDisconnectRetriesTotal
 
-	AccessRevokeSourceReady = m.accessRevokeSourceReady
-	AccessRevokeSourceLagging = m.accessRevokeSourceLagging
-	AccessRevokeSourceLagRecords = m.accessRevokeSourceLagRecords
 	AccessRevokeSourceEventsAppliedTotal = m.accessRevokeSourceEventsAppliedTotal
 	AccessRevokeSourceEventsSkippedTotal = m.accessRevokeSourceEventsSkippedTotal
 	AccessRevokeSourceEventsBeyondWindow = m.accessRevokeSourceEventsBeyondWindow

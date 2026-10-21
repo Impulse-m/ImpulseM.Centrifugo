@@ -2,10 +2,14 @@ package accessrevoke
 
 import (
 	"container/list"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// minReadinessCheck is the shortest delay until the next readiness check, so that a check a moment early cannot spin.
+const minReadinessCheck time.Duration = time.Millisecond
 
 // ReadinessConfig configures a ReadinessTracker.
 type ReadinessConfig struct {
@@ -60,20 +64,21 @@ func (p *partitionProgress) lag() int64 {
 type ReadinessTracker struct {
 	// readyFlag and laggingFlag mirror Snapshot().Ready and Snapshot().Lagging. They are refreshed under mu
 	// by every state change and by Snapshot, so Ready and Lagging are plain loads on the connect path.
-	readyFlag   atomic.Bool
-	laggingFlag atomic.Bool
-	mu          sync.Mutex
-	config      ReadinessConfig
-	clock       func() time.Time
-	startedAt   time.Time
-	lastFetch   time.Time
-	partitions  map[int32]*partitionProgress
-	ready       bool
-	failedOpen  bool
-	caughtUp    bool
-	caughtUpAt  time.Time
-	caughtUpCh  chan struct{}
-	closed      bool
+	readyFlag       atomic.Bool
+	laggingFlag     atomic.Bool
+	lagRecordsValue atomic.Int64
+	mu              sync.Mutex
+	config          ReadinessConfig
+	clock           func() time.Time
+	startedAt       time.Time
+	lastFetch       time.Time
+	partitions      map[int32]*partitionProgress
+	ready           bool
+	failedOpen      bool
+	caughtUp        bool
+	caughtUpAt      time.Time
+	caughtUpCh      chan struct{}
+	closed          bool
 	// notReached is the number of partitions which never reached their target, lagRecords the sum of their lags,
 	// behind the number of partitions with a behindSince, and oldestBehind the earliest of those. They are kept
 	// up to date by Observe, so evaluating the state does not loop over the partitions.
@@ -173,12 +178,23 @@ func (t *ReadinessTracker) FetchSucceeded() {
 	t.refreshLocked(now)
 }
 
-// Snapshot evaluates the current state. It also refreshes the flags read by Ready and Lagging, so the
-// time based transitions (startup timeout, lag threshold) become visible to them on every call.
+// Snapshot evaluates the current state. It also refreshes the flags read by Ready, Lagging and LagRecords, so the
+// time based transitions (startup timeout, lag threshold) become visible to them on every call. A source refreshes
+// them at each of their deadlines with snapshotWithNextCheck.
 func (t *ReadinessTracker) Snapshot() ReadinessSnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.refreshLocked(t.clock())
+}
+
+// snapshotWithNextCheck evaluates the current state like Snapshot, and returns the delay until the next time based
+// transition, see nextCheckLocked.
+func (t *ReadinessTracker) snapshotWithNextCheck() (ReadinessSnapshot, time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.clock()
+	snapshot := t.refreshLocked(now)
+	return snapshot, t.nextCheckLocked(now)
 }
 
 // Ready reports whether the tracker is ready. See ReadinessSnapshot.Ready. It is a lock free load, the
@@ -193,7 +209,36 @@ func (t *ReadinessTracker) Lagging() bool {
 	return t.laggingFlag.Load()
 }
 
-// refreshLocked evaluates the state for the given moment, publishes Ready and Lagging to their flags and
+// LagRecords returns the number of records between consumed and target offsets. See ReadinessSnapshot.LagRecords. It
+// is a lock free load, the value is refreshed by Observe, FetchSucceeded and Snapshot.
+func (t *ReadinessTracker) LagRecords() int64 {
+	return t.lagRecordsValue.Load()
+}
+
+// nextCheckLocked returns the time from now until the earliest time based transition which has not happened yet: the
+// startup timeout while not ready and not strict, and each lag rule while it does not hold. When none is pending it
+// returns the lag threshold, so that a lag which starts after a recovery is measured again. The result is at least
+// minReadinessCheck. The caller holds mu and has refreshed the state for now.
+func (t *ReadinessTracker) nextCheckLocked(now time.Time) time.Duration {
+	var next time.Duration = math.MaxInt64
+	if !t.ready && !t.config.Strict {
+		next = min(next, t.startedAt.Add(t.config.StartupTimeout).Sub(now))
+	}
+	if silent := now.Sub(t.lastFetch); silent <= t.config.LagThreshold {
+		next = min(next, t.config.LagThreshold-silent+time.Nanosecond)
+	}
+	if !t.oldestBehind.IsZero() {
+		if behind := now.Sub(t.oldestBehind); behind <= t.config.LagThreshold {
+			next = min(next, t.config.LagThreshold-behind+time.Nanosecond)
+		}
+	}
+	if next == math.MaxInt64 {
+		next = t.config.LagThreshold
+	}
+	return max(next, minReadinessCheck)
+}
+
+// refreshLocked evaluates the state for the given moment, publishes Ready, Lagging and LagRecords to their flags and
 // returns the snapshot.
 func (t *ReadinessTracker) refreshLocked(now time.Time) ReadinessSnapshot {
 	t.evaluateLocked(now)
@@ -213,6 +258,7 @@ func (t *ReadinessTracker) refreshLocked(now time.Time) ReadinessSnapshot {
 	}
 	t.readyFlag.Store(snapshot.Ready)
 	t.laggingFlag.Store(snapshot.Lagging)
+	t.lagRecordsValue.Store(snapshot.LagRecords)
 	return snapshot
 }
 

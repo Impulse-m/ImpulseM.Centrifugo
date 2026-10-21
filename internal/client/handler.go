@@ -635,14 +635,14 @@ func (h *Handler) OnClientConnecting(
 	h.storeRPCConnection(storage, e.Instance)
 
 	finalReply := centrifuge.ConnectReply{
-		Storage:            storage,
-		Credentials:        credentials,
-		Subscriptions:      subscriptions,
-		Data:               data,
-		ClientSideRefresh:  !refreshProxyEnabled,
-		Flags:              h.registryConnectFlags(),
-		MaxMessagesInFrame: cfg.Client.MaxMessagesInFrame,
+		Storage:           storage,
+		Credentials:       credentials,
+		Subscriptions:     subscriptions,
+		Data:              data,
+		ClientSideRefresh: !refreshProxyEnabled,
+		Flags:             h.registryConnectFlags(),
 	}
+	finalReply.MaxMessagesInFrame = cfg.Client.MaxMessagesInFrame
 	h.setReplyIdentity(cfg, &finalReply, rec)
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole

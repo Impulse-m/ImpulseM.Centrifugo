@@ -104,6 +104,13 @@ func (h *Handler) refreshWithoutRecord(
 		return centrifuge.RefreshReply{}, RefreshExtra{}, centrifuge.DisconnectInvalidToken
 	}
 	identity := tokenIdentityOf(token)
+	// The session is tracked before the check, as refreshSameIdentity does. A revocation applied after the check then finds
+	// the connection in the index, and one applied before it is seen by the check, whose rejection closes the connection,
+	// which releases the track.
+	if h.accessStore != nil && c.UserID() == "" {
+		h.trackRefreshedSession(c, identity.Session)
+	}
+	runTestHook(&testHookRefreshTracked, c)
 	result := h.checkAccess(token.UserID, identity, accessrevoke.OptionsFromConfig(h.cfgContainer.ConfigRef()), "refresh")
 	if result.Verdict != accessrevoke.Allowed {
 		return refreshRevokeReply(c.ID(), c.UserID(), result)

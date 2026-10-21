@@ -65,6 +65,7 @@ type Handler struct {
 	clientLimiter    *ratelimit.ClientLimiter
 	userLimiter      *ratelimit.UserLimiter
 	redisLimiter     *ratelimit.RedisUserLimiter
+	sessionTracks    sessionTrackStripes
 
 	trackSigMu              sync.RWMutex
 	trackSigVerifier        *trackSignatureVerifier

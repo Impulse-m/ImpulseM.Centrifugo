@@ -117,3 +117,15 @@ func TestValidateMethodOverrideNameWithTilde(t *testing.T) {
 	}
 	require.EqualError(t, validateRateLimit(cfg), `client.rate_limit method_overrides: method name "a~b" must not contain "~"`)
 }
+
+func TestValidateMethodOverrideNameWithBrace(t *testing.T) {
+	cfg := algorithmConfig("", testRateLimitBuckets(time.Second, 10))
+	cfg.Client.RateLimit.ClientCommand.RPC = configtypes.RateLimitRPCBuckets{
+		Enabled: true,
+		Buckets: testRateLimitBuckets(time.Second, 10),
+		MethodOverrides: configtypes.RateLimitMethodOverrides{
+			{Method: "a}.refresh", Enabled: true, Buckets: testRateLimitBuckets(time.Second, 5)},
+		},
+	}
+	require.EqualError(t, validateRateLimit(cfg), `client.rate_limit method_overrides: method name "a}.refresh" must not contain "{" or "}"`)
+}

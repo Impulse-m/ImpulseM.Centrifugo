@@ -142,6 +142,16 @@ func TestRedisKeyFormat(t *testing.T) {
 	require.Equal(t, "app.rl.{a:b}.publish.ns.chat", redisKey("app", "a:b", "publish.ns.chat"))
 }
 
+func TestRedisKeyOfBraceUserIDIsUnambiguous(t *testing.T) {
+	// User "x}.rpc.m.a" with scope "refresh" and user "x" with scope "rpc.m.a}.refresh" must not share a key.
+	first := redisKey("p", "x}.rpc.m.a", "refresh")
+	second := redisKey("p", "x", "rpc.m.a}.refresh")
+	require.NotEqual(t, first, second)
+	require.Equal(t, "p.rl.{x%7D.rpc.m.a}.refresh", first)
+	require.Equal(t, "p.rl.{x}.rpc.m.a}.refresh", second)
+	require.Equal(t, "p.rl.{a%25b}.publish", redisKey("p", "a%b", "publish"))
+}
+
 // fakeRedisRunner returns a runner which records calls. It reports no wait when allowed, else a wait of one second,
 // and returns err.
 func fakeRedisRunner(allowed bool, err error, calls *[]string) redisScriptRunner {

@@ -490,7 +490,7 @@ Each profile lists its inputs, then its keys. The arithmetic column applies the 
 | `client.ping_interval` | 150s | greater than the pong timeout |
 | Java SDK `maxServerPingDelay` | 136s | the same figure as the pong timeout |
 
-Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout` after they stop answering: up to about 4 min 45 s on this profile.
+Dead peers are detected between `pong_timeout` and `ping_interval + pong_timeout` after they stop answering: up to about 4 min 46 s (286 s) on this profile.
 
 **(c) Large-object tier: 4 MiB parts and 4 MiB reads, 8 GiB node with `GOMEMLIMIT` 6 GiB.** Inputs: `P` = 4194304, `R` = 4194304, `W` = 2, `S` = 1250000 (10 Mbit/s), `λ` = 125000000 (1 Gbit/s), `T` = 4 s, `M` = 6 GiB (6442450944).
 

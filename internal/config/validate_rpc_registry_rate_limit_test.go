@@ -21,6 +21,14 @@ func TestValidateRateLimitedCode(t *testing.T) {
 	}
 }
 
+// A disabled registry is not checked, and its rate limited code is not used, so the code is not checked either.
+func TestValidateRateLimitedCodeDisabledRegistry(t *testing.T) {
+	reg := validInlineRegistry()
+	reg.Enabled = false
+	reg.Errors.RateLimited.Code = 113
+	require.NoError(t, validateRPCRegistry(configWithRegistry(reg)))
+}
+
 // Error metadata names are not refused at start: the runtime drops the names with the reserved prefix.
 func TestValidateErrorMetadataUnchanged(t *testing.T) {
 	for _, names := range [][]string{

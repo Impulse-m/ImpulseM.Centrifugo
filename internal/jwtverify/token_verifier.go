@@ -22,6 +22,8 @@ type ConnectToken struct {
 	// Validation can be server-side using On().Refresh callback or client-side
 	// if On().Refresh not set.
 	ExpireAt int64
+	// TokenExp is the exp claim of the JWT, zero when absent. It is not the expiry of the connection, which is ExpireAt.
+	TokenExp int64
 	// Info contains additional information about connection. It will be
 	// included into Join/Leave messages, into Alive information, also
 	// info becomes a part of published message if it was published from

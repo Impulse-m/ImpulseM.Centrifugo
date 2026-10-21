@@ -113,6 +113,13 @@ func (h *Handler) callRPCRegistry(
 		sizeErr := registryError(cfg.Errors.RequestTooLarge)
 		return centrifuge.RPCReply{}, registryMethodFailure(m, metrics.RPCRegistryResultError, sizeErr)
 	}
+	// A token which has expired is not forwarded: the call is not executed, and the client sends it again after its
+	// refresh, with the same msg_id.
+	if cfg.RefuseExpiredTokens && m.AuthClass != rpcregistry.AuthClassAnonymous && caller.token != "" && rebindExpired(caller.exp) {
+		expired := registryRetryError(cfg.Errors.TokenExpired, true, rpcRetryLater)
+		m.Metrics.ExpiredRefusal(m.Name)
+		return centrifuge.RPCReply{}, registryFailure(m.Name, metrics.RPCRegistryResultExpired, expired)
+	}
 	// The response bound is read once, and is the cost of the call in admission and the limit of its reply.
 	bound := m.ResponseBound(e.Data)
 	if admission := h.rpcRegistry.Admission(); admission != nil {
@@ -246,7 +253,9 @@ func registryErrorValue(e configtypes.RPCRegistryError) *centrifuge.Error {
 // registryCaller is the identity a connection calls the registry with. It is read once for a call, from the record of the
 // connection, so the token, the class and the dedup scope of the call are those of one identity.
 type registryCaller struct {
-	token    string
+	token string
+	// exp is the JWT exp of the token, zero when the token has none.
+	exp      int64
 	class    rpcregistry.AuthClass
 	userID   string
 	identity centrifuge.TokenIdentity
@@ -268,6 +277,7 @@ func registryConnection(c rebindableClient, claim string) registryCaller {
 	id := rec.identity.Load()
 	return registryCaller{
 		token:    id.token,
+		exp:      id.exp,
 		class:    effectiveClass(id, claim, c.UserID()),
 		userID:   id.tokenUser,
 		identity: id.identity,

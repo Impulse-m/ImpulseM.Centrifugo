@@ -32,6 +32,9 @@ const (
 	RPCRegistryResultDenied     = "denied"
 	RPCRegistryResultUnknown    = "unknown"
 	RPCRegistryResultOverloaded = "overloaded"
+	// RPCRegistryResultExpired is a call refused because its token had expired. It is not in rpcRegistryResults: its
+	// series is created at the first refusal, see ExpiredRefusal.
+	RPCRegistryResultExpired = "expired"
 )
 
 // RPCRegistryMethodMetrics holds the calls_total children of one registry method, one per result.
@@ -76,6 +79,15 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 		return
 	}
 	m.calls[rpcRegistryResultIndex(result)].Inc()
+}
+
+// ExpiredRefusal counts one call of the method which was refused because its token had expired. The series of the
+// method is created at its first refusal, so a method which is never refused has none.
+func (m *RPCRegistryMethodMetrics) ExpiredRefusal(rpcMethod string) {
+	if m == nil || RPCRegistryCallsTotal == nil {
+		return
+	}
+	RPCRegistryCallsTotal.WithLabelValues(rpcMethod, RPCRegistryResultExpired).Inc()
 }
 
 // rpcRegistryResults is the only list of the RPCRegistryResult values. The calls_total children of a

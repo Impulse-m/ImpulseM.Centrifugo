@@ -44,6 +44,17 @@ func validateRPCRegistry(c Config) error {
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}
+	if c.RPC.Registry.RefuseExpiredTokens {
+		if c.Client.Insecure {
+			return errors.New("rpc.registry.refuse_expired_tokens: can't be used with client.insecure")
+		}
+		if c.Client.Proxy.Refresh.Enabled {
+			return errors.New("rpc.registry.refuse_expired_tokens: can't be used with client.proxy.refresh.enabled")
+		}
+		if c.Client.RefreshLead.ToDuration() <= 0 {
+			return errors.New("rpc.registry.refuse_expired_tokens: needs client.refresh_lead above zero, so that the refresh lands before the token expires")
+		}
+	}
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
 	}

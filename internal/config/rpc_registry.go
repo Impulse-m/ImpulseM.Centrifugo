@@ -37,6 +37,8 @@ func setRPCRegistryDefaults(v *viper.Viper) {
 	v.SetDefault(prefix+"dedup_unavailable.message", "dedup unavailable")
 	v.SetDefault(prefix+"overloaded.code", centrifuge.ErrorTooManyRequests.Code)
 	v.SetDefault(prefix+"overloaded.message", centrifuge.ErrorTooManyRequests.Message)
+	v.SetDefault(prefix+"token_expired.code", centrifuge.ErrorTokenExpired.Code)
+	v.SetDefault(prefix+"token_expired.message", centrifuge.ErrorTokenExpired.Message)
 }
 
 // The key and the environment variable of the wakeup switch of the dedup Redis.

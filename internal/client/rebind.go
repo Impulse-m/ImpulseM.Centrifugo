@@ -144,10 +144,16 @@ func (h *Handler) refreshReply(
 	return reply
 }
 
+// tokenExpiredAt reports whether Core refuses a rebind to exp at the time now: an expiration is negative, or it is not
+// in the future. Zero disarms it.
+func tokenExpiredAt(exp int64, now int64) bool {
+	return exp < 0 || (exp > 0 && exp <= now)
+}
+
 // rebindExpired reports whether Core refuses a rebind to expireAt: an expiration is zero, which disarms it, or in the
-// future.
+// future. The clock is read only for an expiration above zero.
 func rebindExpired(expireAt int64) bool {
-	return expireAt < 0 || (expireAt > 0 && expireAt <= time.Now().Unix())
+	return expireAt < 0 || (expireAt > 0 && tokenExpiredAt(expireAt, time.Now().Unix()))
 }
 
 // refreshVerifyError maps the error of verifying a refresh token to the refresh reply and error.

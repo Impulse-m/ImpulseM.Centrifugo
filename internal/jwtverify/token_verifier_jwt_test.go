@@ -572,6 +572,7 @@ func Test_tokenVerifierJWT_VerifyConnectToken(t *testing.T) {
 			want: ConnectToken{
 				UserID:   "user1",
 				ExpireAt: _time.Add(24 * time.Hour).Unix(),
+				TokenExp: _time.Add(24 * time.Hour).Unix(),
 				Info:     []byte("{}"),
 				Subs:     map[string]centrifuge.SubscribeOptions{},
 			},
@@ -585,6 +586,7 @@ func Test_tokenVerifierJWT_VerifyConnectToken(t *testing.T) {
 			want: ConnectToken{
 				UserID:   "user1",
 				ExpireAt: _time.Add(24 * time.Hour).Unix(),
+				TokenExp: _time.Add(24 * time.Hour).Unix(),
 				Info:     []byte("{}"),
 				Subs:     map[string]centrifuge.SubscribeOptions{},
 			},
@@ -599,6 +601,7 @@ func Test_tokenVerifierJWT_VerifyConnectToken(t *testing.T) {
 			want: ConnectToken{
 				UserID:   "user1",
 				ExpireAt: _time.Add(24 * time.Hour).Unix(),
+				TokenExp: _time.Add(24 * time.Hour).Unix(),
 				Info:     []byte("{}"),
 				Subs:     map[string]centrifuge.SubscribeOptions{},
 			},
@@ -670,6 +673,7 @@ func Test_tokenVerifierJWT_VerifyConnectTokenWithJWK(t *testing.T) {
 			want: ConnectToken{
 				UserID:   "user1",
 				ExpireAt: now.Add(24 * time.Hour).Unix(),
+				TokenExp: now.Add(24 * time.Hour).Unix(),
 				Info:     []byte("{}"),
 				Subs:     map[string]centrifuge.SubscribeOptions{},
 			},

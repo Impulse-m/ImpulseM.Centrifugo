@@ -49,10 +49,12 @@ type connState struct {
 // connIdentity is the identity of a connection: what its token proves and the user it is bound to. It is immutable
 // once stored. Every path which gives a connection an identity builds one with nextIdentity.
 type connIdentity struct {
-	origin    connOrigin
-	class     rpcregistry.AuthClass
-	claim     string
-	token     string
+	origin connOrigin
+	class  rpcregistry.AuthClass
+	claim  string
+	token  string
+	// exp is the JWT exp of the kept token, zero without a kept token or without exp.
+	exp       int64
 	tokenUser string
 	account   string
 	identity  centrifuge.TokenIdentity
@@ -284,6 +286,9 @@ func nextIdentity(
 		tokenUser: verified.UserID,
 		account:   verified.UserID,
 		identity:  tokenIdentityOf(verified),
+	}
+	if token != "" {
+		next.exp = verified.TokenExp
 	}
 	if prev != nil {
 		next.origin = prev.origin

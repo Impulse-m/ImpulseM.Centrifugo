@@ -535,14 +535,6 @@ message UnsubscribeResponse {
 // moment.
 message UnsubscribeResult {}
 
-// Unsubscribe describes the code and reason clients are unsubscribed with.
-message Unsubscribe {
-    // code is the unsubscribe code.
-    uint32 code = 1;
-    // reason is the unsubscribe reason.
-    string reason = 2;
-}
-
 // Disconnect describes the code and reason clients are disconnected with.
 message Disconnect {
     reserved 3;
@@ -2049,3 +2041,11 @@ message SharedPollPublishResponse {
 // SharedPollPublishResult is the result of a shared poll publish call.
 // Empty at the moment.
 message SharedPollPublishResult {}
+
+// Unsubscribe describes the code and reason clients are unsubscribed with.
+message Unsubscribe {
+    // code is the unsubscribe code.
+    uint32 code = 1;
+    // reason is the unsubscribe reason.
+    string reason = 2;
+}

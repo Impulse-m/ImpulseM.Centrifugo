@@ -87,13 +87,14 @@ func testRecord(method string, body string, timestamp time.Time) *kgo.Record {
 func TestKafkaSourceAppliesBlockUserRecord(t *testing.T) {
 	clock := &sourceTestClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
+	before := appliedCount(t, KindBlockUser)
 
 	// Record time is 10 minutes ago, so the default TTL of 20 minutes gives an expiration in the future.
 	recordTime := clock.now.Add(-10 * time.Minute)
 	source.handleRecord(testRecord("block_user", `{"user":"user-1"}`, recordTime))
 
 	require.Equal(t, Blocked, userVerdict(store, "user-1"))
-	require.Equal(t, float64(1), appliedCount(t, KindBlockUser))
+	require.Equal(t, before+1, appliedCount(t, KindBlockUser))
 }
 
 func TestKafkaSourceUsesRecordTimeForDefaults(t *testing.T) {
@@ -293,7 +294,6 @@ func TestKafkaSourceDecodeOperationErrors(t *testing.T) {
 	require.NotErrorIs(t, err, ErrUnknownMethod)
 }
 
-// appliedCount returns the number of applied events of the kind.
 // failOpenCount returns the number of fail-open transitions of the sources of the test registry.
 func failOpenCount(t *testing.T) float64 {
 	t.Helper()
@@ -446,6 +446,7 @@ func TestSeedBackOffStaysWithinHalfAndWholeNominal(t *testing.T) {
 	}
 }
 
+// appliedCount returns the number of applied events of the kind.
 func appliedCount(t *testing.T, kind string) float64 {
 	t.Helper()
 	return metricWithLabel(t, "source_events_applied_total", "kind", kind)

@@ -31,7 +31,7 @@ func clockScript(t testing.TB, algo Algorithm) *rueidis.Lua {
 		source, prefix = slidingWindowSource, luaDivisions
 	}
 	require.Equal(t, 1, strings.Count(source, clock))
-	return rueidis.NewLuaScript(prefix + strings.Replace(source, clock, "local t = {'0', ARGV[#ARGV]}", 1))
+	return rueidis.NewLuaScript(prefix + strings.Replace(source, clock, "local t = {'0', ARGV[#ARGV]}", 1) + luaCommit)
 }
 
 // runClockScript runs script on the first shard of l for key, with the clock nowUs in microseconds, and returns the wait.

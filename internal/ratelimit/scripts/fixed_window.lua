@@ -37,9 +37,3 @@ for i = 1, n do
 		end
 	end
 end
-if worst > 0 then
-	return -worst
-end
-redis.call('HSET', KEYS[1], unpack(updates))
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-return 1

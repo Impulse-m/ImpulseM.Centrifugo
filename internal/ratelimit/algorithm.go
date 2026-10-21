@@ -123,6 +123,18 @@ local function ceilDiv(a, b)
 end
 `
 
+// luaCommit is the end of every rate limit script, concatenated after the source of each one. A refusal returns the
+// largest wait of the refusing buckets, which the script left in worst, and writes nothing. An allowed operation
+// writes the updates of its buckets, sets their expiry, and returns 1.
+const luaCommit = `
+if worst > 0 then
+	return -worst
+end
+redis.call('HSET', KEYS[1], unpack(updates))
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return 1
+`
+
 // windowLimit compiles a window bucket.
 func windowLimit(interval time.Duration, rate int) limit {
 	return limit{interval: int64(interval), rate: int64(rate)}

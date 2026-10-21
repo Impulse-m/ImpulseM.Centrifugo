@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -61,40 +62,69 @@ func (t *recordingTransport) Close(disconnect centrifuge.Disconnect) error {
 	return t.TestTransport.Close(disconnect)
 }
 
-// waitReply waits until a reply with the given command id is received.
-func (t *recordingTransport) waitReply(tb testing.TB, id uint32) *protocol.Reply {
+// waitFor polls until the condition holds. It fails the test when the condition does not hold within five seconds.
+func waitFor(tb testing.TB, what string, condition func() bool) {
 	tb.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		t.mu.Lock()
-		for _, reply := range t.replies {
-			if reply.Id == id {
-				t.mu.Unlock()
-				return reply
-			}
+		if condition() {
+			return
 		}
-		t.mu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
-	tb.Fatalf("reply for command %d not received", id)
-	return nil
+	tb.Fatalf("timed out waiting for %s", what)
+}
+
+// waitReply waits until a reply with the given command id is received.
+func (t *recordingTransport) waitReply(tb testing.TB, id uint32) *protocol.Reply {
+	tb.Helper()
+	var found *protocol.Reply
+	waitFor(tb, fmt.Sprintf("reply for command %d", id), func() bool {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for _, reply := range t.replies {
+			if reply.Id == id {
+				found = reply
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
+
+// waitUnsubscribePush waits until the client is sent an unsubscribe push for the channel and returns it.
+func (t *recordingTransport) waitUnsubscribePush(tb testing.TB, channel string) *protocol.Unsubscribe {
+	tb.Helper()
+	var found *protocol.Unsubscribe
+	waitFor(tb, "unsubscribe push for channel "+channel, func() bool {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for _, reply := range t.replies {
+			if reply.Push != nil && reply.Push.Channel == channel && reply.Push.Unsubscribe != nil {
+				found = reply.Push.Unsubscribe
+				return true
+			}
+		}
+		return false
+	})
+	return found
 }
 
 // waitDisconnect waits until the connection is closed and returns the disconnect code.
 func (t *recordingTransport) waitDisconnect(tb testing.TB) centrifuge.Disconnect {
 	tb.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	var found centrifuge.Disconnect
+	waitFor(tb, "disconnect", func() bool {
 		t.mu.Lock()
-		disconnect := t.disconnect
-		t.mu.Unlock()
-		if disconnect != nil {
-			return *disconnect
+		defer t.mu.Unlock()
+		if t.disconnect == nil {
+			return false
 		}
-		time.Sleep(time.Millisecond)
-	}
-	tb.Fatalf("connection was not disconnected")
-	return centrifuge.Disconnect{}
+		found = *t.disconnect
+		return true
+	})
+	return found
 }
 
 // replyCount returns the number of received replies.

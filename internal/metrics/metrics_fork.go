@@ -91,33 +91,30 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"kind"})
 
-	m.accessRevokeStoreSizeBlocked = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "store_size",
-		Help:        "Number of entries in access revocation store by kind.",
-		ConstLabels: withLabel(constLabels, "kind", "blocked"),
-	}, func() float64 {
-		return float64(accessRevokeStoreSizes.Read().Blocked)
-	})
-	m.accessRevokeStoreSizeSessions = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "store_size",
-		Help:        "Number of entries in access revocation store by kind.",
-		ConstLabels: withLabel(constLabels, "kind", "session"),
-	}, func() float64 {
-		return float64(accessRevokeStoreSizes.Read().Sessions)
-	})
-	m.accessRevokeStoreSizeUsers = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "access_revoke",
-		Name:        "store_size",
-		Help:        "Number of entries in access revocation store by kind.",
-		ConstLabels: withLabel(constLabels, "kind", "user"),
-	}, func() float64 {
-		return float64(accessRevokeStoreSizes.Read().Users)
-	})
+	m.accessRevokeStoreSizeBlocked = newAccessRevokeStoreSize(
+		metricsNamespace,
+		constLabels,
+		"blocked",
+		func(sizes AccessRevokeStoreSizes) int {
+			return sizes.Blocked
+		},
+	)
+	m.accessRevokeStoreSizeSessions = newAccessRevokeStoreSize(
+		metricsNamespace,
+		constLabels,
+		"session",
+		func(sizes AccessRevokeStoreSizes) int {
+			return sizes.Sessions
+		},
+	)
+	m.accessRevokeStoreSizeUsers = newAccessRevokeStoreSize(
+		metricsNamespace,
+		constLabels,
+		"user",
+		func(sizes AccessRevokeStoreSizes) int {
+			return sizes.Users
+		},
+	)
 
 	m.accessRevokeSourceReady = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
@@ -452,6 +449,43 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryInflightBytes,
 		m.rpcRegistryAdmissionRefusals,
 	}
+}
+
+// newAccessRevokeStoreSize creates the store_size gauge of one kind of the access revocation store, labelled with kind,
+// which reads the size of that kind with size from the bound store sizes at each scrape.
+func newAccessRevokeStoreSize(
+	metricsNamespace string,
+	constLabels prometheus.Labels,
+	kind string,
+	size func(AccessRevokeStoreSizes) int,
+) prometheus.GaugeFunc {
+	return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "store_size",
+		Help:        "Number of entries in access revocation store by kind.",
+		ConstLabels: withLabel(constLabels, "kind", kind),
+	}, func() float64 {
+		return float64(size(accessRevokeStoreSizes.Read()))
+	})
+}
+
+// withLabel returns a copy of labels, which may be nil, with one more label pair.
+func withLabel(labels prometheus.Labels, name string, value string) prometheus.Labels {
+	copied := make(prometheus.Labels, len(labels)+1)
+	for key, labelValue := range labels {
+		copied[key] = labelValue
+	}
+	copied[name] = value
+	return copied
+}
+
+// boolToFloat returns 1 for true and 0 for false, as a gauge value.
+func boolToFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // ProxyCallChildren holds the proxy metric children of one proxy name. They are resolved once by

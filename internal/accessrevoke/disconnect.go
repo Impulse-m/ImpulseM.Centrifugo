@@ -49,12 +49,7 @@ func SanitizeRevokeTokenBody(body []byte) []byte {
 
 // validateDisconnectValue returns an error when the raw disconnect of a revoke_token record is not a valid disconnect.
 func validateDisconnectValue(value json.RawMessage) error {
-	var disconnect Disconnect
-	err := json.Unmarshal(value, &disconnect)
-	if err != nil {
-		return err
-	}
-	return validateDisconnect(&disconnect)
+	return closecode.ValidateValue(value, validateDisconnect)
 }
 
 // validateDisconnect returns an error when the disconnect is not a valid application close. An absent disconnect is valid.

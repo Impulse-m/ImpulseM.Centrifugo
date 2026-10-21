@@ -43,7 +43,10 @@ func validUnsubscribe(unsubscribe *Unsubscribe) error {
 // applied with its code and reason, and nil means the default server unsubscribe. An invalid custom unsubscribe is
 // returned as an error, so the request is refused.
 func unsubscribeOptions(cmd *UnsubscribeRequest) ([]centrifuge.UnsubscribeOption, error) {
-	opts := []centrifuge.UnsubscribeOption{centrifuge.WithUnsubscribeClient(cmd.Client), centrifuge.WithUnsubscribeSession(cmd.Session)}
+	opts := []centrifuge.UnsubscribeOption{
+		centrifuge.WithUnsubscribeClient(cmd.Client),
+		centrifuge.WithUnsubscribeSession(cmd.Session),
+	}
 	if absentUnsubscribe(cmd.Unsubscribe) {
 		return opts, nil
 	}
@@ -74,10 +77,5 @@ func sanitizeUnsubscribeBody(body []byte) []byte {
 // validateUnsubscribeValue returns an error when the raw unsubscribe of a consumer record is not a valid custom
 // unsubscribe.
 func validateUnsubscribeValue(value json.RawMessage) error {
-	var unsubscribe Unsubscribe
-	err := json.Unmarshal(value, &unsubscribe)
-	if err != nil {
-		return err
-	}
-	return validUnsubscribe(&unsubscribe)
+	return closecode.ValidateValue(value, validUnsubscribe)
 }

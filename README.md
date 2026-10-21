@@ -50,6 +50,8 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
   * `allow_channel_compaction`: clients negotiate a numeric channel id on subscribe, which replaces the channel name in publication, join and leave pushes. Negotiated automatically by the JS and Java SDKs. Not for server-side subscriptions.
   * `client_publish_debounce_interval`: returned to clients on subscribe. The JS SDK sends the first publish at once and coalesces the rest of the interval into the latest value (per key for map subscriptions). Fire-and-forget: pending data is dropped on unsubscribe or disconnect, and errors of the delayed publish are not reported. Must be `0` (off) or a whole number of milliseconds, at least `1ms`.
 
+* `client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead, and the key is read at start. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is in the Core commit `bc8c5cab476ea34125c2ed10b739d1f257a3df69` of the fork, which `go.mod` pins.
+
 ### Access revocation event source
 
 Each node can receive access revocation events from a replayable log and rebuild its store after a restart. Kafka is the only source type now. Without `access_revoke.source.type` nothing changes.

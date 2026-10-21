@@ -29,7 +29,11 @@ var (
 // validateRPCRegistry validates the RPC method registry. A disabled registry is not checked. An enabled one
 // is checked in full, including the registry file, so checkconfig covers it.
 func validateRPCRegistry(c Config) error {
-	err := validateRPCRegistryTransforms(c.RPC.Registry.GRPCStatusToCodeTransforms)
+	err := validateClientRefreshLead(c)
+	if err != nil {
+		return err
+	}
+	err = validateRPCRegistryTransforms(c.RPC.Registry.GRPCStatusToCodeTransforms)
 	if err != nil {
 		return fmt.Errorf("in rpc.registry: %w", err)
 	}

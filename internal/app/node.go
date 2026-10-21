@@ -38,6 +38,7 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 	cfg.ChannelMaxLength = appCfg.Channel.MaxLength
 	cfg.ClientPresenceUpdateInterval = appCfg.Client.PresenceUpdateInterval.ToDuration()
 	cfg.ClientExpiredCloseDelay = appCfg.Client.ExpiredCloseDelay.ToDuration()
+	cfg.ClientRefreshLead = appCfg.Client.RefreshLead.ToDuration()
 	cfg.ClientExpiredSubCloseDelay = appCfg.Client.ExpiredSubCloseDelay.ToDuration()
 	cfg.ClientStaleCloseDelay = appCfg.Client.StaleCloseDelay.ToDuration()
 	cfg.ClientQueueMaxSize = appCfg.Client.QueueMaxSize

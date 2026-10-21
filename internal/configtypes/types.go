@@ -436,6 +436,8 @@ type Client struct {
 	PingPong `mapstructure:",squash" yaml:",inline"`
 	// ExpiredConnectionCloseDelay is a delay before closing connection after it becomes expired.
 	ExpiredCloseDelay Duration `mapstructure:"expired_close_delay" json:"expired_close_delay" envconfig:"expired_close_delay" default:"25s" yaml:"expired_close_delay" toml:"expired_close_delay" doc:"Delay before closing an expired client connection. Default <<25s>>."`
+	// RefreshLead is how long before the expiry of its connection a client with client-side refresh is told to refresh.
+	RefreshLead Duration `mapstructure:"refresh_lead" json:"refresh_lead" envconfig:"refresh_lead" yaml:"refresh_lead" toml:"refresh_lead" doc:"How long before the expiry of its connection a client with client-side refresh is told to refresh, for example <<60s>>. The connect and refresh replies carry the time left minus this lead, but never less than half of the time left. The connection still expires at its own time, and expired_close_delay applies after it. Whole seconds. Zero means no lead. Read at start; a reload does not change it."`
 	// ExpiredSubCloseDelay is a delay before closing subscription after it becomes expired.
 	ExpiredSubCloseDelay Duration `mapstructure:"expired_sub_close_delay" json:"expired_sub_close_delay" envconfig:"expired_sub_close_delay" default:"25s" yaml:"expired_sub_close_delay" toml:"expired_sub_close_delay" doc:"Delay before closing an expired channel subscription. Default <<25s>>."`
 	// StaleConnectionCloseDelay is a delay before closing stale connection (which does not authenticate after connecting).

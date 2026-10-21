@@ -105,7 +105,7 @@ func TestSanitizeBody(t *testing.T) {
 		},
 		{
 			name:    "escaped key",
-			body:    `{"channel":"c","key":50}`,
+			body:    `{"channel":"c","\u006bey":50}`,
 			want:    `{"channel":"c"}`,
 			wantErr: true,
 		},

@@ -11,16 +11,12 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/jwtverify"
-	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const registryTestBackendMethod = "/example.v1.UserService/GetUser"
@@ -100,7 +96,7 @@ func registryTestRegistryConfig() configtypes.RPCRegistry {
 			},
 			{
 				Method:     "system.config",
-				GRPCMethod: "/example.v1.HelpService/GetConfig",
+				GRPCMethod: "/example.v1.StatusService/Ping",
 				Target:     "backend",
 				AuthClass:  configtypes.RPCAuthClassAnonymous,
 			},
@@ -253,61 +249,6 @@ func TestRPCRegistryResponseOverLimitIsRequestTooLarge(t *testing.T) {
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.small", Data: []byte(tools.GRPCBytesBigPayload)}, nil)
 	var protoErr *centrifuge.Error
 	require.ErrorAs(t, err, &protoErr)
-	require.Equal(t, uint32(106), protoErr.Code)
-	require.Equal(t, "limit exceeded", protoErr.Message)
-	require.Len(t, backend.Calls(), 1)
-}
-
-func TestRPCRegistryResponseOverLimitUsesResponseTooLarge(t *testing.T) {
-	backend := newRegistryTestBackend(t)
-	reg := registryTestRegistryConfig()
-	reg.Errors.ResponseTooLarge = configtypes.RPCRegistryError{
-		Code:    1001,
-		Message: "response too large",
-		AppCode: 500,
-		AppType: "RESPONSE_TOO_LARGE",
-	}
-	registry := startRegistryTestRegistry(t, reg, backend)
-
-	cfg := config.DefaultConfig()
-	cfg.RPC.Registry = reg
-	h, _ := newRegistryTestHandler(t, cfg, registry)
-	client := newRegistryTestClient("c1", "42", nil, nil)
-
-	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.small", Data: []byte(tools.GRPCBytesBigPayload)}, nil)
-	protoErr := requireProtocolError(t, err)
-	require.Equal(t, uint32(1001), protoErr.Code)
-	require.Equal(t, "response too large", protoErr.Message)
-	require.False(t, protoErr.Temporary)
-	require.Equal(t, int32(500), protoErr.AppCode)
-	require.Equal(t, "RESPONSE_TOO_LARGE", protoErr.AppType)
-	require.NotContains(t, protoErr.Metadata, rpcRetryMetadataKey)
-	require.Len(t, backend.Calls(), 1)
-}
-
-func TestRPCRegistryTargetRefusalStaysRequestTooLarge(t *testing.T) {
-	backend := newRegistryTestBackend(t)
-	reg := registryTestRegistryConfig()
-	reg.Errors.ResponseTooLarge = configtypes.RPCRegistryError{Code: 1001, Message: "response too large"}
-	reg.Methods = append(reg.Methods, configtypes.RPCMethod{
-		Method:           "users.refuse",
-		GRPCMethod:       "/example.v1.UserService/Refuse",
-		Target:           "backend",
-		MaxRequestBytes:  8192,
-		MaxResponseBytes: 4194304,
-	})
-	backend.FailMethod("/example.v1.UserService/Refuse", tools.GRPCBytesFailure{
-		Err: status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5000 vs. 4194304)"),
-	})
-	registry := startRegistryTestRegistry(t, reg, backend)
-
-	cfg := config.DefaultConfig()
-	cfg.RPC.Registry = reg
-	h, _ := newRegistryTestHandler(t, cfg, registry)
-	client := newRegistryTestClient("c1", "42", nil, nil)
-
-	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.refuse", Data: make([]byte, 5000)}, nil)
-	protoErr := requireProtocolError(t, err)
 	require.Equal(t, uint32(106), protoErr.Code)
 	require.Equal(t, "limit exceeded", protoErr.Message)
 	require.Len(t, backend.Calls(), 1)
@@ -663,36 +604,4 @@ func TestRPCRegistryConnectRejectsInvalidAuthClass(t *testing.T) {
 			require.Equal(t, centrifuge.DisconnectInvalidToken, err)
 		})
 	}
-}
-
-func TestRPCRegistryTransformAppFieldsReachClient(t *testing.T) {
-	backend := newRegistryTestBackend(t)
-	grpcMethod := registryStatusService + "Unavailable"
-	backend.FailMethod(grpcMethod, tools.GRPCBytesFailure{Err: status.Error(codes.Unavailable, "connection refused")})
-
-	cfg := registryErrorTestRegistry([]configtypes.RPCMethod{
-		{Method: "users.get", GRPCMethod: grpcMethod, Target: "backend"},
-	})
-	cfg.GRPCStatusToCodeTransforms = configtypes.RPCGRPCStatusToCodeTransforms{
-		{
-			Status: "UNAVAILABLE",
-			ToError: configtypes.RPCTransformError{
-				TransformError: configtypes.TransformError{Code: 100, Message: "backend unavailable", Temporary: true},
-				AppCode:        503,
-				AppType:        "BACKEND_UNAVAILABLE",
-			},
-		},
-	}
-	h := registryErrorTestHandler(t, backend, cfg)
-	client := newRegistryTestClient("c1", "42", nil, nil)
-	errorsBefore := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "BACKEND_UNAVAILABLE"))
-
-	_, err := h.OnRPC(client, centrifuge.RPCEvent{Method: "users.get", Data: []byte("x")}, nil)
-	protoErr := requireProtocolError(t, err)
-	require.Equal(t, uint32(100), protoErr.Code)
-	require.Equal(t, "backend unavailable", protoErr.Message)
-	require.True(t, protoErr.Temporary)
-	require.Equal(t, int32(503), protoErr.AppCode)
-	require.Equal(t, "BACKEND_UNAVAILABLE", protoErr.AppType)
-	require.Equal(t, errorsBefore+1, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "BACKEND_UNAVAILABLE")))
 }

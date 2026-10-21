@@ -81,15 +81,6 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 	m.calls[rpcRegistryResultIndex(result)].Inc()
 }
 
-// ExpiredRefusal counts one call of the method which was refused because its token had expired. The series of the
-// method is created at its first refusal, so a method which is never refused has none.
-func (m *RPCRegistryMethodMetrics) ExpiredRefusal(rpcMethod string) {
-	if m == nil || RPCRegistryCallsTotal == nil {
-		return
-	}
-	RPCRegistryCallsTotal.WithLabelValues(rpcMethod, RPCRegistryResultExpired).Inc()
-}
-
 // rpcRegistryResults is the only list of the RPCRegistryResult values. The calls_total children of a
 // method are kept in this order.
 var rpcRegistryResults = [...]string{

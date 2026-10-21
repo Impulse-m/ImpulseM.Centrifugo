@@ -251,17 +251,17 @@ func registryErrorValue(e configtypes.RPCRegistryError) *centrifuge.Error {
 }
 
 // registryCaller is the identity a connection calls the registry with. It is read once for a call, from the record of the
-// connection, so the token, the class and the dedup scope of the call are those of one identity.
+// connection, so the token, the class and the dedup scope of the call are those of one identity. exp is the JWT exp of
+// the token, zero when the token has none.
 type registryCaller struct {
-	token string
-	// exp is the JWT exp of the token, zero when the token has none.
-	exp      int64
+	token    string
 	class    rpcregistry.AuthClass
 	userID   string
 	identity centrifuge.TokenIdentity
 	// recorded is false for a connection without a record, whose token identity is the one Core holds. Core's identity is
 	// read only when the dedup scope needs it, see rpcTrackCall.
 	recorded bool
+	exp      int64
 }
 
 // registryConnection reads the identity a connection calls the registry with, and its effective auth class under claim,

@@ -282,7 +282,8 @@ func TestRPCRegistryExpiredTokenRefusalLeavesNoDedupRecord(t *testing.T) {
 }
 
 // A retransmit of a recorded call is refused while its token has expired, before the record is read. Once the refresh
-// lands, it gets the cached answer, and the backend has run once.
+// lands, it gets the cached answer, and the backend has run once. The first call completes, so it stands in for a
+// lost reply: the record holds the answer either way, and the retransmit is what the test pins.
 func TestRPCRegistryExpiredRetransmitGetsCachedAfterRefresh(t *testing.T) {
 	backend := newDedupBackend(t)
 	reg := dedupRegistryConfig()

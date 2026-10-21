@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,18 +16,12 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/balancer/ringhash" // Registers ring_hash_experimental, the policy of the ring_hash targets.
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 // ErrRPCResponseTooLarge is returned by CallRegistryMethod when the target answers with a message
 // over the response limit of the method.
 var ErrRPCResponseTooLarge = errors.New("rpc registry response too large")
-
-// ErrRPCTargetRequestTooLarge is returned by CallRegistryMethod when a grpc-go target refused the request with
-// its own receive limit.
-var ErrRPCTargetRequestTooLarge = errors.New("rpc registry target refused the request as too large")
 
 // RegistryCall is one client call through the RPC method registry.
 type RegistryCall struct {
@@ -127,43 +120,6 @@ func CallRegistryMethod(ctx context.Context, m *rpcregistry.Method, call Registr
 		return nil, trailer, err
 	}
 	return out, trailer, nil
-}
-
-// registryMessageTooLarge classifies a grpc-go "larger than max" error of a call whose request has requestLen
-// bytes, whose reply bound is bound, and whose target is compressed or not. tooLarge reports that the error is
-// one of these. reply reports that the reply was over bound: the message names bound, or math.MaxInt, the largest
-// int, which grpc-go names when a length does not fit in an int. Otherwise a grpc-go target refused the request. A
-// compressed target reports the compressed size, which the request size cannot match, so it always counts as a refused
-// request.
-func registryMessageTooLarge(err error, requestLen int, bound int, compressed bool) (tooLarge bool, reply bool) {
-	st, ok := status.FromError(err)
-	if !ok || st.Code() != codes.ResourceExhausted || !strings.Contains(st.Message(), "larger than max") {
-		return false, false
-	}
-	if compressed || reportedSize(st.Message()) == requestLen {
-		return true, false
-	}
-	msg := strings.TrimSuffix(st.Message(), ")")
-	named := strings.HasSuffix(msg, " "+strconv.Itoa(bound)) || strings.HasSuffix(msg, " "+strconv.Itoa(math.MaxInt))
-	return true, named
-}
-
-// reportedSize returns the size in the first parenthesis of a grpc-go message, as in "(2000 vs. 1024)". It
-// returns -1 when the message has none.
-func reportedSize(message string) int {
-	_, after, found := strings.Cut(message, "(")
-	if !found {
-		return -1
-	}
-	fields := strings.Fields(after)
-	if len(fields) == 0 {
-		return -1
-	}
-	size, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return -1
-	}
-	return size
 }
 
 // registryRequestMetadata builds the outgoing metadata of a registry call. Sources later in the

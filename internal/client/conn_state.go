@@ -47,17 +47,17 @@ type connState struct {
 }
 
 // connIdentity is the identity of a connection: what its token proves and the user it is bound to. It is immutable
-// once stored. Every path which gives a connection an identity builds one with nextIdentity.
+// once stored. Every path which gives a connection an identity builds one with nextIdentity. exp is the JWT exp of the
+// kept token, zero without a kept token or without exp.
 type connIdentity struct {
-	origin connOrigin
-	class  rpcregistry.AuthClass
-	claim  string
-	token  string
-	// exp is the JWT exp of the kept token, zero without a kept token or without exp.
-	exp       int64
+	origin    connOrigin
+	class     rpcregistry.AuthClass
+	claim     string
+	token     string
 	tokenUser string
 	account   string
 	identity  centrifuge.TokenIdentity
+	exp       int64
 }
 
 // connOrigin tells how a connection was made. It never changes.

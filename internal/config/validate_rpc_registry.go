@@ -44,16 +44,9 @@ func validateRPCRegistry(c Config) error {
 	if !c.RPC.Registry.Enabled {
 		return nil
 	}
-	if c.RPC.Registry.RefuseExpiredTokens {
-		if c.Client.Insecure {
-			return errors.New("rpc.registry.refuse_expired_tokens: can't be used with client.insecure")
-		}
-		if c.Client.Proxy.Refresh.Enabled {
-			return errors.New("rpc.registry.refuse_expired_tokens: can't be used with client.proxy.refresh.enabled")
-		}
-		if c.Client.RefreshLead.ToDuration() <= 0 {
-			return errors.New("rpc.registry.refuse_expired_tokens: needs client.refresh_lead above zero, so that the refresh lands before the token expires")
-		}
+	err = validateRefuseExpiredTokens(c)
+	if err != nil {
+		return err
 	}
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
@@ -394,11 +387,9 @@ func validateRPCRegistryTransforms(transforms configtypes.RPCGRPCStatusToCodeTra
 		if err != nil {
 			return err
 		}
-		if (transform.ToError.AppCode != 0 || transform.ToError.AppType != "") && transform.ToError.Code == 0 {
-			return fmt.Errorf("grpc_status_to_code_transforms[%d]: to_error.app_code and to_error.app_type need to_error.code", i)
-		}
-		if transform.ToError.AppType != "" && !configtypes.RPCAppErrorTypePattern.MatchString(transform.ToError.AppType) {
-			return fmt.Errorf("grpc_status_to_code_transforms[%d]: to_error.app_type must match ^[A-Z0-9_]{1,64}$, got %q", i, transform.ToError.AppType)
+		err = validateRPCTransformAppFields(i, transform.ToError)
+		if err != nil {
+			return err
 		}
 	}
 	return nil

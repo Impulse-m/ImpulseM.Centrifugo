@@ -2,6 +2,7 @@ package accessrevoke
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -385,6 +386,64 @@ func TestKafkaSourceGaugesReadAtScrape(t *testing.T) {
 	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_lag_records"))
 	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_ready"))
 	require.Equal(t, 0.0, counterValue(t, "centrifugo_access_revoke_source_lagging"))
+}
+
+func TestKafkaSourceSeedRetriesWithBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+		calls := 0
+		try := func(ctx context.Context) error {
+			calls++
+			if calls <= 3 {
+				return errors.New("listing failed")
+			}
+			return nil
+		}
+		start := time.Now()
+		require.NoError(t, s.seedWith(context.Background(), try))
+		require.Equal(t, 4, calls)
+		// Three delays: 0.5 to 1 s, 1 to 2 s and 2 to 4 s.
+		elapsed := time.Since(start)
+		require.GreaterOrEqual(t, elapsed, 3500*time.Millisecond)
+		require.LessOrEqual(t, elapsed, 7*time.Second+3*time.Nanosecond)
+	})
+}
+
+func TestKafkaSourceSeedStopsOnContextDone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		try := func(ctx context.Context) error {
+			calls++
+			cancel()
+			return errors.New("listing failed")
+		}
+		start := time.Now()
+		require.ErrorIs(t, s.seedWith(ctx, try), context.Canceled)
+		require.Equal(t, 1, calls)
+		require.Zero(t, time.Since(start))
+	})
+}
+
+func TestSeedBackOffStaysWithinHalfAndWholeNominal(t *testing.T) {
+	nominal := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second, 10 * time.Second}
+	for range 200 {
+		schedule := seedBackOff()
+		schedule.Reset()
+		for _, n := range nominal {
+			delay := schedule.NextBackOff()
+			require.GreaterOrEqual(t, delay, n/2)
+			require.LessOrEqual(t, delay, n+time.Nanosecond)
+		}
+	}
+
+	exact := seedBackOff()
+	exact.RandomizationFactor = 0
+	exact.Reset()
+	for _, want := range []time.Duration{750 * time.Millisecond, 1500 * time.Millisecond, 3 * time.Second, 6 * time.Second, 7500 * time.Millisecond, 7500 * time.Millisecond} {
+		require.Equal(t, want, exact.NextBackOff())
+	}
 }
 
 func appliedCount(t *testing.T, kind string) float64 {

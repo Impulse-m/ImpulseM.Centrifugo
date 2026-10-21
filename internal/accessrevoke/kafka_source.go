@@ -11,7 +11,9 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/kafkautil"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
+	"github.com/cenkalti/backoff/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -19,6 +21,16 @@ import (
 )
 
 var _ Source = (*KafkaSource)(nil)
+
+const (
+	// seedBackoffMin is the nominal delay before the second offset listing while the seed fails.
+	seedBackoffMin time.Duration = time.Second
+	// seedBackoffMax caps the nominal delay, so that a strict node accepts connects at most about this long after Kafka
+	// recovers.
+	seedBackoffMax time.Duration = 10 * time.Second
+	// seedLogInterval is the shortest time between two warnings of a failed seed.
+	seedLogInterval time.Duration = 30 * time.Second
+)
 
 // KafkaSource reads access revocation events from a Kafka topic and applies them with a Revoker.
 // It reads all partitions directly, without consumer group and without commits. On every start it
@@ -29,6 +41,8 @@ type KafkaSource struct {
 	revoker      *Revoker
 	tracker      *ReadinessTracker
 	clock        func() time.Time
+	// seedLog limits the warnings of a failed seed.
+	seedLog *tools.IntervalLimiter
 
 	// readinessMu guards the readiness timer fields below.
 	readinessMu sync.Mutex
@@ -62,7 +76,8 @@ func newKafkaSource(
 			LagThreshold:   source.LagThreshold.ToDuration(),
 			Strict:         source.RejectConnectOnLag,
 		}, clock),
-		clock: clock,
+		clock:   clock,
+		seedLog: tools.NewIntervalLimiter(seedLogInterval),
 	}
 }
 
@@ -154,20 +169,44 @@ func (s *KafkaSource) clientOptions(startMilli int64) ([]kgo.Opt, error) {
 
 // seed sets initial offsets of all partitions of the topic: the first offset from startMilli as the
 // next offset, and the last stable offset as the target. Partitions without fetched records are tracked
-// from these values. It retries until listing succeeds or ctx is done.
+// from these values. It retries with backoff until listing succeeds or ctx is done.
 func (s *KafkaSource) seed(ctx context.Context, adm *kadm.Client, startMilli int64) error {
-	for {
-		err := s.trySeed(ctx, adm, startMilli)
-		if err == nil {
-			return nil
-		}
-		log.Warn().Err(err).Msg("error listing access revocation source offsets, retrying")
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
+	return s.seedWith(ctx, func(ctx context.Context) error {
+		return s.trySeed(ctx, adm, startMilli)
+	})
+}
+
+// seedBackOff returns the retry schedule of the seed: the nominal delay starts at seedBackoffMin and doubles up to
+// seedBackoffMax, and each delay is drawn from half the nominal delay to all of it, so that nodes started together do
+// not retry in step and no delay exceeds the cap. ExponentialBackOff randomizes symmetrically around its interval, so
+// the interval is three quarters of the nominal delay and the factor a third: [2I/3, 4I/3] is [d/2, d].
+func seedBackOff() *backoff.ExponentialBackOff {
+	return &backoff.ExponentialBackOff{
+		InitialInterval:     seedBackoffMin * 3 / 4,
+		RandomizationFactor: 1.0 / 3,
+		Multiplier:          2,
+		MaxInterval:         seedBackoffMax * 3 / 4,
 	}
+}
+
+// seedWith calls try until it succeeds or ctx is done, spaced by seedBackOff, and logs a failure at most once per
+// seedLogInterval. It returns nil, or the cause of ctx.
+func (s *KafkaSource) seedWith(ctx context.Context, try func(ctx context.Context) error) error {
+	_, err := backoff.Retry(
+		ctx,
+		func() (struct{}, error) {
+			return struct{}{}, try(ctx)
+		},
+		backoff.WithBackOff(seedBackOff()),
+		// The default limit of 15 minutes would end the seed in a long outage; it retries until ctx is done.
+		backoff.WithMaxElapsedTime(0),
+		backoff.WithNotify(func(err error, _ time.Duration) {
+			if s.seedLog.Allow() {
+				log.Warn().Err(err).Msg("error listing access revocation source offsets, retrying")
+			}
+		}),
+	)
+	return err
 }
 
 func (s *KafkaSource) trySeed(ctx context.Context, adm *kadm.Client, startMilli int64) error {

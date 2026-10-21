@@ -156,7 +156,7 @@ func (h *Handler) rateLimitCommandRead(
 	}
 }
 
-// Services returns background services of rate limits: the user state sweeper when user_command is enabled,
+// Services returns background services of rate limits: the user state eviction when user_command is enabled,
 // and closing of Redis shards when redis_user_command is enabled.
 func (h *Handler) Services() []service.Service {
 	var services []service.Service

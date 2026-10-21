@@ -74,9 +74,11 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 		userLimiter = ratelimit.NewUserLimiter(rl.UserCommand)
 		h.userLimiter = userLimiter
 	}
-	// Connection state is allocated on connect with the connection record, so the read hook is needed for client_error
-	// and user limits too.
-	h.node.OnCommandRead(h.rateLimitCommandRead(limiter, rl.ClientCommand.Enabled, userLimiter, redisLimiter))
+	// The read hook checks commands, so it is needed for the command limits only. The client_error limit counts the
+	// processed commands, and its state is allocated on connect with the connection record.
+	if rl.ClientCommand.Enabled || rl.UserCommand.Enabled || rl.RedisUserCommand.Enabled {
+		h.node.OnCommandRead(h.rateLimitCommandRead(limiter, rl.ClientCommand.Enabled, userLimiter, redisLimiter))
+	}
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
 	}

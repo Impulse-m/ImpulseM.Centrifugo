@@ -557,14 +557,10 @@ func (h *Executor) Unsubscribe(_ context.Context, cmd *UnsubscribeRequest) *Unsu
 		return resp
 	}
 
-	err = validUnsubscribe(cmd.Unsubscribe)
+	opts, err := unsubscribeOptions(cmd)
 	if err != nil {
 		resp.Error = ErrorBadRequest
 		return resp
-	}
-	opts := []centrifuge.UnsubscribeOption{centrifuge.WithUnsubscribeClient(cmd.Client), centrifuge.WithUnsubscribeSession(cmd.Session)}
-	if custom := unsubscribeOption(cmd.Unsubscribe); custom != nil {
-		opts = append(opts, custom)
 	}
 	err = h.node.Unsubscribe(user, channel, opts...)
 	if err != nil {

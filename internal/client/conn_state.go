@@ -86,7 +86,7 @@ func rateLimitStateOf(c rebindableClient) *ratelimit.ConnState {
 }
 
 // AccessIdentity implements accessrevoke.Identified. It returns the user and the token identity of the connection, which
-// the revoker, the recheck and the sweep check it against.
+// the revoker, the recheck and the catch-up sweep check it against.
 func (s *connState) AccessIdentity() (string, centrifuge.TokenIdentity) {
 	id := s.identity.Load()
 	if id == nil {

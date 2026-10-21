@@ -354,6 +354,39 @@ func TestKafkaSourceDetectsSilenceOnTimeWithLazyRearm(t *testing.T) {
 	})
 }
 
+// TestKafkaSourceDetectsSilenceAfterRecoveryBeforeStartupTimeout runs a non-strict source with Kafka unreachable: it
+// lags by silence long before its startup timeout, one fetch ends the lag, and fetches stop again. The timer must see
+// the new silence at its deadline, not at the startup timeout.
+func TestKafkaSourceDetectsSilenceAfterRecoveryBeforeStartupTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		source := sourceTestConfig().AccessRevoke.Source
+		source.StartupTimeout = configtypes.Duration(90 * time.Second)
+		source.LagThreshold = configtypes.Duration(10 * time.Second)
+		s := newKafkaSource(source, nil, nil, time.Now)
+		s.onReadinessTimer()
+
+		time.Sleep(10*time.Second + time.Nanosecond)
+		synctest.Wait()
+		require.True(t, s.tracker.Lagging())
+		require.False(t, s.tracker.Ready())
+
+		time.Sleep(time.Second - time.Nanosecond)
+		synctest.Wait()
+		s.tracker.FetchSucceeded()
+		require.False(t, s.tracker.Lagging())
+
+		time.Sleep(10 * time.Second)
+		synctest.Wait()
+		require.False(t, s.tracker.Lagging())
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.True(t, s.tracker.Lagging())
+		require.False(t, s.tracker.Ready())
+		s.stopReadiness()
+	})
+}
+
 func TestKafkaSourceReportsCaughtUpOnce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newKafkaSource(sourceTestConfig().AccessRevoke.Source, nil, nil, time.Now)

@@ -217,12 +217,14 @@ func (t *ReadinessTracker) LagRecords() int64 {
 
 // nextCheckLocked returns the time from now until the earliest time based transition which has not happened yet: the
 // startup timeout while not ready and not strict, and each lag rule while it does not hold. When none is pending it
-// returns the lag threshold, so that a lag which starts after a recovery is measured again. The result is at least
-// minReadinessCheck. The caller holds mu and has refreshed the state for now.
+// returns the lag threshold. The startup term is capped at the lag threshold plus 1ns, which no lag term exceeds, so
+// every result is at most that long. A lag which starts after this check, after a recovery, is not due before the next
+// check, which then arms for its deadline; fetches never re-arm the timer. The result is at least minReadinessCheck.
+// The caller holds mu and has refreshed the state for now.
 func (t *ReadinessTracker) nextCheckLocked(now time.Time) time.Duration {
 	var next time.Duration = math.MaxInt64
 	if !t.ready && !t.config.Strict {
-		next = min(next, t.startedAt.Add(t.config.StartupTimeout).Sub(now))
+		next = min(next, t.startedAt.Add(t.config.StartupTimeout).Sub(now), t.config.LagThreshold+time.Nanosecond)
 	}
 	if silent := now.Sub(t.lastFetch); silent <= t.config.LagThreshold {
 		next = min(next, t.config.LagThreshold-silent+time.Nanosecond)

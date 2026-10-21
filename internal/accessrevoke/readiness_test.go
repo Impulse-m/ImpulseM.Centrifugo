@@ -384,6 +384,41 @@ func TestReadinessNextCheckHasFloor(t *testing.T) {
 	require.Equal(t, time.Millisecond, next)
 }
 
+// TestReadinessNextCheckIsCappedByLagThreshold lags by silence long before the startup timeout, then one fetch ends the
+// lag and fetches stop again. Each check is armed for the delay the previous one returned. The check after the fetch
+// must come within the lag threshold, so that the new silence is seen at its deadline and not at the startup timeout.
+func TestReadinessNextCheckIsCappedByLagThreshold(t *testing.T) {
+	clock := &fakeReadinessClock{now: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}
+	start := clock.now
+	tracker := NewReadinessTracker(ReadinessConfig{
+		StartupTimeout: 5 * time.Minute,
+		LagThreshold:   30 * time.Second,
+	}, clock.Now)
+	_, next := tracker.snapshotWithNextCheck()
+	require.Equal(t, 30*time.Second+time.Nanosecond, next)
+
+	clock.Advance(next)
+	snapshot, next := tracker.snapshotWithNextCheck()
+	require.True(t, snapshot.Lagging)
+	require.False(t, snapshot.Ready)
+	require.Equal(t, 30*time.Second+time.Nanosecond, next)
+
+	clock.now = start.Add(40 * time.Second)
+	tracker.FetchSucceeded()
+	require.False(t, tracker.Lagging())
+
+	clock.now = start.Add(60*time.Second + 2*time.Nanosecond)
+	snapshot, next = tracker.snapshotWithNextCheck()
+	require.False(t, snapshot.Lagging)
+	require.Equal(t, 10*time.Second-time.Nanosecond, next)
+
+	clock.Advance(next)
+	require.Equal(t, start.Add(70*time.Second+time.Nanosecond), clock.now)
+	tracker.snapshotWithNextCheck()
+	require.True(t, tracker.Lagging())
+	require.False(t, tracker.Ready())
+}
+
 func TestReadinessFailOpenIsSetByAnyRefresh(t *testing.T) {
 	tracker, clock := newReadinessTest(false)
 	clock.Advance(61 * time.Second)

@@ -34,7 +34,8 @@ type RedisUserLimiter struct {
 	// connector holds the shards. Their count never changes, so the user-to-shard mapping stays the same
 	// for the life of the process.
 	connector *redisshard.Connector
-	run       redisScriptRunner
+	// run executes a script on a shard. NewRedisUserLimiter sets runRedisScript; tests replace it with a fake runner.
+	run redisScriptRunner
 	// errorLog limits how often Redis errors are logged to once per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
 }

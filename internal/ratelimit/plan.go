@@ -65,7 +65,7 @@ type slotBucket struct {
 // name, redisName, script and argv are used by Redis limits only: redisName is a part of the Redis key, script
 // and argv are the Redis script of the algorithm and its arguments for the buckets.
 type scope struct {
-	name      string
+	// redisName is the scope name, with the algorithm suffix of the Redis key. Tests read it to find the scope.
 	redisName string
 	algo      Algorithm
 	script    *rueidis.Lua
@@ -209,7 +209,6 @@ func (a *slotAllocator) compileScope(
 	algo := algorithmNamed(algorithm)
 	_, tokenOnly := algo.(tokenBucket)
 	s := &scope{
-		name:      name,
 		algo:      algo,
 		script:    algo.redisScript(),
 		words:     algo.stateWords(),

@@ -470,7 +470,7 @@ func TestMapAndTrackOperationsResolutionInAllPlans(t *testing.T) {
 			t.Run(plan.name+" "+tt.name, func(t *testing.T) {
 				s := plan.resolve(tt.op, tt.key)
 				require.NotNil(t, s)
-				require.Equal(t, tt.wantName, s.name)
+				require.Equal(t, tt.wantName, s.redisName)
 			})
 		}
 	}

@@ -77,7 +77,7 @@ func TestRedisPlanScopeNames(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := p.ops[tt.op].resolve(tt.key)
 			require.NotNil(t, s)
-			require.Equal(t, tt.want, s.name)
+			require.Equal(t, tt.want, s.redisName)
 		})
 	}
 }
@@ -103,7 +103,7 @@ func TestRedisPlanConnectFallsBackToDefault(t *testing.T) {
 	})
 	s := p.ops[OperationConnect].base
 	require.NotNil(t, s)
-	require.Equal(t, defaultScopeName, s.name)
+	require.Equal(t, defaultScopeName, s.redisName)
 }
 
 func TestRedisPlanDefaultScopeIsShared(t *testing.T) {

@@ -52,7 +52,9 @@ type userStore struct {
 	shards   [userShardCount]userShard
 	numSlots int
 	idle     int64
-	now      func() time.Time
+	// now is the clock of the store. NewUserLimiter passes time.Now. Tests replace it to place the eviction at exact
+	// offsets, which sweepAt then reads; no other code path replaces it.
+	now func() time.Time
 
 	// evictAt is the time the eviction timer is armed for, in nowNano, 0 while not armed. It is stored under evictMu
 	// and loaded without it.

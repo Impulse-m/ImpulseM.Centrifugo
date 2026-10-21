@@ -175,30 +175,6 @@ func TestRetryEnqueuesEachConnectionOnce(t *testing.T) {
 	}, 100*time.Millisecond, 10*time.Millisecond)
 }
 
-// TestRevokeSessionWithRoomRequestsNoSweep revokes the session of a connection while the disconnect queue has room.
-// The disconnect is queued, so no sweep is requested.
-func TestRevokeSessionWithRoomRequestsNoSweep(t *testing.T) {
-	node := newRevokeTestNode(t)
-	store := NewStore(time.Minute)
-	queue := NewDisconnectQueue(10000, 100)
-	revoker := NewRevoker(store, node.Hub(), queue)
-	swept := make(chan struct{}, 1)
-	revoker.sweep = func() {
-		select {
-		case swept <- struct{}{}:
-		default:
-		}
-	}
-	connectTestClient(t, node, "42|s1|0|1000")
-
-	require.NoError(t, revoker.RevokeSession("42", "s1", 1000, 0, nil))
-	select {
-	case <-swept:
-		t.Fatal("a queued disconnect requested a sweep")
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
 // TestRetryDoesNotRequeueClosingConnection drops the session disconnects of three indexed connections while the queue
 // holds one. Each retry pass finds the connections which are closing and skips them, so each connection is
 // disconnected exactly once, and the session is retried once per pass that found a drop.

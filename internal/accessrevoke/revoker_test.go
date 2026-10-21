@@ -3,10 +3,8 @@ package accessrevoke
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,59 +146,23 @@ func TestRevokerInvalidateUserDisconnectsOlderTokens(t *testing.T) {
 	}
 }
 
-func TestRevokerRevokeSessionWithoutUserSweepsConnections(t *testing.T) {
+// TestRevokerRevokeSessionWithoutUserLeavesUserConnections checks that a session revoked without a user does not reach a
+// connection of a user, as such a connection is not in the session index. Passing the user reaches it.
+func TestRevokerRevokeSessionWithoutUserLeavesUserConnections(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)
 	revoker := newTestRevoker(t, node, store)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
-	connectTestClient(t, node, "user-2|"+testOtherUUID+"|0|100")
 	waitConnections(t, node, "user-1", 1)
-	waitConnections(t, node, "user-2", 1)
 
 	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0, nil))
+	require.Never(t, func() bool {
+		return len(node.Hub().UserConnections("user-1")) == 0
+	}, 200*time.Millisecond, 5*time.Millisecond)
 
+	require.NoError(t, revoker.RevokeSession("user-1", testUUID, 0, 0, nil))
 	waitConnections(t, node, "user-1", 0)
-	waitConnections(t, node, "user-2", 1)
-}
-
-func TestRevokerRevokeSessionWithoutUserCoalescesSweeps(t *testing.T) {
-	node := newRevokeTestNode(t)
-	store := NewStore(time.Minute)
-	revoker := newTestRevoker(t, node, store)
-
-	var sweeps atomic.Int64
-	swept := make(chan struct{})
-	gate := make(chan struct{})
-	original := revoker.sweep
-	revoker.sweep = func() {
-		original()
-		if sweeps.Add(1) == 1 {
-			close(swept)
-			<-gate
-		}
-	}
-
-	connectTestClient(t, node, "user-1|"+testOtherUUID+"|0|100")
-	waitConnections(t, node, "user-1", 1)
-
-	// The first sweep runs and then blocks, so the revocations below happen while a sweep is running.
-	require.NoError(t, revoker.RevokeSession("", "dummy-first", 0, 0, nil))
-	select {
-	case <-swept:
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "sweep did not start")
-	}
-
-	for i := 0; i < 50; i++ {
-		require.NoError(t, revoker.RevokeSession("", fmt.Sprintf("dummy-%d", i), 0, 0, nil))
-	}
-	// The last revocation targets the connected session and happens after the sweep started.
-	require.NoError(t, revoker.RevokeSession("", testOtherUUID, 0, 0, nil))
-	close(gate)
-
-	waitConnections(t, node, "user-1", 0)
-	require.LessOrEqual(t, sweeps.Load(), int64(2))
 }
 
 func TestRevokerEmptyUserIsError(t *testing.T) {

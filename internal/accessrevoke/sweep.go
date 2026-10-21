@@ -10,7 +10,8 @@ import (
 )
 
 // SweepConnections checks every local connection against the store and enqueues a disconnect for each
-// rejected one. It returns the number of rejected connections. Disconnects dropped by a full queue are
+// rejected one. It is the catch-up pass after a fail-open start; no revocation runs it. It returns the number
+// of rejected connections. Disconnects dropped by a full queue are
 // counted by the queue and still rejected by the refresh check within the token lifetime.
 func SweepConnections(hub Hub, store *Store, queue *DisconnectQueue, opts CheckOptions) int {
 	var rejected int

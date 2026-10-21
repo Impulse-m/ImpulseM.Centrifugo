@@ -258,25 +258,3 @@ func TestRevokerRevokeSessionDisconnectsSessionConnections(t *testing.T) {
 		})
 	}
 }
-
-// TestRevokerRevokeSessionWithoutUserRequestsSweep checks that an empty user also requests the sweep, which finds the
-// connections which the index does not hold.
-func TestRevokerRevokeSessionWithoutUserRequestsSweep(t *testing.T) {
-	node := newRevokeTestNode(t)
-	store := NewStore(0)
-	revoker := newTestRevoker(t, node, store)
-	swept := make(chan struct{}, 1)
-	revoker.sweep = func() {
-		select {
-		case swept <- struct{}{}:
-		default:
-		}
-	}
-
-	require.NoError(t, revoker.RevokeSession("", testUUID, 0, 0, nil))
-	select {
-	case <-swept:
-	case <-time.After(5 * time.Second):
-		t.Fatal("an empty user did not request the sweep")
-	}
-}

@@ -20,8 +20,10 @@ type expiryItem struct {
 }
 
 // expiryHeap is a min-heap of expiry items by expireAt, guarded by the lock of its kind. Every entry of the kind has an
-// item in the heap. An item of a key which was unblocked stays until its pop or a compaction, so the heap can hold up
-// to twice the entries of the kind plus one.
+// item in the heap. An item of a key which was unblocked stays until its pop or a compaction, so after every write and
+// at the end of every removal pass the heap holds at most twice the entries of the kind plus one. Between two holds of
+// one pass, the deletes of the pass shrink the entries and the heap by the same count and can leave the heap above
+// that bound; the compaction check under the last hold restores it.
 type expiryHeap []expiryItem
 
 // Len returns the number of items.

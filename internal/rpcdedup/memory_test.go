@@ -130,7 +130,7 @@ func testRecordCount(store *Memory, scope string) int {
 	if sc == nil {
 		return 0
 	}
-	return sc.records.len
+	return sc.records.Len()
 }
 
 // testRefused returns the refusal of err, and fails the test when err is not a refusal.
@@ -191,11 +191,11 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 	}
 
 	orderLen := 0
-	for r := s.order.head; r != nil; r = r.byAge.next {
+	for r := s.order.Front(); r != nil; r = r.byAge.Next() {
 		orderLen++
 		require.Same(t, r, s.done[r.key])
 	}
-	require.Equal(t, orderLen, s.order.len)
+	require.Equal(t, orderLen, s.order.Len())
 	require.Equal(t, len(s.done), orderLen)
 
 	for name, sc := range s.scopes {
@@ -211,18 +211,18 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 			users[sc.user]++
 		}
 		require.Equal(t, flightsOf[name], sc.flights)
-		require.True(t, sc.records.len > 0 || sc.flights > 0, "an admitted scope holds a record or a call")
+		require.True(t, sc.records.Len() > 0 || sc.flights > 0, "an admitted scope holds a record or a call")
 
 		n := 0
 		var bytes int64
-		for r := sc.records.head; r != nil; r = r.byScope.next {
+		for r := sc.records.Front(); r != nil; r = r.byScope.Next() {
 			n++
 			bytes += r.size
 			require.LessOrEqual(t, r.size, p.recordBytes, "a record is kept within its share of the reserve")
 			require.Same(t, sc, r.scope)
 			require.Same(t, r, s.done[r.key])
 		}
-		require.Equal(t, sc.records.len, n)
+		require.Equal(t, sc.records.Len(), n)
 		require.Equal(t, sc.bytes, bytes)
 		if n <= p.reserveEntries {
 			require.LessOrEqual(t, bytes, int64(p.reserveEntries)*p.recordBytes, "a scope within its record reserve fits its byte reserve")
@@ -248,7 +248,7 @@ func checkShard(t *testing.T, s *shard) [poolCount]poolTotals {
 		require.LessOrEqual(t, p.bytes, p.maxBytes)
 
 		listed := 0
-		for sc := p.surplus.head; sc != nil; sc = sc.surplusLinks.next {
+		for sc := p.surplus.Front(); sc != nil; sc = sc.surplusLinks.Next() {
 			require.True(t, sc.surplus)
 			listed++
 		}

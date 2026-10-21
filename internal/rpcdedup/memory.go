@@ -8,6 +8,7 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/intrusive"
 )
 
 // DefaultShards is the number of shards of the node-local store when MemoryOptions.Shards is zero.
@@ -132,7 +133,7 @@ type shard struct {
 	scopes           map[string]*scopeState
 	users            map[string]int
 	pools            [poolCount]pool
-	order            intrusiveList[storedRecord]
+	order            intrusive.List[storedRecord]
 	ttl              time.Duration
 	maxScope         int
 	maxScopesPerUser int
@@ -151,7 +152,7 @@ type pool struct {
 	entries        int
 	bytes          int64
 	scopes         int
-	surplus        intrusiveList[scopeState]
+	surplus        intrusive.List[scopeState]
 	stats          *poolStats
 }
 
@@ -162,8 +163,8 @@ type storedRecord struct {
 	expireAt time.Time
 	size     int64
 	scope    *scopeState
-	byAge    linkPair[storedRecord]
-	byScope  linkPair[storedRecord]
+	byAge    intrusive.Links[storedRecord]
+	byScope  intrusive.Links[storedRecord]
 }
 
 // scopeState is an admitted scope: its records, oldest first, and its running calls.
@@ -171,11 +172,11 @@ type scopeState struct {
 	scope        string
 	user         string
 	pool         *pool
-	records      intrusiveList[storedRecord]
+	records      intrusive.List[storedRecord]
 	bytes        int64
 	flights      int
 	surplus      bool
-	surplusLinks linkPair[scopeState]
+	surplusLinks intrusive.Links[scopeState]
 }
 
 // NewMemory returns an empty node-local store.
@@ -203,7 +204,7 @@ func NewMemory(opts MemoryOptions) *Memory {
 		s.flights = map[Key]*Flight{}
 		s.scopes = map[string]*scopeState{}
 		s.users = map[string]int{}
-		s.order = intrusiveList[storedRecord]{links: byAgeLinks}
+		s.order = intrusive.NewList(byAgeLinks)
 		s.ttl = opts.TTL
 		s.maxScope = opts.MaxRecordsPerScope
 		s.maxScopesPerUser = opts.MaxScopesPerUser
@@ -240,23 +241,23 @@ func newPool(entries int64, bytes int64, opts MemoryOptions, stats *poolStats) p
 		maxScopes:      int(maxScopes),
 		reserveEntries: reserveEntries,
 		recordBytes:    reserveBytes / int64(reserveEntries),
-		surplus:        intrusiveList[scopeState]{links: surplusLinks},
+		surplus:        intrusive.NewList(surplusLinks),
 		stats:          stats,
 	}
 }
 
 // byAgeLinks returns the links of a record in the order of the shard.
-func byAgeLinks(r *storedRecord) *linkPair[storedRecord] {
+func byAgeLinks(r *storedRecord) *intrusive.Links[storedRecord] {
 	return &r.byAge
 }
 
 // byScopeLinks returns the links of a record in the order of its scope.
-func byScopeLinks(r *storedRecord) *linkPair[storedRecord] {
+func byScopeLinks(r *storedRecord) *intrusive.Links[storedRecord] {
 	return &r.byScope
 }
 
 // surplusLinks returns the links of a scope in the surplus scopes of its pool.
-func surplusLinks(sc *scopeState) *linkPair[scopeState] {
+func surplusLinks(sc *scopeState) *intrusive.Links[scopeState] {
 	return &sc.surplusLinks
 }
 
@@ -459,7 +460,7 @@ func (s *shard) admit(scope string, now time.Time) (*scopeState, error) {
 		scope:   scope,
 		user:    user,
 		pool:    p,
-		records: intrusiveList[storedRecord]{links: byScopeLinks},
+		records: intrusive.NewList(byScopeLinks),
 	}
 	s.scopes[scope] = sc
 	p.scopes++
@@ -504,7 +505,7 @@ func (s *shard) refusalOf(p *pool, user string) (Refusal, bool) {
 // releaseIfEmpty releases sc when it holds no record and no call: its pool slot and its user slot are freed.
 // Caller holds mu.
 func (s *shard) releaseIfEmpty(sc *scopeState) {
-	if sc.records.len > 0 || sc.flights > 0 || s.scopes[sc.scope] != sc {
+	if sc.records.Len() > 0 || sc.flights > 0 || s.scopes[sc.scope] != sc {
 		return
 	}
 	delete(s.scopes, sc.scope)
@@ -535,7 +536,7 @@ func (s *shard) liveRecord(key Key, now time.Time) *storedRecord {
 // sweepSome removes up to sweepLimit records which expired at now, from the oldest. Caller holds mu.
 func (s *shard) sweepSome(now time.Time) {
 	for i := 0; i < sweepLimit; i++ {
-		r := s.order.front()
+		r := s.order.Front()
 		if r == nil || now.Before(r.expireAt) {
 			return
 		}
@@ -562,20 +563,20 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 	if old := s.done[key]; old != nil {
 		s.drop(old, sc)
 	}
-	for sc.records.len > 0 && sc.records.len >= s.maxScope {
-		s.evict(sc.records.front(), EvictionScopeCap, sc)
+	for sc.records.Len() > 0 && sc.records.Len() >= s.maxScope {
+		s.evict(sc.records.Front(), EvictionScopeCap, sc)
 	}
 	for p.overBudget(size) {
-		if f := s.order.front(); f != nil && !now.Before(f.expireAt) {
+		if f := s.order.Front(); f != nil && !now.Before(f.expireAt) {
 			s.drop(f, sc)
 			continue
 		}
-		if sc.records.len > 0 && sc.records.len+1 > p.reserveEntries {
-			s.evict(sc.records.front(), EvictionOverReserve, sc)
+		if sc.records.Len() > 0 && sc.records.Len()+1 > p.reserveEntries {
+			s.evict(sc.records.Front(), EvictionOverReserve, sc)
 			continue
 		}
-		if v := p.surplus.front(); v != nil {
-			s.evict(v.records.front(), EvictionSurplus, sc)
+		if v := p.surplus.Front(); v != nil {
+			s.evict(v.records.Front(), EvictionSurplus, sc)
 			continue
 		}
 		if !rec.Uncached {
@@ -593,8 +594,8 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 		break
 	}
 	r := &storedRecord{key: key, rec: rec, expireAt: now.Add(s.ttl), size: size, scope: sc}
-	s.order.pushBack(r)
-	sc.records.pushBack(r)
+	s.order.PushBack(r)
+	sc.records.PushBack(r)
 	sc.bytes += size
 	s.done[key] = r
 	p.entries++
@@ -617,15 +618,15 @@ func (p *pool) overBudget(size int64) bool {
 // holds mu.
 func (s *shard) updateSurplus(sc *scopeState) {
 	p := sc.pool
-	want := sc.records.len > p.reserveEntries
+	want := sc.records.Len() > p.reserveEntries
 	if want == sc.surplus {
 		return
 	}
 	sc.surplus = want
 	if want {
-		p.surplus.pushBack(sc)
+		p.surplus.PushBack(sc)
 	} else {
-		p.surplus.remove(sc)
+		p.surplus.Remove(sc)
 	}
 }
 
@@ -665,9 +666,9 @@ func (s *shard) drop(r *storedRecord, inserting *scopeState) {
 // its scope and pool. Caller holds mu.
 func (s *shard) unlink(r *storedRecord) {
 	delete(s.done, r.key)
-	s.order.remove(r)
+	s.order.Remove(r)
 	sc := r.scope
-	sc.records.remove(r)
+	sc.records.Remove(r)
 	sc.bytes -= r.size
 	p := sc.pool
 	p.entries--

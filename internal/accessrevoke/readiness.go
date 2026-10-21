@@ -62,8 +62,9 @@ func (p *partitionProgress) lag() int64 {
 // not count as lag. It is fed by per-partition observations (next consumed offset and target offset)
 // and by successful fetches. It is safe for concurrent use.
 type ReadinessTracker struct {
-	// readyFlag and laggingFlag mirror Snapshot().Ready and Snapshot().Lagging. They are refreshed under mu
-	// by every state change and by Snapshot, so Ready and Lagging are plain loads on the connect path.
+	// readyFlag, laggingFlag and lagRecordsValue mirror Ready, Lagging and LagRecords of the snapshot. They are refreshed
+	// under mu by every state change, by Snapshot and by snapshotWithNextCheck, so their readers are plain loads on the
+	// connect path.
 	readyFlag       atomic.Bool
 	laggingFlag     atomic.Bool
 	lagRecordsValue atomic.Int64
@@ -198,19 +199,19 @@ func (t *ReadinessTracker) snapshotWithNextCheck() (ReadinessSnapshot, time.Dura
 }
 
 // Ready reports whether the tracker is ready. See ReadinessSnapshot.Ready. It is a lock free load, the
-// value is refreshed by Observe, FetchSucceeded and Snapshot.
+// value is refreshed by Observe, FetchSucceeded, Snapshot and snapshotWithNextCheck.
 func (t *ReadinessTracker) Ready() bool {
 	return t.readyFlag.Load()
 }
 
 // Lagging reports whether the tracker is lagging. See ReadinessSnapshot.Lagging. It is a lock free load,
-// the value is refreshed by Observe, FetchSucceeded and Snapshot.
+// the value is refreshed by Observe, FetchSucceeded, Snapshot and snapshotWithNextCheck.
 func (t *ReadinessTracker) Lagging() bool {
 	return t.laggingFlag.Load()
 }
 
 // LagRecords returns the number of records between consumed and target offsets. See ReadinessSnapshot.LagRecords. It
-// is a lock free load, the value is refreshed by Observe, FetchSucceeded and Snapshot.
+// is a lock free load, the value is refreshed by Observe, FetchSucceeded, Snapshot and snapshotWithNextCheck.
 func (t *ReadinessTracker) LagRecords() int64 {
 	return t.lagRecordsValue.Load()
 }

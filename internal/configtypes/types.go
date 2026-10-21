@@ -233,7 +233,7 @@ type PingPong struct {
 	// PongTimeout must be less than PingInterval in current implementation.
 	PongTimeout Duration `mapstructure:"pong_timeout" json:"pong_timeout" envconfig:"pong_timeout" default:"8s" yaml:"pong_timeout" toml:"pong_timeout" doc:"Time to wait for a pong response after sending a ping before disconnecting. Use <<-1>> to disable pong checks. Default <<8s>>."`
 	// PongTimeoutAtWrite starts the pong timeout when a ping is written to the connection, not when it is queued.
-	PongTimeoutAtWrite bool `mapstructure:"pong_timeout_at_write" json:"pong_timeout_at_write" envconfig:"pong_timeout_at_write" default:"false" yaml:"pong_timeout_at_write" toml:"pong_timeout_at_write" doc:"Start the pong timeout when a ping is written to the connection, not when it is queued. Use it when a large queue can hold a ping for longer than pong_timeout. The server-side wait is then bounded by the socket send buffer, not by client.queue_max_size; client receive and decode time are outside this bound. Needs websocket.write_timeout to be positive. Needs client.max_messages_in_frame 1 for the SDK figures in the registry README. Default <<false>>."`
+	PongTimeoutAtWrite bool `mapstructure:"pong_timeout_at_write" json:"pong_timeout_at_write" envconfig:"pong_timeout_at_write" default:"false" yaml:"pong_timeout_at_write" toml:"pong_timeout_at_write" doc:"Start the pong timeout when a ping is written to the connection, not when it is queued. Use it when a large queue can hold a ping for longer than pong_timeout. The server-side wait is then bounded by the socket send buffer, not by client.queue_max_size; client receive and decode time are outside this bound. Needs websocket.write_timeout to be positive. Default <<false>>."`
 }
 
 type NatsPrefixed struct {

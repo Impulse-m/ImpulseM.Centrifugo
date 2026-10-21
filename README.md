@@ -31,6 +31,7 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
     * subscription tokens are not covered by revocation, only connection tokens;
     * `invalidate_user_tokens.channel` is not available;
     * `storage_type` is memory only: `redis` and `database` are rejected at startup. Use the per-node revocation source (`access_revoke.source`) as the durable delivery path.
+* `unsubscribe` server API method takes an optional `unsubscribe` code and reason, for the HTTP, gRPC, batch and consumer APIs: a code in 2100-2499 leaves clients unsubscribed, a code in 2600-2999 makes them subscribe again at once, so the subscribe proxy runs again and a changed server tags filter applies. The reason is at most 123 bytes. Without the field the default code 2000 applies; an invalid code or reason is a bad request, and in a consumer it is logged and the default code is used.
 * Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enabled`): concurrent identical calls share one broker or presence request. Helps only with a remote engine (Redis), not with the memory engine.
 * `shared_position_sync` channel option (namespace or `channel.without_namespace`): the node checks stream position once per channel per `client.channel_position_check_delay` instead of once per subscriber, so position checks cost one broker request per channel per interval.
   * Requires `force_positioning`, `allow_positioning`, `force_recovery` or `allow_recovery`, and a `client.channel_position_check_delay` greater than zero.

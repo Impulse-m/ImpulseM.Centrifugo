@@ -1,11 +1,12 @@
 package accessrevoke
 
 import (
-	"container/list"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/intrusive"
 )
 
 // minReadinessCheck is the shortest delay until the next readiness check, so that a check a moment early cannot spin.
@@ -45,8 +46,14 @@ type partitionProgress struct {
 	target      int64
 	reached     bool
 	behindSince time.Time
-	// behindElem is the place of the partition in ReadinessTracker.behindOrder, nil while it is not behind.
-	behindElem *list.Element
+	// behindListed is true while the partition is behind, held in ReadinessTracker.behindOrder by behindLinks.
+	behindListed bool
+	behindLinks  intrusive.Links[partitionProgress]
+}
+
+// behindLinks returns the links of a partition in ReadinessTracker.behindOrder.
+func behindLinks(p *partitionProgress) *intrusive.Links[partitionProgress] {
+	return &p.behindLinks
 }
 
 // lag returns the number of records between the consumed offset and the target offset of the partition.
@@ -88,7 +95,7 @@ type ReadinessTracker struct {
 	behind       int
 	oldestBehind time.Time
 	// behindOrder holds the partitions which are behind, in the order they became behind, so its front is the oldest one.
-	behindOrder list.List
+	behindOrder intrusive.List[partitionProgress]
 }
 
 // NewReadinessTracker creates a ReadinessTracker. The clock is used for all timing decisions, so tests
@@ -96,12 +103,13 @@ type ReadinessTracker struct {
 func NewReadinessTracker(config ReadinessConfig, clock func() time.Time) *ReadinessTracker {
 	now := clock()
 	return &ReadinessTracker{
-		config:     config,
-		clock:      clock,
-		startedAt:  now,
-		lastFetch:  now,
-		partitions: make(map[int32]*partitionProgress),
-		caughtUpCh: make(chan struct{}),
+		config:      config,
+		clock:       clock,
+		startedAt:   now,
+		lastFetch:   now,
+		partitions:  make(map[int32]*partitionProgress),
+		caughtUpCh:  make(chan struct{}),
+		behindOrder: intrusive.NewList(behindLinks),
 	}
 }
 
@@ -138,11 +146,11 @@ func (t *ReadinessTracker) reachedLocked(progress *partitionProgress) {
 		progress.reached = true
 		t.notReached--
 	}
-	if progress.behindElem == nil {
+	if !progress.behindListed {
 		return
 	}
-	t.behindOrder.Remove(progress.behindElem)
-	progress.behindElem = nil
+	t.behindOrder.Remove(progress)
+	progress.behindListed = false
 	progress.behindSince = time.Time{}
 	t.behind--
 	t.updateOldestBehindLocked()
@@ -151,11 +159,12 @@ func (t *ReadinessTracker) reachedLocked(progress *partitionProgress) {
 // behindLocked records that the partition is behind its target, starting its lag at now unless it is behind already.
 // The clock does not go back, so a partition which becomes behind is never older than the ones before it in behindOrder.
 func (t *ReadinessTracker) behindLocked(progress *partitionProgress, now time.Time) {
-	if progress.behindElem != nil {
+	if progress.behindListed {
 		return
 	}
 	progress.behindSince = now
-	progress.behindElem = t.behindOrder.PushBack(progress)
+	t.behindOrder.PushBack(progress)
+	progress.behindListed = true
 	t.behind++
 	t.updateOldestBehindLocked()
 }
@@ -166,7 +175,7 @@ func (t *ReadinessTracker) behindLocked(progress *partitionProgress, now time.Ti
 func (t *ReadinessTracker) updateOldestBehindLocked() {
 	t.oldestBehind = time.Time{}
 	if front := t.behindOrder.Front(); front != nil {
-		t.oldestBehind = front.Value.(*partitionProgress).behindSince
+		t.oldestBehind = front.behindSince
 	}
 }
 

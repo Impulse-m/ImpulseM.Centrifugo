@@ -3,7 +3,6 @@ package metrics
 import (
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -246,15 +245,11 @@ var rpcRegistryRefusedReasons = [...]string{
 var RPCRegistryInflightBytes prometheus.Collector
 
 // rpcRegistryInflightSource is the reader of the bytes in flight, bound by the admission which the registry runs.
-var rpcRegistryInflightSource atomic.Pointer[func() int64]
+var rpcRegistryInflightSource boundReader[int64]
 
 // readRPCRegistryInflight returns the bytes in flight of the bound admission, or zero when none is bound.
 func readRPCRegistryInflight() float64 {
-	read := rpcRegistryInflightSource.Load()
-	if read == nil {
-		return 0
-	}
-	return float64((*read)())
+	return float64(rpcRegistryInflightSource.Read())
 }
 
 // RPCRegistryAdmissionRefusalsTotal counts the registry calls which admission refused, by reason. It is set by the fork
@@ -285,7 +280,7 @@ func (m *RPCRegistryAdmissionMetrics) BindInflight(read func() int64) {
 	if m == nil {
 		return
 	}
-	rpcRegistryInflightSource.Store(&read)
+	rpcRegistryInflightSource.Bind(read)
 }
 
 // RefusedInflight counts one call which the in-flight budget refused.

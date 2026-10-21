@@ -286,7 +286,7 @@ func TestRPCRegistryLimitWarnings(t *testing.T) {
 			},
 			wantWarnings: []string{
 				`method "users.getUser": max_response_bytes 1048576 exceeds client.queue_max_size (1000)`,
-				`method "help.getConfig": max_response_bytes 1048576 exceeds client.queue_max_size (1000)`,
+				`method "settings.get": max_response_bytes 1048576 exceeds client.queue_max_size (1000)`,
 			},
 		},
 		{

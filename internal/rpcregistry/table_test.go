@@ -43,8 +43,8 @@ func testRegistry() configtypes.RPCRegistry {
 				Headers:    []string{"x-example-export", "x-example-a"},
 			},
 			{
-				Method:     "help.getConfig",
-				GRPCMethod: "/example.v1.HelpService/GetConfig",
+				Method:     "settings.get",
+				GRPCMethod: "/example.v1.SettingsService/Get",
 				Target:     "users",
 				AuthClass:  configtypes.RPCAuthClassAnonymous,
 				Timeout:    configtypes.Duration(time.Second),
@@ -80,18 +80,18 @@ func TestMethodDefaultsPrecedence(t *testing.T) {
 	apply()
 
 	// Method timeout set on the entry wins over the target and defaults.
-	helpMethod := r.Lookup("help.getConfig")
-	require.NotNil(t, helpMethod)
-	require.Equal(t, time.Second, helpMethod.Timeout)
-	require.Equal(t, AuthClassAnonymous, helpMethod.AuthClass)
+	settingsMethod := r.Lookup("settings.get")
+	require.NotNil(t, settingsMethod)
+	require.Equal(t, time.Second, settingsMethod.Timeout)
+	require.Equal(t, AuthClassAnonymous, settingsMethod.AuthClass)
 	// Unset method timeout falls back to the target, then defaults.
 	getUser := r.Lookup(testGetUserMethod)
 	require.Equal(t, 3*time.Second, getUser.Timeout)
 	// Unset limits fall back to the defaults, then to built-in values.
 	require.Equal(t, 1000, getUser.MaxRequestBytes)
 	require.Equal(t, 2000, getUser.MaxResponseBytes)
-	require.Equal(t, 1000, helpMethod.MaxRequestBytes)
-	require.False(t, helpMethod.Idempotent)
+	require.Equal(t, 1000, settingsMethod.MaxRequestBytes)
+	require.False(t, settingsMethod.Idempotent)
 	require.Equal(t, configtypes.RPCLoadBalancingRoundRobin, getUser.Target.Config.LoadBalancing)
 }
 

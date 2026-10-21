@@ -29,8 +29,8 @@
   ],
   "methods": [
     {
-      "method": "help.getConfig",
-      "grpc_method": "/example.v1.HelpService/GetConfig",
+      "method": "settings.get",
+      "grpc_method": "/example.v1.SettingsService/Get",
       "target": "users",
       "auth_class": "anonymous",
       "idempotent": true
@@ -56,7 +56,7 @@
       "auth_class": "pending_2fa"
     },
     {
-      "method": "files.saveFilePart",
+      "method": "files.uploadPart",
       "grpc_method": "/example.v1.FileService/SaveFilePart",
       "target": "files",
       "idempotent": true,

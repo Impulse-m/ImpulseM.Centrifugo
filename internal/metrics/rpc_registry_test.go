@@ -62,12 +62,12 @@ func TestIncRPCRegistryCallUnknownResultCountsAsError(t *testing.T) {
 func TestIncRPCRegistryErrorNormalisesAppType(t *testing.T) {
 	resetRPCRegistryMetrics(t)
 
-	IncRPCRegistryError("messages.sendMessage", "QUOTA_EXCEEDED_17")
-	IncRPCRegistryError("messages.sendMessage", "QUOTA_EXCEEDED_30")
-	IncRPCRegistryError("messages.sendMessage", "")
+	IncRPCRegistryError("orders.create", "QUOTA_EXCEEDED_17")
+	IncRPCRegistryError("orders.create", "QUOTA_EXCEEDED_30")
+	IncRPCRegistryError("orders.create", "")
 
-	require.Equal(t, 2.0, testutil.ToFloat64(RPCRegistryErrorsTotal.WithLabelValues("messages.sendMessage", "QUOTA_EXCEEDED_X")))
-	require.Equal(t, 1.0, testutil.ToFloat64(RPCRegistryErrorsTotal.WithLabelValues("messages.sendMessage", "none")))
+	require.Equal(t, 2.0, testutil.ToFloat64(RPCRegistryErrorsTotal.WithLabelValues("orders.create", "QUOTA_EXCEEDED_X")))
+	require.Equal(t, 1.0, testutil.ToFloat64(RPCRegistryErrorsTotal.WithLabelValues("orders.create", "none")))
 }
 
 func TestIncRPCRegistryHelpersWithoutInit(t *testing.T) {

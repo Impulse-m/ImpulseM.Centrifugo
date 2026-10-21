@@ -31,7 +31,7 @@ func validInlineRegistry() configtypes.RPCRegistry {
 				Headers:    []string{"x-example-export-id"},
 			},
 			{
-				Method:     "help.getConfig",
+				Method:     "settings.get",
 				GRPCMethod: "/example.v1.StatusService/Ping",
 				Target:     "users",
 				AuthClass:  configtypes.RPCAuthClassAnonymous,

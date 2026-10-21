@@ -20,18 +20,24 @@ import (
 // ARGV entry instead of Redis TIME. The production script is unchanged, the substitution is test-only.
 func clockScript(t testing.TB, algo Algorithm) *rueidis.Lua {
 	t.Helper()
+	return rueidis.NewLuaScript(clockSource(t, algo))
+}
+
+// clockSource returns the text of the clock script of algo, see clockScript.
+func clockSource(t testing.TB, algo Algorithm) string {
+	t.Helper()
 	const clock = "local t = redis.call('TIME')"
-	var source, prefix string
+	var source string
 	switch algo.(type) {
 	case tokenBucket:
 		source = tokenBucketSource
 	case fixedWindow:
-		source, prefix = fixedWindowSource, luaDivisions
+		source = fixedWindowSource
 	case slidingWindow:
-		source, prefix = slidingWindowSource, luaDivisions
+		source = slidingWindowSource
 	}
 	require.Equal(t, 1, strings.Count(source, clock))
-	return rueidis.NewLuaScript(prefix + strings.Replace(source, clock, "local t = {'0', ARGV[#ARGV]}", 1) + luaCommit)
+	return luaScript(algo.stateWords(), strings.Replace(source, clock, "local t = {'0', ARGV[#ARGV]}", 1))
 }
 
 // runClockScript runs script on the first shard of l for key, with the clock nowUs in microseconds, and returns the wait.
@@ -119,18 +125,20 @@ func TestRedisTTLIsSet(t *testing.T) {
 		{algo: slidingWindow{}, ttl: 2 * time.Second},
 	} {
 		l := newIntegrationLimiter(t, redisIntegrationConfig(time.Second, 10), uniquePrefix())
-		script := clockScript(t, tc.algo)
+		// The script returns the TTL of its key after the take, instead of the wait, so PTTL reads the TTL in the same
+		// script as the PEXPIRE, with the same clock. A refused take would return a wait, which fails the check.
+		const commit = "redis.call('PEXPIRE', KEYS[1], ARGV[1])\nreturn 1\n"
+		src := clockSource(t, tc.algo)
+		require.Equal(t, 1, strings.Count(src, commit))
+		script := rueidis.NewLuaScript(strings.Replace(src, commit, "redis.call('PEXPIRE', KEYS[1], ARGV[1])\nreturn redis.call('PTTL', KEYS[1])\n", 1))
 		argv := tc.algo.redisArgs([]limit{tc.algo.newLimit(time.Second, 10)}, time.Second)
 		key := uniquePrefix() + ".rl.{42}.x"
-		require.Zero(t, runClockScript(t, l, script, key, argv, integrationTime(testWindow, 1000, 0)/1000))
-		res := runOnShard(l, func(client rueidis.Client) rueidis.Completed {
-			return client.B().Pttl().Key(key).Build()
-		})
-		ttl, err := res.AsInt64()
+		args := append(append([]string{}, argv...), strconv.FormatInt(integrationTime(testWindow, 1000, 0)/1000, 10))
+		ttl, err := firstShard(l).RunOp(func(client rueidis.Client) rueidis.RedisResult {
+			return script.Exec(context.Background(), client, []string{key}, args)
+		}).AsInt64()
 		require.NoError(t, err)
-		// PEXPIRE runs in the script and PTTL in a later round trip, so the live clock has already taken some of the TTL.
-		require.LessOrEqual(t, ttl, tc.ttl.Milliseconds(), tc.algo.Name())
-		require.Greater(t, ttl, tc.ttl.Milliseconds()-500, tc.algo.Name())
+		require.InDelta(t, tc.ttl.Milliseconds(), ttl, 1, tc.algo.Name())
 	}
 }
 

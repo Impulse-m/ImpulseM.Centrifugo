@@ -20,7 +20,7 @@ type tokenBucket struct{}
 var tokenBucketSource string
 
 // tokenBucketScript is the Redis script of the token bucket.
-var tokenBucketScript = rueidis.NewLuaScript(tokenBucketSource + luaCommit)
+var tokenBucketScript = rueidis.NewLuaScript(luaScript(1, tokenBucketSource))
 
 // Name returns the configuration value of the token bucket.
 func (tokenBucket) Name() string {

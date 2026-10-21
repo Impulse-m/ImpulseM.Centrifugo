@@ -19,7 +19,7 @@ type fixedWindow struct{}
 var fixedWindowSource string
 
 // fixedWindowScript is the Redis script of the fixed window, with the shared Lua prelude.
-var fixedWindowScript = rueidis.NewLuaScript(luaDivisions + fixedWindowSource + luaCommit)
+var fixedWindowScript = rueidis.NewLuaScript(luaScript(2, fixedWindowSource))
 
 // Name returns the configuration value of the fixed window.
 func (fixedWindow) Name() string {

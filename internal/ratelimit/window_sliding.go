@@ -20,7 +20,7 @@ type slidingWindow struct{}
 var slidingWindowSource string
 
 // slidingWindowScript is the Redis script of the sliding window, with the shared Lua prelude.
-var slidingWindowScript = rueidis.NewLuaScript(luaDivisions + slidingWindowSource + luaCommit)
+var slidingWindowScript = rueidis.NewLuaScript(luaScript(3, slidingWindowSource))
 
 // Name returns the configuration value of the sliding window.
 func (slidingWindow) Name() string {

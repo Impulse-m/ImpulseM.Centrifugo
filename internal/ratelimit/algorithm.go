@@ -1,8 +1,7 @@
 package ratelimit
 
 import (
-	"strconv"
-	"strings"
+	"fmt"
 	"time"
 
 	"github.com/redis/rueidis"
@@ -68,23 +67,6 @@ func algorithmNamed(name string) Algorithm {
 // as the Redis clock does: windowClock(now) is the wall clock of a monotonic nowNano value.
 var windowOrigin = epoch.UnixNano()
 
-// windowClock converts a nowNano value to the window clock in nanoseconds.
-func windowClock(now int64) int64 {
-	return now + windowOrigin
-}
-
-// windowAt returns the window index of the window clock t, for windows of length w, and the offset of t in that
-// window. A stored index one window ahead of t is kept, since a command with an earlier time may be ordered after a
-// later one: the offset is then negative and the state is never moved back. A stored index further ahead is stale,
-// the window of t is used, and the caller finds the state of other windows empty.
-func windowAt(stored int64, t int64, w int64) (int64, int64) {
-	idx := floorDiv(t, w)
-	if stored == idx+1 {
-		idx = stored
-	}
-	return idx, t - idx*w
-}
-
 // floorDiv returns a divided by b, rounded toward negative infinity. b must be positive.
 func floorDiv(a int64, b int64) int64 {
 	q := a / b
@@ -106,7 +88,7 @@ func ttlMillis(d time.Duration) int64 {
 }
 
 // luaDivisions is the Lua prelude of the window scripts. Lua numbers are doubles, exact below 2^53, which holds for
-// the magnitudes of the caps of window algorithms. It is concatenated in front of each window script.
+// the magnitudes of the caps of window algorithms.
 const luaDivisions = `
 local function floorDiv(a, b)
 	local q = math.floor(a / b)
@@ -123,6 +105,19 @@ local function ceilDiv(a, b)
 end
 `
 
+// luaLoad is the Lua prelude of the rate limit scripts, for buckets of words state words. It reads the bucket count
+// from ARGV, and the stored state of all buckets of the key in one HMGET. Each script is concatenated after it, and
+// its body starts with the clock line local t = redis.call('TIME').
+func luaLoad(words int) string {
+	return fmt.Sprintf(`local n = tonumber(ARGV[2])
+local fields = {}
+for i = 1, %d * n do
+	fields[i] = tostring(i - 1)
+end
+local stored = redis.call('HMGET', KEYS[1], unpack(fields))
+`, words)
+}
+
 // luaCommit is the end of every rate limit script, concatenated after the source of each one. A refusal returns the
 // largest wait of the refusing buckets, which the script left in worst, and writes nothing. An allowed operation
 // writes the updates of its buckets, sets their expiry, and returns 1.
@@ -135,31 +130,8 @@ redis.call('PEXPIRE', KEYS[1], ARGV[1])
 return 1
 `
 
-// windowLimit compiles a window bucket.
-func windowLimit(interval time.Duration, rate int) limit {
-	return limit{interval: int64(interval), rate: int64(rate)}
-}
-
-// windowArgs returns the ARGV of a window algorithm: TTL in milliseconds, number of buckets, then the window length
-// in microseconds and the rate of every bucket. The TTL is ttl rounded up to milliseconds.
-func windowArgs(lims []limit, ttl time.Duration) []string {
-	args := make([]string, 0, 2+2*len(lims))
-	args = append(args, strconv.FormatInt(ttlMillis(ttl), 10), strconv.Itoa(len(lims)))
-	for i := range lims {
-		args = append(args, strconv.FormatInt(lims[i].interval/int64(time.Microsecond), 10))
-		args = append(args, strconv.FormatInt(lims[i].rate, 10))
-	}
-	return args
-}
-
-// windowSuffix returns the Redis key suffix of a window algorithm: a short name of the algorithm, then the interval in
-// milliseconds and the rate of every bucket. Intervals are whole milliseconds, see validation.
-func windowSuffix(short string, lims []limit) string {
-	var sb strings.Builder
-	sb.WriteString("~" + short)
-	for i := range lims {
-		sb.WriteString("." + strconv.FormatInt(lims[i].interval/int64(time.Millisecond), 10))
-		sb.WriteString("." + strconv.FormatInt(lims[i].rate, 10))
-	}
-	return sb.String()
+// luaScript composes the Redis script of an algorithm with buckets of words state words: the shared prelude, the
+// source of the algorithm and the commit tail. The token bucket and the window algorithms all use it.
+func luaScript(words int, source string) string {
+	return luaDivisions + luaLoad(words) + source + luaCommit
 }

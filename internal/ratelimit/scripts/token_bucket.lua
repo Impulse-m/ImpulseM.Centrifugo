@@ -4,12 +4,6 @@
 -- refusing buckets as a negative number of microseconds, and writes nothing. Returns 1 when allowed.
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000000 + tonumber(t[2])
-local n = tonumber(ARGV[2])
-local fields = {}
-for i = 1, n do
-	fields[i] = tostring(i - 1)
-end
-local stored = redis.call('HMGET', KEYS[1], unpack(fields))
 local updates = {}
 local worst = 0
 for i = 1, n do

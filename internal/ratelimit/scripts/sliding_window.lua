@@ -5,12 +5,6 @@
 -- Returns 1 when allowed.
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000000 + tonumber(t[2])
-local n = tonumber(ARGV[2])
-local fields = {}
-for i = 1, 3 * n do
-	fields[i] = tostring(i - 1)
-end
-local stored = redis.call('HMGET', KEYS[1], unpack(fields))
 
 -- slidingWait returns the wait of a refused operation: the first offset in the window where the operation is allowed,
 -- or the start of the next window when the current one never allows it. Its formulas match the Go implementation.

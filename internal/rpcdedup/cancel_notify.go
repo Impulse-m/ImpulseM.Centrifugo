@@ -12,9 +12,9 @@ type cancelNotice struct {
 
 // cancelNotifier sends the cancel notifications of a node, in the background. A notification which is pending for the
 // same node and key is not queued again: a cancel of the call which is already on its way covers the next one. The
-// queue is served by at most maxCancelWorkers goroutines, which start as notices come and exit when the queue is empty,
-// so an idle node runs none. A notice which finds the queue full is not sent, and its call runs to its end, as a cancel
-// which the shared tier fails to deliver does.
+// queue is served by at most maxCancelWorkers goroutines, which start as notices come and exit when the queue is
+// empty, so an idle node runs none. The queue is not capped: its size is the number of distinct pending calls, and the
+// rpc rate limit of the exactly-once methods bounds the cancels that reach it.
 type cancelNotifier struct {
 	send    func(nodeID string, key Key)
 	mu      sync.Mutex
@@ -34,7 +34,7 @@ func (n *cancelNotifier) notify(nodeID string, key Key) {
 	notice := cancelNotice{nodeID: nodeID, key: key}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if _, found := n.pending[notice]; found || len(n.queue) >= maxQueuedCancels {
+	if _, found := n.pending[notice]; found {
 		return
 	}
 	n.pending[notice] = struct{}{}

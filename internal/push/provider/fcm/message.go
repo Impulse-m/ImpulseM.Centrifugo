@@ -22,11 +22,15 @@ const (
 	pathAPNsExpiration = "apns.headers.apns-expiration"
 )
 
-// CheckMessage validates the caller message of an FCM target. The token is set by the server, so a caller token is
-// refused. When collapseID is set, a caller collapse key on either field must equal it. When it is empty, the caller
-// values pass unchanged.
+// errExpired reports that the expiry of the notification is at or before the time of the injection.
+var errExpired = errors.New("expire_at is not after now")
+
+// CheckMessage validates the caller message of an FCM target. The message must be one valid JSON object: the object
+// check of gjson looks at the first byte only, so the whole message is validated too. The token is set by the server,
+// so a caller token is refused. When collapseID is set, a caller collapse key on either field must equal it. When it
+// is empty, the caller values pass unchanged.
 func CheckMessage(message []byte, collapseID string) error {
-	if !gjson.ParseBytes(message).IsObject() {
+	if !gjson.ValidBytes(message) || !gjson.ParseBytes(message).IsObject() {
 		return errors.New("message is not a JSON object")
 	}
 	if gjson.GetBytes(message, pathToken).Exists() {
@@ -48,8 +52,13 @@ func CheckMessage(message []byte, collapseID string) error {
 // injectMessage returns the message with the server additions: the token, and the collapse id and the expiry on the
 // Android and APNs fields of the message. Each addition is made only where the caller set nothing, so the caller
 // bytes are kept otherwise. A resolved collapse id is set on both collapse fields; expireAt is in Unix seconds, zero
-// when unset.
+// when unset. An expireAt at or before now returns errExpired, so the time to live is never negative.
 func injectMessage(message []byte, token string, collapseID string, expireAt int64, now time.Time) ([]byte, error) {
+	remaining := expireAt - now.Unix()
+	if expireAt > 0 && remaining <= 0 {
+		return nil, errExpired
+	}
+
 	result, err := sjson.SetBytes(message, pathToken, token)
 	if err != nil {
 		return nil, err
@@ -67,10 +76,6 @@ func injectMessage(message []byte, token string, collapseID string, expireAt int
 	}
 
 	if expireAt > 0 {
-		remaining := expireAt - now.Unix()
-		if remaining < 0 {
-			remaining = 0
-		}
 		result, err = setIfAbsent(result, pathTTL, strconv.FormatInt(remaining, 10)+"s")
 		if err != nil {
 			return nil, err

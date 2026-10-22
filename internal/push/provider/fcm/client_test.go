@@ -130,6 +130,31 @@ func newTestAccount(t *testing.T, tokenURL string) *provider.FCMServiceAccount {
 	return account
 }
 
+// newTestClient returns the client of a generated account, and fails the test when the client cannot be built.
+func newTestClient(t *testing.T, tokenURL string, timeout time.Duration, options ...Option) *Client {
+	t.Helper()
+
+	client, err := NewClient(context.Background(), newTestAccount(t, tokenURL), timeout, options...)
+	require.NoError(t, err)
+	return client
+}
+
+// newFailingToken is a token endpoint that refuses every request with status, as a revoked service account does.
+func newFailingToken(t *testing.T, status int) *fakeToken {
+	t.Helper()
+
+	fake := &fakeToken{}
+	fake.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		fake.requests.Add(1)
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(status)
+		_, _ = writer.Write([]byte(`{"error":"invalid_client"}`))
+	}))
+	t.Cleanup(fake.server.Close)
+	return fake
+}
+
 // newTestJob returns a job of one FCM target with the message.
 func newTestJob(index int, message string) *provider.Job {
 	return &provider.Job{
@@ -155,7 +180,7 @@ func okHandler(writer http.ResponseWriter, _ *http.Request) {
 func TestFCMBodyIsPassThrough(t *testing.T) {
 	tokens := newFakeToken(t, false)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	job := newTestJob(0, `{"notification":{"title":"hello"},"data":{"k":"v"}}`)
 	job.CollapseID = "collapse-1"
@@ -177,7 +202,7 @@ func TestFCMBodyIsPassThrough(t *testing.T) {
 func TestFCMApnsExpirationIsString(t *testing.T) {
 	tokens := newFakeToken(t, false)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	job := newTestJob(0, `{"data":{"k":"v"}}`)
 	expireAt := time.Now().Unix() + 3600
@@ -217,7 +242,7 @@ func TestFCMOversizedAnswerFieldsAreTruncated(t *testing.T) {
 		writer.Header().Set("content-type", "application/json")
 		_, _ = writer.Write([]byte(`{"name":"` + longName + `"}`))
 	})
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 	require.Equal(t, provider.StatusSent, result.GetStatus())
@@ -228,7 +253,7 @@ func TestFCMOversizedAnswerFieldsAreTruncated(t *testing.T) {
 		writer.WriteHeader(http.StatusBadRequest)
 		_, _ = writer.Write([]byte(`{"error":{"status":"` + longStatus + `"}}`))
 	})
-	client = NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client = newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	result = client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 	require.Equal(t, provider.StatusRejected, result.GetStatus())
@@ -244,7 +269,7 @@ func TestFCMCollapseKeyConflict(t *testing.T) {
 func TestCollapseHeadersPassThroughWhenEmpty(t *testing.T) {
 	tokens := newFakeToken(t, false)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	message := `{"android":{"collapse_key":"caller-a"},"apns":{"headers":{"apns-collapse-id":"caller-b"}}}`
 	result := client.Send(context.Background(), newTestJob(0, message))
@@ -306,7 +331,7 @@ func TestFCMErrorDetails(t *testing.T) {
 				writer.WriteHeader(testCase.status)
 				_, _ = writer.Write([]byte(testCase.body))
 			})
-			client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+			client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 			result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 
@@ -321,7 +346,7 @@ func TestFCMErrorDetails(t *testing.T) {
 func TestFCMSentCarriesMessageName(t *testing.T) {
 	tokens := newFakeToken(t, false)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 
@@ -333,7 +358,7 @@ func TestFCMSentCarriesMessageName(t *testing.T) {
 func TestFCMTokenRefreshedFromServiceAccount(t *testing.T) {
 	tokens := newFakeToken(t, false)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 	client.Send(context.Background(), newTestJob(1, `{"data":{}}`))
@@ -346,7 +371,7 @@ func TestFCMTokenRefreshedFromServiceAccount(t *testing.T) {
 func TestFCMTokenWaitBounded(t *testing.T) {
 	tokens := newFakeToken(t, true)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), 200*time.Millisecond, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, 200*time.Millisecond, withFCMEndpoint(fake.server.URL))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -362,7 +387,7 @@ func TestFCMTokenWaitBounded(t *testing.T) {
 func TestFCMTokenFetchOneAtATime(t *testing.T) {
 	tokens := newFakeToken(t, true)
 	fake := newFakeFCM(t, okHandler)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	var wg sync.WaitGroup
 	for index := 0; index < 20; index++ {
@@ -396,7 +421,7 @@ func TestFCMPayloadLimit(t *testing.T) {
 
 	t.Run("at the limit is sent", func(t *testing.T) {
 		fake := newFakeFCM(t, okHandler)
-		client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+		client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 		result := client.Send(context.Background(), newTestJob(0, base(fit)))
 
@@ -406,7 +431,7 @@ func TestFCMPayloadLimit(t *testing.T) {
 
 	t.Run("over the limit is refused without a request", func(t *testing.T) {
 		fake := newFakeFCM(t, okHandler)
-		client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+		client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 		result := client.Send(context.Background(), newTestJob(0, base(fit+1)))
 
@@ -419,11 +444,122 @@ func TestFCMPayloadLimit(t *testing.T) {
 
 func TestFCMKeepaliveSet(t *testing.T) {
 	tokens := newFakeToken(t, false)
-	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second)
+	client := newTestClient(t, tokens.server.URL, time.Second)
 
 	transport := client.httpClient.Transport.(*http.Transport)
 	require.NotNil(t, transport.HTTP2)
 	require.Equal(t, 15*time.Second, transport.HTTP2.SendPingTimeout)
 	require.Equal(t, 15*time.Second, transport.HTTP2.PingTimeout)
 	require.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+}
+
+func TestFCMMessageMustBeValidJSON(t *testing.T) {
+	require.ErrorContains(t, CheckMessage([]byte(`{"notification":{"title":"x"}`), ""), "not a JSON object")
+	require.ErrorContains(t, CheckMessage([]byte(`{"data":{}} trailing`), ""), "not a JSON object")
+	require.NoError(t, CheckMessage([]byte(`{"data":{}}`+"\n"), ""))
+}
+
+func TestFCMMalformedMessageMakesNoRequest(t *testing.T) {
+	tokens := newFakeToken(t, false)
+	fake := newFakeFCM(t, okHandler)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+
+	for _, message := range []string{`{"notification":{"title":"x"}`, `{"data":{}} trailing`} {
+		result := client.Send(context.Background(), newTestJob(0, message))
+
+		require.Equal(t, provider.StatusRejected, result.GetStatus())
+	}
+	requests, _ := fake.recorded()
+	require.Empty(t, requests)
+}
+
+func TestFCMExpiredRefusedBeforeAnyCall(t *testing.T) {
+	tokens := newFakeToken(t, false)
+	fake := newFakeFCM(t, okHandler)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+
+	job := newTestJob(0, `{"data":{}}`)
+	job.Notification.ExpireAt = time.Now().Unix() - 1
+	result := client.Send(context.Background(), job)
+
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Equal(t, provider.CodeExpired, result.GetCode())
+	requests, _ := fake.recorded()
+	require.Empty(t, requests)
+	require.Zero(t, tokens.requests.Load(), "an expired target does not even fetch a token")
+}
+
+func TestFCMTTLNeverNegative(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	_, err := injectMessage([]byte(`{"data":{}}`), "device-token", "", now.Unix(), now)
+	require.ErrorIs(t, err, errExpired)
+	_, err = injectMessage([]byte(`{"data":{}}`), "device-token", "", now.Unix()-5, now)
+	require.ErrorIs(t, err, errExpired)
+
+	injected, err := injectMessage([]byte(`{"data":{}}`), "device-token", "", now.Unix()+60, now)
+	require.NoError(t, err)
+	require.Equal(t, "60s", gjson.GetBytes(injected, "android.ttl").String())
+}
+
+func TestNewClientRejectsNonPositiveTimeout(t *testing.T) {
+	tokens := newFakeToken(t, false)
+	account := newTestAccount(t, tokens.server.URL)
+
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		_, err := NewClient(context.Background(), account, timeout)
+
+		require.ErrorContains(t, err, "must be positive")
+	}
+}
+
+func TestFCMTokenFetchFailureIsRejectedWithoutCode(t *testing.T) {
+	tokens := newFailingToken(t, http.StatusUnauthorized)
+	fake := newFakeFCM(t, okHandler)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+
+	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
+
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Zero(t, result.GetHttpStatus())
+	require.Empty(t, result.GetProviderCode())
+	require.Empty(t, result.GetCode())
+	requests, _ := fake.recorded()
+	require.Empty(t, requests, "a token failure makes no provider call")
+}
+
+func TestFCMTokenFailureHeldForAllTargets(t *testing.T) {
+	tokens := newFailingToken(t, http.StatusServiceUnavailable)
+	fake := newFakeFCM(t, okHandler)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+
+	var wg sync.WaitGroup
+	for index := 0; index < 50; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			client.Send(context.Background(), newTestJob(index, `{"data":{}}`))
+		}(index)
+	}
+	wg.Wait()
+
+	require.Equal(t, int64(1), tokens.requests.Load(), "the failure is held, so the targets of a call share one fetch")
+	requests, _ := fake.recorded()
+	require.Empty(t, requests)
+}
+
+func TestFCMPendingWhenTokenReadyAfterDeadline(t *testing.T) {
+	tokens := newFakeToken(t, false)
+	fake := newFakeFCM(t, okHandler)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+	require.Equal(t, provider.StatusSent, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
+
+	// The token is cached, so the wait returns it at once, but the call is already past its deadline.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := client.Send(ctx, newTestJob(1, `{"data":{}}`))
+
+	require.Equal(t, provider.StatusPending, result.GetStatus())
+	requests, _ := fake.recorded()
+	require.Len(t, requests, 1, "a call past its deadline makes no provider call")
 }

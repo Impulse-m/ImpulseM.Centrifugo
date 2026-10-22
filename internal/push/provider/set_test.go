@@ -200,3 +200,18 @@ func TestDispatchInflightGaugeReturnsToZero(t *testing.T) {
 	require.Equal(t, float64(1), sender.seen, "the slot is counted while the call runs")
 	require.Zero(t, testutil.ToFloat64(metrics.PushDirectInflight.WithLabelValues(ProviderFCM)))
 }
+
+func TestDispatchRefusesExpiredBeforeCall(t *testing.T) {
+	// The sender fails the test if it is called: an expired target is refused before any call.
+	set := NewSet()
+	set.Add(ProviderAPNs, failingSender{t: t}, 1)
+	job := newTestJob(2, ProviderAPNs)
+	job.Notification = &apiproto.PushNotification{ExpireAt: time.Now().Unix() - 1}
+
+	result := set.Dispatch(context.Background(), time.Minute, job)
+
+	require.Equal(t, StatusRejected, result.GetStatus())
+	require.Equal(t, CodeExpired, result.GetCode())
+	require.Zero(t, result.GetHttpStatus())
+	require.Equal(t, uint32(2), result.GetIndex())
+}

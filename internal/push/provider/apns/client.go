@@ -10,9 +10,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
@@ -93,6 +93,11 @@ type response struct {
 
 // Send sends the job to APNs and returns its raw result. It implements provider.Sender.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
+	// An expired target is refused before any call, as the dispatcher refuses it too.
+	if provider.Expired(job, time.Now()) {
+		return provider.NewCodeResult(job, provider.CodeExpired)
+	}
+
 	caller := job.Notification.GetApns().GetHeaders()
 	// The request validator answers 107 before any provider call. This check is defence in depth only: a refusal
 	// here is a rejected item without a code, and it is never the refusal path of the request.
@@ -159,7 +164,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, he
 	}
 
 	// A body read error keeps the status: the reason is set only from a body that was read whole.
-	body, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, provider.MaxResponseBodyBytes))
+	body, readErr := provider.ReadAnswer(httpResponse)
 	if readErr != nil {
 		return answer, true
 	}

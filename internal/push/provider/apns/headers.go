@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/http/httpguts"
 )
 
 // Header names of the APNs request.
@@ -37,11 +38,15 @@ var allowedHeaders = map[string]bool{
 
 // CheckHeaders validates the caller headers of an APNs target. collapseID is the resolved collapse id of the target,
 // empty when there is none. A caller apns-collapse-id must equal a set collapse id, and passes unchanged when the
-// collapse id is empty.
+// collapse id is empty. Every value must be a valid header field value, so net/http never refuses a request after
+// the validation: such an answer would be a transport error, which reads as unanswered.
 func CheckHeaders(headers map[string]string, collapseID string) error {
 	for name, value := range headers {
 		if !allowedHeaders[name] {
 			return fmt.Errorf("apns header %s is not allowed", name)
+		}
+		if value == "" || !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("apns header %s has an empty or invalid value", name)
 		}
 
 		switch name {
@@ -52,6 +57,10 @@ func CheckHeaders(headers map[string]string, collapseID string) error {
 		case headerPriority:
 			if value != priorityImmediate && value != priorityPowerSave {
 				return fmt.Errorf("apns header %s must be 5 or 10", headerPriority)
+			}
+		case headerExpiration:
+			if _, err := strconv.ParseUint(value, 10, 63); err != nil {
+				return fmt.Errorf("apns header %s is not a non-negative decimal integer", headerExpiration)
 			}
 		case headerCollapseID:
 			if collapseID != "" && value != collapseID {

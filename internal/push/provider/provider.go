@@ -5,6 +5,10 @@ package provider
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"time"
+	"unicode/utf8"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
@@ -36,12 +40,36 @@ const MaxResponseBodyBytes = 64 << 10
 // MaxFieldBytes bounds each provider-supplied string of a result: the code, the detail and the message id.
 const MaxFieldBytes = 256
 
-// Truncate returns value cut to at most MaxFieldBytes.
+// Truncate returns value cut to at most MaxFieldBytes. The cut never splits a UTF-8 rune: it backs off to the start of
+// the rune that straddles the limit, because the result fields are proto3 strings and must stay valid UTF-8.
 func Truncate(value string) string {
-	if len(value) > MaxFieldBytes {
-		return value[:MaxFieldBytes]
+	if len(value) <= MaxFieldBytes {
+		return value
 	}
-	return value
+	end := MaxFieldBytes
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end]
+}
+
+// ReadAnswer reads the body of a provider response, bounded by MaxResponseBodyBytes. The caller closes the body. It is
+// called after the status line is taken, so a read error keeps the status.
+func ReadAnswer(response *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(response.Body, MaxResponseBodyBytes))
+}
+
+// Expired reports whether the notification of job has an expire_at at or before now. Such a target is refused with
+// CodeExpired and no provider call is made.
+func Expired(job *Job, now time.Time) bool {
+	expireAt := job.Notification.GetExpireAt()
+	return expireAt > 0 && expireAt <= now.Unix()
+}
+
+// DryRun returns the result of a valid job in dry run mode. No provider is called, so the HTTP status is zero and
+// there is no message id.
+func DryRun(job *Job) *apiproto.PushItemResult {
+	return NewResult(job, StatusDryRun)
 }
 
 // Job is one target of a direct send, with the request values a provider reads.

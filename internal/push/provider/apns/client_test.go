@@ -197,7 +197,9 @@ func TestAPNsServerHeaders(t *testing.T) {
 	})
 	job := newTestJob(0, "device-token", nil, `{"aps":{"alert":"hi"}}`)
 	job.CollapseID = "collapse-1"
-	job.Notification.ExpireAt = 1700000000
+	// The expiry is in the future of the real clock: a past expire_at is refused before the call.
+	expireAt := time.Now().Unix() + 3600
+	job.Notification.ExpireAt = expireAt
 
 	result := newTestClient(t, fake, credential).Send(context.Background(), job)
 
@@ -209,7 +211,7 @@ func TestAPNsServerHeaders(t *testing.T) {
 	require.Equal(t, "alert", request.headers.Get("apns-push-type"))
 	require.Equal(t, testBundleID, request.headers.Get("apns-topic"))
 	require.Equal(t, "collapse-1", request.headers.Get("apns-collapse-id"))
-	require.Equal(t, "1700000000", request.headers.Get("apns-expiration"))
+	require.Equal(t, strconv.FormatInt(expireAt, 10), request.headers.Get("apns-expiration"))
 	require.Equal(t, `{"aps":{"alert":"hi"}}`, string(request.body))
 }
 
@@ -557,4 +559,45 @@ func TestAPNsErrorsNeverCarryToken(t *testing.T) {
 	require.Equal(t, provider.StatusUnanswered, result.GetStatus())
 	require.NotContains(t, result.String(), token)
 	require.NotContains(t, result.GetProviderDetail(), token)
+}
+
+func TestAPNsInvalidHeaderValueRefusedWithoutRequest(t *testing.T) {
+	credential, _ := newTestCredential(t, newTestKey(t), &fakeClock{now: testWindow})
+	fake := newFakeAPNs(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	client := newTestClient(t, fake, credential)
+
+	testCases := map[string]map[string]string{
+		"control character in thread id": {"apns-thread-id": "a\nb"},
+		"empty expiration":               {"apns-expiration": ""},
+		"empty topic":                    {"apns-topic": ""},
+		"negative expiration":            {"apns-expiration": "-1"},
+	}
+	for name, headers := range testCases {
+		t.Run(name, func(t *testing.T) {
+			result := client.Send(context.Background(), newTestJob(0, "tok", headers, "{}"))
+
+			// The refusal is a rejected item, never unanswered: no request was sent, so no provider call was made.
+			require.Equal(t, provider.StatusRejected, result.GetStatus())
+			require.Zero(t, result.GetHttpStatus())
+			require.Empty(t, result.GetCode())
+		})
+	}
+	require.Empty(t, fake.recorded(), "an invalid header value makes no request")
+}
+
+func TestAPNsExpiredRefusedBeforeAnyCall(t *testing.T) {
+	credential, _ := newTestCredential(t, newTestKey(t), &fakeClock{now: testWindow})
+	fake := newFakeAPNs(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+
+	job := newTestJob(0, "tok", nil, "{}")
+	job.Notification.ExpireAt = time.Now().Unix() - 1
+	result := newTestClient(t, fake, credential).Send(context.Background(), job)
+
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Equal(t, provider.CodeExpired, result.GetCode())
+	require.Empty(t, fake.recorded())
 }

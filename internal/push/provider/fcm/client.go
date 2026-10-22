@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"time"
 
@@ -38,8 +38,13 @@ type Client struct {
 }
 
 // NewClient returns the client of account. processCtx is the process-lifetime context: it ends the token fetches at
-// shutdown. requestTimeout bounds each token fetch through the HTTP client of the token source.
-func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, requestTimeout time.Duration, options ...Option) *Client {
+// shutdown. requestTimeout bounds each token fetch through the HTTP client of the token source, so it must be
+// positive: a zero timeout would leave a fetch with no bound but the process context.
+func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, requestTimeout time.Duration, options ...Option) (*Client, error) {
+	if requestTimeout <= 0 {
+		return nil, errors.New("fcm request timeout must be positive")
+	}
+
 	tokenHTTP := &http.Client{
 		Timeout:   requestTimeout,
 		Transport: provider.NewTransport(),
@@ -56,7 +61,7 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 	for _, option := range options {
 		option(client)
 	}
-	return client
+	return client, nil
 }
 
 // fcmError is the error body of a failed send request: the status, and the details that name the cause.
@@ -74,6 +79,11 @@ type fcmError struct {
 
 // Send sends the job to FCM and returns its raw result. It implements provider.Sender.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
+	// An expired target is refused before any call, as the dispatcher refuses it too.
+	if provider.Expired(job, time.Now()) {
+		return provider.NewCodeResult(job, provider.CodeExpired)
+	}
+
 	message := provider.FCMMessageOf(job)
 	if len(message) == 0 {
 		return provider.NewResult(job, provider.StatusRejected)
@@ -85,7 +95,8 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	// The token wait is not a provider call: when ctx ends first, nothing is sent and the item is pending.
+	// The token wait is not a provider call: when ctx ends first, nothing is sent and the item is pending. A fetch
+	// that fails while ctx is alive is a rejected item without a code and without a provider call.
 	token, err := c.gate.Token(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -93,9 +104,17 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		}
 		return provider.NewResult(job, provider.StatusRejected)
 	}
+	// The token can be ready in the same moment as ctx ends, and the select then picks it. A call past its deadline
+	// is still not made.
+	if ctx.Err() != nil {
+		return provider.NewResult(job, provider.StatusPending)
+	}
 
 	// The message token is the device token of the target. The OAuth access token is only the bearer of the request.
 	injected, err := injectMessage(message, job.Target.GetToken(), job.CollapseID, job.Notification.GetExpireAt(), time.Now())
+	if errors.Is(err, errExpired) {
+		return provider.NewCodeResult(job, provider.CodeExpired)
+	}
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
@@ -131,7 +150,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 		result.Status = provider.StatusSent
 	}
 
-	responseBody, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, provider.MaxResponseBodyBytes))
+	responseBody, readErr := provider.ReadAnswer(httpResponse)
 	if readErr != nil {
 		return result
 	}

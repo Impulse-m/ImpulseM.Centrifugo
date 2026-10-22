@@ -48,6 +48,11 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		return NewResult(job, StatusRejected)
 	}
 
+	// An expired target is refused before it takes a slot, so no provider call can follow it.
+	if Expired(job, time.Now()) {
+		return NewCodeResult(job, CodeExpired)
+	}
+
 	err := limited.slots.Acquire(syncCtx, 1)
 	if err != nil {
 		return NewResult(job, StatusPending)

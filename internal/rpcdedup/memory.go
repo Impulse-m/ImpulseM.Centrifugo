@@ -16,7 +16,7 @@ const DefaultShards = 64
 
 // RecordOverhead is the size counted for a record besides its reply or the encoded form of its error, so that records
 // without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
-// done map of the shard which holds the record. It is the value of configtypes.RPCDedupRecordOverhead, which the reply
+// done map of the shard which holds the record. The scope string is not counted: the records of a scope share one copy of it. It is the value of configtypes.RPCDedupRecordOverhead, which the reply
 // limit of the configuration subtracts from the share of a record.
 const RecordOverhead = configtypes.RPCDedupRecordOverhead
 
@@ -564,6 +564,8 @@ func (s *shard) sweepSome(now time.Time) {
 // and only the owner of the flight inserts. The removal above keeps the counts right if that ever changes.
 func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now time.Time) Record {
 	p := sc.pool
+	// The record keeps the scope string of sc, so that the records of a scope share one copy of it, which is not counted.
+	key.Scope = sc.scope
 	size := recordSize(rec, errJSON)
 	if !rec.Uncached && size > p.recordBytes {
 		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}

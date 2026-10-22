@@ -117,6 +117,7 @@ func TestStoreStaleMajorityIsCompacted(t *testing.T) {
 	require.Len(t, store.blockedExpiry, 10)
 
 	require.NoError(t, store.UnblockUser("u5"))
+	store.expireDue(clock)
 	require.Len(t, store.blockedExpiry, 4)
 	require.Equal(t, 4, cap(store.blockedExpiry))
 	require.Equal(t, 4, store.Sizes().Blocked)
@@ -128,9 +129,11 @@ func TestStoreStaleMajorityIsCompacted(t *testing.T) {
 	require.Len(t, store.blockedExpiry, 4)
 
 	require.NoError(t, store.UnblockUser("u8"))
+	store.expireDue(clock)
 	require.Len(t, store.blockedExpiry, 1)
 
 	require.NoError(t, store.UnblockUser("u9"))
+	store.expireDue(clock)
 	require.Nil(t, store.blockedExpiry)
 	require.Equal(t, 0, store.Sizes().Blocked)
 }

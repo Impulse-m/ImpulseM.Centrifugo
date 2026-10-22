@@ -165,7 +165,9 @@ func (s *Store) BlockUser(userID string, expireAt int64) error {
 	return nil
 }
 
-// UnblockUser removes the block of the user. Unblocking a user which is not blocked does nothing.
+// UnblockUser removes the block of the user. Unblocking a user which is not blocked does nothing. It never rebuilds the
+// kind: the item of the block stays in the expiry order until the expiry pass compacts it, so an unblock which arrives
+// on a reader goroutine costs one map delete.
 func (s *Store) UnblockUser(userID string) error {
 	key, ok := Key(userID)
 	if !ok {
@@ -175,7 +177,6 @@ func (s *Store) UnblockUser(userID string) error {
 	delete(s.blocked, key)
 	s.blockedVersion++
 	s.blockedMu.Unlock()
-	compactKind(s.blockedKind())
 	return nil
 }
 

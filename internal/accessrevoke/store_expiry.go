@@ -168,17 +168,33 @@ func expireKind[V any](kind kindRef[V], now int64) (int64, bool) {
 	return (*kind.order)[0].expireAt, true
 }
 
+// compactAttempts bounds the rebuilds of one compaction. A write between a rebuild and its swap skips the swap, so the
+// rebuild runs again, up to this many times. Under steady writes the swap can be skipped on every attempt; the stale
+// items then stay until a pass finds the kind without a write in between.
+const compactAttempts int = 3
+
 // compactKind rebuilds the map and the order of a kind when the stale items of the order outnumber the entries: a new
 // map and a new order sized to the entries, one item per entry at its expiry. A Go map never shrinks, so the new map
 // gives back the capacity of the old peak and keeps the next walk proportional to the entries of this one.
-// The rebuild runs under the read lock, so checks go on meanwhile, and writers wait for it. Only the swap takes the
-// write lock. A write between the snapshot and the swap makes the swap skip, and the next pass compacts again. The caller
-// does not hold the lock of the kind.
+// It is called by the expiry pass only, on the sweeper goroutine, never by a write, so a write does not wait for it.
+// The caller does not hold the lock of the kind.
 func compactKind[V any](kind kindRef[V]) {
+	for range compactAttempts {
+		if compactOnce(kind) {
+			return
+		}
+	}
+}
+
+// compactOnce is one attempt of compactKind. The rebuild runs under the read lock, so checks go on meanwhile. A writer
+// which is queued during the rebuild runs right after the read lock is released, and the readers after it wait for it, so
+// a check can wait for that writer. Only the swap takes the write lock. A write between the snapshot and the swap makes
+// the swap skip, and compactOnce reports false. It reports true when no compaction was due or the swap was made.
+func compactOnce[V any](kind kindRef[V]) bool {
 	kind.mu.RLock()
 	if len(*kind.order) <= 2*len(*kind.entries) {
 		kind.mu.RUnlock()
-		return
+		return true
 	}
 	version := *kind.version
 	fresh, live := rebuildKind(*kind.entries, kind.expireAtOf)
@@ -193,14 +209,16 @@ func compactKind[V any](kind kindRef[V]) {
 	kind.mu.Lock()
 	defer kind.mu.Unlock()
 	if *kind.version != version {
-		return
+		return false
 	}
 	*kind.entries = fresh
 	*kind.order = live
+	return true
 }
 
-// compactTestHook is called by compactKind by stage: "rebuilt" under the read lock once the rebuild is built, and "swap"
-// after the read lock is released and before the write lock is taken. Tests set it, production leaves it nil.
+// compactTestHook is a test seam: compactOnce calls it by stage, "rebuilt" under the read lock once the rebuild is built,
+// and "swap" after the read lock is released and before the write lock is taken. Tests set it, production leaves it nil,
+// and the cost in production is two atomic loads per attempt.
 var compactTestHook atomic.Pointer[func(stage string)]
 
 // rebuildKind returns a new map of the entries and a new expiry order with one item per entry at its expiry.

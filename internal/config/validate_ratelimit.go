@@ -108,6 +108,9 @@ func validateRateLimit(c Config) error {
 	if rc.Total.Enabled || len(rc.Total.Buckets) > 0 {
 		return fmt.Errorf("redis_user_command.total is not supported, use per-operation buckets instead")
 	}
+	if rc.OnError != "" && rc.OnError != configtypes.RateLimitOnErrorAllow && rc.OnError != configtypes.RateLimitOnErrorDeny {
+		return fmt.Errorf("redis_user_command.on_error must be %s or %s", configtypes.RateLimitOnErrorAllow, configtypes.RateLimitOnErrorDeny)
+	}
 	if rc.Redis.ReuseFromEngine && rc.Enabled && c.Engine.Type != "redis" {
 		return fmt.Errorf("redis_user_command.redis.reuse_from_engine requires engine.type to be redis")
 	}

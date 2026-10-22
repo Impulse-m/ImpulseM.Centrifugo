@@ -322,6 +322,38 @@ func TestRedisUserLimiterCommandTimeoutBounded(t *testing.T) {
 	require.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
+func TestRedisUserLimiterCachesRefusal(t *testing.T) {
+	var calls []string
+	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, nil, &calls))
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Len(t, calls, 1)
+
+	// The refusal waits a second, so the same user and scope is refused locally inside that second.
+	wait := l.CommandAllowed("42", OperationPublish, "chat")
+	require.Positive(t, wait)
+	require.LessOrEqual(t, wait, time.Second)
+	require.Len(t, calls, 1)
+
+	// Another scope of the same user is a different key and reaches Redis.
+	require.NotZero(t, l.CommandAllowed("42", OperationPublish, ""))
+	require.Len(t, calls, 2)
+}
+
+func TestRedisUserLimiterFailClosedOnErrorDenies(t *testing.T) {
+	var calls []string
+	cfg := redisTestConfig()
+	cfg.OnError = configtypes.RateLimitOnErrorDeny
+	l := newFakeRedisLimiter(cfg, fakeRedisRunner(true, errors.New("redis is down"), &calls))
+	require.Positive(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.False(t, l.ConnectAllowed("42"))
+
+	// The default allows on Redis errors, as before.
+	calls = nil
+	l = newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(true, errors.New("redis is down"), &calls))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.True(t, l.ConnectAllowed("42"))
+}
+
 func TestRedisLimiterNeedsKey(t *testing.T) {
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
 	require.True(t, l.NeedsKey(OperationPublish))

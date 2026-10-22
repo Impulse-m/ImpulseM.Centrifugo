@@ -449,6 +449,20 @@ func TestMigrateRateLimitMethodOverrideBothSetNotMigrated(t *testing.T) {
 	require.ErrorContains(t, migrated.Validate(), "cannot be used together")
 }
 
+func TestValidateRedisUserCommandOnError(t *testing.T) {
+	withOnError := func(onError string) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.OnError = onError
+		return cfg
+	}
+
+	require.NoError(t, withOnError("").Validate())
+	require.NoError(t, withOnError(configtypes.RateLimitOnErrorAllow).Validate())
+	require.NoError(t, withOnError(configtypes.RateLimitOnErrorDeny).Validate())
+	require.ErrorContains(t, withOnError("block").Validate(), "redis_user_command.on_error must be allow or deny")
+}
+
 func testRateLimitBucketsOf(count int) configtypes.RateLimitBucketList {
 	buckets := make(configtypes.RateLimitBucketList, 0, count)
 	for i := 0; i < count; i++ {

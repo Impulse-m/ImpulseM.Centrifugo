@@ -38,7 +38,15 @@ type RedisUserLimiter struct {
 	run redisScriptRunner
 	// errorLog limits how often Redis errors are logged to once per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
+	// refusals holds the refusals of this node, so that refused commands need no Redis call, see refusalCache.
+	refusals *refusalCache
+	// denyOnError refuses commands and connects when Redis fails, instead of allowing them, see on_error.
+	denyOnError bool
 }
+
+// denyWaitOnError is the wait of a command which is refused because Redis failed. The limit has no state to tell when
+// it is allowed again, so the client is asked to retry after this long.
+const denyWaitOnError = time.Second
 
 // NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
 // run Run as a service, which keeps connecting until it succeeds. shardConfigs must not be empty, shards are
@@ -60,8 +68,10 @@ func NewRedisUserLimiter(
 		plan:     newRedisUserPlan(cfg),
 		prefix:   prefix,
 		timeout:  ioTimeout,
-		run:      runRedisScript,
-		errorLog: tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
+		run:         runRedisScript,
+		errorLog:    tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
+		refusals:    newRefusalCache(),
+		denyOnError: cfg.OnError == configtypes.RateLimitOnErrorDeny,
 	}
 	limiter.connector = redisshard.NewConnector(shardConfigs, redisshard.LogConnect(
 		"redis_user_command rate limit",
@@ -77,7 +87,8 @@ func (l *RedisUserLimiter) NeedsKey(op Operation) bool {
 
 // CommandAllowed checks and consumes one command of op of userID. key is a namespace name for channel
 // operations and a method name for RPC. It returns 0 when the command is allowed, else the wait until it is.
-// Anonymous users (empty user ID) are not limited. On Redis errors and while not connected the command is allowed.
+// Anonymous users (empty user ID) are not limited. On Redis errors and while not connected the command is allowed,
+// unless on_error denies it.
 func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key string) time.Duration {
 	if userID == "" {
 		return 0
@@ -123,30 +134,44 @@ func (l *RedisUserLimiter) connected() bool {
 	return l.connector.Shards() != nil
 }
 
-// check runs the script of scope s for userID and returns its wait. Redis errors are counted and logged, and allow the
-// operation. While not connected, the operation is allowed and counted as an error.
+// check runs the script of scope s for userID and returns its wait. A refusal which this node has cached is returned
+// without a Redis call. Redis errors are counted and logged, and allow the operation unless on_error denies it. While
+// not connected, the operation is counted as an error and is allowed unless on_error denies it.
 func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 	list := l.connector.Shards()
 	if list == nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(redisshard.ErrNotConnected)
-		return 0
+		return l.errorWait()
 	}
 	key := redisKey(l.prefix, userID, s.redisName)
+	start := time.Now()
+	if wait, ok := l.refusals.refused(key, start.UnixNano()); ok {
+		return wait
+	}
 	shard := list[redisshard.ShardIndex(userID, len(list))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
-	start := time.Now()
+	runStart := time.Now()
 	wait, err := l.run(ctx, shard, s.script, key, s.argv)
-	metrics.RateLimitRedisDuration.Observe(time.Since(start).Seconds())
+	metrics.RateLimitRedisDuration.Observe(time.Since(runStart).Seconds())
 	cancel()
 
 	if err != nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(err)
-		return 0
+		return l.errorWait()
 	}
+	l.refusals.refuse(key, start.UnixNano(), wait)
 	return wait
+}
+
+// errorWait is the wait of a command when Redis failed: none, unless on_error denies commands.
+func (l *RedisUserLimiter) errorWait() time.Duration {
+	if l.denyOnError {
+		return denyWaitOnError
+	}
+	return 0
 }
 
 // logError logs a Redis error at most once per redisshard.ErrorLogInterval.

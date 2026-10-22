@@ -4,28 +4,22 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// PushNotificationCount, PushDirectRequestsTotal and PushDirectInflight are assigned by setPushMetrics. They are nil
-// while push notifications are disabled, so no push family is exported. Their label values are bounded: a provider,
-// a result and a status class are enumerations, and a token, a device id, a ref, a payload or error text is never a
-// label.
+// PushNotificationCount, PushDirectRequestsTotal and PushDirectInflight are assigned by initPushMetrics, which runs only
+// when Config.PushEnabled is set. They are nil otherwise, so no push family is exported, and a caller nil-checks them
+// before use: the direct send route of the sender must check PushDirectRequestsTotal and PushNotificationCount too.
+// Their label values are bounded: a provider, a result and a status class are enumerations, and a token, a device id,
+// a ref, a payload or error text is never a label.
 var (
 	PushNotificationCount   *prometheus.CounterVec
 	PushDirectRequestsTotal *prometheus.CounterVec
 	PushDirectInflight      *prometheus.GaugeVec
 )
 
-// pushRegistry holds the push notification metrics. It is embedded into Registry, so the metrics are created by
-// initPushMetrics and assigned by setPushMetrics, and only when Config.PushEnabled is set.
-type pushRegistry struct {
-	pushNotificationCount   *prometheus.CounterVec
-	pushDirectRequestsTotal *prometheus.CounterVec
-	pushDirectInflight      *prometheus.GaugeVec
-}
-
-// initPushMetrics creates the push metrics in namespace with constLabels and returns their collectors for
-// registration. The first metric keeps the name and the label names of the PRO metric of the same name.
-func (m *Registry) initPushMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
-	m.pushNotificationCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+// initPushMetrics creates the push metrics in namespace with constLabels, assigns them to the package variables and
+// returns their collectors for registration. The first metric keeps the name and the label names of the PRO metric of
+// the same name.
+func initPushMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
+	pushNotificationCount := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "push",
 		Name:        "notification_count",
@@ -33,7 +27,7 @@ func (m *Registry) initPushMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"provider", "recipient_type", "platform", "success", "err_code"})
 
-	m.pushDirectRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+	pushDirectRequestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "push",
 		Name:        "direct_requests_total",
@@ -41,7 +35,7 @@ func (m *Registry) initPushMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"result"})
 
-	m.pushDirectInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	pushDirectInflight := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "push",
 		Name:        "direct_inflight",
@@ -49,16 +43,13 @@ func (m *Registry) initPushMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	}, []string{"provider"})
 
-	return []prometheus.Collector{
-		m.pushNotificationCount,
-		m.pushDirectRequestsTotal,
-		m.pushDirectInflight,
-	}
-}
+	PushNotificationCount = pushNotificationCount
+	PushDirectRequestsTotal = pushDirectRequestsTotal
+	PushDirectInflight = pushDirectInflight
 
-// setPushMetrics assigns the push metrics created by initPushMetrics to the package level variables.
-func (m *Registry) setPushMetrics() {
-	PushNotificationCount = m.pushNotificationCount
-	PushDirectRequestsTotal = m.pushDirectRequestsTotal
-	PushDirectInflight = m.pushDirectInflight
+	return []prometheus.Collector{
+		pushNotificationCount,
+		pushDirectRequestsTotal,
+		pushDirectInflight,
+	}
 }

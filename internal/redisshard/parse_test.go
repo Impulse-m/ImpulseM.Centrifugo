@@ -57,6 +57,8 @@ func TestConfigsOfRedactsPassword(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "setting.redis: ")
 	require.NotContains(t, err.Error(), "p%zzss")
+	// The escape error of the parser quotes the two bytes after the percent sign, which are part of the password.
+	require.NotContains(t, err.Error(), "%zz")
 }
 
 func TestOptionsFromAddressKeepsParseErrorChainWithoutPassword(t *testing.T) {

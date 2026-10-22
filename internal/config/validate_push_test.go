@@ -269,9 +269,10 @@ func TestConfigValidateRefusesPushSettings(t *testing.T) {
 	require.ErrorContains(t, conf.Validate(), "is not available in this build")
 }
 
-// Validation does not read the key or credential files: sender false, or any other state, never
-// touches them. The files named by pushTestConfig do not exist and the configuration is valid.
-func TestPushValidationReadsNoFiles(t *testing.T) {
+// Validation accepts the files named by pushTestConfig as missing, with sender false and with sender
+// true. It does not prove that no file is opened: the proof that sender false loads no file is
+// TestSetupRejectsBadKeyAtStartup (D3 and D4, spec section 6.2).
+func TestPushValidationAcceptsMissingFiles(t *testing.T) {
 	conf := pushTestConfig()
 	conf.PushNotifications.Sender = false
 	require.NoError(t, conf.Validate())

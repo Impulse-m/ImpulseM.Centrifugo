@@ -146,8 +146,11 @@ func (l *UserLimiter) Run(ctx context.Context) error {
 }
 
 // userIdleTimeout returns how long a state without references is kept: twice the longest bucket
-// interval, or once it when the plan has token buckets only, but at least userMinIdle. After that much idle time a state equals a fresh one for every
-// algorithm: a token bucket TAT is in the past, and a window state is two windows old, see windowAt.
+// interval, or one interval when the plan has token buckets only, but at least userMinIdle. A token
+// bucket TAT is at most one interval ahead of the last operation, because newLimit in token_bucket.go
+// sets the tolerance to emission times rate, which is at most the interval. After that much idle time
+// a state equals a fresh one for every algorithm: a token bucket TAT is in the past, and a window state
+// is two windows old, see windowAt.
 func userIdleTimeout(maxInterval time.Duration, tokenOnly bool) time.Duration {
 	if tokenOnly {
 		// A token bucket TAT is at most one interval ahead of the last operation, so one interval of idleness suffices.

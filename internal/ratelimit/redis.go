@@ -65,9 +65,9 @@ func NewRedisUserLimiter(
 		ioTimeout = cfg.CommandTimeout.ToDuration()
 	}
 	limiter := &RedisUserLimiter{
-		plan:     newRedisUserPlan(cfg),
-		prefix:   prefix,
-		timeout:  ioTimeout,
+		plan:        newRedisUserPlan(cfg),
+		prefix:      prefix,
+		timeout:     ioTimeout,
 		run:         runRedisScript,
 		errorLog:    tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusals:    newRefusalCache(),

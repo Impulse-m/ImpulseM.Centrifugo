@@ -14,6 +14,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/cenkalti/backoff/v5"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -320,12 +321,14 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 // skip counts and logs a record which is not applied.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
-	event := log.Warn()
+	var event *zerolog.Event
 	if sampled, ok := s.skipLogs[reason]; ok {
 		event = sampled.event()
-		if event == nil {
-			return
-		}
+	} else {
+		event = log.Warn()
+	}
+	if event == nil {
+		return
 	}
 	event.
 		Err(err).

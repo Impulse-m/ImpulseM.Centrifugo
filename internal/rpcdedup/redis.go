@@ -136,6 +136,8 @@ type Redis struct {
 	readBlock time.Duration
 	// errorLog limits the log of the wake watchers' read errors to one per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
+	// ackFlush runs the acks of one shard group, see Redis.Ack. It is flushAckShard unless a test replaces it.
+	ackFlush func(callCtx context.Context, shard *redisshard.RedisShard, execs []rueidis.LuaExec) error
 }
 
 // NewRedis returns the Redis backend of the keys with prefix. The connector may not be connected yet: calls made
@@ -145,7 +147,7 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 	if ioTimeout <= 0 {
 		ioTimeout = redisshard.DefaultIOTimeout
 	}
-	return &Redis{
+	r := &Redis{
 		prefix:    prefix,
 		connector: connector,
 		timeout:   ioTimeout,
@@ -153,6 +155,8 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 		readBlock: wakeReadBlock,
 		errorLog:  tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
+	r.ackFlush = r.flushAckShard
+	return r
 }
 
 // Begin implements Backend with the begin script. maxWaiters is the cap of the waiter list, zero for none.
@@ -262,17 +266,23 @@ func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 	}
 	return ackShards(ctx, groups, func(ctx context.Context, index int, execs []rueidis.LuaExec) error {
 		return r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
-			results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
-				return ackScript.ExecMulti(callCtx, client, execs...)
-			})
-			for i := range results {
-				if err := results[i].Error(); err != nil {
-					return err
-				}
-			}
-			return nil
+			return r.ackFlush(callCtx, shard, execs)
 		})
 	})
+}
+
+// flushAckShard runs the ack script of each scope of execs on shard, as one pipeline, and returns the first failed
+// command.
+func (r *Redis) flushAckShard(callCtx context.Context, shard *redisshard.RedisShard, execs []rueidis.LuaExec) error {
+	results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
+		return ackScript.ExecMulti(callCtx, client, execs...)
+	})
+	for i := range results {
+		if err := results[i].Error(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ackShards runs flush for each shard group of groups, in a goroutine of its own, and returns when all have returned.

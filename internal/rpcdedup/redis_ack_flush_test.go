@@ -2,9 +2,12 @@ package rpcdedup
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
 
 	"github.com/redis/rueidis"
 	"github.com/stretchr/testify/require"
@@ -39,4 +42,44 @@ func TestRedisAckFlushAttemptsEveryShard(t *testing.T) {
 	})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Len(t, attempted, len(groups))
+}
+
+// Redis.Ack flushes its shards in parallel: two stalled shards, each bounded by the IO timeout, cost the flush one timeout
+// and not two. The shards are nil stand-ins, since the flush of each shard is replaced by the test.
+func TestRedisAckFlushParallelShardsOfAck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = time.Second
+		connector := redisshard.NewConnector(nil, nil)
+		connector.SetConnect(func(_ []redisshard.RedisShardConfig) ([]*redisshard.RedisShard, error) {
+			return make([]*redisshard.RedisShard, 2), nil
+		})
+		require.NoError(t, connector.Connect())
+		backend := NewRedis("p", connector, timeout, nil)
+		backend.ackFlush = func(callCtx context.Context, _ *redisshard.RedisShard, _ []rueidis.LuaExec) error {
+			<-callCtx.Done()
+			return callCtx.Err()
+		}
+		acks := []ScopeAcks{
+			{Scope: scopeOnShard(t, 0, 2), MsgIDs: []uint64{1}},
+			{Scope: scopeOnShard(t, 1, 2), MsgIDs: []uint64{2}},
+		}
+
+		start := time.Now()
+		err := backend.Ack(context.Background(), acks)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, timeout, time.Since(start), "the stalled shards are flushed at once")
+	})
+}
+
+// scopeOnShard returns a scope whose keys are on shard index of shards shards.
+func scopeOnShard(t *testing.T, index int, shards int) string {
+	t.Helper()
+	for i := range 1000 {
+		scope := fmt.Sprintf("scope-%d", i)
+		if redisshard.ShardIndex(scope, shards) == index {
+			return scope
+		}
+	}
+	t.Fatalf("no scope maps to shard %d of %d", index, shards)
+	return ""
 }

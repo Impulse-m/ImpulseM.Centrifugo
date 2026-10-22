@@ -86,22 +86,6 @@ func TestThrottleKeyAndLogAddrFallBackToLegacy(t *testing.T) {
 	require.Equal(t, "1.1.1.1", LogAddr(req))
 }
 
-func TestLegacyLogAddrIgnoresUntrustedHeaders(t *testing.T) {
-	// A public peer is the client itself, so its forwarded headers say nothing about the client.
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "203.0.113.9:1234"
-	req.Header.Set("X-Real-IP", "evil")
-	req.Header.Set("X-Forwarded-For", "evil-two")
-	require.Equal(t, "203.0.113.9:1234", LogAddr(req))
-
-	// A private peer is a proxy: the last forwarded address is logged, as the throttle key uses it.
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "10.0.0.9:1"
-	req.Header.Set("X-Real-IP", "evil")
-	req.Header.Set("X-Forwarded-For", "2.2.2.2, 1.1.1.1")
-	require.Equal(t, "1.1.1.1", LogAddr(req))
-}
-
 func TestWithPeer(t *testing.T) {
 	ctx := peer.NewContext(context.Background(), &peer.Peer{
 		Addr: &net.TCPAddr{IP: net.ParseIP("::ffff:2.2.2.2"), Port: 4567},

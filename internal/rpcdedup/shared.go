@@ -30,6 +30,10 @@ const (
 	maxPendingWakes = 64
 	// pollCapDivisor sets the longest poll interval of a wait as a share of the wait, see Shared.pollCap.
 	pollCapDivisor = 10
+	// maxCancelWorkers is the number of goroutines which send the cancel notifications of a node at once, and
+	// maxQueuedCancels the notifications which wait for one of them, see cancelNotifier.
+	maxCancelWorkers = 8
+	maxQueuedCancels = 1024
 	// wakeCheckDelay is the time after which a wait which has not been woken reads the record once, see watchWake.
 	wakeCheckDelay = 2 * time.Second
 	// wakeWatchIdle is how long the wake watcher of a node runs after the node's last remote wait ended. It is the
@@ -134,9 +138,13 @@ type Shared struct {
 	maxReplyBytes int
 	failOpen      bool
 	notifier      func(nodeID string, key Key)
-	observer      SharedObserver
-	pollInitial   time.Duration
-	pollMax       time.Duration
+
+	// cancels queues the cancel notifications which notifier sends, see cancelNotifier.
+	cancels *cancelNotifier
+
+	observer    SharedObserver
+	pollInitial time.Duration
+	pollMax     time.Duration
 	// wakeup is set when the waits are woken by the wake streams, see SharedOptions.Wakeup.
 	wakeup bool
 	// wakeSlots holds one token per wake which is written in the background, at most maxPendingWakes.
@@ -200,7 +208,7 @@ func NewShared(opts SharedOptions) *Shared {
 	if opts.MaxWaiterNodes <= 0 {
 		opts.MaxWaiterNodes = sharedDefaultMaxWaiterNodes
 	}
-	return &Shared{
+	s := &Shared{
 		local:          opts.Local,
 		backend:        opts.Backend,
 		nodeID:         opts.NodeID,
@@ -225,6 +233,13 @@ func NewShared(opts SharedOptions) *Shared {
 		errorLog:       tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusedLog:     tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
+	s.cancels = newCancelNotifier(s.sendCancel)
+	return s
+}
+
+// sendCancel sends a cancel notification with the notifier of the node. It runs on a worker of cancels.
+func (s *Shared) sendCancel(nodeID string, key Key) {
+	s.notifier(nodeID, key)
 }
 
 // Begin implements Store. A call which the node runs is found in the node-local store. A call which runs on another
@@ -312,7 +327,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now, from a
 		// goroutine of its own, so the answer of this duplicate does not wait for the notification.
 		if flight.markRemote(s.wakeup && !res.WaitersFull) && res.Owner != s.nodeID && s.notifier != nil {
-			go s.notifier(res.Owner, key)
+			s.cancels.notify(res.Owner, key)
 		}
 		if res.WaitersFull {
 			s.refuseWait(key, flight, res.Owner)
@@ -698,8 +713,8 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 		if res.Owner == s.nodeID {
 			s.CancelFlight(key)
 		} else if s.notifier != nil {
-			// The notification is sent from a goroutine of its own: the answer to the cancel does not wait for it.
-			go s.notifier(res.Owner, key)
+			// The notification is queued for a worker of its own: the answer to the cancel does not wait for it.
+			s.cancels.notify(res.Owner, key)
 		}
 	}
 	return nil

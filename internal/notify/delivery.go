@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 	"github.com/rs/zerolog/log"
 )
@@ -15,6 +16,14 @@ const queueSize = 1024
 // fullLogInterval limits the log line about a full queue to one line per interval.
 const fullLogInterval = 10 * time.Second
 
+// inlineOps are the ops whose handler runs on the goroutine that delivers the event, with no queue. Such a handler
+// must not wait: the access revocation handler writes the store and enqueues its disconnects without blocking, so
+// the node's notification path is never held by a full queue. The delivering goroutine is serial, so the events of
+// the op keep their order.
+var inlineOps = map[string]bool{
+	accessrevoke.NotifyOp: true,
+}
+
 // delivery runs the handlers of notifications through one queue per op. The queue of an op has one
 // consumer goroutine, which starts on the first event of the op and stays for the life of the process,
 // so the goroutines are constant per node, and the events of one op are handled in the order they were
@@ -23,7 +32,8 @@ const fullLogInterval = 10 * time.Second
 // A full queue blocks the publisher instead of dropping the event. The events are notifications which must
 // reach every node, such as access revocations: a dropped one would leave a revoked access working on this
 // node. The publisher is the node's notification path, so handlers must stay fast and must not call
-// Node.Notify: a handler which waits on its own full queue would deadlock.
+// Node.Notify: a handler which waits on its own full queue would deadlock. The ops of inlineOps have no queue,
+// and their handlers run on the publisher, so they must never block.
 type delivery struct {
 	queues map[string]*opQueue
 }
@@ -31,12 +41,13 @@ type delivery struct {
 type opQueue struct {
 	op        string
 	handler   centrifuge.NotificationHandler
+	inline    bool
 	events    chan centrifuge.NotificationEvent
 	startOnce sync.Once
 	fullLog   *tools.IntervalLimiter
 }
 
-// newDelivery returns a delivery which runs handlers, each with a queue of size events.
+// newDelivery returns a delivery which runs handlers, each with a queue of size events, except the inline ops.
 func newDelivery(handlers map[string]centrifuge.NotificationHandler, size int) *delivery {
 	d := &delivery{
 		queues: make(map[string]*opQueue, len(handlers)),
@@ -45,6 +56,7 @@ func newDelivery(handlers map[string]centrifuge.NotificationHandler, size int) *
 		d.queues[op] = &opQueue{
 			op:      op,
 			handler: handler,
+			inline:  inlineOps[op],
 			events:  make(chan centrifuge.NotificationEvent, size),
 			fullLog: tools.NewIntervalLimiter(fullLogInterval),
 		}
@@ -52,10 +64,15 @@ func newDelivery(handlers map[string]centrifuge.NotificationHandler, size int) *
 	return d
 }
 
-// deliver queues event for the handler of its op. An event of an op without a handler is ignored.
+// deliver queues event for the handler of its op, or runs the handler at once for an inline op. An event of an op
+// without a handler is ignored.
 func (d *delivery) deliver(event centrifuge.NotificationEvent) {
 	q, ok := d.queues[event.Op]
 	if !ok {
+		return
+	}
+	if q.inline {
+		q.handler(event)
 		return
 	}
 	q.startOnce.Do(func() {

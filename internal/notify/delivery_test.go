@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
 )
@@ -98,6 +100,39 @@ func TestDeliveryWaitsForFullQueue(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("event %d was not handled", i)
 		}
+	}
+}
+
+func TestDeliveryRunsInlineOpOnDeliveringGoroutine(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	d := newDelivery(map[string]centrifuge.NotificationHandler{
+		accessrevoke.NotifyOp: func(centrifuge.NotificationEvent) {
+			close(entered)
+			<-release
+		},
+	}, 1)
+
+	returned := make(chan struct{})
+	go func() {
+		d.deliver(eventOf(accessrevoke.NotifyOp, 0))
+		close(returned)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("inline handler was not run")
+	}
+	select {
+	case <-returned:
+		t.Fatal("deliver returned before the inline handler finished, so the handler did not run on the delivering goroutine")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliver did not return after the inline handler finished")
 	}
 }
 

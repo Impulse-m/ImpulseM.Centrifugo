@@ -14,12 +14,7 @@ func RegisterHandlers(
 	extra map[string]centrifuge.NotificationHandler,
 ) {
 	handlers := mergeHandlers(notificationHandlers(node, statsSender, revoker), extra)
-	// The access revocation handler writes the store and enqueues its disconnects without blocking, so it runs inline:
-	// the reader is never held by a full queue, and the events of the op keep their order.
-	inline := map[string]bool{
-		accessrevoke.NotifyOp: true,
-	}
-	deliveries := newDelivery(handlers, queueSize, inline)
+	deliveries := newDelivery(handlers, queueSize, inlineOps())
 	node.OnNotification(deliveries.deliver)
 }
 

@@ -103,6 +103,12 @@ func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	require.Len(t, node.Hub().UserConnections("user-1"), 1)
 }
 
+// TestRegisteredOpsKeepAccessRevokeInline pins the ops which RegisterHandlers runs inline. The access revocation op must
+// stay inline: with a queue, a full disconnect queue would block the Core control reader.
+func TestRegisteredOpsKeepAccessRevokeInline(t *testing.T) {
+	require.True(t, inlineOps()[accessrevoke.NotifyOp])
+}
+
 // deliverWithin delivers the event and fails the test if the delivery waits longer than a bound. An inline op returns at
 // once, so the bound only catches a delivery which blocks on a full queue.
 func deliverWithin(t *testing.T, deliveries *delivery, event centrifuge.NotificationEvent) {

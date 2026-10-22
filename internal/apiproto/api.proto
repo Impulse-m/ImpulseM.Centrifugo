@@ -1579,6 +1579,12 @@ message PushRecipient {
     // webpush_tokens sends to a list of raw Web Push subscriptions, each a
     // PushSubscription JSON string.
     repeated string webpush_tokens = 9;
+
+    // ---- fork extensions ----
+
+    // targets sends to raw provider tokens, each with its own environment
+    // and reference. Answered synchronously by the direct send mode.
+    repeated PushTarget targets = 100;
 }
 
 // PushNotification is a push notification in the format of each provider.
@@ -1664,6 +1670,12 @@ message SendPushNotificationRequest {
     // use_meta additionally loads device meta while sending, making it
     // available in templating.
     bool use_meta = 10;
+
+    // ---- fork extensions ----
+
+    // collapse_id is the default collapse id of the targets that set none.
+    // At most 64 bytes. Used by the direct send mode only.
+    string collapse_id = 100;
 }
 
 // PushLocalization holds translations for one language/locale.
@@ -1731,6 +1743,12 @@ message SendPushNotificationResult {
     // uid is the unique identifier of the send request (not a provider
     // message ID). Matches the request uid if it was set.
     string uid = 1;
+
+    // ---- fork extensions ----
+
+    // results has one entry per recipient, in request order. Used by the
+    // direct send mode only.
+    repeated PushItemResult results = 100;
 }
 
 // UpdatePushStatusRequest saves the delivery or interaction status of a
@@ -2048,4 +2066,52 @@ message Unsubscribe {
     uint32 code = 1;
     // reason is the unsubscribe reason.
     string reason = 2;
+}
+
+// PushTarget is one raw provider token of a direct send. Used by the direct
+// send mode of SendPushNotification only.
+message PushTarget {
+    // provider is the provider of the token: apns or fcm. Required.
+    string provider = 1;
+    // token is the provider token. Required.
+    string token = 2;
+    // environment is the APNs environment: production or development.
+    // Required for apns, refused for fcm.
+    string environment = 3;
+    // ref is a caller reference, echoed in the result. At most 128 bytes.
+    string ref = 4;
+    // collapse_id is the collapse id of this target. At most 64 bytes.
+    // Overrides the request collapse_id.
+    string collapse_id = 5;
+    // apns_payload replaces the APNs payload of the request for this target
+    // only. A JSON object.
+    bytes apns_payload = 6;
+    // fcm_message replaces the FCM message of the request for this target
+    // only. A JSON object.
+    bytes fcm_message = 7;
+}
+
+// PushItemResult is the result of one recipient of a direct send.
+message PushItemResult {
+    // index is the zero-based position of the recipient in the request.
+    uint32 index = 1;
+    // ref is the echo of the target ref, when set.
+    string ref = 2;
+    // status is sent, rejected, unanswered, pending or dry_run.
+    string status = 3;
+    // code is a server refusal reason, set only when the server refused the
+    // target before any provider call: payload_too_large or expired.
+    string code = 4;
+    // provider_code is the APNs reason, or the FCM error status. Empty when
+    // the provider sent no status or no body.
+    string provider_code = 5;
+    // provider_detail is the APNs 410 timestamp, or the first FCM error
+    // detail, at most 256 bytes.
+    string provider_detail = 6;
+    // http_status is the HTTP status returned by the provider. Zero when no
+    // status line was received.
+    uint32 http_status = 7;
+    // provider_message_id is the APNs apns-id, or the FCM message name when
+    // the send was sent. Empty when the provider sent none.
+    string provider_message_id = 8;
 }

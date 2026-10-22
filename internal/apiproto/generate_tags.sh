@@ -25,3 +25,5 @@ gomodifytags -file api.pb.go -field Statuses -struct GetUserStatusResult -all -w
 gomodifytags -file api.pb.go -field Items -struct DeviceListResult -all -w -remove-options json=omitempty >/dev/null
 gomodifytags -file api.pb.go -field Items -struct DeviceTopicListResult -all -w -remove-options json=omitempty >/dev/null
 gomodifytags -file api.pb.go -field Items -struct UserTopicListResult -all -w -remove-options json=omitempty >/dev/null
+gomodifytags -file api.pb.go -field Index -struct PushItemResult -all -w -remove-options json=omitempty >/dev/null
+gomodifytags -file api.pb.go -field HttpStatus -struct PushItemResult -all -w -remove-options json=omitempty >/dev/null

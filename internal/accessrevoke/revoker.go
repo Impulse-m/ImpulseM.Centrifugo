@@ -2,6 +2,7 @@ package accessrevoke
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
@@ -25,17 +26,25 @@ type Hub interface {
 // connections through the DisconnectQueue. Only local connections are affected, cluster
 // propagation is done by the caller.
 type Revoker struct {
-	store *Store
-	hub   Hub
-	queue *DisconnectQueue
+	store  *Store
+	hub    Hub
+	queue  *DisconnectQueue
+	maxTTL func() time.Duration
 }
 
-// NewRevoker creates a Revoker.
+// NewRevoker creates a Revoker which applies the expire_at of a notification as it is.
 func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
+	return NewRevokerWithMaxTTL(store, hub, queue, nil)
+}
+
+// NewRevokerWithMaxTTL creates a Revoker which clamps the expire_at of every notification it applies to the limit
+// maxTTL returns, read at each apply, so a config reload applies. A nil maxTTL means no limit.
+func NewRevokerWithMaxTTL(store *Store, hub Hub, queue *DisconnectQueue, maxTTL func() time.Duration) *Revoker {
 	revoker := &Revoker{
-		store: store,
-		hub:   hub,
-		queue: queue,
+		store:  store,
+		hub:    hub,
+		queue:  queue,
+		maxTTL: maxTTL,
 	}
 	queue.setRetrier(revoker.retry)
 	return revoker
@@ -110,8 +119,12 @@ func (r *Revoker) InvalidateUser(userID string, minGeneration uint64, issuedBefo
 }
 
 // Apply applies the notification to local state. It is used both for operations received through
-// the API and for notifications from other nodes. Only local connections are disconnected.
+// the API and for notifications from other nodes. Only local connections are disconnected. The expire_at is clamped
+// to the max TTL of the revoker first, so a notification from a node which has no limit cannot exceed this node's.
 func (r *Revoker) Apply(notification Notification) error {
+	if r.maxTTL != nil {
+		notification = ClampExpireAt(notification, time.Now(), r.maxTTL(), ClampSourceNotify)
+	}
 	switch notification.Kind {
 	case KindBlockUser:
 		return r.BlockUser(notification.User, notification.ExpireAt)
@@ -171,14 +184,6 @@ func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect cent
 func (r *Revoker) retry(key retryKey) {
 	// Every kind is checked, so a retry applies whatever the store still holds.
 	opts := CheckOptions{Block: true, Session: true, UserTokens: true}
-	if key.all {
-		metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindSweep).Inc()
-		for _, client := range r.hub.Connections() {
-			userID, identity := IdentityOf(client)
-			r.retryConnection(client, opts, sweepRetryKey(userID, identity))
-		}
-		return
-	}
 	if key.user != "" {
 		metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindUser).Inc()
 		for _, client := range r.hub.UserConnections(key.user) {

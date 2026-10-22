@@ -28,7 +28,6 @@ const stageRetry = "retry"
 const (
 	retryKindUser    = "user"
 	retryKindSession = "session"
-	retryKindSweep   = "sweep"
 )
 
 // Sources of an expire_at clamped to access_revoke.max_ttl, used as metric label values.

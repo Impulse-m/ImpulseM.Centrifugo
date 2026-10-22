@@ -400,20 +400,31 @@ func TestDisconnectQueueFillGauge(t *testing.T) {
 	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_disconnect_queue_fill"))
 }
 
-// TestRetryKeysBoundedWhenQueueFull drops disconnects under 10000 distinct keys while the queue holds one. The kept keys
-// stay within twice the queue size, and the overflow is flagged so the queue runs a node sweep instead.
-func TestRetryKeysBoundedWhenQueueFull(t *testing.T) {
+// TestRetryKeysAreNotCapped drops disconnects under 10000 distinct keys while the queue holds one. Every key is kept, and
+// once the queue is drained each key is retried exactly once, so no pass runs over the whole node.
+func TestRetryKeysAreNotCapped(t *testing.T) {
 	queue := NewDisconnectQueue(10000, 1)
-	require.True(t, queue.Enqueue(&fakeConnection{id: "queued"}, centrifuge.DisconnectExpired, ReasonSession))
+	queued := &fakeConnection{id: "queued"}
+	require.True(t, queue.Enqueue(queued, centrifuge.DisconnectExpired, ReasonSession))
 	for i := range 10000 {
 		key := retryKey{user: strconv.Itoa(i)}
 		require.False(t, queue.enqueueKeyed(key, &fakeConnection{id: "dropped"}, centrifuge.DisconnectExpired, ReasonSession))
 	}
+	queue.mu.Lock()
+	require.Len(t, queue.retry, 10000)
+	queue.mu.Unlock()
 
+	retried := 0
+	queue.setRetrier(func(retryKey) {
+		retried++
+	})
+	<-queue.items
+	queue.begin(queued)
+
+	require.Equal(t, 10000, retried)
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	require.LessOrEqual(t, len(queue.retry), 2)
-	require.True(t, queue.retryOverflow)
+	require.Empty(t, queue.retry)
 }
 
 func TestDisconnectQueueRunReturnsOnContextDone(t *testing.T) {

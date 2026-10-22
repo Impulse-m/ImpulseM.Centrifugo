@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,16 +46,15 @@ func connectNotifyTestClient(t *testing.T, node *centrifuge.Node, userID string)
 }
 
 // TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue blocks a user whose second connection's disconnect does not fit
-// in the queue, then unblocks the user. Both events are delivered without waiting for the queue, the store ends
-// unblocked, and the dropped connection is kept because the retry finds the user unblocked.
+// in the queue, then unblocks the user. Both events are delivered without waiting for the queue, the store is blocked
+// after the block is delivered and unblocked after the unblock, and the dropped connection is kept because the retry
+// finds the user unblocked. The inline handling itself is pinned by TestDeliveryRunsInlineOpOnDeliveringGoroutine.
 func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	node := newNotifyTestNode(t)
 	store := accessrevoke.NewStore(time.Minute)
 	queue := accessrevoke.NewDisconnectQueue(10000, 1)
 	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
-	cfgContainer, err := config.NewContainer(config.DefaultConfig())
-	require.NoError(t, err)
-	deliveries := newDelivery(notificationHandlers(node, nil, revoker, cfgContainer), queueSize)
+	deliveries := newDelivery(notificationHandlers(node, nil, revoker), queueSize)
 
 	connectNotifyTestClient(t, node, "user-1")
 	connectNotifyTestClient(t, node, "user-1")
@@ -74,19 +74,14 @@ func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	delivered := make(chan struct{})
-	go func() {
-		deliveries.deliver(centrifuge.NotificationEvent{FromNodeID: "other-node", Op: accessrevoke.NotifyOp, Data: block})
-		deliveries.deliver(centrifuge.NotificationEvent{FromNodeID: "other-node", Op: accessrevoke.NotifyOp, Data: unblock})
-		close(delivered)
-	}()
-	select {
-	case <-delivered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("delivery of block and unblock waited on the full disconnect queue")
-	}
+	// The store is written before the disconnect is enqueued, so the block holds while the dropped disconnect waits.
+	deliverWithin(t, deliveries, centrifuge.NotificationEvent{FromNodeID: "other-node", Op: accessrevoke.NotifyOp, Data: block})
+	require.Equal(t, accessrevoke.Blocked, store.Check("user-1", centrifuge.TokenIdentity{}, accessrevoke.CheckOptions{Block: true}).Verdict)
+
+	deliverWithin(t, deliveries, centrifuge.NotificationEvent{FromNodeID: "other-node", Op: accessrevoke.NotifyOp, Data: unblock})
 	require.Equal(t, accessrevoke.Allowed, store.Check("user-1", centrifuge.TokenIdentity{}, accessrevoke.CheckOptions{Block: true}).Verdict)
 
+	retries := testutil.ToFloat64(metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues("user"))
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
@@ -97,13 +92,31 @@ func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 		<-errCh
 	})
 
-	// The queued connection is disconnected by the queue. The dropped one is retried and stays connected.
+	// The queued connection is disconnected by the queue, once. The dropped one is retried by user; the retry finds the
+	// user unblocked and disconnects nothing, so the connection stays.
 	require.Eventually(t, func() bool {
 		return len(node.Hub().UserConnections("user-1")) == 1
 	}, 5*time.Second, 5*time.Millisecond)
-	require.Never(t, func() bool {
-		return len(node.Hub().UserConnections("user-1")) == 0
-	}, 200*time.Millisecond, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues("user")) == retries+1
+	}, 5*time.Second, 5*time.Millisecond)
+	require.Len(t, node.Hub().UserConnections("user-1"), 1)
+}
+
+// deliverWithin delivers the event and fails the test if the delivery waits longer than a bound. An inline op returns at
+// once, so the bound only catches a delivery which blocks on a full queue.
+func deliverWithin(t *testing.T, deliveries *delivery, event centrifuge.NotificationEvent) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		deliveries.deliver(event)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery waited on the full disconnect queue")
+	}
 }
 
 func TestAccessRevokeNotificationHandler(t *testing.T) {
@@ -112,9 +125,7 @@ func TestAccessRevokeNotificationHandler(t *testing.T) {
 
 	store := accessrevoke.NewStore(time.Minute)
 	revoker := accessrevoke.NewRevoker(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100))
-	cfgContainer, err := config.NewContainer(config.DefaultConfig())
-	require.NoError(t, err)
-	handlers := notificationHandlers(node, nil, revoker, cfgContainer)
+	handlers := notificationHandlers(node, nil, revoker)
 	handler := handlers[accessrevoke.NotifyOp]
 	require.NotNil(t, handler)
 

@@ -33,11 +33,10 @@ type queuedDisconnect struct {
 
 // retryKey names what a dropped disconnect was for: the connections of a user (user set), or the indexed connections of
 // a session without a user (user empty). A retry re-reads the store, so the key carries no reason and no disconnect.
-// The all key names a pass over every local connection, kept when the queue overflows its retry keys.
+// The memory of the kept keys is bounded by the dropped disconnects, one key per user or session.
 type retryKey struct {
 	user    string
 	session [16]byte
-	all     bool
 }
 
 // DisconnectQueue drains live disconnects caused by access revocation at a limited rate. The queue is bounded and holds
@@ -46,16 +45,16 @@ type retryKey struct {
 // A disconnect which finds the queue full is dropped and counted, and its key is kept. The queue goroutine re-evaluates
 // kept keys through the store once the queue has room: one key per drained item while the queue holds items,
 // and the next key in a row while it is empty. The refresh check rejects a connection within the token lifetime in any case.
-// At most twice the queue size of keys is kept. Past that, the queue runs one pass over every local connection instead.
+// The kept keys are not capped: a key is one user or session, so the keys cost no more than the dropped disconnects, and
+// the retry walks only the connections of the key, never the whole node.
 type DisconnectQueue struct {
 	items   chan Connection
 	limiter *rate.Limiter
 
-	mu            sync.Mutex
-	inflight      map[string]queuedDisconnect
-	retry         map[retryKey]struct{}
-	retryOverflow bool
-	retrier       func(key retryKey)
+	mu       sync.Mutex
+	inflight map[string]queuedDisconnect
+	retry    map[retryKey]struct{}
+	retrier  func(key retryKey)
 }
 
 // NewDisconnectQueue creates a queue which disconnects at most ratePerSecond connections per second
@@ -119,14 +118,9 @@ func (q *DisconnectQueue) enqueue(
 	return false
 }
 
-// keepRetryLocked keeps key for a retry. Past twice the queue size of keys, the key is not kept and the overflow is
-// flagged, so the queue runs one pass over every local connection once it has room.
+// keepRetryLocked keeps key for a retry. It is called with mu held.
 func (q *DisconnectQueue) keepRetryLocked(key retryKey) {
 	if _, kept := q.retry[key]; kept {
-		return
-	}
-	if len(q.retry) >= 2*cap(q.items) {
-		q.retryOverflow = true
 		return
 	}
 	if q.retry == nil {
@@ -216,16 +210,11 @@ func (q *DisconnectQueue) retryKept() {
 	}
 }
 
-// takeRetryLocked removes and returns one kept key with the retrier. An overflow is taken before the keys, as the all key.
-// It reports false when there is no key or no retrier. The set is released when its last key is taken, so a saturated
-// queue does not keep its map for the life of the process.
+// takeRetryLocked removes and returns one kept key with the retrier. It reports false when there is no key or no retrier.
+// The set is released when its last key is taken, so a saturated queue does not keep its map for the life of the process.
 func (q *DisconnectQueue) takeRetryLocked() (retryKey, func(retryKey), bool) {
 	if q.retrier == nil {
 		return retryKey{}, nil, false
-	}
-	if q.retryOverflow {
-		q.retryOverflow = false
-		return retryKey{all: true}, q.retrier, true
 	}
 	for key := range q.retry {
 		delete(q.retry, key)

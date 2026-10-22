@@ -1,6 +1,8 @@
 package accessrevoke
 
 import (
+	"time"
+
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 
@@ -28,7 +30,9 @@ type Components struct {
 func Setup(node *centrifuge.Node, cfg config.Config, cfgContainer *config.Container) Components {
 	store := NewStore(cfg.AccessRevoke.DefaultTTL.ToDuration())
 	queue := NewDisconnectQueue(cfg.AccessRevoke.DisconnectRate, cfg.AccessRevoke.DisconnectQueueSize)
-	revoker := NewRevoker(store, node.Hub(), queue)
+	revoker := NewRevokerWithMaxTTL(store, node.Hub(), queue, func() time.Duration {
+		return cfgContainer.Config().AccessRevoke.MaxTTL.ToDuration()
+	})
 	components := Components{
 		Store:    store,
 		Revoker:  revoker,

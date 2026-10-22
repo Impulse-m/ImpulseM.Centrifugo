@@ -61,8 +61,11 @@ func TestPushConfigLoadReadsNoFiles(t *testing.T) {
 	require.NoError(t, conf.Validate())
 }
 
-// A key held inline is masked in every output path of the configuration: the JSON, TOML and YAML
-// dumps of the default configuration command, and formatted output.
+// A key held inline is masked in the JSON and YAML dumps of a configuration and in its String form.
+// TOML with a key set is not covered: go-toml v2 ignores MarshalText on string kinds, so a Secret
+// written to TOML shows its value. The only TOML marshal of the configuration is the defaultconfig
+// command, which prints the defaults, where the key is empty; the default configuration test below
+// checks that it carries no key material. defaultconfig.go is not changed.
 func TestPushTokenKeyPEMMaskedInDumps(t *testing.T) {
 	path := writeRegistryFile(t, "config.json", `{"push_notifications": {"enabled": false, "apns": {"token_key_pem": "`+pushTestKeyText+`"}}}`)
 	conf, _, err := GetConfig(nil, path)
@@ -74,14 +77,25 @@ func TestPushTokenKeyPEMMaskedInDumps(t *testing.T) {
 	require.NotContains(t, string(jsonBytes), "SECRETKEYBYTES")
 	require.Contains(t, string(jsonBytes), "[REDACTED]")
 
-	tomlBytes, err := toml.Marshal(conf)
-	require.NoError(t, err)
-	require.NotContains(t, string(tomlBytes), "SECRETKEYBYTES")
-
 	yamlBytes, err := yaml.Marshal(conf)
 	require.NoError(t, err)
 	require.NotContains(t, string(yamlBytes), "SECRETKEYBYTES")
+	require.Contains(t, string(yamlBytes), "[REDACTED]")
 
+	require.Equal(t, "[REDACTED]", conf.PushNotifications.APNs.TokenKeyPEM.String())
 	formatted := fmt.Sprintf("%v|%+v|%#v", conf.PushNotifications, conf.PushNotifications, conf.PushNotifications)
 	require.NotContains(t, formatted, "SECRETKEYBYTES")
+}
+
+// The default configuration, the one the defaultconfig command prints as TOML, carries no key
+// material: its token key is empty.
+func TestPushDefaultConfigTOMLHasNoKeyMaterial(t *testing.T) {
+	conf, _, err := GetConfig(nil, "")
+	require.NoError(t, err)
+	require.Equal(t, configtypes.Secret(""), conf.PushNotifications.APNs.TokenKeyPEM)
+
+	tomlBytes, err := toml.Marshal(conf)
+	require.NoError(t, err)
+	require.NotContains(t, string(tomlBytes), "PRIVATE KEY")
+	require.NotContains(t, string(tomlBytes), "SECRETKEYBYTES")
 }

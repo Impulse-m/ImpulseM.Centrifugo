@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -18,7 +19,9 @@ func TestAccessRevokeNotificationHandler(t *testing.T) {
 
 	store := accessrevoke.NewStore(time.Minute)
 	revoker := accessrevoke.NewRevoker(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100))
-	handlers := notificationHandlers(node, nil, revoker)
+	cfgContainer, err := config.NewContainer(config.DefaultConfig())
+	require.NoError(t, err)
+	handlers := notificationHandlers(node, nil, revoker, cfgContainer)
 	handler := handlers[accessrevoke.NotifyOp]
 	require.NotNil(t, handler)
 

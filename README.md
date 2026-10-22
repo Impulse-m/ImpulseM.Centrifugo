@@ -20,11 +20,12 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
-  * An entry is kept until the request's `expire_at`. Without it `access_revoke.default_ttl` (20 minutes) applies, so a revocation that must hold until the token expires sets `expire_at` to that expiration.
+  * An entry is kept until the request's `expire_at`. Without it `access_revoke.default_ttl` (20 minutes) applies, so a revocation that must hold until the token expires sets `expire_at` to that expiration. A permanent block sets a far-future `expire_at`, which needs `access_revoke.max_ttl` off.
+  * `access_revoke.max_ttl` (off by default, `0`) caps how long an entry may be kept, counted from the time it is applied. The API refuses an `expire_at` beyond now plus `max_ttl` with bad request, and the Kafka and notify paths clamp it to that limit. A revocation is clamped, not dropped, and each clamp is counted in `centrifugo_access_revoke_expire_at_clamped_total{source}`. Without it the store has no entry cap and keeps a far-future entry for its whole life, so watch `centrifugo_access_revoke_store_size`.
   * API calls reach the other nodes over the broker at most once: a node that misses the message (a dropped PUB/SUB message, a restart) does not apply it. The opt-in [revocation source](#access-revocation-event-source) is the durable delivery path.
-  * A live disconnect which finds the disconnect queue full (`access_revoke.disconnect_queue_size`) is dropped and retried by user or session once the queue has room, so a blocked user or an invalidated token is still disconnected. Each connection is queued at most once, and a connection whose close has begun is never queued again.
+  * A live disconnect which finds the disconnect queue full (`access_revoke.disconnect_queue_size`) is dropped and retried by user or session once the queue has room, so a blocked user or an invalidated token is still disconnected. Each connection is queued at most once, and a connection whose close has begun is never queued again. At most twice the queue size of retry keys is kept; past that, the node runs one pass over its connections instead.
   * Differences from Centrifugo PRO:
-    * `revoke_token` without `user` disconnects at once the connections with no user (anonymous and pending) which hold the session, through a per-node session index; connections with a user are disconnected at once only when `user` is passed, otherwise at their next refresh. No revocation scans the connections of a node; only the one-shot catch-up pass after a fail-open start does.
+    * `revoke_token` without `user` disconnects at once the connections with no user (anonymous and pending) which hold the session, through a per-node session index; connections with a user are disconnected at once only when `user` is passed, otherwise at their next refresh. A token without `exp` keeps such a connection until it reconnects or its TTL ends. No revocation scans the connections of a node; only the one-shot catch-up pass after a fail-open start does.
     * `expire_at` in the past is rejected with bad request.
     * Extensions: `user` and `revoked_at` on `revoke_token`; `disconnect` on `revoke_token`, a code in 4000-4999 and a reason of at most 123 bytes that every close of the revocation uses instead of 3005; `generation` and `revoked_at` on `invalidate_user_tokens`; `token_revoke.uid_claim` and `user_tokens_invalidate.generation_claim` config; disconnect code 4500 for blocked users; loop guard disconnects with 3500.
   * Not implemented:
@@ -88,6 +89,7 @@ Topic guidance:
 * Record key is the user ID, so events of one user stay ordered.
 * 1 to 6 partitions: every node reads every partition.
 * Restrict producers with topic ACLs: any producer can ban users.
+* Records are not signed. The topic ACL is the only check on who may write them, so the topic must have one producer. Every node reads the whole topic, so the broker egress grows with the node count.
 
 ### RPC method registry
 

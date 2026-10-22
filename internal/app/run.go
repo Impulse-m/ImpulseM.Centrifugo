@@ -304,7 +304,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		serviceManager.Register(statsSender)
 	}
 
-	notify.RegisterHandlers(node, statsSender, accessRevoke.Revoker, clientHandler.NotificationHandlers())
+	notify.RegisterHandlers(node, statsSender, accessRevoke.Revoker, cfgContainer, clientHandler.NotificationHandlers())
 
 	if err = node.Run(); err != nil {
 		log.Fatal().Err(err).Msg("error running node")

@@ -280,6 +280,7 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 		s.skip(skipValidation, err, record, method)
 		return
 	}
+	notification = ClampExpireAt(notification, recordTime, cfg.AccessRevoke.MaxTTL.ToDuration(), ClampSourceKafka)
 	// Staleness is checked against the processing time: an event replayed after its expiration must not
 	// disconnect users, even though its record time is recent.
 	if notification.Kind != KindUnblockUser && notification.ExpireAt <= s.clock().Unix() {

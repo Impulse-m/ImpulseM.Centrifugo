@@ -58,6 +58,7 @@ var (
 	AccessRevokeDisconnectsTotal        *prometheus.CounterVec
 	AccessRevokeDisconnectsDroppedTotal prometheus.Counter
 	AccessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
+	AccessRevokeExpireAtClampedTotal    *prometheus.CounterVec
 
 	AccessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
 	AccessRevokeSourceEventsSkippedTotal *prometheus.CounterVec

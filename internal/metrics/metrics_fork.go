@@ -12,6 +12,7 @@ type forkRegistry struct {
 	accessRevokeDisconnectsTotal        *prometheus.CounterVec
 	accessRevokeDisconnectsDroppedTotal prometheus.Counter
 	accessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
+	accessRevokeExpireAtClampedTotal    *prometheus.CounterVec
 	accessRevokeStoreSizeBlocked        prometheus.GaugeFunc
 	accessRevokeStoreSizeSessions       prometheus.GaugeFunc
 	accessRevokeStoreSizeUsers          prometheus.GaugeFunc
@@ -90,6 +91,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Help:        "Number of dropped access revocation disconnects re-evaluated by key once the queue had room.",
 		ConstLabels: constLabels,
 	}, []string{"kind"})
+
+	m.accessRevokeExpireAtClampedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "expire_at_clamped_total",
+		Help:        "Number of access revocations whose expire_at was clamped to access_revoke.max_ttl, by source: api, kafka or notify.",
+		ConstLabels: constLabels,
+	}, []string{"source"})
 
 	m.accessRevokeStoreSizeBlocked = newAccessRevokeStoreSize(
 		metricsNamespace,
@@ -412,6 +421,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
 		m.accessRevokeDisconnectRetriesTotal,
+		m.accessRevokeExpireAtClampedTotal,
 		m.accessRevokeStoreSizeBlocked,
 		m.accessRevokeStoreSizeSessions,
 		m.accessRevokeStoreSizeUsers,
@@ -518,6 +528,7 @@ func (m *Registry) setForkMetrics() {
 	AccessRevokeDisconnectsTotal = m.accessRevokeDisconnectsTotal
 	AccessRevokeDisconnectsDroppedTotal = m.accessRevokeDisconnectsDroppedTotal
 	AccessRevokeDisconnectRetriesTotal = m.accessRevokeDisconnectRetriesTotal
+	AccessRevokeExpireAtClampedTotal = m.accessRevokeExpireAtClampedTotal
 
 	AccessRevokeSourceEventsAppliedTotal = m.accessRevokeSourceEventsAppliedTotal
 	AccessRevokeSourceEventsSkippedTotal = m.accessRevokeSourceEventsSkippedTotal

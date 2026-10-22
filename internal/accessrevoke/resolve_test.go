@@ -28,6 +28,22 @@ func TestResolveBlockUserExplicitExpireAt(t *testing.T) {
 	require.Equal(t, int64(12345), notification.ExpireAt)
 }
 
+// TestClampExpireAtToMaxTTL clamps a far future expire_at to now plus max_ttl, and leaves an expire_at within the limit
+// and a zero max_ttl alone.
+func TestClampExpireAtToMaxTTL(t *testing.T) {
+	const maxTTL = 24 * time.Hour
+	far := resolveNow.Add(1000 * 24 * time.Hour).Unix()
+	notification := Notification{Kind: KindBlockUser, User: "user", ExpireAt: far}
+
+	clamped := ClampExpireAt(notification, resolveNow, maxTTL, ClampSourceKafka)
+	require.Equal(t, resolveNow.Add(maxTTL).Unix(), clamped.ExpireAt)
+
+	within := Notification{Kind: KindBlockUser, User: "user", ExpireAt: resolveNow.Add(time.Hour).Unix()}
+	require.Equal(t, within, ClampExpireAt(within, resolveNow, maxTTL, ClampSourceKafka))
+
+	require.Equal(t, notification, ClampExpireAt(notification, resolveNow, 0, ClampSourceKafka))
+}
+
 func TestResolveUnblockUserHasNoTimes(t *testing.T) {
 	notification, err := Resolve(Operation{Kind: KindUnblockUser, User: "user"}, resolveNow, resolveTTL)
 	require.NoError(t, err)

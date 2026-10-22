@@ -3,6 +3,8 @@ package accessrevoke
 import (
 	"fmt"
 	"time"
+
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 )
 
 // Operation is an access revocation request with plain fields. It is built from API requests and
@@ -100,6 +102,22 @@ func Resolve(operation Operation, now time.Time, defaultTTL time.Duration) (Noti
 	default:
 		return Notification{}, fmt.Errorf("%w: %q", ErrUnknownKind, operation.Kind)
 	}
+}
+
+// ClampExpireAt returns the notification with expire_at not later than now plus maxTTL, and counts the clamp under source.
+// A zero or negative maxTTL means no limit, and so does a notification without expire_at. A revocation is clamped, not
+// dropped.
+func ClampExpireAt(notification Notification, now time.Time, maxTTL time.Duration, source string) Notification {
+	if maxTTL <= 0 || notification.ExpireAt == 0 {
+		return notification
+	}
+	limit := now.Add(maxTTL).Unix()
+	if notification.ExpireAt <= limit {
+		return notification
+	}
+	metrics.AccessRevokeExpireAtClampedTotal.WithLabelValues(source).Inc()
+	notification.ExpireAt = limit
+	return notification
 }
 
 // resolveRevokedAt returns revokedAt or Unix time of now when it is zero.

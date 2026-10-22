@@ -30,7 +30,7 @@ func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUse
 		Kind:     accessrevoke.KindBlockUser,
 		User:     cmd.User,
 		ExpireAt: cmd.ExpireAt,
-	}, cfg.AccessRevoke.DefaultTTL)
+	}, cfg.AccessRevoke)
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
@@ -58,7 +58,7 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind: accessrevoke.KindUnblockUser,
 		User: cmd.User,
-	}, cfg.AccessRevoke.DefaultTTL)
+	}, cfg.AccessRevoke)
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
@@ -73,7 +73,8 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 
 // RevokeToken revokes session (uid claim of connection tokens) on all nodes. Connections with no user which hold this
 // session are disconnected at once through the session index, with or without user. Connections of user with this
-// session are disconnected when user is set; without user they are refused at their next refresh.
+// session are disconnected when user is set; without user they are refused at their next refresh. A token without exp
+// keeps such a connection until it reconnects or its TTL ends.
 func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *RevokeTokenResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "revoke_token")
 
@@ -91,7 +92,7 @@ func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *Revo
 		RevokedAt:  cmd.RevokedAt,
 		ExpireAt:   cmd.ExpireAt,
 		Disconnect: accessrevoke.FromAPIDisconnect(cmd.Disconnect),
-	}, cfg.AccessRevoke.DefaultTTL)
+	}, cfg.AccessRevoke)
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
@@ -124,7 +125,7 @@ func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTo
 		IssuedBefore: cmd.IssuedBefore,
 		RevokedAt:    cmd.RevokedAt,
 		ExpireAt:     cmd.ExpireAt,
-	}, cfg.AccessRevoke.DefaultTTL)
+	}, cfg.AccessRevoke)
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
@@ -162,14 +163,20 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 
 // resolveAccessRevoke resolves the operation into a Notification using the current time. Validation
 // failures are mapped to API errors: unsupported operations to ErrorNotAvailable, others to ErrorBadRequest.
-func resolveAccessRevoke(operation accessrevoke.Operation, defaultTTL configtypes.Duration) (accessrevoke.Notification, *Error) {
+// An expire_at beyond max_ttl is refused, and a default expiration time beyond it is clamped to it.
+func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configtypes.AccessRevoke) (accessrevoke.Notification, *Error) {
 	now := time.Now()
 	// Expired operation has no effect, so it is rejected here. Kafka source skips such records itself.
 	if operation.ExpireAt != 0 && operation.ExpireAt <= now.Unix() {
 		log.Error().Int64("expire_at", operation.ExpireAt).Str("kind", operation.Kind).Msg("bad access revocation request: expire_at is in the past")
 		return accessrevoke.Notification{}, ErrorBadRequest
 	}
-	notification, err := accessrevoke.Resolve(operation, now, defaultTTL.ToDuration())
+	maxTTL := accessRevoke.MaxTTL.ToDuration()
+	if maxTTL > 0 && operation.ExpireAt > now.Add(maxTTL).Unix() {
+		log.Error().Int64("expire_at", operation.ExpireAt).Str("kind", operation.Kind).Msg("bad access revocation request: expire_at is beyond max_ttl")
+		return accessrevoke.Notification{}, ErrorBadRequest
+	}
+	notification, err := accessrevoke.Resolve(operation, now, accessRevoke.DefaultTTL.ToDuration())
 	if err != nil {
 		log.Error().Err(err).Str("kind", operation.Kind).Msg("bad access revocation request")
 		var validationErr *accessrevoke.ValidationError
@@ -178,7 +185,7 @@ func resolveAccessRevoke(operation accessrevoke.Operation, defaultTTL configtype
 		}
 		return accessrevoke.Notification{}, ErrorBadRequest
 	}
-	return notification, nil
+	return accessrevoke.ClampExpireAt(notification, now, maxTTL, accessrevoke.ClampSourceAPI), nil
 }
 
 // dispatchAccessRevoke handles access revocation commands of asynchronous consumers. handled is false

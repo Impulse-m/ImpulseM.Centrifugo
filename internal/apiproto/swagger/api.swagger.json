@@ -3811,6 +3811,46 @@
       },
       "description": "PublishResult is the result of a successful publish."
     },
+    "PushItemResult": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "format": "int64",
+          "description": "index is the zero-based position of the recipient in the request."
+        },
+        "ref": {
+          "type": "string",
+          "description": "ref is the echo of the target ref, when set."
+        },
+        "status": {
+          "type": "string",
+          "description": "status is sent, rejected, unanswered, pending or dry_run."
+        },
+        "code": {
+          "type": "string",
+          "description": "code is a server refusal reason, set only when the server refused the\ntarget before any provider call: payload_too_large or expired."
+        },
+        "provider_code": {
+          "type": "string",
+          "description": "provider_code is the APNs reason, or the FCM error status. Empty when\nthe provider sent no status or no body."
+        },
+        "provider_detail": {
+          "type": "string",
+          "description": "provider_detail is the APNs 410 timestamp, or the first FCM error\ndetail, at most 256 bytes."
+        },
+        "http_status": {
+          "type": "integer",
+          "format": "int64",
+          "description": "http_status is the HTTP status returned by the provider. Zero when no\nstatus line was received."
+        },
+        "provider_message_id": {
+          "type": "string",
+          "description": "provider_message_id is the APNs apns-id on any status received, rejected\nincluded, or the FCM message name on sent only. Empty when the provider\nsent none."
+        }
+      },
+      "description": "PushItemResult is the result of one recipient of a direct send."
+    },
     "PushLimitStrategy": {
       "type": "object",
       "properties": {
@@ -3936,9 +3976,51 @@
             "type": "string"
           },
           "description": "webpush_tokens sends to a list of raw Web Push subscriptions, each a\nPushSubscription JSON string."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PushTarget"
+          },
+          "description": "targets sends to raw provider tokens, each with its own environment\nand reference. Answered synchronously by the direct send mode."
         }
       },
       "description": "PushRecipient describes who receives a push notification. Set only one\nof its fields. Centrifugo PRO only."
+    },
+    "PushTarget": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "provider is the provider of the token: apns or fcm. Required."
+        },
+        "token": {
+          "type": "string",
+          "description": "token is the provider token. Required."
+        },
+        "environment": {
+          "type": "string",
+          "description": "environment is the APNs environment: production or development.\nRequired for apns, refused for fcm."
+        },
+        "ref": {
+          "type": "string",
+          "description": "ref is a caller reference, echoed in the result. At most 128 bytes."
+        },
+        "collapse_id": {
+          "type": "string",
+          "description": "collapse_id is the collapse id of this target. At most 64 bytes.\nOverrides the request collapse_id."
+        },
+        "apns_payload": {
+          "type": "object",
+          "description": "apns_payload replaces the APNs payload of the request for this target\nonly. A JSON object."
+        },
+        "fcm_message": {
+          "type": "object",
+          "description": "fcm_message replaces the FCM message of the request for this target\nonly. A JSON object."
+        }
+      },
+      "description": "PushTarget is one raw provider token of a direct send. Used by the direct\nsend mode of SendPushNotification only."
     },
     "PushTimeLimitStrategy": {
       "type": "object",
@@ -4320,6 +4402,10 @@
         "use_meta": {
           "type": "boolean",
           "description": "use_meta additionally loads device meta while sending, making it\navailable in templating."
+        },
+        "collapse_id": {
+          "type": "string",
+          "description": "collapse_id is the default collapse id of the targets that set none.\nAt most 64 bytes. Used by the direct send mode only."
         }
       },
       "description": "SendPushNotificationRequest sends a push notification. The request is\nqueued and sent to the provider by Centrifugo workers.\nCentrifugo PRO only."
@@ -4344,6 +4430,14 @@
         "uid": {
           "type": "string",
           "description": "uid is the unique identifier of the send request (not a provider\nmessage ID). Matches the request uid if it was set."
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/PushItemResult"
+          },
+          "description": "results has one entry per recipient, in request order. Used by the\ndirect send mode only."
         }
       },
       "description": "SendPushNotificationResult is the result of a send push notification\ncall. Centrifugo PRO only."

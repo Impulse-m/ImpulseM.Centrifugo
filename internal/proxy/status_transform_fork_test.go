@@ -80,7 +80,7 @@ func TestMapGRPCRegistryErrorTransformAppFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			protocolError, disconnect := MapGRPCRegistryError(tt.err, tt.trailers, transforms, appKeys, nil)
+			protocolError, disconnect := MapGRPCRegistryError(tt.err, tt.trailers, transforms, appKeys, nil, false)
 			if tt.wantDisconn != 0 {
 				require.Nil(t, protocolError)
 				require.NotNil(t, disconnect)
@@ -97,14 +97,27 @@ func TestMapGRPCRegistryErrorTransformAppFields(t *testing.T) {
 	}
 }
 
-// TestRawGoErrorMessageNotForwarded verifies that the text of a plain Go error, which may name internal
-// addresses, does not reach the client.
+// TestRawGoErrorMessageNotForwarded verifies that, with fixed_non_status_error_message set, the text of a plain Go
+// error, which may name internal addresses, does not reach the client.
 func TestRawGoErrorMessageNotForwarded(t *testing.T) {
 	appKeys := configtypes.RPCRegistryAppError{CodeKey: "app-code", TypeKey: "app-type"}
 	err := errors.New("dial tcp 10.0.0.5:9000: connect: connection refused")
 
-	protocolError, disconnect := MapGRPCRegistryError(err, nil, nil, appKeys, nil)
+	protocolError, disconnect := MapGRPCRegistryError(err, nil, nil, appKeys, nil, true)
 	require.Nil(t, disconnect)
 	require.NotNil(t, protocolError)
+	require.Equal(t, rpcRegistryNonStatusMessage, protocolError.Message)
 	require.NotContains(t, protocolError.Message, "10.0.0.5")
+}
+
+// TestRawGoErrorMessageForwardedByDefault verifies that the default keeps the text of a plain Go error for the client,
+// as it did before the fixed message was an option.
+func TestRawGoErrorMessageForwardedByDefault(t *testing.T) {
+	appKeys := configtypes.RPCRegistryAppError{CodeKey: "app-code", TypeKey: "app-type"}
+	err := errors.New("dial tcp 10.0.0.5:9000: connect: connection refused")
+
+	protocolError, disconnect := MapGRPCRegistryError(err, nil, nil, appKeys, nil, false)
+	require.Nil(t, disconnect)
+	require.NotNil(t, protocolError)
+	require.Equal(t, err.Error(), protocolError.Message)
 }

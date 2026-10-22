@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -234,6 +235,20 @@ func TestRPCRegistryLimitWarnings(t *testing.T) {
 		{
 			name:   "defaults give no warning",
 			modify: func(cfg *Config) {},
+		},
+		{
+			name: "drain timeout below the method timeout warns",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.DrainTimeout = configtypes.Duration(100 * time.Millisecond)
+			},
+			wantWarnings: []string{`rpc.registry.drain_timeout 100ms is below the longest method timeout 5s`},
+		},
+		{
+			name: "zero drain timeout warns",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.DrainTimeout = 0
+			},
+			wantWarnings: []string{`rpc.registry.drain_timeout 0s is below the longest method timeout 5s`},
 		},
 		{
 			name: "websocket limit under a method request limit warns",

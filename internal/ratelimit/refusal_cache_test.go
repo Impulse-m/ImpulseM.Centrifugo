@@ -54,3 +54,25 @@ func TestRefusalCacheSkipsInsertIntoFullShard(t *testing.T) {
 	_, ok := c.refused(sameShard[2], 1)
 	require.False(t, ok)
 }
+
+func TestRefusalCacheSweepsEndedEntriesOnFullShard(t *testing.T) {
+	c := newRefusalCache()
+	c.perShard = 2
+	shard := c.shardOf("a")
+
+	var sameShard []string
+	for i := 0; len(sameShard) < 3; i++ {
+		key := fmt.Sprintf("k%d", i)
+		if c.shardOf(key) == shard {
+			sameShard = append(sameShard, key)
+		}
+	}
+	// Both entries of the shard have ended by now=100, so a new refusal fits after the sweep.
+	c.refuse(sameShard[0], 0, 10*time.Nanosecond)
+	c.refuse(sameShard[1], 0, 20*time.Nanosecond)
+	c.refuse(sameShard[2], 100, time.Hour)
+	require.Len(t, shard.ends, 1)
+	wait, ok := c.refused(sameShard[2], 100)
+	require.True(t, ok)
+	require.Equal(t, time.Hour, wait)
+}

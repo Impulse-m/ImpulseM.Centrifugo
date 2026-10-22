@@ -11,6 +11,8 @@ const (
 	refusalCacheCapacity = 100000
 	// refusalShardCount is the number of independent shards of the refusal cache. Must be a power of two.
 	refusalShardCount = 64
+	// refusalSweepEntries is the most entries an insert into a full shard looks at for ended refusals.
+	refusalSweepEntries = 16
 )
 
 // refusalSeed hashes keys to shards of the refusal cache.
@@ -26,8 +28,8 @@ type refusalShard struct {
 // refusalCache remembers the refusals of redis_user_command limits on this node. A refusal says that the limit of its
 // key refuses until its end. Other nodes can only consume the same budget, which can lengthen a wait but never shorten
 // it, so until the end Redis would refuse too, and a command inside it needs no Redis call. Entries are removed when
-// they are looked up after their end. Nothing runs in the background: an insert into a full shard is skipped, which
-// only means no caching for that key.
+// they are looked up after their end, or swept by an insert into a full shard. Nothing runs in the background: an insert
+// into a shard which is still full after the sweep is skipped, which only means no caching for that key.
 type refusalCache struct {
 	shards   [refusalShardCount]refusalShard
 	perShard int
@@ -64,8 +66,8 @@ func (c *refusalCache) refused(key string, now int64) (time.Duration, bool) {
 	return time.Duration(end - now), true
 }
 
-// refuse caches a refusal of key which lasts wait from now. Nothing is cached for a wait of zero or less, and an insert
-// into a full shard is skipped.
+// refuse caches a refusal of key which lasts wait from now. Nothing is cached for a wait of zero or less. An insert into
+// a full shard first sweeps some ended refusals of it, and is skipped when the shard is still full.
 func (c *refusalCache) refuse(key string, now int64, wait time.Duration) {
 	if wait <= 0 {
 		return
@@ -81,7 +83,25 @@ func (c *refusalCache) refuse(key string, now int64, wait time.Duration) {
 		return
 	}
 	if len(sh.ends) >= c.perShard {
-		return
+		sh.sweep(now)
+		if len(sh.ends) >= c.perShard {
+			return
+		}
 	}
 	sh.ends[key] = end
+}
+
+// sweep removes the ended refusals among at most refusalSweepEntries entries of the shard. Map iteration starts at a
+// random entry, so repeated sweeps reach all entries. The caller must hold mu.
+func (sh *refusalShard) sweep(now int64) {
+	visited := 0
+	for key, end := range sh.ends {
+		if end <= now {
+			delete(sh.ends, key)
+		}
+		visited++
+		if visited >= refusalSweepEntries {
+			return
+		}
+	}
 }

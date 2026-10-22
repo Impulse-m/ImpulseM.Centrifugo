@@ -199,9 +199,6 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 	next.enabled = cfg.Enabled
 	next.emulatedHeaders = make(map[string]struct{})
 	for _, target := range next.targets {
-		if len(target.Config.EmulatedHeaders) > 0 {
-			next.usesEmulatedHeaders = true
-		}
 		for _, name := range target.Config.EmulatedHeaders {
 			next.emulatedHeaders[strings.ToLower(name)] = struct{}{}
 		}

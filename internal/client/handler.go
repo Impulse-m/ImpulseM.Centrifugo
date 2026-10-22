@@ -650,15 +650,7 @@ func (h *Handler) OnClientConnecting(
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
-	if (h.proxyMap.UsesEmulatedHeaders || h.rpcRegistry.UsesEmulatedHeaders()) && len(e.Headers) > 0 {
-		if kept := keepEmulatedHeaders(e.Headers, h.proxyMap.EmulatedHeaderNames, h.rpcRegistry.EmulatedHeaderAllowed); len(kept) > 0 {
-			if newCtx != nil {
-				newCtx = clientcontext.SetEmulatedHeadersToContext(newCtx, kept)
-			} else {
-				newCtx = clientcontext.SetEmulatedHeadersToContext(ctx, kept)
-			}
-		}
-	}
+	newCtx = h.setConnectEmulatedHeaders(ctx, newCtx, e.Headers)
 	if newCtx != nil {
 		finalReply.Context = newCtx
 	}

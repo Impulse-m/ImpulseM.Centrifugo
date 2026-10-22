@@ -3,7 +3,6 @@ package rpcregistry
 import (
 	"context"
 	"crypto/sha256"
-	"fmt"
 	"math/rand/v2"
 	"os"
 	"time"
@@ -83,10 +82,6 @@ func (p *poller) check() {
 	info, err := os.Stat(path)
 	if err == nil && info.Size() == source.size && info.ModTime().Equal(source.modTime) {
 		p.lastErr = ""
-		return
-	}
-	if err == nil && cfg.PollMaxFileSize > 0 && info.Size() > cfg.PollMaxFileSize {
-		p.logFailure(fmt.Errorf("registry file of %d bytes is over the poll limit of %d bytes, keeping the current registry", info.Size(), cfg.PollMaxFileSize))
 		return
 	}
 	snap, err := snapshotFile(path, cfg.PollMaxFileSize)

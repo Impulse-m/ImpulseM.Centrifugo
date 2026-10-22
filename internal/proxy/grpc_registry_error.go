@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -18,8 +19,12 @@ import (
 const rpcRegistryNonStatusMessage = "backend call failed"
 
 // nonStatusErrLog throttles the server log of the plain Go errors of registry calls, so that a backend which fails
-// every call does not write a line per call on the request path. At most one line per interval.
+// every call does not write a line per call on the request path. At most one line per interval, across all targets.
 var nonStatusErrLog = tools.NewIntervalLimiter(time.Minute)
+
+// nonStatusErrSuppressed counts the plain Go errors which the throttle did not log since the last line, and the next
+// line reports the count, so a second failure in the same interval is not silently dropped.
+var nonStatusErrSuppressed atomic.Int64
 
 // MapGRPCRegistryError maps the error of a failed gRPC registry call to the protocol error or the
 // disconnect the client receives. The configured status transforms come first, then the default
@@ -43,7 +48,9 @@ func MapGRPCRegistryError(
 		// A plain Go error can name internal addresses, so the client gets a fixed message and the
 		// error text is logged here.
 		if nonStatusErrLog.Allow() {
-			log.Warn().Err(err).Msg("rpc registry call failed with a non-status error")
+			log.Warn().Err(err).Int64("suppressed", nonStatusErrSuppressed.Swap(0)).Msg("rpc registry call failed with a non-status error")
+		} else {
+			nonStatusErrSuppressed.Add(1)
 		}
 		message = rpcRegistryNonStatusMessage
 	}

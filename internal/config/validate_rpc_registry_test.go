@@ -11,8 +11,7 @@ import (
 
 func validInlineRegistry() configtypes.RPCRegistry {
 	return configtypes.RPCRegistry{
-		Enabled:      true,
-		DrainTimeout: configtypes.Duration(30 * time.Second),
+		Enabled: true,
 		Defaults: configtypes.RPCMethodDefaults{
 			AuthClass: configtypes.RPCAuthClassAuthenticated,
 			Timeout:   configtypes.Duration(5 * time.Second),
@@ -365,12 +364,7 @@ func TestValidateRPCRegistryDisabledIsNotChecked(t *testing.T) {
 }
 
 func TestValidateRPCRegistryChecksFileWhenEnabled(t *testing.T) {
-	reg := configtypes.RPCRegistry{
-		Enabled:        true,
-		DrainTimeout:   configtypes.Duration(30 * time.Second),
-		File:           "testdata/rpc_registry.yaml",
-		AuthClassClaim: "auth_class",
-	}
+	reg := configtypes.RPCRegistry{Enabled: true, File: "testdata/rpc_registry.yaml", AuthClassClaim: "auth_class"}
 	cfg := configWithRegistry(reg)
 	require.NoError(t, cfg.Validate())
 	file, err := ResolveRPCRegistry(reg)

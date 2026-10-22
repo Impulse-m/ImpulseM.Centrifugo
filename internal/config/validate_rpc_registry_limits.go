@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -171,11 +170,9 @@ func validateRPCResponseSizeHints(_ configtypes.RPCRegistry, file configtypes.RP
 // is not a file check.
 func rpcRegistryLimitWarnings(c Config, file configtypes.RPCRegistryFile) []string {
 	var warnings []string
-	var longestTimeout time.Duration
 	targets := rpcTargetsByName(file)
 	for _, method := range file.Methods {
 		limits := configtypes.ResolveRPCMethodLimits(method, targets[method.Target], file.Defaults)
-		longestTimeout = max(longestTimeout, limits.Timeout)
 		warnings = append(warnings, rpcRequestLimitWarnings(c, method.Method, limits.MaxRequestBytes)...)
 		if c.Client.QueueMaxSize > 0 && limits.MaxResponseBytes > c.Client.QueueMaxSize {
 			warnings = append(warnings, fmt.Sprintf("rpc registry method %q: max_response_bytes %d exceeds client.queue_max_size (%d): a reply of that size would disconnect the client as slow", method.Method, limits.MaxResponseBytes, c.Client.QueueMaxSize))
@@ -185,22 +182,7 @@ func rpcRegistryLimitWarnings(c Config, file configtypes.RPCRegistryFile) []stri
 			warnings = append(warnings, warning)
 		}
 	}
-	warning := rpcDrainWarning(c.RPC.Registry.DrainTimeout.ToDuration(), longestTimeout)
-	if warning != "" {
-		warnings = append(warnings, warning)
-	}
 	return warnings
-}
-
-// rpcDrainWarning returns the warning of a drain timeout below the longest method timeout, or the empty string. The
-// connections of removed or replaced targets close when the drain ends, so a shorter drain closes them under the calls
-// of that method. Zero closes them at once. A non-idempotent call cut this way is recorded as final, so this is a
-// warning and not a refusal: the config keeps loading.
-func rpcDrainWarning(drain time.Duration, longestTimeout time.Duration) string {
-	if drain >= longestTimeout {
-		return ""
-	}
-	return fmt.Sprintf("rpc.registry.drain_timeout %s is below the longest method timeout %s: connections of removed or replaced targets close under the calls of that method", drain, longestTimeout)
 }
 
 // rpcAdmissionCostWarning returns the warning of a method whose full-size request costs more than the in-flight budget,

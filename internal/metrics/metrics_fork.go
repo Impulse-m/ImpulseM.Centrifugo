@@ -47,6 +47,7 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisErrors   prometheus.Counter
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
+	rpcRegistryDedupCancelDrops   prometheus.Counter
 	rpcRegistryDedupRemoteReads   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
@@ -339,6 +340,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.rpcRegistryDedupCancelDrops = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_cancel_drops_total",
+		Help:        "Number of cancel notifications to other nodes which the exactly-once RPC tier dropped because its notification queue was full. The call which such a notification would cancel runs to its own end.",
+		ConstLabels: constLabels,
+	})
+
 	m.rpcRegistryDedupRemoteReads = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
@@ -441,6 +450,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisErrors,
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
+		m.rpcRegistryDedupCancelDrops,
 		m.rpcRegistryDedupRemoteReads,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
@@ -544,6 +554,7 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+	RPCRegistryDedupCancelDropsTotal = m.rpcRegistryDedupCancelDrops
 	RPCRegistryDedupRemoteReadsTotal = m.rpcRegistryDedupRemoteReads
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications

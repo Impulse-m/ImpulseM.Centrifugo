@@ -480,6 +480,10 @@ func (fx *sharedFixture) AckDropped() {
 	fx.dropped++
 }
 
+// CancelDropped implements SharedObserver.
+func (fx *sharedFixture) CancelDropped() {
+}
+
 // LostOwnership implements SharedObserver.
 func (fx *sharedFixture) LostOwnership() {
 	fx.lost++
@@ -1445,6 +1449,10 @@ type droppedAckObserver struct {
 // AckDropped implements SharedObserver.
 func (o *droppedAckObserver) AckDropped() {
 	o.dropped.Add(1)
+}
+
+// CancelDropped implements SharedObserver.
+func (o *droppedAckObserver) CancelDropped() {
 }
 
 // LostOwnership implements SharedObserver.

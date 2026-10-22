@@ -10,11 +10,14 @@ type cancelNotice struct {
 	key    Key
 }
 
+// maxCancelPending is the number of notices which may wait for a worker. A notice beyond it is dropped: the call it
+// cancels then runs until its own end, as it does without a cancel, and the drop is counted, see Shared.Cancel.
+const maxCancelPending = 65536
+
 // cancelNotifier sends the cancel notifications of a node, in the background. A notification which is pending for the
 // same node and key is not queued again: a cancel of the call which is already on its way covers the next one. The
 // queue is served by at most maxCancelWorkers goroutines, which start as notices come and exit when the queue is
-// empty, so an idle node runs none. The queue is not capped: its size is the number of distinct pending calls, and the
-// rpc rate limit of the exactly-once methods bounds the cancels that reach it.
+// empty, so an idle node runs none. The queue holds at most maxCancelPending notices which wait for a worker.
 type cancelNotifier struct {
 	send    func(nodeID string, key Key)
 	mu      sync.Mutex
@@ -29,13 +32,16 @@ func newCancelNotifier(send func(nodeID string, key Key)) *cancelNotifier {
 }
 
 // notify queues the cancel notification of key to nodeID, and returns at once. It starts a worker when the queue has
-// none free, up to maxCancelWorkers.
-func (n *cancelNotifier) notify(nodeID string, key Key) {
+// none free, up to maxCancelWorkers. It returns false when the queue is full and the notice is dropped.
+func (n *cancelNotifier) notify(nodeID string, key Key) bool {
 	notice := cancelNotice{nodeID: nodeID, key: key}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if _, found := n.pending[notice]; found {
-		return
+		return true
+	}
+	if len(n.queue) >= maxCancelPending {
+		return false
 	}
 	n.pending[notice] = struct{}{}
 	n.queue = append(n.queue, notice)
@@ -43,6 +49,7 @@ func (n *cancelNotifier) notify(nodeID string, key Key) {
 		n.workers++
 		go n.work()
 	}
+	return true
 }
 
 // work sends the queued notices, one at a time, until the queue is empty. A notice stays pending while it is sent.

@@ -59,6 +59,9 @@ type SharedObserver interface {
 	// AckDropped is called for every ack which is dropped because the ack queue is full, or which a shutdown leaves
 	// unsent.
 	AckDropped()
+	// CancelDropped is called for every cancel notification to another node which is dropped because the notification
+	// queue is full, see cancelNotifier.
+	CancelDropped()
 	// LostOwnership is called once for a call whose first write of its answer finds no in-flight record of this node,
 	// so the answer is kept on this node only.
 	LostOwnership()
@@ -339,7 +342,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		// A cancel which came while the flight had no call to cancel is sent to the node which runs the call now, from a
 		// goroutine of its own, so the answer of this duplicate does not wait for the notification.
 		if flight.markRemote(s.wakeup && !res.WaitersFull) && res.Owner != s.nodeID && s.notifier != nil {
-			s.cancels.notify(res.Owner, key)
+			s.notifyCancel(res.Owner, key)
 		}
 		if res.WaitersFull {
 			s.refuseWait(key, flight, res.Owner)
@@ -767,10 +770,18 @@ func (s *Shared) Cancel(key Key, failure *centrifuge.Error) error {
 			s.CancelFlight(key)
 		} else if s.notifier != nil {
 			// The notification is queued for a worker of its own: the answer to the cancel does not wait for it.
-			s.cancels.notify(res.Owner, key)
+			s.notifyCancel(res.Owner, key)
 		}
 	}
 	return nil
+}
+
+// notifyCancel queues the cancel notification of key to nodeID, see cancelNotifier. A notification which is dropped is
+// counted by the observer.
+func (s *Shared) notifyCancel(nodeID string, key Key) {
+	if !s.cancels.notify(nodeID, key) && s.observer != nil {
+		s.observer.CancelDropped()
+	}
 }
 
 // CancelFlight cancels the call of key when it runs on this node, and reports whether it did. A flight which waits

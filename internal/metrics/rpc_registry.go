@@ -399,6 +399,10 @@ var RPCRegistryDedupRedisDuration prometheus.Histogram
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
 
+// RPCRegistryDedupCancelDropsTotal counts the cancel notifications to other nodes which the shared tier dropped because
+// its notification queue was full. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupCancelDropsTotal prometheus.Counter
+
 // RPCRegistryDedupRemoteReadsTotal counts the reads of the shared tier which the waits for calls on other nodes make.
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRemoteReadsTotal prometheus.Counter
@@ -512,6 +516,7 @@ type RPCRegistryDedupMetrics struct {
 	redisErrors      prometheus.Counter
 	redisDuration    prometheus.Histogram
 	ackDrops         prometheus.Counter
+	cancelDrops      prometheus.Counter
 	remoteReads      prometheus.Counter
 	waitWoken        prometheus.Counter
 	waitChecked      prometheus.Counter
@@ -537,6 +542,7 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 		redisErrors:   RPCRegistryDedupRedisErrorsTotal,
 		redisDuration: RPCRegistryDedupRedisDuration,
 		ackDrops:      RPCRegistryDedupRedisAckDropsTotal,
+		cancelDrops:   RPCRegistryDedupCancelDropsTotal,
 	}
 	for i, label := range rpcRegistryDedupOutcomeLabels {
 		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
@@ -699,6 +705,15 @@ func (m *RPCRegistryDedupMetrics) AckDropped() {
 		return
 	}
 	incCounter(m.ackDrops)
+}
+
+// CancelDropped counts one cancel notification which the shared tier dropped because its queue was full. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) CancelDropped() {
+	if m == nil {
+		return
+	}
+	incCounter(m.cancelDrops)
 }
 
 // LostOwnership counts one call whose answer the shared tier does not hold for this node. It is counted as a Redis

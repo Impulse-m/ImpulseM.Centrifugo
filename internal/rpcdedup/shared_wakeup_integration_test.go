@@ -24,6 +24,9 @@ type waitObserver struct {
 // AckDropped implements SharedObserver.
 func (o *waitObserver) AckDropped() {}
 
+// CancelDropped implements SharedObserver.
+func (o *waitObserver) CancelDropped() {}
+
 // LostOwnership implements SharedObserver.
 func (o *waitObserver) LostOwnership() {}
 

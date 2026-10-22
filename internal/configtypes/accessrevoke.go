@@ -45,7 +45,7 @@ type AccessRevoke struct {
 	DefaultTTL Duration `mapstructure:"default_ttl" default:"20m" json:"default_ttl" envconfig:"default_ttl" yaml:"default_ttl" toml:"default_ttl" doc:"How long a revocation entry is kept when the request does not set expiration time."`
 	// MaxTTL is the longest time a revocation entry may be kept, counted from the time it is applied. The API refuses
 	// a larger expiration time, and the Kafka and notify paths clamp it. Zero means no limit.
-	MaxTTL Duration `mapstructure:"max_ttl" json:"max_ttl" envconfig:"max_ttl" yaml:"max_ttl" toml:"max_ttl" doc:"The longest time a revocation entry may be kept, counted from the time it is applied. The API refuses a larger expiration time, and the Kafka and notify paths clamp it. Zero means no limit."`
+	MaxTTL Duration `mapstructure:"max_ttl" json:"max_ttl" envconfig:"max_ttl" yaml:"max_ttl" toml:"max_ttl" doc:"The longest time a revocation entry may be kept, counted from the time it is applied. The API refuses a larger expiration time, and the Kafka and notify paths clamp it. Zero means no limit. A positive value under one second is refused."`
 	// SweepInterval is the shortest time between two removals of expired revocation entries from memory.
 	SweepInterval Duration `mapstructure:"sweep_interval" default:"30s" json:"sweep_interval" envconfig:"sweep_interval" yaml:"sweep_interval" toml:"sweep_interval" doc:"The shortest time between two removals of expired revocation entries from memory. An expired entry is removed at most this long after it expires, and an entry written already expired at most this long after the write; nothing runs while no entry is due."`
 	// Source is a source of access revocation events for this node. Empty type means no source.

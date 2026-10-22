@@ -48,7 +48,7 @@ func connectNotifyTestClient(t *testing.T, node *centrifuge.Node, userID string)
 // TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue blocks a user whose second connection's disconnect does not fit
 // in the queue, then unblocks the user. Both events are delivered without waiting for the queue, the store is blocked
 // after the block is delivered and unblocked after the unblock, and the dropped connection is kept because the retry
-// finds the user unblocked. The inline handling itself is pinned by TestDeliveryRunsInlineOpOnDeliveringGoroutine.
+// finds the user unblocked. The inline handling itself is pinned by TestDeliveryRunsInlineOpOnDeliveringGoroutine. It reads global counters, so it must not run in parallel with other access revocation tests.
 func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	node := newNotifyTestNode(t)
 	store := accessrevoke.NewStore(time.Minute)

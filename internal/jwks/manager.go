@@ -37,6 +37,9 @@ const (
 	// fetch time. URL templates are filled from token claims, which are not
 	// verified at this point either.
 	_maxTrackedEndpoints = 1024
+	// _maxJWKSBodyBytes bounds the body of a JWKS response. A key set is a few kilobytes, so a larger body is a
+	// broken or hostile endpoint, and it is refused instead of read into memory on each refresh.
+	_maxJWKSBodyBytes = 1 << 20
 )
 
 // JWK represents an unparsed JSON Web Key (JWK) in its wire format.
@@ -53,6 +56,7 @@ var (
 	ErrPublicKeyNotFound = errors.New("jwks: public key not found")
 
 	errUnexpectedStatusCode = errors.New("jwks: unexpected status code")
+	errBodyTooLarge         = errors.New("jwks: response body too large")
 	errUnmarshal            = errors.New("jwks: unmarshal error")
 	errConvert              = errors.New("jwks: convert error")
 )
@@ -230,7 +234,15 @@ func (m *Manager) loadData(req *http.Request) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: %d", errUnexpectedStatusCode, resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	// One byte over the limit is read, so a body of exactly the limit is accepted and a larger one is seen.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, _maxJWKSBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > _maxJWKSBodyBytes {
+		return nil, errBodyTooLarge
+	}
+	return body, nil
 }
 
 // resolveURL applies tokenVars to the URL template and rejects results with

@@ -234,6 +234,9 @@ type RateLimitRedisUserCommand struct {
 	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Not supported for Redis rate limits. Setting it is a configuration error."`
 	// Connect operation buckets.
 	Connect RateLimitBuckets `mapstructure:"connect" json:"connect" envconfig:"connect" yaml:"connect" toml:"connect" doc:"Connect operation buckets."`
+	// CommandTimeout bounds the Redis call of one command or connect check. A call which times out is allowed, as any
+	// Redis error is. Zero means the io_timeout of the Redis configuration.
+	CommandTimeout Duration `mapstructure:"command_timeout" json:"command_timeout" envconfig:"command_timeout" yaml:"command_timeout" toml:"command_timeout" doc:"Timeout of the Redis call of one command or connect check. A call which times out is allowed, as any Redis error is. Zero means the io_timeout of the Redis configuration."`
 	// RateLimitOperations are the operation buckets of client commands of a user, kept in Redis.
 	RateLimitOperations `mapstructure:",squash" yaml:",inline"`
 }

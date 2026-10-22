@@ -298,6 +298,30 @@ func TestRedisLimiterLogsErrorsAgainAfterInterval(t *testing.T) {
 	require.Equal(t, 2, strings.Count(logBuf.String(), "\n"))
 }
 
+func TestRedisUserLimiterCommandTimeoutBounded(t *testing.T) {
+	cfg := redisTestConfig()
+	cfg.CommandTimeout = configtypes.Duration(50 * time.Millisecond)
+	l := NewRedisUserLimiter(cfg, "p", fakeShardConfigs(1), 4*time.Second)
+	connector := &flakyConnector{}
+	l.connector.SetConnect(connector.connect)
+	l.Connect()
+	require.True(t, l.connected())
+	// A stalled script returns when its context is done, or after two seconds when it ignores the context.
+	l.run = func(ctx context.Context, _ *redisshard.RedisShard, _ *rueidis.Lua, _ string, _ []string) (time.Duration, error) {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(2 * time.Second):
+			return time.Second, nil
+		}
+	}
+
+	start := time.Now()
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.True(t, l.ConnectAllowed("42"))
+	require.Less(t, time.Since(start), 500*time.Millisecond)
+}
+
 func TestRedisLimiterNeedsKey(t *testing.T) {
 	l := NewRedisUserLimiter(redisTestConfig(), "p", fakeShardConfigs(1), 0)
 	require.True(t, l.NeedsKey(OperationPublish))

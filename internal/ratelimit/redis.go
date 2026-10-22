@@ -43,7 +43,7 @@ type RedisUserLimiter struct {
 // NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
 // run Run as a service, which keeps connecting until it succeeds. shardConfigs must not be empty, shards are
 // closed by Run when its context is done. prefix starts all Redis keys of the limiter. ioTimeout bounds each
-// Redis call, zero means the default.
+// Redis call, zero means the default. A command_timeout of cfg replaces it for the command and connect checks.
 func NewRedisUserLimiter(
 	cfg configtypes.RateLimitRedisUserCommand,
 	prefix string,
@@ -52,6 +52,9 @@ func NewRedisUserLimiter(
 ) *RedisUserLimiter {
 	if ioTimeout <= 0 {
 		ioTimeout = redisshard.DefaultIOTimeout
+	}
+	if cfg.CommandTimeout > 0 {
+		ioTimeout = cfg.CommandTimeout.ToDuration()
 	}
 	limiter := &RedisUserLimiter{
 		plan:     newRedisUserPlan(cfg),

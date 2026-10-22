@@ -434,7 +434,7 @@ func TestRedisBackendCancelResults(t *testing.T) {
 	require.Equal(t, CancelDone, res.State)
 }
 
-func TestRedisBackendAckDeletesDoneAndTombstonesOnly(t *testing.T) {
+func TestRedisBackendAckDeletesDoneOnly(t *testing.T) {
 	prefix := uniqueRedisPrefix()
 	backend, connector := newIntegrationBackend(t, prefix)
 	ctx := context.Background()
@@ -455,7 +455,7 @@ func TestRedisBackendAckDeletesDoneAndTombstonesOnly(t *testing.T) {
 
 	require.NoError(t, backend.Ack(ctx, []ScopeAcks{{Scope: scope, MsgIDs: []uint64{10, 11, 12}}}))
 	require.False(t, integrationExists(t, connector, RedisKey(prefix, done)))
-	require.False(t, integrationExists(t, connector, RedisKey(prefix, tombstone)))
+	require.True(t, integrationExists(t, connector, RedisKey(prefix, tombstone)), "an ack keeps the tombstone of a cancelled call")
 	require.True(t, integrationExists(t, connector, RedisKey(prefix, inflight)))
 }
 

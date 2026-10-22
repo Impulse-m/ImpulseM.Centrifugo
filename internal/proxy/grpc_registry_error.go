@@ -5,10 +5,14 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+// rpcRegistryNonStatusMessage is the client message of a call which failed with a plain Go error.
+const rpcRegistryNonStatusMessage = "backend call failed"
 
 // MapGRPCRegistryError maps the error of a failed gRPC registry call to the protocol error or the
 // disconnect the client receives. The configured status transforms come first, then the default
@@ -25,8 +29,15 @@ func MapGRPCRegistryError(
 	appKeys configtypes.RPCRegistryAppError,
 	metadataKeys []string,
 ) (*centrifuge.Error, *centrifuge.Disconnect) {
-	st := status.Convert(err)
+	st, isStatus := status.FromError(err)
 	code := st.Code()
+	message := st.Message()
+	if !isStatus {
+		// A plain Go error can name internal addresses, so the client gets a fixed message and the
+		// error text is logged here.
+		log.Warn().Err(err).Msg("rpc registry call failed with a non-status error")
+		message = rpcRegistryNonStatusMessage
+	}
 
 	rule, matched := transformGRPCStatus(code, transforms)
 	var protoErr *proxyproto.Error
@@ -37,16 +48,16 @@ func MapGRPCRegistryError(
 			return nil, proxyproto.DisconnectFromProto(disconnect)
 		}
 	} else {
-		protoErr = defaultGRPCStatusError(code, st.Message())
+		protoErr = defaultGRPCStatusError(code, message)
 	}
 	if protoErr == nil {
 		// The default table has no protocol error for OK and Canceled. Canceled reaches here only
 		// when the backend sent it: a cancelled client call is answered before the mapping. Such a
 		// status is mapped to the internal class, as any other status without a rule.
-		protoErr = defaultGRPCStatusError(codes.Internal, st.Message())
+		protoErr = defaultGRPCStatusError(codes.Internal, message)
 	}
 
-	appError := extractGRPCAppError(trailers, code, st.Message(), appKeys, metadataKeys, rule.toError)
+	appError := extractGRPCAppError(trailers, code, message, appKeys, metadataKeys, rule.toError)
 	result := proxyproto.ErrorFromProto(protoErr)
 	result.AppCode = appError.AppCode
 	result.AppType = appError.AppType

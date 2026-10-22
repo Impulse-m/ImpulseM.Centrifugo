@@ -162,14 +162,17 @@ type CommandPlan struct {
 	numSlots int
 	// maxInterval is the longest interval of all buckets. Only the user plan sets and reads it, for userIdleTimeout.
 	maxInterval time.Duration
-	total       *scope
-	ops         [operationCount]opLimit
+	// tokenOnly is set when no scope of the plan uses a window algorithm. Only the user plan sets and reads it.
+	tokenOnly bool
+	total     *scope
+	ops       [operationCount]opLimit
 }
 
 // slotAllocator assigns static slot indexes to buckets while a plan is compiled.
 type slotAllocator struct {
 	next        int
 	maxInterval time.Duration
+	windowed    bool
 }
 
 // HasBuckets reports whether a limit is enabled and has at least one bucket. Only such a limit is compiled,
@@ -250,6 +253,7 @@ func (a *slotAllocator) compileScope(
 		a.next += s.words
 	}
 	a.maxInterval = max(a.maxInterval, maxInterval)
+	a.windowed = a.windowed || !tokenOnly
 	s.redisName = name + algo.redisSuffix(lims)
 	s.argv = algo.redisArgs(lims, maxInterval)
 	return s
@@ -352,6 +356,7 @@ func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 
 	p.numSlots = alloc.next
 	p.maxInterval = alloc.maxInterval
+	p.tokenOnly = !alloc.windowed
 	return p
 }
 

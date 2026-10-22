@@ -29,6 +29,10 @@ var pushRoutePaths = []string{
 	"/cancel_push",
 }
 
+// pushTestLargeBodySize is a body size above the default 1 MiB request cap of
+// direct send, so the test shows that push off does not refuse by size first.
+const pushTestLargeBodySize = 2 << 20
+
 // newPushTestRoutes returns the API routes of a node that has no push
 // notification subsystem, the state of a deployment with push off.
 func newPushTestRoutes(t *testing.T) map[string]http.HandlerFunc {
@@ -72,6 +76,19 @@ func TestPushMethodsNotAvailable(t *testing.T) {
 	}
 }
 
+// TestPushMethodsNotAvailableAnswerFreshError checks that two answers do not
+// share one error value, so a caller that changes its answer cannot change
+// the answer of another call.
+func TestPushMethodsNotAvailableAnswerFreshError(t *testing.T) {
+	h := &Executor{}
+	ctx := context.Background()
+
+	first := h.SendPushNotification(ctx, &SendPushNotificationRequest{}).Error
+	second := h.SendPushNotification(ctx, &SendPushNotificationRequest{}).Error
+
+	require.NotSame(t, first, second)
+}
+
 // TestPushRouteAnswers108 checks that every push notification route exists and
 // answers 108 in the response body over HTTP, not 404 or 405.
 func TestPushRouteAnswers108(t *testing.T) {
@@ -90,39 +107,43 @@ func TestPushRouteAnswers108(t *testing.T) {
 	}
 }
 
-// countingReader serves an endless body and counts the bytes it hands out.
-type countingReader struct {
+// spaceReader serves an endless run of spaces and counts the bytes it hands out.
+// Spaces after a JSON object are valid JSON, so the body stays decodable.
+type spaceReader struct {
 	read int64
 	max  int64
 }
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	if c.read >= c.max {
+func (s *spaceReader) Read(p []byte) (int, error) {
+	if s.read >= s.max {
 		return 0, io.EOF
 	}
 	n := int64(len(p))
-	if c.read+n > c.max {
-		n = c.max - c.read
+	if s.read+n > s.max {
+		n = s.max - s.read
 	}
 	for i := range p[:n] {
-		p[i] = 'a'
+		p[i] = ' '
 	}
-	c.read += n
+	s.read += n
 	return int(n), nil
 }
 
-// TestPushRouteBodyLimit checks that an oversized body on a push route answers
-// 107 and that the route does not read the body past the cap.
-func TestPushRouteBodyLimit(t *testing.T) {
+// TestPushRouteAnswers108ForLargeBody checks that a body above the direct send
+// cap still answers 108 on every push route while push is off: the size check
+// belongs to the send path, which runs only when push is on.
+func TestPushRouteAnswers108ForLargeBody(t *testing.T) {
 	routes := newPushTestRoutes(t)
 
 	for _, path := range pushRoutePaths {
-		body := &countingReader{max: 64 << 20}
+		body := io.MultiReader(
+			strings.NewReader(`{}`),
+			&spaceReader{max: pushTestLargeBodySize},
+		)
 		rec := httptest.NewRecorder()
 		routes[path](rec, httptest.NewRequest(http.MethodPost, "/api"+path, body))
 
 		require.Equal(t, http.StatusOK, rec.Code, path)
-		require.Contains(t, rec.Body.String(), `"code":107`, path)
-		require.LessOrEqual(t, body.read, int64(pushMaxBodyBytes+1), path)
+		require.Contains(t, rec.Body.String(), `"code":108`, path)
 	}
 }

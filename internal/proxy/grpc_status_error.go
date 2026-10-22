@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"strconv"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -40,14 +41,22 @@ func grpcStatusRules(transforms configtypes.RPCGRPCStatusToCodeTransforms) []sta
 	return rules
 }
 
+// grpcStatusCodes memoizes the names which grpcStatusByName parsed, so a failed call does not parse them again. The
+// config validates the names, so the memo holds the few names which the config can hold.
+var grpcStatusCodes sync.Map
+
 // grpcStatusByName returns the gRPC status code with the exact name, for example UNAUTHENTICATED.
 func grpcStatusByName(name string) (codes.Code, bool) {
+	if code, found := grpcStatusCodes.Load(name); found {
+		return code.(codes.Code), true
+	}
 	var code codes.Code
 	// The same parser validates the names at config load, so both accept exactly the same names.
 	err := code.UnmarshalJSON([]byte(strconv.Quote(name)))
 	if err != nil {
 		return codes.OK, false
 	}
+	grpcStatusCodes.Store(name, code)
 	return code, true
 }
 

@@ -43,11 +43,16 @@ type Config struct {
 	CacheAssumeRole bool
 }
 
+// LoggerOption returns the franz-go option which logs through log, with the levels of the logging config.
+func LoggerOption(log zerolog.Logger) kgo.Opt {
+	return kgo.WithLogger(&zerologAdapter{log: log})
+}
+
 // Options returns franz-go options for seed brokers, logging, TLS and SASL.
 func Options(config Config, log zerolog.Logger) ([]kgo.Opt, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(config.Brokers...),
-		kgo.WithLogger(&zerologAdapter{log: log}),
+		LoggerOption(log),
 	}
 	if config.TLS.Enabled {
 		tlsOpt, err := TLSOption(config.TLS, config.Name)

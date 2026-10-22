@@ -54,7 +54,7 @@ func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	store := accessrevoke.NewStore(time.Minute)
 	queue := accessrevoke.NewDisconnectQueue(10000, 1)
 	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
-	deliveries := newDelivery(notificationHandlers(node, nil, revoker), queueSize)
+	deliveries := newDelivery(notificationHandlers(node, nil, revoker), queueSize, map[string]bool{accessrevoke.NotifyOp: true})
 
 	connectNotifyTestClient(t, node, "user-1")
 	connectNotifyTestClient(t, node, "user-1")

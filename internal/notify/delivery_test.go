@@ -23,7 +23,7 @@ func TestDeliveryHandlesEventsOfOneOpInOrder(t *testing.T) {
 			seq, _ := strconv.Atoi(event.FromNodeID)
 			handled <- seq
 		},
-	}, 16)
+	}, 16, nil)
 
 	for i := 0; i < count; i++ {
 		d.deliver(eventOf("op", i))
@@ -49,7 +49,7 @@ func TestDeliverySlowHandlerDoesNotBlockOtherOp(t *testing.T) {
 		"fast": func(centrifuge.NotificationEvent) {
 			fastHandled <- struct{}{}
 		},
-	}, 16)
+	}, 16, nil)
 
 	d.deliver(eventOf("slow", 0))
 	d.deliver(eventOf("fast", 0))
@@ -70,7 +70,7 @@ func TestDeliveryWaitsForFullQueue(t *testing.T) {
 			seq, _ := strconv.Atoi(event.FromNodeID)
 			handled <- seq
 		},
-	}, 1)
+	}, 1, nil)
 
 	pushed := make(chan struct{})
 	go func() {
@@ -111,7 +111,7 @@ func TestDeliveryRunsInlineOpOnDeliveringGoroutine(t *testing.T) {
 			close(entered)
 			<-release
 		},
-	}, 1)
+	}, 1, map[string]bool{accessrevoke.NotifyOp: true})
 
 	returned := make(chan struct{})
 	go func() {
@@ -136,8 +136,49 @@ func TestDeliveryRunsInlineOpOnDeliveringGoroutine(t *testing.T) {
 	}
 }
 
+// TestDeliveryInlineOpReturnsWhileOtherOpStalled stalls the handler of a queued op, and delivers an inline op meanwhile.
+// The inline op has no queue and shares none with the stalled op, so its delivery returns at once.
+func TestDeliveryInlineOpReturnsWhileOtherOpStalled(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	entered := make(chan struct{}, 1)
+	inlineHandled := make(chan struct{}, 1)
+	d := newDelivery(map[string]centrifuge.NotificationHandler{
+		"slow": func(centrifuge.NotificationEvent) {
+			entered <- struct{}{}
+			<-release
+		},
+		accessrevoke.NotifyOp: func(centrifuge.NotificationEvent) {
+			inlineHandled <- struct{}{}
+		},
+	}, 1, map[string]bool{accessrevoke.NotifyOp: true})
+
+	d.deliver(eventOf("slow", 0))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler of the queued op was not run")
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		d.deliver(eventOf(accessrevoke.NotifyOp, 0))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("inline op waited for the stalled handler of another op")
+	}
+	select {
+	case <-inlineHandled:
+	default:
+		t.Fatal("inline op returned without running its handler")
+	}
+}
+
 func TestDeliveryIgnoresOpWithoutHandler(t *testing.T) {
-	d := newDelivery(map[string]centrifuge.NotificationHandler{}, 1)
+	d := newDelivery(map[string]centrifuge.NotificationHandler{}, 1, nil)
 	require.NotPanics(t, func() {
 		d.deliver(eventOf("unknown", 0))
 	})

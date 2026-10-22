@@ -115,6 +115,9 @@ type Store struct {
 	expiryAt time.Time
 	// expiryLast is the start of the previous run.
 	expiryLast time.Time
+	// compactHook is a test seam, nil in production. compactOnce calls it with "rebuilt" once the rebuild is built, and
+	// with "swap" before the write lock is taken for the swap. A test sets it before the expiry pass runs.
+	compactHook func(stage string)
 }
 
 // NewStore creates an empty Store. defaultTTL is used for entries which come without expiration time.

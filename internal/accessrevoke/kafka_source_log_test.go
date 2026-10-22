@@ -2,6 +2,7 @@ package accessrevoke
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // TestSkipLogIsSampled skips 10000 records of an unknown method. Every skip is counted, but only one warning is logged
@@ -30,5 +32,25 @@ func TestSkipLogIsSampled(t *testing.T) {
 	require.Equal(t, before+10000, skippedCount(t, skipUnknownMethod))
 	// The limiter reads the wall clock, so a run which takes longer than the skip log interval, as a race build on a slow
 	// runner can, logs one more line. The sampling is what is tested: the lines stay at a few, not one per record.
+	require.LessOrEqual(t, strings.Count(logged.String(), "\n"), 2)
+}
+
+// TestSkipLogIsSampledForUnlistedReason skips 10000 records under a reason which the skip log list does not name. Every
+// skip is counted, and the warnings stay sampled as those of the listed reasons are.
+func TestSkipLogIsSampledForUnlistedReason(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	source, _ := newSourceTest(t, sourceTestConfig(), clock)
+	var logged bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&logged)
+	t.Cleanup(func() { log.Logger = previous })
+
+	const reason = "unlisted_reason"
+	before := skippedCount(t, reason)
+	for range 10000 {
+		source.skip(reason, errors.New("unlisted"), &kgo.Record{}, "publish")
+	}
+
+	require.Equal(t, before+10000, skippedCount(t, reason))
 	require.LessOrEqual(t, strings.Count(logged.String(), "\n"), 2)
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/cenkalti/backoff/v5"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -47,8 +46,10 @@ type KafkaSource struct {
 	clock        func() time.Time
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
-	// skipLogs limits the warnings of skipped records, one sampled log per reason.
-	skipLogs map[string]*tools.SampledLog
+	// skipLogs limits the warnings of skipped records, one sampled log per reason. A reason which is not listed in
+	// skipLogs shares unlistedSkipLog, so no warning of a skip is unsampled.
+	skipLogs        map[string]*tools.SampledLog
+	unlistedSkipLog *tools.SampledLog
 	// beyondWindowLog limits the warnings of events which expire beyond the window.
 	beyondWindowLog *tools.SampledLog
 
@@ -87,6 +88,7 @@ func newKafkaSource(
 		clock:           clock,
 		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
 		skipLogs:        newSkipLogs(),
+		unlistedSkipLog: tools.NewSampledLog(skipLogInterval),
 		beyondWindowLog: tools.NewSampledLog(skipLogInterval),
 	}
 }
@@ -331,12 +333,11 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 // skip counts and logs a record which is not applied.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
-	var event *zerolog.Event
-	if sampled, ok := s.skipLogs[reason]; ok {
-		event = sampled.Event()
-	} else {
-		event = log.Warn()
+	sampled, ok := s.skipLogs[reason]
+	if !ok {
+		sampled = s.unlistedSkipLog
 	}
+	event := sampled.Event()
 	if event == nil {
 		return
 	}

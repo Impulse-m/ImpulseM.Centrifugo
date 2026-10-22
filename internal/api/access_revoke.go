@@ -15,7 +15,7 @@ import (
 
 // BlockUser blocks user on all nodes until expire_at. Live connections of the user are disconnected
 // with 4500 code and the user can't connect or refresh while the block is active.
-func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUserResponse {
+func (h *Executor) BlockUser(ctx context.Context, cmd *BlockUserRequest) *BlockUserResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "block_user")
 
 	resp := &BlockUserResponse{}
@@ -30,12 +30,12 @@ func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUse
 		Kind:     accessrevoke.KindBlockUser,
 		User:     cmd.User,
 		ExpireAt: cmd.ExpireAt,
-	}, cfg.AccessRevoke)
+	}, cfg.AccessRevoke, fromConsumer(ctx))
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
 	}
-	resp.Error = h.applyAccessRevoke(notification)
+	resp.Error = h.applyAccessRevoke(ctx, notification)
 	if resp.Error != nil {
 		return resp
 	}
@@ -44,7 +44,7 @@ func (h *Executor) BlockUser(_ context.Context, cmd *BlockUserRequest) *BlockUse
 }
 
 // UnblockUser removes the block of user on all nodes. Connections are not affected.
-func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *UnblockUserResponse {
+func (h *Executor) UnblockUser(ctx context.Context, cmd *UnblockUserRequest) *UnblockUserResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "unblock_user")
 
 	resp := &UnblockUserResponse{}
@@ -58,12 +58,12 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 	notification, respErr := resolveAccessRevoke(accessrevoke.Operation{
 		Kind: accessrevoke.KindUnblockUser,
 		User: cmd.User,
-	}, cfg.AccessRevoke)
+	}, cfg.AccessRevoke, fromConsumer(ctx))
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
 	}
-	resp.Error = h.applyAccessRevoke(notification)
+	resp.Error = h.applyAccessRevoke(ctx, notification)
 	if resp.Error != nil {
 		return resp
 	}
@@ -75,7 +75,7 @@ func (h *Executor) UnblockUser(_ context.Context, cmd *UnblockUserRequest) *Unbl
 // session are disconnected at once through the session index, with or without user. Connections of user with this
 // session are disconnected when user is set; without user they are refused at their next refresh. A token without exp
 // keeps such a connection until it reconnects.
-func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *RevokeTokenResponse {
+func (h *Executor) RevokeToken(ctx context.Context, cmd *RevokeTokenRequest) *RevokeTokenResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "revoke_token")
 
 	resp := &RevokeTokenResponse{}
@@ -92,12 +92,12 @@ func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *Revo
 		RevokedAt:  cmd.RevokedAt,
 		ExpireAt:   cmd.ExpireAt,
 		Disconnect: accessrevoke.FromAPIDisconnect(cmd.Disconnect),
-	}, cfg.AccessRevoke)
+	}, cfg.AccessRevoke, fromConsumer(ctx))
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
 	}
-	resp.Error = h.applyAccessRevoke(notification)
+	resp.Error = h.applyAccessRevoke(ctx, notification)
 	if resp.Error != nil {
 		return resp
 	}
@@ -107,7 +107,7 @@ func (h *Executor) RevokeToken(_ context.Context, cmd *RevokeTokenRequest) *Revo
 
 // InvalidateUserTokens invalidates tokens of user on all nodes. Connections of user with rejected
 // tokens are disconnected.
-func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTokensRequest) *InvalidateUserTokensResponse {
+func (h *Executor) InvalidateUserTokens(ctx context.Context, cmd *InvalidateUserTokensRequest) *InvalidateUserTokensResponse {
 	defer metrics.ObserveAPICommand(time.Now(), h.config.Protocol, "invalidate_user_tokens")
 
 	resp := &InvalidateUserTokensResponse{}
@@ -125,12 +125,12 @@ func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTo
 		IssuedBefore: cmd.IssuedBefore,
 		RevokedAt:    cmd.RevokedAt,
 		ExpireAt:     cmd.ExpireAt,
-	}, cfg.AccessRevoke)
+	}, cfg.AccessRevoke, fromConsumer(ctx))
 	if respErr != nil {
 		resp.Error = respErr
 		return resp
 	}
-	resp.Error = h.applyAccessRevoke(notification)
+	resp.Error = h.applyAccessRevoke(ctx, notification)
 	if resp.Error != nil {
 		return resp
 	}
@@ -140,15 +140,19 @@ func (h *Executor) InvalidateUserTokens(_ context.Context, cmd *InvalidateUserTo
 
 // applyAccessRevoke applies the notification on this node and then sends it to other nodes. The
 // rate limit is checked first, so ErrorTooManyRequests is returned before anything is applied and
-// the whole call can be retried.
-func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Error {
+// the whole call can be retried. The expire_at is clamped to max_ttl, counted under the source of the call.
+func (h *Executor) applyAccessRevoke(ctx context.Context, notification accessrevoke.Notification) *Error {
 	if h.config.AccessRevoker == nil || h.config.AccessNotifier == nil {
 		return ErrorNotAvailable
 	}
 	if !h.config.AccessNotifier.Allow() {
 		return ErrorTooManyRequests
 	}
-	notification = h.config.AccessRevoker.ClampToMaxTTL(notification, accessrevoke.ClampSourceAPI)
+	source := accessrevoke.ClampSourceAPI
+	if fromConsumer(ctx) {
+		source = accessrevoke.ClampSourceConsumer
+	}
+	notification = h.config.AccessRevoker.ClampToMaxTTL(notification, source)
 	err := h.config.AccessRevoker.Apply(notification)
 	if err != nil {
 		log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation")
@@ -162,10 +166,26 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 	return nil
 }
 
+// consumerKey is the context key which marks the calls of asynchronous consumers.
+type consumerKey struct{}
+
+// withConsumer marks the context of an asynchronous consumer. Its access revocations are never refused for max_ttl:
+// their expire_at is clamped to it instead, so a revocation is not lost.
+func withConsumer(ctx context.Context) context.Context {
+	return context.WithValue(ctx, consumerKey{}, true)
+}
+
+// fromConsumer reports whether the context marks the call of an asynchronous consumer.
+func fromConsumer(ctx context.Context) bool {
+	isConsumer, _ := ctx.Value(consumerKey{}).(bool)
+	return isConsumer
+}
+
 // resolveAccessRevoke resolves the operation into a Notification using the current time. Validation
 // failures are mapped to API errors: unsupported operations to ErrorNotAvailable, others to ErrorBadRequest.
-// An expire_at beyond max_ttl is refused, and a default expiration time beyond it is clamped to it.
-func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configtypes.AccessRevoke) (accessrevoke.Notification, *Error) {
+// An expire_at beyond max_ttl is refused for API requests, and clamped to it for consumers, which must not
+// lose the revocation. A default expiration time beyond max_ttl is clamped to it.
+func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configtypes.AccessRevoke, consumer bool) (accessrevoke.Notification, *Error) {
 	now := time.Now()
 	// Expired operation has no effect, so it is rejected here. Kafka source skips such records itself.
 	if operation.ExpireAt != 0 && operation.ExpireAt <= now.Unix() {
@@ -173,7 +193,7 @@ func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configty
 		return accessrevoke.Notification{}, ErrorBadRequest
 	}
 	maxTTL := accessRevoke.MaxTTL.ToDuration()
-	if maxTTL > 0 && operation.ExpireAt > now.Add(maxTTL).Unix() {
+	if !consumer && accessrevoke.ExceedsMaxTTL(operation.ExpireAt, now, maxTTL) {
 		log.Error().Int64("expire_at", operation.ExpireAt).Str("kind", operation.Kind).Msg("bad access revocation request: expire_at is beyond max_ttl")
 		return accessrevoke.Notification{}, ErrorBadRequest
 	}
@@ -194,6 +214,7 @@ func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configty
 // errors are logged and skipped.
 func (d *Dispatcher) dispatchAccessRevoke(ctx context.Context, method string, payload []byte) (bool, error) {
 	var err error
+	ctx = withConsumer(ctx)
 	switch method {
 	case "block_user":
 		_, err = d.handler.handleBlockUser(ctx, payload)

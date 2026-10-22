@@ -30,6 +30,7 @@ type Revoker struct {
 	hub    Hub
 	queue  *DisconnectQueue
 	maxTTL func() time.Duration
+	clock  func() time.Time
 }
 
 // NewRevoker creates a Revoker. It has no expire_at limit until SetMaxTTL sets one.
@@ -41,6 +42,7 @@ func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 		maxTTL: func() time.Duration {
 			return 0
 		},
+		clock: time.Now,
 	}
 	queue.setRetrier(revoker.retry)
 	return revoker
@@ -123,7 +125,7 @@ func (r *Revoker) InvalidateUser(userID string, minGeneration uint64, issuedBefo
 // ClampToMaxTTL returns the notification with its expire_at clamped to the max TTL of the revoker, counted under source.
 // The caller clamps once, before Apply and before the notification is sent to other nodes, so one clamp is counted once.
 func (r *Revoker) ClampToMaxTTL(notification Notification, source string) Notification {
-	return ClampExpireAt(notification, time.Now(), r.maxTTL(), source)
+	return ClampExpireAt(notification, r.clock(), r.maxTTL(), source)
 }
 
 // Apply applies the notification to local state. It is used both for operations received through

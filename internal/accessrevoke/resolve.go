@@ -104,19 +104,20 @@ func Resolve(operation Operation, now time.Time, defaultTTL time.Duration) (Noti
 	}
 }
 
+// ExceedsMaxTTL reports whether expireAt is later than now plus maxTTL. A zero or negative maxTTL means no limit, and
+// so does a zero expireAt, which means not set.
+func ExceedsMaxTTL(expireAt int64, now time.Time, maxTTL time.Duration) bool {
+	return maxTTL > 0 && expireAt != 0 && expireAt > now.Add(maxTTL).Unix()
+}
+
 // ClampExpireAt returns the notification with expire_at not later than now plus maxTTL, and counts the clamp under source.
-// A zero or negative maxTTL means no limit, and so does a notification without expire_at. A revocation is clamped, not
-// dropped.
+// A revocation is clamped, not dropped.
 func ClampExpireAt(notification Notification, now time.Time, maxTTL time.Duration, source string) Notification {
-	if maxTTL <= 0 || notification.ExpireAt == 0 {
-		return notification
-	}
-	limit := now.Add(maxTTL).Unix()
-	if notification.ExpireAt <= limit {
+	if !ExceedsMaxTTL(notification.ExpireAt, now, maxTTL) {
 		return notification
 	}
 	metrics.AccessRevokeExpireAtClampedTotal.WithLabelValues(source).Inc()
-	notification.ExpireAt = limit
+	notification.ExpireAt = now.Add(maxTTL).Unix()
 	return notification
 }
 

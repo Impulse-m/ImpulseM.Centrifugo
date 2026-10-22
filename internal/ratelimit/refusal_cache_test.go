@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -32,6 +33,16 @@ func TestRefusalCacheIgnoresNoWaitAndKeepsLaterEnd(t *testing.T) {
 	wait, ok := c.refused("key", 1000)
 	require.True(t, ok)
 	require.Equal(t, 800*time.Nanosecond, wait)
+}
+
+func TestRefusalCacheCachesHugeWait(t *testing.T) {
+	c := newRefusalCache()
+	// A wait this long would overflow the end of the refusal, so the end saturates and the refusal stays cached.
+	c.refuse("key", 1000, time.Duration(math.MaxInt64))
+
+	wait, ok := c.refused("key", 1000)
+	require.True(t, ok)
+	require.Equal(t, time.Duration(math.MaxInt64-1000), wait)
 }
 
 func TestRefusalCacheSkipsInsertIntoFullShard(t *testing.T) {

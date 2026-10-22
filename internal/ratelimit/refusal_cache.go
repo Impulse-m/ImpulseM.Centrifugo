@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"hash/maphash"
+	"math"
 	"sync"
 	"time"
 )
@@ -82,6 +83,10 @@ func (c *refusalCache) refuse(key string, now int64, wait time.Duration) {
 		return
 	}
 	end := now + int64(wait)
+	if end < now {
+		// The end overflows for a wait near the largest duration, so the refusal lasts as long as the clock can count.
+		end = math.MaxInt64
+	}
 	sh := c.shardOf(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

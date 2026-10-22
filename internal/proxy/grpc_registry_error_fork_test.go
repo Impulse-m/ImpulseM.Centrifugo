@@ -16,6 +16,8 @@ import (
 
 // The lines of plain Go errors are throttled across all targets. The line which comes after a throttled error reports
 // how many errors it did not log, so a second target's failure in the same interval is counted, not dropped.
+// The test swaps the package globals nonStatusErrLog and nonStatusErrSuppressed, so no test of package proxy may run in
+// parallel with it, and none may call t.Parallel.
 func TestNonStatusErrLogCountsSuppressedLines(t *testing.T) {
 	var buf bytes.Buffer
 	previousLogger := log.Logger

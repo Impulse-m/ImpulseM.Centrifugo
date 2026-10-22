@@ -1047,3 +1047,465 @@ func (s *Handler) handleInvalidateUserTokens(w http.ResponseWriter, r *http.Requ
 
 	s.writeJson(w, data)
 }
+
+func (s *Handler) handleDeviceRegister(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_register", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceRegister(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_register", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceRegister(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_register", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceRegister(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_register", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_register", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleDeviceUpdate(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_update", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceUpdate(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_update", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceUpdate(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_update", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceUpdate(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_update", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_update", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleDeviceRemove(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_remove", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceRemove(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_remove", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceRemove(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_remove", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceRemove(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_remove", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_remove", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleDeviceList(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_list", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceList(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_list", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceList(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_list", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceList(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_list", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_list", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleDeviceTopicUpdate(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_update", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceTopicUpdate(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_update", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceTopicUpdate(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_update", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceTopicUpdate(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_update", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_update", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleDeviceTopicList(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_list", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeDeviceTopicList(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_list", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.DeviceTopicList(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_list", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeDeviceTopicList(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "device_topic_list", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_list", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleUserTopicUpdate(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_update", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeUserTopicUpdate(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_update", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.UserTopicUpdate(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_update", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeUserTopicUpdate(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_update", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_update", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleUserTopicList(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_list", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeUserTopicList(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_list", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.UserTopicList(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_list", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeUserTopicList(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "user_topic_list", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_list", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleSendPushNotification(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "send_push_notification", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeSendPushNotification(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "send_push_notification", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.SendPushNotification(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "send_push_notification", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeSendPushNotification(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "send_push_notification", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "send_push_notification", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleUpdatePushStatus(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "update_push_status", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeUpdatePushStatus(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "update_push_status", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.UpdatePushStatus(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "update_push_status", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeUpdatePushStatus(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "update_push_status", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "update_push_status", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}
+
+func (s *Handler) handleCancelPush(w http.ResponseWriter, r *http.Request) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "cancel_push", "read_body")
+		s.handleReadDataError(r, w, err)
+		return
+	}
+
+	req, err := requestDecoder.DecodeCancelPush(data)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "cancel_push", "unmarshal")
+		s.handleUnmarshalError(r, w, err)
+		return
+	}
+
+	resp := s.api.CancelPush(r.Context(), req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(r.Context())
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+
+	if resp.Error != nil && s.useTransportErrorMode(r) {
+		metrics.IncAPIError(s.api.config.Protocol, "cancel_push", resp.Error.Code)
+		statusCode := MapErrorToHTTPCode(resp.Error)
+		data, _ = EncodeError(resp.Error)
+		s.writeJsonCustomStatus(w, statusCode, data)
+		return
+	}
+
+	data, err = responseEncoder.EncodeCancelPush(resp)
+	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "cancel_push", "marshal")
+		s.handleMarshalError(r, w, err)
+		return
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "cancel_push", resp.Error.Code)
+	}
+
+	s.writeJson(w, data)
+}

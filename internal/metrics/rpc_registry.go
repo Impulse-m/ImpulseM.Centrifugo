@@ -106,23 +106,25 @@ func (s *rpcRegistryDroppedSet) drop(names ...string) {
 	s.names.Store(&next)
 }
 
-// remove deletes name from the set, when the method is built again.
-func (s *rpcRegistryDroppedSet) remove(name string) {
-	if !s.has(name) {
-		return
-	}
+// removeAll deletes names from the set, when the methods are built again. The set is copied once for all names.
+func (s *rpcRegistryDroppedSet) removeAll(names ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := make(map[string]struct{})
-	maps.Copy(next, *s.names.Load())
-	delete(next, name)
+	current := s.names.Load()
+	if current == nil {
+		return
+	}
+	next := make(map[string]struct{}, len(*current))
+	maps.Copy(next, *current)
+	for _, name := range names {
+		delete(next, name)
+	}
 	s.names.Store(&next)
 }
 
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
 func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
-	rpcRegistryDropped.remove(rpcMethod)
 	if RPCRegistryCallsTotal == nil {
 		return nil
 	}
@@ -170,6 +172,12 @@ func DropRPCRegistryMethodSeries(rpcMethods ...string) {
 			RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)
 		}
 	}
+}
+
+// ReviveRPCRegistryMethodSeries lifts the skip of the counts of rpcMethods, which a reload built again after
+// DropRPCRegistryMethodSeries dropped them. A reload calls it once, after it has built all its methods.
+func ReviveRPCRegistryMethodSeries(rpcMethods ...string) {
+	rpcRegistryDropped.removeAll(rpcMethods...)
 }
 
 // DropRPCRegistryTargetSeries deletes the proxy metric series of a target which left the registry. It

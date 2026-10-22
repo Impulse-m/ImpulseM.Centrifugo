@@ -286,6 +286,7 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 	}
 
 	defaults := file.Defaults
+	built := make([]string, 0, len(file.Methods))
 	for _, def := range file.Methods {
 		target := next.targets[def.Target]
 		authClassName := def.AuthClass
@@ -315,7 +316,9 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			Headers:          sortedCopy(def.Headers),
 			ErrorMetadata:    sortedCopy(def.ErrorMetadata),
 		}
+		built = append(built, def.Method)
 	}
+	metrics.ReviveRPCRegistryMethodSeries(built...)
 
 	var removed []*Target
 	for name, prev := range old.targets {

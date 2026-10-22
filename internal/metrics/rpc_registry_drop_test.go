@@ -41,9 +41,22 @@ func TestDroppedMethodCountsAreSkipped(t *testing.T) {
 	require.Zero(t, testutil.CollectAndCount(RPCRegistryErrorsTotal), "a count of a dropped method is skipped")
 	require.Zero(t, testutil.CollectAndCount(RPCRegistryCallsTotal), "a refusal of a dropped method is skipped")
 
-	NewRPCRegistryMethodMetrics(method)
+	ReviveRPCRegistryMethodSeries(method)
 	IncRPCRegistryError(method, "")
 	require.Equal(t, 1, testutil.CollectAndCount(RPCRegistryErrorsTotal), "a method which is built again counts")
+}
+
+// A reload revives the names it built again in one call, and the names which it did not build stay dropped.
+func TestReviveRPCRegistryMethodSeriesLiftsBatch(t *testing.T) {
+	resetRPCRegistryMetrics(t)
+	built := []string{"drop.test.revive.a", "drop.test.revive.b"}
+	const kept = "drop.test.revive.c"
+	DropRPCRegistryMethodSeries(append(built, kept)...)
+
+	ReviveRPCRegistryMethodSeries(built...)
+	require.False(t, rpcRegistryDropped.has(built[0]))
+	require.False(t, rpcRegistryDropped.has(built[1]))
+	require.True(t, rpcRegistryDropped.has(kept))
 }
 
 // A reload drops many names at once. The set keeps the bound, and the last name of the batch is in it.

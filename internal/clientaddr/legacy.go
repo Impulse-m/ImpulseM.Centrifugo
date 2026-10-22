@@ -47,17 +47,30 @@ func legacyThrottleKey(r *http.Request) string {
 	return peer.String()
 }
 
-// legacyLogAddr is the address written to the request log when client_address is disabled: the
-// X-Real-IP header, then X-Forwarded-For, then the remote address, all taken from any peer.
+// legacyLogAddr is the address written to the request log when client_address is disabled. It follows the trust rule
+// of legacyThrottleKey: forwarded headers are read from a local proxy only, and the address it appended is logged.
+// Otherwise the remote address is logged, as written by the server.
 func legacyLogAddr(r *http.Request) string {
-	addr := r.Header.Get("X-Real-IP")
-	if addr == "" {
-		addr = r.Header.Get("X-Forwarded-For")
-		if addr == "" {
-			addr = r.RemoteAddr
-		}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	return addr
+	peer := net.ParseIP(host)
+	if peer == nil || !isInternalIP(peer) {
+		return r.RemoteAddr
+	}
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) == 0 {
+		return r.RemoteAddr
+	}
+	last := values[len(values)-1]
+	if i := strings.LastIndexByte(last, ','); i >= 0 {
+		last = last[i+1:]
+	}
+	if ip := parseForwardedIP(last); ip != nil {
+		return ip.String()
+	}
+	return r.RemoteAddr
 }
 
 func isInternalIP(ip net.IP) bool {

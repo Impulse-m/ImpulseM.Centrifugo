@@ -7,6 +7,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 )
 
 // limitedSender is a Sender with the in-flight limit of its provider on this node.
@@ -39,9 +40,10 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 // Dispatch sends job to its provider. It waits for an in-flight slot until syncCtx ends: when no slot is free in
 // time, the result is pending and no provider call is made. The provider call then runs on a context with its own
 // requestTimeout, created after the slot is acquired, so a call that starts late still gets the full timeout. The
-// call is not stopped by the end of syncCtx.
+// call is not stopped by the end of syncCtx. The in-flight gauge of the provider counts the slot while it is held.
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
-	limited, ok := s.limited[job.Target.GetProvider()]
+	name := job.Target.GetProvider()
+	limited, ok := s.limited[name]
 	if !ok {
 		return NewResult(job, StatusRejected)
 	}
@@ -51,6 +53,13 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		return NewResult(job, StatusPending)
 	}
 	defer limited.slots.Release(1)
+
+	// The gauge is nil while push metrics are not registered.
+	inflight := metrics.PushDirectInflight
+	if inflight != nil {
+		inflight.WithLabelValues(name).Inc()
+		defer inflight.WithLabelValues(name).Dec()
+	}
 
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(syncCtx), requestTimeout)
 	defer cancel()

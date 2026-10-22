@@ -26,6 +26,9 @@ const (
 // refused. When collapseID is set, a caller collapse key on either field must equal it. When it is empty, the caller
 // values pass unchanged.
 func CheckMessage(message []byte, collapseID string) error {
+	if !gjson.ParseBytes(message).IsObject() {
+		return errors.New("message is not a JSON object")
+	}
 	if gjson.GetBytes(message, pathToken).Exists() {
 		return errors.New("message.token is set by the server")
 	}

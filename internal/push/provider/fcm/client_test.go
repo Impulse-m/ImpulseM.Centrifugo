@@ -166,7 +166,8 @@ func TestFCMBodyIsPassThrough(t *testing.T) {
 	body := requests[0]
 	require.Equal(t, `{"title":"hello"}`, gjson.GetBytes(body, "message.notification").Raw)
 	require.Equal(t, `{"k":"v"}`, gjson.GetBytes(body, "message.data").Raw)
-	require.Equal(t, "fcm-access", gjson.GetBytes(body, "message.token").String())
+	require.Equal(t, "device-token", gjson.GetBytes(body, "message.token").String())
+	require.NotEqual(t, "fcm-access", gjson.GetBytes(body, "message.token").String(), "the OAuth token never goes in the body")
 	require.Equal(t, "collapse-1", gjson.GetBytes(body, "message.android.collapse_key").String())
 	require.Equal(t, "collapse-1", gjson.GetBytes(body, "message.apns.headers.apns-collapse-id").String())
 	require.False(t, gjson.GetBytes(body, "message.android.ttl").Exists())
@@ -200,6 +201,38 @@ func TestFCMMessageTokenRefused(t *testing.T) {
 	err := CheckMessage([]byte(`{"token":"caller","data":{}}`), "")
 
 	require.ErrorContains(t, err, "message.token is set by the server")
+}
+
+func TestFCMMessageMustBeObject(t *testing.T) {
+	require.ErrorContains(t, CheckMessage([]byte(`[{"data":{}}]`), ""), "not a JSON object")
+	require.ErrorContains(t, CheckMessage([]byte(`"text"`), ""), "not a JSON object")
+	require.NoError(t, CheckMessage([]byte(`{"data":{}}`), ""))
+}
+
+func TestFCMOversizedAnswerFieldsAreTruncated(t *testing.T) {
+	tokens := newFakeToken(t, false)
+	longStatus := strings.Repeat("S", 60<<10)
+	longName := strings.Repeat("n", 60<<10)
+	fake := newFakeFCM(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"name":"` + longName + `"}`))
+	})
+	client := NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+
+	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
+	require.Equal(t, provider.StatusSent, result.GetStatus())
+	require.Len(t, result.GetProviderMessageId(), provider.MaxFieldBytes)
+
+	fake = newFakeFCM(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"error":{"status":"` + longStatus + `"}}`))
+	})
+	client = NewClient(context.Background(), newTestAccount(t, tokens.server.URL), time.Second, withFCMEndpoint(fake.server.URL))
+
+	result = client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Len(t, result.GetProviderCode(), provider.MaxFieldBytes)
 }
 
 func TestFCMCollapseKeyConflict(t *testing.T) {
@@ -355,7 +388,7 @@ func TestFCMPayloadLimit(t *testing.T) {
 		return `{"data":{"x":"` + strings.Repeat("a", padding) + `"}}`
 	}
 	injectedLength := func(padding int) int {
-		injected, err := injectMessage([]byte(base(padding)), "fcm-access", "", 0, time.Now())
+		injected, err := injectMessage([]byte(base(padding)), "device-token", "", 0, time.Now())
 		require.NoError(t, err)
 		return len(injected)
 	}

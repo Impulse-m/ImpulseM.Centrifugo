@@ -26,9 +26,6 @@ const (
 	hostDevelopment        = "https://api.sandbox.push.apple.com"
 )
 
-// maxResponseBodyBytes bounds the body of a provider response. The body is never returned.
-const maxResponseBodyBytes = 64 << 10
-
 // Provider reasons which mean that the provider token is refused. They can repeat once with a token of a newer window.
 const (
 	reasonExpiredProviderToken = "ExpiredProviderToken"
@@ -97,6 +94,8 @@ type response struct {
 // Send sends the job to APNs and returns its raw result. It implements provider.Sender.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
 	caller := job.Notification.GetApns().GetHeaders()
+	// The request validator answers 107 before any provider call. This check is defence in depth only: a refusal
+	// here is a rejected item without a code, and it is never the refusal path of the request.
 	err := CheckHeaders(caller, job.CollapseID)
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
@@ -108,15 +107,15 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
 	}
 
-	token, issuedAt, err := c.credential.bearer.Current()
+	token, issuedAt, err := c.credential.Current()
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
 	answer, answered := c.post(ctx, job, payload, headers, token)
-	if answered && answer.status == http.StatusForbidden && providerTokenRefused(answer.reason) && issuedAt < c.credential.bearer.Window() {
+	if answered && answer.status == http.StatusForbidden && providerTokenRefused(answer.reason) && issuedAt < c.credential.Window() {
 		// The bearer is of an earlier window, so one repeat with the bearer of the current window is allowed.
-		token, _, err = c.credential.bearer.Current()
+		token, _, err = c.credential.Current()
 		if err == nil {
 			answer, answered = c.post(ctx, job, payload, headers, token)
 		}
@@ -160,7 +159,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, he
 	}
 
 	// A body read error keeps the status: the reason is set only from a body that was read whole.
-	body, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, maxResponseBodyBytes))
+	body, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, provider.MaxResponseBodyBytes))
 	if readErr != nil {
 		return answer, true
 	}
@@ -184,21 +183,13 @@ func providerTokenRefused(reason string) bool {
 	return reason == reasonExpiredProviderToken || reason == reasonInvalidProviderToken
 }
 
-// truncate returns value cut to at most the detail limit of a result.
-func truncate(value string) string {
-	const maxDetailBytes = 256
-	if len(value) > maxDetailBytes {
-		return value[:maxDetailBytes]
-	}
-	return value
-}
-
-// answeredResult returns the result of job for a provider answer with status. The status line is always kept.
+// answeredResult returns the result of job for a provider answer with status. The status line is always kept. Every
+// provider string is cut to the field limit, so one answer cannot put its full size into a result.
 func answeredResult(job *provider.Job, status string, answer response) *apiproto.PushItemResult {
 	result := provider.NewResult(job, status)
 	result.HttpStatus = uint32(answer.status)
-	result.ProviderCode = answer.reason
-	result.ProviderDetail = truncate(answer.detail)
-	result.ProviderMessageId = answer.messageID
+	result.ProviderCode = provider.Truncate(answer.reason)
+	result.ProviderDetail = provider.Truncate(answer.detail)
+	result.ProviderMessageId = provider.Truncate(answer.messageID)
 	return result
 }

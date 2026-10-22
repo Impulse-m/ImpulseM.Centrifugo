@@ -30,6 +30,20 @@ const (
 	ProviderFCM  = "fcm"
 )
 
+// MaxResponseBodyBytes bounds the body of a provider response. The body is never returned.
+const MaxResponseBodyBytes = 64 << 10
+
+// MaxFieldBytes bounds each provider-supplied string of a result: the code, the detail and the message id.
+const MaxFieldBytes = 256
+
+// Truncate returns value cut to at most MaxFieldBytes.
+func Truncate(value string) string {
+	if len(value) > MaxFieldBytes {
+		return value[:MaxFieldBytes]
+	}
+	return value
+}
+
 // Job is one target of a direct send, with the request values a provider reads.
 type Job struct {
 	// Index is the zero-based position of the target in the request.

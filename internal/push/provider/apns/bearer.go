@@ -24,32 +24,11 @@ type bearerClaims struct {
 	IssuedAt int64  `json:"iat"`
 }
 
-// Credential is the signing key of an APNs credential. The environments of the credential share it: the key id and
-// the team id are the same for production and development, and the environment chooses only the host.
+// Credential is the signing key of an APNs credential, and the provider token cached for its current window. The
+// environments of the credential share it: the key id and the team id are the same for production and development,
+// and the environment chooses only the host. The token is signed under the lock and cached until the window changes,
+// so every call of a window uses one token.
 type Credential struct {
-	bearer *bearer
-}
-
-// NewCredential returns the credential of a P-256 signing key with keyID and teamID.
-func NewCredential(key *ecdsa.PrivateKey, keyID string, teamID string) (*Credential, error) {
-	signer, err := jwt.NewSignerES(jwt.ES256, key)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Credential{
-		bearer: &bearer{
-			keyID:  keyID,
-			teamID: teamID,
-			signer: signer,
-			now:    time.Now,
-		},
-	}, nil
-}
-
-// bearer holds the provider token of a credential. The token is signed under the lock and cached until the window
-// changes, so every call of a window uses one token.
-type bearer struct {
 	mu sync.Mutex
 
 	keyID  string
@@ -62,6 +41,21 @@ type bearer struct {
 	issuedAt int64
 }
 
+// NewCredential returns the credential of a P-256 signing key with keyID and teamID.
+func NewCredential(key *ecdsa.PrivateKey, keyID string, teamID string) (*Credential, error) {
+	signer, err := jwt.NewSignerES(jwt.ES256, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Credential{
+		keyID:  keyID,
+		teamID: teamID,
+		signer: signer,
+		now:    time.Now,
+	}, nil
+}
+
 // windowStart returns the issue time of the window that now is in, in Unix seconds.
 func windowStart(now time.Time) int64 {
 	length := int64(windowLength / time.Second)
@@ -70,30 +64,30 @@ func windowStart(now time.Time) int64 {
 }
 
 // Window returns the issue time of the current window, in Unix seconds.
-func (b *bearer) Window() int64 {
-	return windowStart(b.now())
+func (c *Credential) Window() int64 {
+	return windowStart(c.now())
 }
 
 // Current returns the provider token of the current window and its issue time. A token is signed only when the
 // window has changed since the cached one, so one credential signs at most once per window on a node.
-func (b *bearer) Current() (string, int64, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (c *Credential) Current() (string, int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	issuedAt := windowStart(b.now())
-	if b.token != "" && b.issuedAt == issuedAt {
-		return b.token, issuedAt, nil
+	issuedAt := windowStart(c.now())
+	if c.token != "" && c.issuedAt == issuedAt {
+		return c.token, issuedAt, nil
 	}
 
-	token, err := jwt.NewBuilder(b.signer, jwt.WithKeyID(b.keyID)).Build(bearerClaims{
-		Issuer:   b.teamID,
+	token, err := jwt.NewBuilder(c.signer, jwt.WithKeyID(c.keyID)).Build(bearerClaims{
+		Issuer:   c.teamID,
 		IssuedAt: issuedAt,
 	})
 	if err != nil {
 		return "", 0, err
 	}
 
-	b.token = token.String()
-	b.issuedAt = issuedAt
-	return b.token, issuedAt, nil
+	c.token = token.String()
+	c.issuedAt = issuedAt
+	return c.token, issuedAt, nil
 }

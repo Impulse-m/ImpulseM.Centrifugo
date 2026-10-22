@@ -20,12 +20,6 @@ import (
 // endpointBase is the base of the FCM HTTP v1 send endpoint.
 const endpointBase = "https://fcm.googleapis.com/v1/projects/"
 
-// maxResponseBodyBytes bounds the body of a provider response. The body is never returned.
-const maxResponseBodyBytes = 64 << 10
-
-// maxDetailBytes bounds the provider detail of a result.
-const maxDetailBytes = 256
-
 // Option sets a field of a Client. The option is a test seam: production code uses none of them.
 type Option func(*Client)
 
@@ -84,6 +78,8 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 	if len(message) == 0 {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
+	// The request validator answers 107 before any provider call. This check is defence in depth only: a refusal
+	// here is a rejected item without a code, and it is never the refusal path of the request.
 	err := CheckMessage(message, job.CollapseID)
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
@@ -98,7 +94,8 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	injected, err := injectMessage(message, token.AccessToken, job.CollapseID, job.Notification.GetExpireAt(), time.Now())
+	// The message token is the device token of the target. The OAuth access token is only the bearer of the request.
+	injected, err := injectMessage(message, job.Target.GetToken(), job.CollapseID, job.Notification.GetExpireAt(), time.Now())
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
@@ -134,7 +131,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 		result.Status = provider.StatusSent
 	}
 
-	responseBody, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, maxResponseBodyBytes))
+	responseBody, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, provider.MaxResponseBodyBytes))
 	if readErr != nil {
 		return result
 	}
@@ -144,7 +141,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(responseBody, &success) == nil {
-			result.ProviderMessageId = success.Name
+			result.ProviderMessageId = provider.Truncate(success.Name)
 		}
 		return result
 	}
@@ -153,7 +150,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 	if json.Unmarshal(responseBody, &failure) != nil {
 		return result
 	}
-	result.ProviderCode = failure.Error.Status
+	result.ProviderCode = provider.Truncate(failure.Error.Status)
 	result.ProviderDetail = failureDetail(failure)
 	return result
 }
@@ -162,23 +159,15 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 func failureDetail(failure fcmError) string {
 	for _, detail := range failure.Error.Details {
 		if detail.ErrorCode != "" {
-			return truncate(detail.ErrorCode)
+			return provider.Truncate(detail.ErrorCode)
 		}
 	}
 	for _, detail := range failure.Error.Details {
 		for _, violation := range detail.FieldViolations {
 			if violation.Field != "" {
-				return truncate(violation.Field)
+				return provider.Truncate(violation.Field)
 			}
 		}
 	}
 	return ""
-}
-
-// truncate returns value cut to at most maxDetailBytes.
-func truncate(value string) string {
-	if len(value) > maxDetailBytes {
-		return value[:maxDetailBytes]
-	}
-	return value
 }

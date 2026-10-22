@@ -6,10 +6,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 )
+
+// initPushMetricsForTest registers the push metrics in a fresh registry, as a node with push enabled does.
+func initPushMetricsForTest(t *testing.T) {
+	t.Helper()
+
+	err := metrics.Init(metrics.Config{Registerer: prometheus.NewRegistry(), PushEnabled: true})
+	require.NoError(t, err)
+}
+
+// gaugeSender reads the in-flight gauge of its provider while its call runs.
+type gaugeSender struct {
+	provider string
+	seen     float64
+}
+
+func (s *gaugeSender) Send(_ context.Context, job *Job) *apiproto.PushItemResult {
+	s.seen = testutil.ToFloat64(metrics.PushDirectInflight.WithLabelValues(s.provider))
+	return NewResult(job, StatusSent)
+}
+
+// failingSender fails the test when it is called.
+type failingSender struct {
+	t *testing.T
+}
+
+func (s failingSender) Send(_ context.Context, job *Job) *apiproto.PushItemResult {
+	s.t.Errorf("a provider was called in dry run")
+	return NewResult(job, StatusRejected)
+}
 
 // recordingSender counts its calls. When hold is set, it answers only when its context ends, recording the start and
 // the end of the call.
@@ -137,4 +169,34 @@ func TestDryRunResult(t *testing.T) {
 	require.Equal(t, "ref", result.GetRef())
 	require.Zero(t, result.GetHttpStatus())
 	require.Empty(t, result.GetProviderMessageId())
+}
+
+func TestDryRunMakesNoRequest(t *testing.T) {
+	initPushMetricsForTest(t)
+
+	// The dry run result is built without a provider: the sender of the set fails the test if it is ever called.
+	set := NewSet()
+	set.Add(ProviderAPNs, failingSender{t: t}, 1)
+
+	result := DryRun(newTestJob(0, ProviderAPNs))
+
+	require.Equal(t, StatusDryRun, result.GetStatus())
+	require.Zero(t, result.GetHttpStatus())
+	require.Empty(t, result.GetProviderMessageId())
+	require.Zero(t, testutil.ToFloat64(metrics.PushDirectInflight.WithLabelValues(ProviderAPNs)))
+	require.Zero(t, testutil.CollectAndCount(metrics.PushNotificationCount))
+}
+
+func TestDispatchInflightGaugeReturnsToZero(t *testing.T) {
+	initPushMetricsForTest(t)
+
+	sender := &gaugeSender{provider: ProviderFCM}
+	set := NewSet()
+	set.Add(ProviderFCM, sender, 1)
+
+	result := set.Dispatch(context.Background(), time.Minute, newTestJob(0, ProviderFCM))
+
+	require.Equal(t, StatusSent, result.GetStatus())
+	require.Equal(t, float64(1), sender.seen, "the slot is counted while the call runs")
+	require.Zero(t, testutil.ToFloat64(metrics.PushDirectInflight.WithLabelValues(ProviderFCM)))
 }

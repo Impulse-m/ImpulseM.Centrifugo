@@ -408,6 +408,85 @@ func TestAPNsProviderTokenInsideWindowIsRaw(t *testing.T) {
 	require.Equal(t, int64(1), counter.signs.Load())
 }
 
+// alwaysExpiredFake answers every request with 403 ExpiredProviderToken.
+func alwaysExpiredFake(t *testing.T) *fakeAPNs {
+	t.Helper()
+
+	return newFakeAPNs(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"reason":"ExpiredProviderToken"}`))
+	})
+}
+
+func TestAPNsBurstSignsAtMostOncePerWindow(t *testing.T) {
+	boundary := testWindow.Unix()
+	clock := &fakeClock{now: time.Unix(boundary+100, 0)}
+	credential, counter := newTestCredential(t, newTestKey(t), clock)
+
+	fake := alwaysExpiredFake(t)
+	client := newTestClient(t, fake, credential)
+	for index := 0; index < 50; index++ {
+		result := client.Send(context.Background(), newTestJob(index, "tok", nil, "{}"))
+		require.Equal(t, provider.StatusRejected, result.GetStatus())
+		require.Equal(t, uint32(http.StatusForbidden), result.GetHttpStatus())
+	}
+	require.Len(t, fake.recorded(), 50, "no item repeats inside the window")
+	require.Equal(t, int64(1), counter.signs.Load(), "one signing for the window")
+
+	clock.Set(time.Unix(boundary+2400+100, 0))
+	for index := 0; index < 50; index++ {
+		client.Send(context.Background(), newTestJob(index, "tok", nil, "{}"))
+	}
+	require.Equal(t, int64(2), counter.signs.Load(), "one more signing for the next window")
+}
+
+func TestAPNsConcurrentRefreshRace(t *testing.T) {
+	boundary := testWindow.Unix()
+	clock := &fakeClock{now: time.Unix(boundary+100, 0)}
+	credential, counter := newTestCredential(t, newTestKey(t), clock)
+
+	fake := alwaysExpiredFake(t)
+	client := newTestClient(t, fake, credential)
+
+	var wg sync.WaitGroup
+	for index := 0; index < 100; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			client.Send(context.Background(), newTestJob(index, "tok", nil, "{}"))
+		}(index)
+	}
+	wg.Wait()
+
+	require.Len(t, fake.recorded(), 100)
+	require.Equal(t, int64(1), counter.signs.Load())
+
+	bearers := make(map[string]struct{})
+	for _, request := range fake.recorded() {
+		bearers[request.authorization] = struct{}{}
+	}
+	require.Len(t, bearers, 1, "all parallel items use the bearer of the window")
+}
+
+func TestAPNsOversizedAnswerFieldsAreTruncated(t *testing.T) {
+	clock := &fakeClock{now: testWindow}
+	credential, _ := newTestCredential(t, newTestKey(t), clock)
+
+	longReason := strings.Repeat("R", 60<<10)
+	longID := strings.Repeat("a", 60<<10)
+	fake := newFakeAPNs(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set(headerID, longID)
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"reason":"` + longReason + `"}`))
+	})
+
+	result := newTestClient(t, fake, credential).Send(context.Background(), newTestJob(0, "tok", nil, "{}"))
+
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Len(t, result.GetProviderCode(), provider.MaxFieldBytes)
+	require.Len(t, result.GetProviderMessageId(), provider.MaxFieldBytes)
+}
+
 func TestAPNsMaxInflightHonoured(t *testing.T) {
 	const targets = 10
 

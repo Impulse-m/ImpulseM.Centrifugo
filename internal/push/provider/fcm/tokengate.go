@@ -18,6 +18,10 @@ const fetchKey = "fcm-token"
 // tokenGate wraps the token source of a credential. It returns the cached token while it has time left, and runs at
 // most one fetch at a time: concurrent callers share the result of that fetch. A caller waits no longer than its own
 // context, and the fetch itself ends within the HTTP client timeout of the token source.
+//
+// The gate keeps its own cache because the reusing source of x/oauth2 (oauth2.ReuseTokenSource) holds its mutex
+// during a refresh and takes no context, so a caller behind it could not stop waiting at its own deadline. The gate
+// reads the cache without that lock, and the fetch runs in a singleflight call that the callers select on.
 type tokenGate struct {
 	source oauth2.TokenSource
 

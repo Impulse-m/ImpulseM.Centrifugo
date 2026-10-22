@@ -19,7 +19,6 @@ const (
 // settings above.
 func NewTransport() *http.Transport {
 	return &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
 		ForceAttemptHTTP2: true,
 		IdleConnTimeout:   idleConnTimeout,
 		HTTP2: &http.HTTP2Config{

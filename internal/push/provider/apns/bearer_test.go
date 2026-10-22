@@ -63,9 +63,9 @@ func newTestCredential(t *testing.T, key *ecdsa.PrivateKey, clock *fakeClock) (*
 	credential, err := NewCredential(key, "KEYID1234", "TEAMID1234")
 	require.NoError(t, err)
 
-	counter := &countingSigner{Signer: credential.bearer.signer}
-	credential.bearer.signer = counter
-	credential.bearer.now = clock.Now
+	counter := &countingSigner{Signer: credential.signer}
+	credential.signer = counter
+	credential.now = clock.Now
 	return credential, counter
 }
 
@@ -101,13 +101,13 @@ func TestBearerIATChangesOnlyAfterLagPastBoundary(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(boundary+59, 0)}
 	credential, _ := newTestCredential(t, newTestKey(t), clock)
 
-	token, iat, err := credential.bearer.Current()
+	token, iat, err := credential.Current()
 	require.NoError(t, err)
 	require.Equal(t, boundary-2400, iat)
 	require.Equal(t, iat, issuedAtOf(t, token))
 
 	clock.Set(time.Unix(boundary+60, 0))
-	_, iat, err = credential.bearer.Current()
+	_, iat, err = credential.Current()
 	require.NoError(t, err)
 	require.Equal(t, boundary, iat)
 }
@@ -120,9 +120,9 @@ func TestBearerTwoNodesShareIATInsideWindow(t *testing.T) {
 	first, _ := newTestCredential(t, key, clock)
 	second, _ := newTestCredential(t, key, clock)
 
-	_, firstIAT, err := first.bearer.Current()
+	_, firstIAT, err := first.Current()
 	require.NoError(t, err)
-	_, secondIAT, err := second.bearer.Current()
+	_, secondIAT, err := second.Current()
 	require.NoError(t, err)
 
 	require.Equal(t, firstIAT, secondIAT)
@@ -134,13 +134,13 @@ func TestBearerSignsOncePerWindow(t *testing.T) {
 	credential, counter := newTestCredential(t, newTestKey(t), clock)
 
 	for index := 0; index < 50; index++ {
-		_, _, err := credential.bearer.Current()
+		_, _, err := credential.Current()
 		require.NoError(t, err)
 	}
 	require.Equal(t, int64(1), counter.signs.Load())
 
 	clock.Set(time.Unix(boundary+2400+100, 0))
-	_, _, err := credential.bearer.Current()
+	_, _, err := credential.Current()
 	require.NoError(t, err)
 	require.Equal(t, int64(2), counter.signs.Load())
 }
@@ -149,7 +149,7 @@ func TestBearerKeyIDHeader(t *testing.T) {
 	clock := &fakeClock{now: testWindow}
 	credential, _ := newTestCredential(t, newTestKey(t), clock)
 
-	token, _, err := credential.bearer.Current()
+	token, _, err := credential.Current()
 	require.NoError(t, err)
 
 	header, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])

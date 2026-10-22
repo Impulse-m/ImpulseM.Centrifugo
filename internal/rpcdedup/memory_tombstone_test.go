@@ -36,6 +36,23 @@ func TestMemoryAckKeepsDowngradedTombstone(t *testing.T) {
 	require.Equal(t, 1, int(store.Stats().Entries), "the downgraded tombstone is kept")
 }
 
+// An ack keeps a tombstone which is over the reply limit when it is kept: the replacement keeps the tombstone flag, so an
+// ack does not remove the cancel which answers a retransmit on a node without the shared tier.
+func TestMemoryAckKeepsOversizeTombstone(t *testing.T) {
+	store, _ := newTestMemory(512)
+	scope := testScope("u1", "a")
+	key := Key{Scope: scope, MsgID: 7}
+	flight := NewFlight()
+	testBegin(t, store, key, flight)
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("e", 600)}
+
+	require.NoError(t, store.Complete(key, flight, Record{Err: failure, tombstone: true}))
+	require.NoError(t, store.Ack(scope, []uint64{7}))
+
+	require.Equal(t, 1, testEntries(store), "the oversize tombstone is kept")
+	checkInvariants(t, store)
+}
+
 // An ack removes a done record, even one with an error and no fingerprint: the shared tier removes it too, since only
 // its tombstones keep their state.
 func TestMemoryAckRemovesDoneRecordWithError(t *testing.T) {

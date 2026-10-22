@@ -40,7 +40,8 @@ func (tokenBucket) newLimit(interval time.Duration, rate int) limit {
 }
 
 // wait returns the time until the operation is allowed, 0 when it is allowed now. The client limiter does not call
-// it: token-only scopes call gcra directly. It is the Algorithm implementation which the golden and Redis oracle
+// it: tokenWait and tokenCommit in plan.go call gcraWait and gcraTAT, the two parts of gcra. Keep those in step with
+// gcra. It is the Algorithm implementation which the golden and Redis oracle
 // tests run.
 func (tokenBucket) wait(lim *limit, st []int64, now int64) int64 {
 	_, wait := gcra(lim.emission, lim.tolerance, st[0], now)

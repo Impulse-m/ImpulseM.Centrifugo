@@ -57,10 +57,10 @@ func newDelivery(
 			op:      op,
 			handler: handler,
 			inline:  inline[op],
-			fullLog: tools.NewIntervalLimiter(fullLogInterval),
 		}
 		if !q.inline {
 			q.events = make(chan centrifuge.NotificationEvent, size)
+			q.fullLog = tools.NewIntervalLimiter(fullLogInterval)
 		}
 		d.queues[op] = q
 	}

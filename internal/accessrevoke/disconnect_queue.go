@@ -44,7 +44,7 @@ type retryKey struct {
 // each connection at most once. It never queues or disconnects a connection whose close has begun. A connection which is
 // queued keeps the first disconnect it was queued with, except that a terminal disconnect replaces a reconnectable one.
 // A disconnect which finds the queue full is dropped and counted, and its key is kept. The queue goroutine re-evaluates
-// kept keys through the store once the queue is at most half full: one key per drained item while the queue holds items,
+// kept keys through the store once the queue has room: one key per drained item while the queue holds items,
 // and the next key in a row while it is empty. The refresh check rejects a connection within the token lifetime in any case.
 // At most twice the queue size of keys is kept. Past that, the queue runs one pass over every local connection instead.
 type DisconnectQueue struct {
@@ -187,12 +187,12 @@ func (q *DisconnectQueue) begin(connection Connection) {
 	q.retryKept()
 }
 
-// retryKept re-evaluates kept keys on the queue goroutine. It runs after each dequeue, and only while the queue is at most
-// half full. It takes one key and runs its pass; when the pass left an item in the queue it stops, since that item's
-// dequeue carries the next retry. While the queue is empty it takes the next key, so a key which queued nothing does not
-// wait for an enqueue. A key comes back only through a drop, which needs a full queue, and a full queue stops the loop.
+// retryKept re-evaluates kept keys on the queue goroutine. It runs after each dequeue, and only while the queue has room.
+// It takes one key and runs its pass; when the pass left an item in the queue it stops, since that item's dequeue carries
+// the next retry. While the queue is empty it takes the next key, so a key which queued nothing does not wait for an
+// enqueue. A key comes back only through a drop, which needs a full queue, and a full queue stops the loop.
 func (q *DisconnectQueue) retryKept() {
-	if len(q.items) > cap(q.items)/2 {
+	if len(q.items) >= cap(q.items) {
 		return
 	}
 	for {

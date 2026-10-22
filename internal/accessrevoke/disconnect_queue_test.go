@@ -244,7 +244,7 @@ func retryRecorder(queue *DisconnectQueue) (func(key retryKey), *[]int, *sync.Mu
 }
 
 // TestDisconnectQueueRetriesOneKeyWhileItemsQueued fills a queue of 4 and drops three keys. The retries run one per
-// dequeue while the queue holds items, so the queue lengths seen by the retrier are 2, 1 and 0.
+// dequeue while the queue holds items, so the queue lengths seen by the retrier are 3, 2 and 1.
 func TestDisconnectQueueRetriesOneKeyWhileItemsQueued(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 4)
 	retrier, lengths, mu := retryRecorder(queue)
@@ -273,7 +273,7 @@ func TestDisconnectQueueRetriesOneKeyWhileItemsQueued(t *testing.T) {
 		return len(*lengths) > 3
 	}, 100*time.Millisecond, 5*time.Millisecond)
 	mu.Lock()
-	require.Equal(t, []int{2, 1, 0}, *lengths)
+	require.Equal(t, []int{3, 2, 1}, *lengths)
 	mu.Unlock()
 
 	cancel()
@@ -317,9 +317,9 @@ func TestDisconnectQueueRetriesNextKeyWhileEmpty(t *testing.T) {
 	require.ErrorIs(t, <-errCh, context.Canceled)
 }
 
-// TestDisconnectQueueRetriesDroppedKeyWhenHalfFree drops a keyed disconnect from a full queue. The key is re-evaluated
-// once the queue is at most half full, and only then, and it is removed by the retry, so it is evaluated once.
-func TestDisconnectQueueRetriesDroppedKeyWhenHalfFree(t *testing.T) {
+// TestDisconnectQueueRetriesDroppedKeyWhenRoom drops a keyed disconnect from a full queue. The key is re-evaluated
+// once the queue has room, at the first dequeue, and it is removed by the retry, so it is evaluated once.
+func TestDisconnectQueueRetriesDroppedKeyWhenRoom(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 4)
 	var mu sync.Mutex
 	var retried []int
@@ -350,7 +350,36 @@ func TestDisconnectQueueRetriesDroppedKeyWhenHalfFree(t *testing.T) {
 		return len(retried) > 1
 	}, 100*time.Millisecond, 5*time.Millisecond)
 	mu.Lock()
-	require.LessOrEqual(t, retried[0], 2)
+	require.Equal(t, 3, retried[0])
+	mu.Unlock()
+
+	cancel()
+	require.ErrorIs(t, <-errCh, context.Canceled)
+}
+
+// TestDisconnectQueueRetriesAboveHalf drops a keyed disconnect from a full queue of 10 and dequeues one item. The key is
+// retried at once, while the queue still holds 9 items, so a burst does not hold the retry until the queue is half empty.
+func TestDisconnectQueueRetriesAboveHalf(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 10)
+	retrier, lengths, mu := retryRecorder(queue)
+	queue.setRetrier(retrier)
+	for i := range 10 {
+		conn := &fakeConnection{id: strconv.Itoa(i)}
+		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	}
+	dropped := &fakeConnection{id: "dropped"}
+	require.False(t, queue.enqueueKeyed(retryKey{user: "user-1"}, dropped, centrifuge.DisconnectExpired, ReasonBlocked))
+
+	cancel, errCh := runQueue(t, queue)
+	defer cancel()
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(*lengths) == 1
+	}, 5*time.Second, 5*time.Millisecond)
+	mu.Lock()
+	require.Equal(t, []int{9}, *lengths)
 	mu.Unlock()
 
 	cancel()

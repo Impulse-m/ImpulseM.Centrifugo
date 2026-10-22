@@ -48,9 +48,34 @@ type RPCRegistryMethodMetrics struct {
 // transport loss. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryRetransmitsTotal *prometheus.CounterVec
 
+// rpcRegistryDropped holds the names of the methods whose series a reload dropped, until the method is built again.
+// A count by name from a call which was running when its series were dropped would create them again for the life of
+// the process, so such a count is skipped. The lock orders the counts with the drops: a count holds the read lock, and
+// a drop holds the write lock.
+var rpcRegistryDropped = &rpcRegistryDroppedSet{names: map[string]struct{}{}}
+
+// rpcRegistryDroppedSet is the set of the dropped method names, see rpcRegistryDropped.
+type rpcRegistryDroppedSet struct {
+	mu    sync.RWMutex
+	names map[string]struct{}
+}
+
+// count runs inc unless name is dropped.
+func (s *rpcRegistryDroppedSet) count(name string, inc func()) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, found := s.names[name]; found {
+		return
+	}
+	inc()
+}
+
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
 func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
+	rpcRegistryDropped.mu.Lock()
+	delete(rpcRegistryDropped.names, rpcMethod)
+	rpcRegistryDropped.mu.Unlock()
 	if RPCRegistryCallsTotal == nil {
 		return nil
 	}
@@ -83,8 +108,12 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 
 // DropRPCRegistryMethodSeries deletes the calls_total, errors_total and retransmits series of a method which
 // left the registry, so a removed name does not keep its series for the life of the process. A call of the old
-// method which is still running keeps counting on the detached children, which are not exported.
+// method which is still running keeps counting on the detached children, which are not exported, and its counts
+// by name are skipped until the method is built again.
 func DropRPCRegistryMethodSeries(rpcMethod string) {
+	rpcRegistryDropped.mu.Lock()
+	defer rpcRegistryDropped.mu.Unlock()
+	rpcRegistryDropped.names[rpcMethod] = struct{}{}
 	if RPCRegistryCallsTotal != nil {
 		RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
 	}
@@ -204,7 +233,10 @@ func IncRPCRegistryError(rpcMethod string, appType string) {
 	if RPCRegistryErrorsTotal == nil {
 		return
 	}
-	RPCRegistryErrorsTotal.WithLabelValues(rpcMethod, rpcRegistryAppTypeLabel(appType)).Inc()
+	label := rpcRegistryAppTypeLabel(appType)
+	rpcRegistryDropped.count(rpcMethod, func() {
+		RPCRegistryErrorsTotal.WithLabelValues(rpcMethod, label).Inc()
+	})
 }
 
 // rpcRegistryResultLabel returns result when it is a known result, and RPCRegistryResultError otherwise.

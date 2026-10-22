@@ -34,7 +34,7 @@ func TestRevokerApplyClampsToMaxTTL(t *testing.T) {
 func TestRevokerApplyWithoutMaxTTLKeepsExpireAt(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)
-	revoker := NewRevoker(store, node.Hub(), NewDisconnectQueue(10000, 100))
+	revoker := NewRevokerWithMaxTTL(store, node.Hub(), NewDisconnectQueue(10000, 100), nil)
 	clampsBefore := clampedCount(t, ClampSourceNotify)
 
 	farExpireAt := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()

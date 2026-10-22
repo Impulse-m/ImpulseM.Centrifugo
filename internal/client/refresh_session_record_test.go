@@ -39,7 +39,7 @@ func TestRefreshToSessionReachesTheConnection(t *testing.T) {
 			go func() {
 				_ = queue.Run(ctx)
 			}()
-			revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+			revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 
 			connectClaims := map[string]any{"iat": now}
 			if tt.connectID != "" {
@@ -246,7 +246,7 @@ func TestRefreshedSessionRevokedBeforeCoreStoresIdentity(t *testing.T) {
 	go func() {
 		_ = queue.Run(ctx)
 	}()
-	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 	client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{"iat": now}))
 
 	hook := func(_ rebindableClient) {

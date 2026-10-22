@@ -92,7 +92,7 @@ func TestPendingConnectionIsNotInUserIndexAndIsRevocableBySession(t *testing.T) 
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			go func() { _ = queue.Run(ctx) }()
-			revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+			revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 
 			client := connectRevokeTestClient(t, node, getConnTokenWithClaims(t, map[string]any{
 				"sub":        "42",
@@ -142,7 +142,7 @@ func TestConnectRevocationAfterTrackDisconnects(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = queue.Run(ctx) }()
-	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
+	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 	sessionKey, _ := accessrevoke.Key(revokeTestUUID)
 
 	var trackedAtHook int

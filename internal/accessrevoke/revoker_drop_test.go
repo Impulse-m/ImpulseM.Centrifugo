@@ -19,7 +19,7 @@ const (
 func newDroppingRevoker(t *testing.T, hub Hub, store *Store) (*Revoker, func()) {
 	t.Helper()
 	queue := NewDisconnectQueue(10000, 1)
-	revoker := NewRevoker(store, hub, queue)
+	revoker := NewRevokerWithMaxTTL(store, hub, queue, nil)
 	start := func() {
 		cancel, errCh := runQueue(t, queue)
 		t.Cleanup(func() {
@@ -182,7 +182,7 @@ func TestRetryEnqueuesEachConnectionOnce(t *testing.T) {
 		cancel()
 		<-errCh
 	})
-	revoker := NewRevoker(store, node.Hub(), queue)
+	revoker := NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 	for i := range 50 {
 		connectTestClient(t, node, fmt.Sprintf("user-1|s%d|0|100", i))
 	}

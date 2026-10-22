@@ -45,6 +45,8 @@ type retryKey struct {
 // A disconnect which finds the queue full is dropped and counted, and its key is kept. The queue goroutine re-evaluates
 // kept keys through the store once the queue has room: one key per drained item while the queue holds items,
 // and the next key in a row while it is empty. The refresh check rejects a connection within the token lifetime in any case.
+// A key whose retry pass dropped a disconnect again is held until the queue is at or below half of its size, so a user
+// with many connections is re-scanned once per half drain of the queue, not once per dequeue.
 // The kept keys are not capped: a key is one user or session, so the keys cost no more than the dropped disconnects, and
 // the retry walks only the connections of the key, never the whole node.
 type DisconnectQueue struct {
@@ -54,6 +56,7 @@ type DisconnectQueue struct {
 	mu       sync.Mutex
 	inflight map[string]queuedDisconnect
 	retry    map[retryKey]struct{}
+	held     map[retryKey]struct{}
 	retrier  func(key retryKey)
 }
 
@@ -66,29 +69,38 @@ func NewDisconnectQueue(ratePerSecond int, size int) *DisconnectQueue {
 	}
 }
 
-// Enqueue adds a disconnect without blocking. A connection which is closing or already queued is not queued again, and
-// the call returns true. It returns false when the queue is full, in which case the disconnect is dropped.
-func (q *DisconnectQueue) Enqueue(connection Connection, disconnect centrifuge.Disconnect, reason Reason) bool {
-	return q.enqueue(connection, disconnect, reason, nil)
-}
-
-// enqueueKeyed is Enqueue for a disconnect of key. A drop records key for a retry in the same critical section as the full
-// queue check, so the queue goroutine cannot drain the queue between the drop and the record.
+// enqueueKeyed adds a disconnect of key without blocking. A connection which is closing or already queued is not queued
+// again, and the call returns true. It returns false when the queue is full, in which case the disconnect is dropped and
+// key is kept for a retry in the same critical section as the full queue check, so the queue goroutine cannot drain the
+// queue between the drop and the record.
 func (q *DisconnectQueue) enqueueKeyed(
 	key retryKey,
 	connection Connection,
 	disconnect centrifuge.Disconnect,
 	reason Reason,
 ) bool {
-	return q.enqueue(connection, disconnect, reason, &key)
+	return q.enqueue(key, connection, disconnect, reason, false)
 }
 
-// enqueue adds the disconnect without blocking and records key, when it is not nil, if the queue is full.
-func (q *DisconnectQueue) enqueue(
+// requeueRetry is enqueueKeyed for a disconnect found by a retry pass of key. A drop by a retry pass is not a new dropped
+// disconnect, since the first drop counted it, and key is held until the queue is at or below half of its size.
+func (q *DisconnectQueue) requeueRetry(
+	key retryKey,
 	connection Connection,
 	disconnect centrifuge.Disconnect,
 	reason Reason,
-	key *retryKey,
+) bool {
+	return q.enqueue(key, connection, disconnect, reason, true)
+}
+
+// enqueue adds the disconnect without blocking. When the queue is full it counts the drop unless retrying is set, and it
+// keeps key for a retry, held when retrying is set.
+func (q *DisconnectQueue) enqueue(
+	key retryKey,
+	connection Connection,
+	disconnect centrifuge.Disconnect,
+	reason Reason,
+	retrying bool,
 ) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -111,22 +123,46 @@ func (q *DisconnectQueue) enqueue(
 		return true
 	default:
 	}
-	metrics.AccessRevokeDisconnectsDroppedTotal.Inc()
-	if key != nil {
-		q.keepRetryLocked(*key)
+	if !retrying {
+		metrics.AccessRevokeDisconnectsDroppedTotal.Inc()
 	}
+	q.keepRetryLocked(key, retrying)
 	return false
 }
 
-// keepRetryLocked keeps key for a retry. It is called with mu held.
-func (q *DisconnectQueue) keepRetryLocked(key retryKey) {
-	if _, kept := q.retry[key]; kept {
+// keepRetryLocked keeps key for a retry, in the held set when held is set. A key which is already held stays held. It is
+// called with mu held.
+func (q *DisconnectQueue) keepRetryLocked(key retryKey, held bool) {
+	if held {
+		delete(q.retry, key)
+		q.held = addRetryKey(q.held, key)
 		return
 	}
-	if q.retry == nil {
-		q.retry = make(map[retryKey]struct{})
+	if _, isHeld := q.held[key]; isHeld {
+		return
 	}
-	q.retry[key] = struct{}{}
+	q.retry = addRetryKey(q.retry, key)
+}
+
+// releaseHeldLocked moves the held keys to the retry set once the queue is at or below half of its size. It is called
+// with mu held.
+func (q *DisconnectQueue) releaseHeldLocked() {
+	if len(q.held) == 0 || len(q.items) > cap(q.items)/2 {
+		return
+	}
+	for key := range q.held {
+		q.retry = addRetryKey(q.retry, key)
+	}
+	q.held = nil
+}
+
+// addRetryKey adds key to keys, creating the set when it is nil, and returns the set.
+func addRetryKey(keys map[retryKey]struct{}, key retryKey) map[retryKey]struct{} {
+	if keys == nil {
+		keys = make(map[retryKey]struct{})
+	}
+	keys[key] = struct{}{}
+	return keys
 }
 
 // pending reports whether the connection is closing or queued, so a pass which re-evaluates it has nothing to queue.
@@ -184,6 +220,7 @@ func (q *DisconnectQueue) begin(connection Connection) {
 	if !connection.Closing() && connection.BeginDisconnect(queued.disconnect) {
 		metrics.AccessRevokeDisconnectsTotal.WithLabelValues(string(queued.reason)).Inc()
 	}
+	q.releaseHeldLocked()
 	q.mu.Unlock()
 	q.retryKept()
 }

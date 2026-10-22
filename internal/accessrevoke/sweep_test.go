@@ -43,7 +43,7 @@ func TestSweepRetriesDroppedDisconnects(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)
 	queue := NewDisconnectQueue(10000, 1)
-	NewRevoker(store, node.Hub(), queue)
+	NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
 	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")

@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testRetryKey is the key of the disconnects which the queue tests enqueue.
+var testRetryKey = retryKey{user: "test-user"}
+
 // fakeConnection models a Core client for the queue: BeginDisconnect marks it closing and records the disconnect once,
 // and Closing reports the mark. It stays in the session index, so it models a close which has not completed.
 type fakeConnection struct {
@@ -80,7 +83,7 @@ func TestDisconnectQueuePacesDisconnects(t *testing.T) {
 	for i := range 5 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
 		conns = append(conns, conn)
-		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	}
 
 	cancel, errCh := runQueue(t, queue)
@@ -118,9 +121,9 @@ func TestDisconnectQueueDropsWhenFull(t *testing.T) {
 	third := &fakeConnection{id: "third"}
 	dropped := counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total")
 
-	require.True(t, queue.Enqueue(first, centrifuge.DisconnectExpired, ReasonSession))
-	require.True(t, queue.Enqueue(second, centrifuge.DisconnectExpired, ReasonSession))
-	require.False(t, queue.Enqueue(third, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, first, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, second, centrifuge.DisconnectExpired, ReasonSession))
+	require.False(t, queue.enqueueKeyed(testRetryKey, third, centrifuge.DisconnectExpired, ReasonSession))
 
 	require.Equal(t, dropped+1, counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total"))
 	disconnects, _ := third.snapshot()
@@ -134,8 +137,8 @@ func TestDisconnectQueueEnqueuesConnectionOnce(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)
 	conn := &fakeConnection{id: "once"}
 
-	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
-	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	require.Len(t, queue.items, 1)
 
 	cancel, errCh := runQueue(t, queue)
@@ -149,7 +152,7 @@ func TestDisconnectQueueEnqueuesConnectionOnce(t *testing.T) {
 		return queuedCount(queue) == 0
 	}, 5*time.Second, 5*time.Millisecond)
 	require.True(t, conn.Closing())
-	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	require.Len(t, queue.items, 0)
 	require.Never(t, func() bool {
 		disconnects, _ := conn.snapshot()
@@ -167,9 +170,9 @@ func TestDisconnectQueueTerminalReplacesReconnectable(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)
 	conn := &fakeConnection{id: "upgrade"}
 
-	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
-	require.True(t, queue.Enqueue(conn, DisconnectUserBlocked, ReasonBlocked))
-	require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, DisconnectUserBlocked, ReasonBlocked))
+	require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	require.Len(t, queue.items, 1)
 
 	cancel, errCh := runQueue(t, queue)
@@ -191,7 +194,7 @@ func TestDisconnectQueueTerminalReplacesReconnectable(t *testing.T) {
 func TestDisconnectQueueSkipsClosingConnection(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 1)
 	filler := &fakeConnection{id: "filler"}
-	require.True(t, queue.Enqueue(filler, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, filler, centrifuge.DisconnectExpired, ReasonSession))
 	closing := &fakeConnection{id: "closing"}
 	closing.markClosing()
 	dropped := counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total")
@@ -212,8 +215,8 @@ func TestDisconnectQueueSkipsConnectionClosedWhileQueued(t *testing.T) {
 	queue := NewDisconnectQueue(1, 10)
 	first := &fakeConnection{id: "first"}
 	second := &fakeConnection{id: "second"}
-	require.True(t, queue.Enqueue(first, centrifuge.DisconnectExpired, ReasonSession))
-	require.True(t, queue.Enqueue(second, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, first, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, second, centrifuge.DisconnectExpired, ReasonSession))
 	first.markClosing()
 	counted := labeledCounterValue(t, disconnectsMetric, "reason", string(ReasonSession))
 
@@ -252,7 +255,7 @@ func TestDisconnectQueueRetriesOneKeyWhileItemsQueued(t *testing.T) {
 	queue.setRetrier(retrier)
 	for i := range 4 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
-		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	}
 	for i := range 3 {
 		conn := &fakeConnection{id: "dropped-" + strconv.Itoa(i)}
@@ -289,7 +292,7 @@ func TestDisconnectQueueRetriesNextKeyWhileEmpty(t *testing.T) {
 	queue.setRetrier(retrier)
 	for i := range 2 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
-		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	}
 	for i := range 3 {
 		conn := &fakeConnection{id: "dropped-" + strconv.Itoa(i)}
@@ -366,7 +369,7 @@ func TestDisconnectQueueRetriesAboveHalf(t *testing.T) {
 	queue.setRetrier(retrier)
 	for i := range 10 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
-		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	}
 	dropped := &fakeConnection{id: "dropped"}
 	require.False(t, queue.enqueueKeyed(retryKey{user: "user-1"}, dropped, centrifuge.DisconnectExpired, ReasonBlocked))
@@ -394,10 +397,52 @@ func TestDisconnectQueueFillGauge(t *testing.T) {
 	defer metrics.BindAccessRevokeDisconnectQueue(nil)
 	for i := range 3 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
-		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
 	}
 
 	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_disconnect_queue_fill"))
+}
+
+// TestDisconnectQueueHoldsKeyDroppedByRetry gives one user 100 connections and a queue of 10, and dequeues 60 times. Each
+// retry pass of the user re-drops most of its connections, so the key is held until the queue is at or below half, and a
+// pass runs about once per 5 dequeues. A pass per dequeue would scan the user 60 times, and the bound is 13 passes.
+// The drops of the passes are not counted as dropped disconnects, so only the first drop counts.
+func TestDisconnectQueueHoldsKeyDroppedByRetry(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 10)
+	for i := range 10 {
+		conn := &fakeConnection{id: "fill-" + strconv.Itoa(i)}
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
+	}
+	userConns := make([]*fakeConnection, 100)
+	for i := range userConns {
+		userConns[i] = &fakeConnection{id: "user-" + strconv.Itoa(i)}
+	}
+	userKey := retryKey{user: "heavy-user"}
+	require.False(t, queue.enqueueKeyed(userKey, userConns[0], centrifuge.DisconnectExpired, ReasonBlocked))
+	droppedBefore := counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total")
+
+	passes := 0
+	queue.setRetrier(func(key retryKey) {
+		passes++
+		for _, conn := range userConns {
+			if queue.pending(conn) {
+				continue
+			}
+			queue.requeueRetry(key, conn, centrifuge.DisconnectExpired, ReasonBlocked)
+		}
+	})
+	for range 60 {
+		select {
+		case conn := <-queue.items:
+			queue.begin(conn)
+		default:
+			t.Fatal("queue ran empty before 60 dequeues")
+		}
+	}
+
+	require.Positive(t, passes)
+	require.LessOrEqual(t, passes, 13)
+	require.Equal(t, droppedBefore, counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total"))
 }
 
 // TestRetryKeysAreNotCapped drops disconnects under 10000 distinct keys while the queue holds one. Every key is kept, and
@@ -405,7 +450,7 @@ func TestDisconnectQueueFillGauge(t *testing.T) {
 func TestRetryKeysAreNotCapped(t *testing.T) {
 	queue := NewDisconnectQueue(10000, 1)
 	queued := &fakeConnection{id: "queued"}
-	require.True(t, queue.Enqueue(queued, centrifuge.DisconnectExpired, ReasonSession))
+	require.True(t, queue.enqueueKeyed(testRetryKey, queued, centrifuge.DisconnectExpired, ReasonSession))
 	for i := range 10000 {
 		key := retryKey{user: strconv.Itoa(i)}
 		require.False(t, queue.enqueueKeyed(key, &fakeConnection{id: "dropped"}, centrifuge.DisconnectExpired, ReasonSession))

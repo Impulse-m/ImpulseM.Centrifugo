@@ -65,7 +65,7 @@ func newTestRevoker(t *testing.T, node *centrifuge.Node, store *Store) *Revoker 
 		cancel()
 		<-errCh
 	})
-	return NewRevoker(store, node.Hub(), queue)
+	return NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
 }
 
 func waitConnections(t *testing.T, node *centrifuge.Node, userID string, count int) {

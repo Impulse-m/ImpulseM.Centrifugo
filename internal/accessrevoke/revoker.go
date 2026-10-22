@@ -32,11 +32,6 @@ type Revoker struct {
 	maxTTL func() time.Duration
 }
 
-// NewRevoker creates a Revoker which applies the expire_at of a notification as it is.
-func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
-	return NewRevokerWithMaxTTL(store, hub, queue, nil)
-}
-
 // NewRevokerWithMaxTTL creates a Revoker which clamps the expire_at of every notification it applies to the limit
 // maxTTL returns, read at each apply, so a config reload applies. A nil maxTTL means no limit.
 func NewRevokerWithMaxTTL(store *Store, hub Hub, queue *DisconnectQueue, maxTTL func() time.Duration) *Revoker {
@@ -87,7 +82,7 @@ func (r *Revoker) RevokeSession(
 	}
 	sessionKey, _ := Key(sessionID)
 	closeConn := closeWith(r.store.sessionDisconnect(sessionKey), centrifuge.DisconnectExpired)
-	r.disconnectSessionConnections(sessionKey, closeConn)
+	r.disconnectSessionConnections(sessionKey, closeConn, false)
 	if userID == "" {
 		return nil
 	}
@@ -171,10 +166,14 @@ func (r *Revoker) disconnectMatching(
 
 // disconnectSessionConnections enqueues disconnect of the indexed connections of session. Such connections
 // may have no user, so disconnectMatching does not find them all. A dropped disconnect is kept under the
-// session for a retry.
-func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) {
+// session for a retry. A retry pass passes retrying, so its drops are not counted again.
+func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect, retrying bool) {
 	key := retryKey{session: session}
 	for _, conn := range r.store.SessionConnections().Connections(session) {
+		if retrying {
+			r.queue.requeueRetry(key, conn, disconnect, ReasonSession)
+			continue
+		}
 		r.queue.enqueueKeyed(key, conn, disconnect, ReasonSession)
 	}
 }
@@ -197,7 +196,7 @@ func (r *Revoker) retry(key retryKey) {
 		return
 	}
 	closeConn := closeWith(r.store.sessionDisconnect(key.session), centrifuge.DisconnectExpired)
-	r.disconnectSessionConnections(key.session, closeConn)
+	r.disconnectSessionConnections(key.session, closeConn, true)
 }
 
 // retryConnection disconnects a local connection which the store still rejects, and keeps a dropped disconnect under key.
@@ -209,6 +208,6 @@ func (r *Revoker) retryConnection(client *centrifuge.Client, opts CheckOptions, 
 	}
 	disconnect, reason, revoked := CheckConnection(r.store, client, opts, stageRetry)
 	if revoked {
-		r.queue.enqueueKeyed(key, client, disconnect, reason)
+		r.queue.requeueRetry(key, client, disconnect, reason)
 	}
 }

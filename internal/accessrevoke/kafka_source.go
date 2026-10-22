@@ -30,6 +30,9 @@ const (
 	seedBackoffMax time.Duration = 10 * time.Second
 	// seedLogInterval is the shortest time between two warnings of a failed seed.
 	seedLogInterval time.Duration = 30 * time.Second
+	// skipLogInterval is the shortest time between two warnings of skipped records of one reason, and between two
+	// warnings of records which expire beyond the window. The metrics count every record.
+	skipLogInterval time.Duration = 10 * time.Second
 )
 
 // KafkaSource reads access revocation events from a Kafka topic and applies them with a Revoker.
@@ -43,6 +46,10 @@ type KafkaSource struct {
 	clock        func() time.Time
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
+	// skipLogs limits the warnings of skipped records, one limiter per reason.
+	skipLogs map[string]*tools.IntervalLimiter
+	// beyondWindowLog limits the warnings of events which expire beyond the window.
+	beyondWindowLog *tools.IntervalLimiter
 
 	// readinessMu guards the readiness timer fields below.
 	readinessMu sync.Mutex
@@ -76,9 +83,21 @@ func newKafkaSource(
 			LagThreshold:   source.LagThreshold.ToDuration(),
 			Strict:         source.RejectConnectOnLag,
 		}, clock),
-		clock:   clock,
-		seedLog: tools.NewIntervalLimiter(seedLogInterval),
+		clock:           clock,
+		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
+		skipLogs:        newSkipLogs(),
+		beyondWindowLog: tools.NewIntervalLimiter(skipLogInterval),
 	}
+}
+
+// newSkipLogs returns a limiter of the warnings for each skip reason.
+func newSkipLogs() map[string]*tools.IntervalLimiter {
+	reasons := []string{skipUnknownMethod, skipDecodeError, skipValidation, skipDisabled, skipStale, skipApplyError}
+	limiters := make(map[string]*tools.IntervalLimiter, len(reasons))
+	for _, reason := range reasons {
+		limiters[reason] = tools.NewIntervalLimiter(skipLogInterval)
+	}
+	return limiters
 }
 
 // Ready implements Source.
@@ -289,11 +308,13 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 	}
 	if notification.Kind != KindUnblockUser && notification.ExpireAt-recordTime.Unix() > int64(s.source.Window.ToDuration()/time.Second) {
 		metrics.AccessRevokeSourceEventsBeyondWindow.Inc()
-		log.Warn().
-			Str("kind", notification.Kind).
-			Int64("expire_at", notification.ExpireAt).
-			Time("record_time", recordTime).
-			Msg("access revocation event expires beyond source window, long bans must be re-emitted")
+		if s.beyondWindowLog.Allow() {
+			log.Warn().
+				Str("kind", notification.Kind).
+				Int64("expire_at", notification.ExpireAt).
+				Time("record_time", recordTime).
+				Msg("access revocation event expires beyond source window, long bans must be re-emitted")
+		}
 	}
 	err = s.revoker.Apply(notification)
 	if err != nil {
@@ -306,6 +327,10 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 // skip counts and logs a record which is not applied.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
+	limiter, ok := s.skipLogs[reason]
+	if ok && !limiter.Allow() {
+		return
+	}
 	log.Warn().
 		Err(err).
 		Str("reason", reason).

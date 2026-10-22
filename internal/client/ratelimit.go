@@ -3,9 +3,11 @@ package client
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
@@ -145,7 +147,7 @@ func (h *Handler) rateLimitCommandRead(
 
 // rateLimitRefusal returns the error of a command which a rate limit refused with the given wait. An RPC of a method in
 // the registry gets rpc.registry.errors.rate_limited when its code is set: a temporary error whose metadata holds the
-// wait in whole seconds. Every other refusal is 111 too many requests. The error is read from the running config per
+// wait in whole seconds, and whose app type has the placeholder of the wait replaced by the same seconds. Every other refusal is 111 too many requests. The error is read from the running config per
 // refusal, and a new error value is built each time.
 func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait time.Duration) error {
 	if op != ratelimit.OperationRPC || !h.rpcRegistry.Enabled() || h.rpcRegistry.Lookup(name) == nil {
@@ -155,9 +157,13 @@ func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait tim
 	if cfg.Code == 0 {
 		return centrifuge.ErrorTooManyRequests
 	}
+	seconds := strconv.FormatInt(retryAfterSeconds(wait), 10)
 	protoErr := registryErrorValue(cfg)
 	protoErr.Temporary = true
-	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: strconv.FormatInt(retryAfterSeconds(wait), 10)}
+	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: seconds}
+	// The placeholder of the app type takes the same seconds as the metadata. The errors counter counts the expanded type.
+	protoErr.AppType = strings.ReplaceAll(cfg.AppType, configtypes.RPCRetryAfterPlaceholder, seconds)
+	metrics.IncRPCRegistryError(name, protoErr.AppType)
 	return protoErr
 }
 

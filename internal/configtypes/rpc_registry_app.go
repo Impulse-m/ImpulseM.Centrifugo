@@ -7,6 +7,14 @@ import (
 // RPCAppErrorTypePattern is the format of an application error type, from a trailer, a status message or a transform.
 var RPCAppErrorTypePattern = regexp.MustCompile(`^[A-Z0-9_]{1,64}$`)
 
+// RPCRetryAfterPlaceholder is the placeholder of the wait in rpc.registry.errors.rate_limited.app_type. A refusal replaces
+// each one with the whole-second wait of its x-centrifugo-retry-after metadata.
+const RPCRetryAfterPlaceholder = "{retry_after}"
+
+// RPCRetryAfterMaxValue is the widest value the placeholder takes. A wait is a duration of at most 9223372037 whole seconds,
+// which has ten digits, so config checks the app type with this value in place of each placeholder.
+const RPCRetryAfterMaxValue = "9999999999"
+
 // RPCTransformError is the protocol error of a gRPC status transform. Besides the fields of TransformError it
 // sets the application code and type. They fill what the backend did not send: its trailers win.
 type RPCTransformError struct {

@@ -6,12 +6,15 @@ import (
 	"time"
 )
 
-// The refusal cache is hand-rolled, although github.com/maypok86/otter/v2 is in the module graph. Its bounded caches run
-// periodic maintenance, by default in goroutines (see the Options doc), which the no-polling rule forbids. The sweep
+// The refusal cache is hand-rolled, although github.com/maypok86/otter/v2 is in the module graph. Otter can run its
+// maintenance inline, but its eviction is policy-driven across the whole cache, while this design skips an insert into
+// a full shard and sweeps the ended refusals of that shard. The behaviour the design needs is not otter's. The sweep
 // below is the only maintenance, and it runs inside an insert.
 
 const (
 	// refusalCacheCapacity is the number of refusals a node keeps for redis_user_command limits, in all shards together.
+	// Each shard keeps refusalCacheCapacity / refusalShardCount refusals, rounded down, so the effective capacity is
+	// 99968 refusals. The README states 100000 as the upper bound.
 	refusalCacheCapacity = 100000
 	// refusalShardCount is the number of independent shards of the refusal cache. Must be a power of two.
 	refusalShardCount = 64

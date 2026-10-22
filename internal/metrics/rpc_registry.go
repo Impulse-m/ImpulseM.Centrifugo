@@ -81,6 +81,36 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 	m.calls[rpcRegistryResultIndex(result)].Inc()
 }
 
+// DropRPCRegistryMethodSeries deletes the calls_total and retransmits series of a method which left the
+// registry, so a removed name does not keep its series for the life of the process. A call of the old
+// method which is still running keeps counting on the detached children, which are not exported.
+func DropRPCRegistryMethodSeries(rpcMethod string) {
+	if RPCRegistryCallsTotal != nil {
+		RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+	}
+	if RPCRegistryRetransmitsTotal != nil {
+		RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)
+	}
+}
+
+// DropRPCRegistryTargetSeries deletes the proxy metric series of a target which left the registry. It
+// deletes the children which NewProxyCallChildren resolves with the grpc protocol and the rpc kind.
+func DropRPCRegistryTargetSeries(target string) {
+	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
+		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
+		return
+	}
+	ProxyCallDurationHistogram.DeleteLabelValues("grpc", "rpc", target)
+	ProxyCallErrorCount.DeleteLabelValues("grpc", "rpc", target)
+	ProxyCallInflightRequests.DeleteLabelValues("grpc", "rpc", target)
+	// The summary is an ObserverVec interface, and only its vector type can delete a child.
+	if summary, ok := ProxyCallDurationSummary.(interface {
+		DeleteLabelValues(lvs ...string) bool
+	}); ok {
+		summary.DeleteLabelValues("grpc", "rpc", target)
+	}
+}
+
 // rpcRegistryResults is the only list of the RPCRegistryResult values. The calls_total children of a
 // method are kept in this order.
 var rpcRegistryResults = [...]string{

@@ -225,10 +225,12 @@ func (r *Registry) stage(p *prepared, reloads *metrics.RPCRegistryReloadMetrics)
 		if !settled.CompareAndSwap(false, true) {
 			return
 		}
+		old := r.current.Load()
 		r.cfg = p.cfg
 		r.source = p.source
 		r.current.Store(p.next)
 		r.retire(p.removed, p.drain)
+		dropRemovedSeries(old, p.next)
 		reloads.Inc(true)
 		r.reloadMu.Unlock()
 	}
@@ -327,6 +329,25 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 		}
 	}
 	return next, removed, created, nil
+}
+
+// dropRemovedSeries deletes the metric series of the targets and methods which the new table drops.
+// A name the new table keeps keeps its series, also when its target is replaced. Old is nil for the
+// first table, which has nothing to drop.
+func dropRemovedSeries(old *table, next *table) {
+	if old == nil {
+		return
+	}
+	for name := range old.targets {
+		if _, ok := next.targets[name]; !ok {
+			metrics.DropRPCRegistryTargetSeries(name)
+		}
+	}
+	for name := range old.methods {
+		if _, ok := next.methods[name]; !ok {
+			metrics.DropRPCRegistryMethodSeries(name)
+		}
+	}
 }
 
 // retire closes the connections of targets which left the table once the drain timeout has

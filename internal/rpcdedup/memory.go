@@ -15,9 +15,10 @@ import (
 const DefaultShards = 64
 
 // RecordOverhead is the size counted for a record besides its reply or the encoded form of its error, so that records
-// without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry of the
-// done map of the shard which holds the record. The scope string is not counted: the records of a scope share one copy of it. It is the value of configtypes.RPCDedupRecordOverhead, which the reply
-// limit of the configuration subtracts from the share of a record.
+// without a reply count too. It covers the storedRecord struct, which is 168 bytes on a 64-bit platform, and the entry
+// of the done map of the shard which holds the record. The scope string is not counted: the records of a scope share one
+// copy of it. It is the value of configtypes.RPCDedupRecordOverhead, which the reply limit of the configuration
+// subtracts from the share of a record.
 const RecordOverhead = configtypes.RPCDedupRecordOverhead
 
 // zeroFingerprint is the fingerprint of a record which has no call, such as a cancelled one.

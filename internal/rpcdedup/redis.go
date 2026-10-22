@@ -3,7 +3,6 @@ package rpcdedup
 import (
 	"context"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/centrifugal/centrifuge"
@@ -11,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/redis/rueidis"
+	"golang.org/x/sync/errgroup"
 )
 
 // InflightGrace is the time an in-flight record is kept beyond the method timeout of its call. The owner
@@ -283,24 +283,13 @@ func ackShards(
 	groups map[int][]rueidis.LuaExec,
 	flush func(ctx context.Context, index int, execs []rueidis.LuaExec) error,
 ) error {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
+	var eg errgroup.Group
 	for index, execs := range groups {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := flush(ctx, index, execs); err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-			}
-		}()
+		eg.Go(func() error {
+			return flush(ctx, index, execs)
+		})
 	}
-	wg.Wait()
-	return firstErr
+	return eg.Wait()
 }
 
 // Connected reports whether the connector has shards.

@@ -26,7 +26,8 @@ type cancelNotifier struct {
 	workers int
 }
 
-// newCancelNotifier returns a notifier which sends each notice with send.
+// newCancelNotifier returns a notifier which sends each notice with send. send must not be nil: the callers check the
+// notifier of the node before they queue a notice.
 func newCancelNotifier(send func(nodeID string, key Key)) *cancelNotifier {
 	return &cancelNotifier{send: send, pending: map[cancelNotice]struct{}{}}
 }

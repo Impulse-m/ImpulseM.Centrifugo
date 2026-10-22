@@ -3,7 +3,6 @@ package rpcdedup
 import (
 	"context"
 	"errors"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,9 +48,6 @@ const (
 	sharedCompleteAttempts   = 2
 	sharedCompleteBackoff    = 50 * time.Millisecond
 	sharedCompleteMaxBackoff = 500 * time.Millisecond
-	// sharedDefaultWakeWorkers is the number of wakes of completed calls which are written in the background at once. A
-	// wake beyond it is written by the completion, see Shared.scheduleWake.
-	sharedDefaultWakeWorkers = 64
 )
 
 // SharedObserver observes the shared tier. Methods may be called from any goroutine.
@@ -169,11 +165,6 @@ type Shared struct {
 	acks         chan Key
 	errorLog     *tools.IntervalLimiter
 	refusedLog   *tools.IntervalLimiter
-	// wakeMu guards wakePending, the wakes of completed calls which are not written yet, one per key, see scheduleWake.
-	wakeMu      sync.Mutex
-	wakePending map[Key]*wakeJob
-	// wakeSlots holds one token per wake which runs in the background, see scheduleWake.
-	wakeSlots chan struct{}
 	// remoteWaits is the number of waits for calls on another node which run on this node.
 	remoteWaits atomic.Int64
 	// lastWaitEnd is the time in Unix nanoseconds when the last of them ended, zero when none did.
@@ -238,17 +229,9 @@ func NewShared(opts SharedOptions) *Shared {
 		acks:           make(chan Key, opts.AckQueueSize),
 		errorLog:       tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusedLog:     tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
-		wakePending:    make(map[Key]*wakeJob),
-		wakeSlots:      make(chan struct{}, sharedDefaultWakeWorkers),
 	}
 	s.cancels = newCancelNotifier(opts.Notifier)
 	return s
-}
-
-// wakeJob is a wake of the waiters of a completed call which is not written yet. See Shared.scheduleWake.
-type wakeJob struct {
-	// waiters are the nodes which the wake is written for.
-	waiters []string
 }
 
 // Begin implements Store. A call which the node runs is found in the node-local store. A call which runs on another
@@ -580,8 +563,7 @@ func (s *Shared) stopWatching() {
 
 // Complete implements Store. The shared tier is written first, so a client which got the answer and reconnected to
 // another node finds it there; then the node-local store keeps the record and wakes the local duplicates; then the
-// waiters of the record are woken in the background, so the reply does not wait for them. A flight which runs without
-// the shared tier skips it.
+// waiters of the record are woken in the shared tier. A flight which runs without the shared tier skips it.
 func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	// The error is encoded once, and the encoded form is passed on to both tiers.
 	errJSON := encodeError(rec.Err)
@@ -594,7 +576,7 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	waiters, stored := s.completeShared(ctx, key, flight, rec, errJSON)
 	rec.sharedUncached = stored && overReplyLimit(rec, errJSON, s.maxReplyBytes)
 	s.local.complete(key, flight, rec, errJSON)
-	s.scheduleWake(key, waiters)
+	s.wakeWaiters(ctx, key, waiters)
 	return nil
 }
 
@@ -610,64 +592,9 @@ func (s *Shared) completeLimit(flight *Flight) time.Time {
 	return limit
 }
 
-// scheduleWake writes the wakes of a completed call to its waiters in the background, each within the IO timeout of its
-// own. At most one wake per key is pending: a wake which is not yet written takes the waiters of a later completion of
-// the same key too. At most sharedDefaultWakeWorkers wakes run at once; a wake beyond them is written by the caller, so
-// that no wake is dropped. Nothing is scheduled without the wakeup, or without waiters. Stop does not wait for the
-// wakes: a wake which is lost leaves its wait to its check.
-func (s *Shared) scheduleWake(key Key, waiters []string) {
-	if !s.wakeup || len(waiters) == 0 {
-		return
-	}
-	s.wakeMu.Lock()
-	if job := s.wakePending[key]; job != nil {
-		job.waiters = appendMissing(job.waiters, waiters)
-		s.wakeMu.Unlock()
-		return
-	}
-	select {
-	case s.wakeSlots <- struct{}{}:
-	default:
-		s.wakeMu.Unlock()
-		s.wakeNow(key, waiters)
-		return
-	}
-	job := &wakeJob{waiters: waiters}
-	s.wakePending[key] = job
-	s.wakeMu.Unlock()
-	go s.runWake(key, job)
-}
-
-// runWake writes the wake of job, which holds one of the wake slots until it ends. The job leaves the pending set before
-// the write, so a completion of the same key which comes meanwhile schedules a wake of its own.
-func (s *Shared) runWake(key Key, job *wakeJob) {
-	s.wakeMu.Lock()
-	delete(s.wakePending, key)
-	waiters := job.waiters
-	s.wakeMu.Unlock()
-	s.wakeNow(key, waiters)
-	<-s.wakeSlots
-}
-
-// wakeNow writes the wakes of key to waiters, within the IO timeout from now.
-func (s *Shared) wakeNow(key Key, waiters []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
-	defer cancel()
-	s.wakeWaiters(ctx, key, waiters)
-}
-
-// appendMissing appends the nodes of extra which list does not hold yet.
-func appendMissing(list []string, extra []string) []string {
-	for _, node := range extra {
-		if !slices.Contains(list, node) {
-			list = append(list, node)
-		}
-	}
-	return list
-}
-
 // wakeWaiters writes a wake for each of the waiter nodes of key, in the shared tier, within ctx. Nothing is written
-// without the wakeup, or without waiters. A failed wake is counted and logged; its wait is checked.
+// without the wakeup, or without waiters. It runs after the local flight is done, so the local duplicates are answered
+// first. A failed wake is counted and logged; its wait is checked.
 func (s *Shared) wakeWaiters(ctx context.Context, key Key, waiters []string) {
 	if !s.wakeup || len(waiters) == 0 {
 		return

@@ -441,33 +441,13 @@ func TestSharedCompleteWakesWaiters(t *testing.T) {
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
 	require.False(t, flightOpen(owner))
-	requireWakeCallsEventually(t, fx, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}})
-	requireWokenEventually(t, fx, [2]int{2, 0})
+	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}}, fx.backend.wakeCalls())
+	require.Equal(t, [2]int{2, 0}, fx.woke)
 }
 
-// requireWakeCallsEventually waits until the wake calls of the fake backend are want, since the owner writes its wakes in
-// the background.
-func requireWakeCallsEventually(t *testing.T, fx *sharedFixture, want []wakeCall) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return len(fx.backend.wakeCalls()) >= len(want)
-	}, 2*time.Second, time.Millisecond)
-	require.Equal(t, want, fx.backend.wakeCalls())
-}
-
-// requireWokenEventually waits until the wakes which the observer of the fixture counted are want.
-func requireWokenEventually(t *testing.T, fx *sharedFixture, want [2]int) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		fx.mu.Lock()
-		defer fx.mu.Unlock()
-		return fx.woke == want
-	}, 2*time.Second, time.Millisecond)
-}
-
-// TestSharedCompleteRepliesBeforeWake pins that the owner's completion does not wait for the wake writes: the wake blocks
-// until the test releases it, and Complete still returns.
-func TestSharedCompleteRepliesBeforeWake(t *testing.T) {
+// TestSharedCompleteWaitsForWakeWrites pins that the owner's completion returns after the wake writes: the wake blocks
+// until the test releases it, and Complete does not return before then.
+func TestSharedCompleteWaitsForWakeWrites(t *testing.T) {
 	fx := newSharedFixtureWakeup(t)
 	owner := NewCallFlight(sharedFingerprintA, time.Second)
 	_, err := fx.shared.Begin(sharedKey, owner)
@@ -481,21 +461,21 @@ func TestSharedCompleteRepliesBeforeWake(t *testing.T) {
 		done <- fx.shared.Complete(sharedKey, owner, sharedWakeupRecord)
 	}()
 	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Complete waited for the wake writes")
+	case <-done:
+		t.Fatal("Complete returned before the wake was written")
+	case <-time.After(100 * time.Millisecond):
 	}
-	require.False(t, flightOpen(owner))
-	require.Eventually(t, func() bool {
-		return len(fx.backend.wakeCalls()) == 1
-	}, 2*time.Second, time.Millisecond, "the wake is written in the background")
-	fx.mu.Lock()
-	require.Equal(t, [2]int{0, 0}, fx.woke, "the wake is still blocked")
-	fx.mu.Unlock()
+	require.Equal(t, 1, len(fx.backend.wakeCalls()), "the wake write has started")
 
 	close(fx.backend.wakeRelease)
-	requireWokenEventually(t, fx, [2]int{1, 0})
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Complete did not return after the wake was written")
+	}
+	require.False(t, flightOpen(owner))
+	require.Equal(t, [2]int{1, 0}, fx.woke)
 }
 
 func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
@@ -508,7 +488,7 @@ func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
 	fx.backend.wakeErr = errors.New("wake failed")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	requireWokenEventually(t, fx, [2]int{0, 2})
+	require.Equal(t, [2]int{0, 2}, fx.woke)
 	require.False(t, flightOpen(owner))
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply, "the local record is kept")
 }
@@ -521,7 +501,7 @@ func TestSharedCompleteAbandonedWakesWaiters(t *testing.T) {
 	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Abandoned: true, NotRun: true}))
-	requireWakeCallsEventually(t, fx, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}})
+	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}}, fx.backend.wakeCalls())
 }
 
 func TestSharedCompleteNotOwnedWakesNobody(t *testing.T) {

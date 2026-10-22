@@ -93,17 +93,26 @@ func (p *poller) check() {
 		p.logFailure(fmt.Errorf("registry file of %d bytes is over the poll limit of %d bytes, keeping the current registry", info.Size(), maxPollFileSize))
 		return
 	}
-	snap, err := snapshotFile(path)
+	snap, err := snapshotFile(path, maxPollFileSize)
 	if err != nil {
 		p.logFailure(err)
 		return
 	}
+	p.apply(path, source, snap)
+}
+
+// apply publishes snap, the content of the file at path which the poll read while the registry had
+// read as its source. It takes reloadMu. A reload which was applied while the file was read has
+// changed the source, and that reload is newer than snap, so snap is dropped and the next tick
+// compares the file with the new source.
+func (p *poller) apply(path string, read fileSource, snap *fileSnapshot) {
+	r := p.registry
 	r.reloadMu.Lock()
-	if !r.cfg.Enabled || r.cfg.File != path {
+	if !r.cfg.Enabled || r.cfg.File != path || r.source != read {
 		r.reloadMu.Unlock()
 		return
 	}
-	cfg = r.cfg
+	cfg := r.cfg
 	if snap.hash == r.source.hash {
 		// A touch without a change of content. Remember the new stat, so the next check does not read
 		// the file again.

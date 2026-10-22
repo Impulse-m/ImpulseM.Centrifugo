@@ -171,7 +171,7 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 	switch {
 	case cfg.Enabled && cfg.File != "":
 		if snap == nil {
-			loaded, err := snapshotFile(cfg.File)
+			loaded, err := snapshotFile(cfg.File, 0)
 			if err != nil {
 				return nil, err
 			}

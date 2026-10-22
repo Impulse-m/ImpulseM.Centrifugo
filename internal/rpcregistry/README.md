@@ -123,6 +123,8 @@ Metadata sent with each call. Later sources win:
 5. `x-forwarded-for` with the client address, as resolved by `client_address`. When the address is not resolved, no `x-forwarded-for` is sent, even if a source above carried one. Clients cannot set it: the name is reserved;
 6. `traceparent` and `tracestate` from the trace context of the call.
 
+The connect-time headers kept on a connection are only those named in some `emulated_headers` list, of a proxy or of a target. A connect header which is in a proxy's `http_headers` and in no `emulated_headers` list is dropped at connect, so the log hint about such a name, which the proxy writes for a migration, is not written while an emulated header list is in use.
+
 ## Connection identity
 
 A connection keeps its user and its auth class across refreshes. Two parts decide what a refresh may change: the pending connection, and the rebind.

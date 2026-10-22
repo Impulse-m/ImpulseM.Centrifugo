@@ -81,11 +81,11 @@ func requireRetryAfterShape(t *testing.T, metadata map[string]string, maxSeconds
 	require.LessOrEqual(t, seconds, maxSeconds)
 }
 
-// The wait is at most 1.2 s, so the retry-after value is at most 2 whatever the time between the two commands.
+// The wait is at most an hour, so the retry-after value is at most 3600 whatever the time between the two commands.
 func TestRPCRefusalConfiguredError(t *testing.T) {
 	reg := rateLimitedRegistry()
 	reg.Errors.RateLimited.Code = 400
-	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(1200*time.Millisecond, 1), reg)
+	_, node := newRPCRateLimitNode(t, rpcRateLimitOf(time.Hour, 1), reg)
 	client, transport, _ := connectTestClient(t, node, 0)
 
 	sendRateLimitCommand(client, rpcRateLimitCommand(2, "users.get"))
@@ -99,7 +99,7 @@ func TestRPCRefusalConfiguredError(t *testing.T) {
 	require.True(t, reply.Error.Temporary)
 	require.Equal(t, int32(17), reply.Error.AppCode)
 	require.Equal(t, "example.throttle", reply.Error.AppType)
-	requireRetryAfterShape(t, reply.Error.Metadata, 2)
+	requireRetryAfterShape(t, reply.Error.Metadata, 3600)
 }
 
 // The wait is at most a minute, so the retry-after value is at most 60 whatever the time between the two commands.

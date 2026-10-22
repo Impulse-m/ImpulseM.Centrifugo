@@ -174,10 +174,9 @@ func TestRedisLimiterRealTimeSmoke(t *testing.T) {
 		l := newIntegrationLimiter(t, cfg, uniquePrefix())
 		require.Zero(t, l.CommandAllowed("42", OperationPublish, ""), algo.Name())
 		require.Zero(t, l.CommandAllowed("42", OperationPublish, ""), algo.Name())
-		// A window boundary between the calls can allow the third one, so only a refusal is checked.
+		// The third call is refused, and the wait until the next call is allowed is within the one second interval.
 		wait := l.CommandAllowed("42", OperationPublish, "")
-		if wait > 0 {
-			require.LessOrEqual(t, wait, time.Second, algo.Name())
-		}
+		require.Positive(t, wait, algo.Name())
+		require.LessOrEqual(t, wait, time.Second, algo.Name())
 	}
 }

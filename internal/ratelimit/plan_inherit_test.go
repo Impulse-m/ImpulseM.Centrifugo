@@ -50,6 +50,33 @@ func TestMapPublishOverrideOnlyKeepsPublishForOtherNamespaces(t *testing.T) {
 	require.Positive(t, p.allow(slots, now, OperationPublish, "news"))
 }
 
+func TestOwnBaseKeepsOwnBaseOverParentOverride(t *testing.T) {
+	ops := configtypes.RateLimitOperations{
+		Publish: configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testList(time.Minute, 1),
+			NamespaceOverrides: configtypes.RateLimitNamespaceOverrides{
+				{NamespaceName: "chat", Enabled: true, Buckets: testList(time.Minute, 100)},
+			},
+		},
+		MapPublish: configtypes.RateLimitChannelBuckets{Enabled: true, Buckets: testList(time.Minute, 3)},
+	}
+	p := newCommandPlan(configtypes.RateLimitClientCommand{RateLimitOperations: ops})
+	// A map publish with its own base buckets keeps them in every namespace, not the publish override of chat.
+	require.Same(t, p.ops[OperationMapPublish].base, p.resolve(OperationMapPublish, "chat"))
+	require.Same(t, p.ops[OperationMapPublish].base, p.resolve(OperationMapPublish, "news"))
+	require.NotSame(t, p.ops[OperationPublish].overrides["chat"], p.resolve(OperationMapPublish, "chat"))
+	require.Same(t, p.ops[OperationPublish].overrides["chat"], p.resolve(OperationPublish, "chat"))
+
+	// The own budget is 3 per minute in chat, so the fourth map publish is refused whatever publish allows there.
+	const now int64 = 1_000_000_000_000
+	slots := make([]int64, p.numSlots)
+	for range 3 {
+		require.Zero(t, p.allow(slots, now, OperationMapPublish, "chat"))
+	}
+	require.Positive(t, p.allow(slots, now, OperationMapPublish, "chat"))
+}
+
 func TestInheritedOverridesKeepOwnOverrides(t *testing.T) {
 	ops := configtypes.RateLimitOperations{
 		Publish: configtypes.RateLimitChannelBuckets{

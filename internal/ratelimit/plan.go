@@ -84,10 +84,7 @@ func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 	var worst int64
 	for i := range buckets {
 		sb := &buckets[i]
-		wait := gcraWait(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
-		if wait > worst {
-			worst = wait
-		}
+		worst = max(worst, gcraWait(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now))
 	}
 	return worst
 }
@@ -311,18 +308,19 @@ func wireOperations(
 	inheritUnset(ops, &cfg.Untrack, OperationUntrack, OperationSubRefresh)
 }
 
-// inheritUnset makes op resolve the buckets it has no own of from parent, see wireOperations. The base is inherited
-// when own has no base buckets. Namespace overrides of parent are inherited for the namespaces which own does not
-// override, so a namespace override of op never leaves the other namespaces unlimited.
+// inheritUnset makes op resolve the buckets it has no own of from parent, see wireOperations. Nothing is inherited when
+// own has base buckets: then op keeps them, in every namespace. Otherwise the base and the namespace overrides of parent
+// are inherited, and the namespace overrides of op take precedence over them.
 func inheritUnset(
 	ops *[operationCount]opLimit,
 	own *configtypes.RateLimitChannelBuckets,
 	op Operation,
 	parent Operation,
 ) {
-	if !HasBuckets(own.Enabled, own.Buckets) {
-		ops[op].base = ops[parent].base
+	if HasBuckets(own.Enabled, own.Buckets) {
+		return
 	}
+	ops[op].base = ops[parent].base
 	for namespace, s := range ops[parent].overrides {
 		if _, ok := ops[op].overrides[namespace]; ok {
 			continue

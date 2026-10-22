@@ -195,7 +195,8 @@ func optionsFromAddress(address string, options rueidis.ClientOption) (fromAddre
 
 	u, err := url.Parse(address)
 	if err != nil {
-		return result, fmt.Errorf("malformed connection address, not a valid URL: %w", err)
+		// The parse error quotes the whole URL, which holds the password, so it is not wrapped.
+		return result, errors.New("malformed connection address, not a valid URL")
 	}
 
 	var addresses []string

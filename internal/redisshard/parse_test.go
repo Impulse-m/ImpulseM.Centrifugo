@@ -49,6 +49,14 @@ func TestConfigsOfNamesTheSettingInErrors(t *testing.T) {
 	require.ErrorContains(t, err, "no Redis address configured")
 }
 
+func TestConfigsOfRedactsPassword(t *testing.T) {
+	// The escape in the password is invalid, so the URL does not parse. The error must not repeat the URL.
+	_, err := ConfigsOf(configtypes.Redis{Address: []string{"redis://:p%zzss@host:6379"}}, "setting.redis")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "setting.redis: ")
+	require.NotContains(t, err.Error(), "p%zzss")
+}
+
 func TestNewRedisShardsFailsWhenRedisIsUnreachable(t *testing.T) {
 	configs, err := ParseRedisShardConfigs(configtypes.Redis{Address: []string{closedAddress(t)}})
 	require.NoError(t, err)

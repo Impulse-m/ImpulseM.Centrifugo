@@ -26,8 +26,9 @@ const fullLogInterval = 10 * time.Second
 // Node.Notify: a handler which waits on its own full queue would deadlock.
 //
 // An inline op has no queue. Its handler runs on the goroutine which delivers the event, so it must never block.
-// Its events keep their order because that goroutine is serial. Only the reader of the Core control messages
-// delivers the events of another node, so the events of an inline op from other nodes are handled one at a time.
+// The events of an inline op which one goroutine delivers keep their order. The Core control reader delivers the events
+// of other nodes, one at a time. A local event runs on the calling goroutine, which is not ordered against the reader,
+// so the order of an inline op holds per delivering goroutine only.
 type delivery struct {
 	queues map[string]*opQueue
 }

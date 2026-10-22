@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,10 +50,20 @@ func TestLoadAPNSKeyFromFile(t *testing.T) {
 func TestLoadAPNSKeyFromPEM(t *testing.T) {
 	keyPEM := newTestPKCS8PEM(t, elliptic.P256())
 
-	key, err := LoadAPNSKey("", configtypes.PEMData(string(keyPEM)))
+	key, err := LoadAPNSKey("", configtypes.Secret(string(keyPEM)))
 
 	require.NoError(t, err)
 	require.Equal(t, elliptic.P256(), key.Curve)
+}
+
+func TestLoadAPNSKeyRefusesLargeFile(t *testing.T) {
+	path := writeTestFile(t, []byte(strings.Repeat("A", maxKeyFileBytes+1)))
+
+	_, err := LoadAPNSKey(path, "")
+
+	require.ErrorContains(t, err, apnsKeyFileKey)
+	require.ErrorContains(t, err, "larger than")
+	require.NotContains(t, err.Error(), "AAAA")
 }
 
 func TestCredentialErrorsNameKeyNotContent(t *testing.T) {
@@ -71,7 +82,7 @@ func TestCredentialErrorsNameKeyNotContent(t *testing.T) {
 	t.Run("inline PEM not a key", func(t *testing.T) {
 		keyPEM := "-----BEGIN PRIVATE KEY-----\n" + secretLine + "\n-----END PRIVATE KEY-----\n"
 
-		_, err := LoadAPNSKey("", configtypes.PEMData(keyPEM))
+		_, err := LoadAPNSKey("", configtypes.Secret(keyPEM))
 
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), secretLine)

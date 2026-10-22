@@ -19,6 +19,10 @@ import (
 // fcmScope is the OAuth scope of the FCM HTTP v1 API.
 const fcmScope = "https://www.googleapis.com/auth/firebase.messaging"
 
+// maxKeyFileBytes bounds the APNs key file. A P-256 PKCS#8 key is well under one kilobyte, so a larger file is a
+// misconfiguration and is refused before it is read.
+const maxKeyFileBytes = 64 << 10
+
 // Configuration keys named in the load errors. An error names the key and never its content.
 const (
 	apnsKeyFileKey = "push_notifications.apns.token_key_file"
@@ -29,8 +33,15 @@ const (
 // LoadAPNSKey loads the APNs signing key of a credential, from keyFile or, when keyFile is empty, from keyPEM. The
 // key must be a PKCS#8 PEM P-256 private key. The error names the key configuration key, and never the key content
 // or the library error text, which could carry it.
-func LoadAPNSKey(keyFile string, keyPEM configtypes.PEMData) (*ecdsa.PrivateKey, error) {
+func LoadAPNSKey(keyFile string, keyPEM configtypes.Secret) (*ecdsa.PrivateKey, error) {
 	if keyFile != "" {
+		info, err := os.Stat(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("%s (%s): the key file cannot be read", apnsKeyFileKey, keyFile)
+		}
+		if info.Size() > maxKeyFileBytes {
+			return nil, fmt.Errorf("%s (%s): the key file is larger than %d bytes", apnsKeyFileKey, keyFile, maxKeyFileBytes)
+		}
 		data, err := os.ReadFile(keyFile) //nolint:gosec // The key file is named by the operator's configuration.
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s): the key file cannot be read", apnsKeyFileKey, keyFile)
@@ -38,7 +49,7 @@ func LoadAPNSKey(keyFile string, keyPEM configtypes.PEMData) (*ecdsa.PrivateKey,
 		return parseAPNSKey(data, apnsKeyFileKey+" ("+keyFile+")")
 	}
 
-	data, _, err := keyPEM.Load(os.Stat, os.ReadFile)
+	data, _, err := configtypes.PEMData(string(keyPEM)).Load(os.Stat, os.ReadFile)
 	if err != nil {
 		return nil, fmt.Errorf("%s: the key cannot be loaded", apnsKeyPEMKey)
 	}

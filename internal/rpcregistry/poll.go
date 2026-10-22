@@ -3,6 +3,7 @@ package rpcregistry
 import (
 	"context"
 	"crypto/sha256"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -24,8 +25,22 @@ func (r *Registry) pollInterval() time.Duration {
 	return interval
 }
 
-// poll checks the registry file every interval until ctx is done.
+// pollStartPhase returns the delay before the first check of a node: a random value within one
+// interval. The nodes which share a registry file then do not check, and reload, on the same tick.
+func pollStartPhase(interval time.Duration) time.Duration {
+	return rand.N(interval)
+}
+
+// poll checks the registry file every interval until ctx is done. The first check comes after a
+// random start phase within one interval.
 func (r *Registry) poll(ctx context.Context, interval time.Duration) {
+	phase := time.NewTimer(pollStartPhase(interval))
+	select {
+	case <-ctx.Done():
+		phase.Stop()
+		return
+	case <-phase.C:
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	p := &poller{registry: r}

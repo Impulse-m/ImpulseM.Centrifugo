@@ -3,6 +3,7 @@ package redisshard
 import (
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -38,6 +39,17 @@ func ConfigsOf(redisConf configtypes.Redis, setting string) ([]RedisShardConfig,
 		return nil, fmt.Errorf("%s: %w", setting, err)
 	}
 	return configs, nil
+}
+
+// redactURLError returns err with the URL of a url.Error replaced by a placeholder, so that a password in a Redis
+// address cannot reach an error message. The wrapped error stays reachable through errors.As and errors.Unwrap. Other
+// errors are returned as they are.
+func redactURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	return &url.Error{Op: urlErr.Op, URL: "<redacted>", Err: urlErr.Err}
 }
 
 // validateRedisShardConfig checks the same configuration errors NewRedisShard reports before it connects.

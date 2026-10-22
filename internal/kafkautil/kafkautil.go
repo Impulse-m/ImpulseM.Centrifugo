@@ -21,6 +21,7 @@ import (
 	mskaws "github.com/twmb/franz-go/pkg/sasl/aws"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
+	"golang.org/x/sync/singleflight"
 )
 
 // Config is a connection configuration of a Kafka client.
@@ -106,6 +107,13 @@ const mskAssumeRoleSessionName = "centrifugo-msk"
 // The rest is the margin for a handshake which starts close to the expiry.
 const mskCredentialsLifetimeShare = 0.75
 
+// mskAssumeRoleTimeout caps one AssumeRole call. The call runs on its own context, so it is bounded by this and not by
+// the handshake which starts it.
+const mskAssumeRoleTimeout = 10 * time.Second
+
+// mskAssumeRoleKey is the singleflight key of the AssumeRole call: one call is in flight at a time per auth.
+const mskAssumeRoleKey = "assume-role"
+
 // assumeRoler is the STS call of the MSK auth. Satisfied by *sts.Client.
 type assumeRoler interface {
 	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
@@ -120,11 +128,13 @@ type mskAssumeRoleAuth struct {
 	roleARN   string
 	now       func() time.Time
 
-	// mu guards the cached credentials. It is held across the AssumeRole call, so concurrent handshakes wait for one call.
+	// mu guards the cached credentials. The AssumeRole call runs outside mu, under group: concurrent handshakes share
+	// one call, and each waits on it with its own context, so a slow call does not hold a handshake past its deadline.
 	mu        sync.Mutex
 	creds     mskaws.Auth
 	refreshAt time.Time
 	cached    bool
+	group     singleflight.Group
 }
 
 func newMSKAssumeRoleAuth(ctx context.Context, roleARN string) (*mskAssumeRoleAuth, error) {
@@ -139,13 +149,36 @@ func newMSKAssumeRoleAuth(ctx context.Context, roleARN string) (*mskAssumeRoleAu
 	}, nil
 }
 
+// auth returns the credentials of the cache, or assumes the role when the cache has none to share. A waiting handshake
+// returns when ctx is done, even while the call it waits on runs.
 func (a *mskAssumeRoleAuth) auth(ctx context.Context) (mskaws.Auth, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := a.now()
-	if a.cached && now.Before(a.refreshAt) {
-		return a.creds, nil
+	if a.cached && a.now().Before(a.refreshAt) {
+		creds := a.creds
+		a.mu.Unlock()
+		return creds, nil
 	}
+	a.mu.Unlock()
+	result := a.group.DoChan(mskAssumeRoleKey, func() (any, error) {
+		return a.assumeRole(ctx)
+	})
+	select {
+	case res := <-result:
+		if res.Err != nil {
+			return mskaws.Auth{}, res.Err
+		}
+		return res.Val.(mskaws.Auth), nil
+	case <-ctx.Done():
+		return mskaws.Auth{}, ctx.Err()
+	}
+}
+
+// assumeRole calls AssumeRole on a context detached from the handshake which started it, capped by mskAssumeRoleTimeout,
+// and caches the credentials. The shared call must not end because the first handshake gave up.
+func (a *mskAssumeRoleAuth) assumeRole(ctx context.Context) (mskaws.Auth, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mskAssumeRoleTimeout)
+	defer cancel()
+	now := a.now()
 	out, err := a.stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         aws.String(a.roleARN),
 		RoleSessionName: aws.String(mskAssumeRoleSessionName),
@@ -172,9 +205,11 @@ func (a *mskAssumeRoleAuth) auth(ctx context.Context) (mskaws.Auth, error) {
 	// Credentials without an expiry are not cached: there is no lifetime to share.
 	if creds.Expiration != nil {
 		lifetime := creds.Expiration.Sub(now)
+		a.mu.Lock()
 		a.creds = auth
 		a.refreshAt = now.Add(time.Duration(float64(lifetime) * mskCredentialsLifetimeShare))
 		a.cached = true
+		a.mu.Unlock()
 	}
 	return auth, nil
 }

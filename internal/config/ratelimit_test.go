@@ -463,6 +463,31 @@ func TestValidateRedisUserCommandOnError(t *testing.T) {
 	require.ErrorContains(t, withOnError("block").Validate(), "redis_user_command.on_error must be allow or deny")
 }
 
+func TestValidateRedisBucketRejectsSubMicrosecondEmission(t *testing.T) {
+	withRate := func(interval time.Duration, rate int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.Publish = configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testRateLimitBuckets(interval, rate),
+		}
+		return cfg
+	}
+
+	// Emission of 1s / 1000000 is exactly 1us, which Redis keeps. 1s / 2000000 is 500ns, which Redis would raise to 1us.
+	require.NoError(t, withRate(time.Second, 1000000).Validate())
+	require.ErrorContains(t, withRate(time.Second, 2000000).Validate(), "redis_user_command.publish: bucket emission interval must be at least 1us")
+
+	// Only the Redis token bucket truncates, so the same bucket is valid for user_command.
+	cfg := DefaultConfig()
+	cfg.Client.RateLimit.UserCommand.Enabled = true
+	cfg.Client.RateLimit.UserCommand.Publish = configtypes.RateLimitChannelBuckets{
+		Enabled: true,
+		Buckets: testRateLimitBuckets(time.Second, 2000000),
+	}
+	require.NoError(t, cfg.Validate())
+}
+
 func testRateLimitBucketsOf(count int) configtypes.RateLimitBucketList {
 	buckets := make(configtypes.RateLimitBucketList, 0, count)
 	for i := 0; i < count; i++ {

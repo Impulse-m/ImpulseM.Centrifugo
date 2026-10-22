@@ -35,16 +35,14 @@ var nonStatusErrSuppressed atomic.Int64
 // Cancelled calls are not mapped here: the caller answers them from the registry config before it
 // gets here.
 //
-// A plain Go error, which is not a gRPC status, is logged here in full. Its text is the client's message
-// unless fixedNonStatusMessage is set, which gives the fixed message instead: the text can name internal
-// addresses.
+// A plain Go error, which is not a gRPC status, is logged here in full, and the client gets the fixed message
+// rpcRegistryNonStatusMessage instead of its text: the text can name internal addresses.
 func MapGRPCRegistryError(
 	err error,
 	trailers metadata.MD,
 	transforms configtypes.RPCGRPCStatusToCodeTransforms,
 	appKeys configtypes.RPCRegistryAppError,
 	metadataKeys []string,
-	fixedNonStatusMessage bool,
 ) (*centrifuge.Error, *centrifuge.Disconnect) {
 	st, isStatus := status.FromError(err)
 	code := st.Code()
@@ -55,9 +53,7 @@ func MapGRPCRegistryError(
 		} else {
 			nonStatusErrSuppressed.Add(1)
 		}
-		if fixedNonStatusMessage {
-			message = rpcRegistryNonStatusMessage
-		}
+		message = rpcRegistryNonStatusMessage
 	}
 
 	rule, matched := transformGRPCStatus(code, transforms)

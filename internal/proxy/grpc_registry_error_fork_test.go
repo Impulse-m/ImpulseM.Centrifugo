@@ -31,12 +31,12 @@ func TestNonStatusErrLogCountsSuppressedLines(t *testing.T) {
 
 	failure := errors.New("dial tcp 10.0.0.5:9000: connection refused")
 	for range 3 {
-		_, _ = MapGRPCRegistryError(failure, nil, configtypes.RPCGRPCStatusToCodeTransforms{}, configtypes.RPCRegistryAppError{}, nil, false)
+		_, _ = MapGRPCRegistryError(failure, nil, configtypes.RPCGRPCStatusToCodeTransforms{}, configtypes.RPCRegistryAppError{}, nil)
 	}
 	require.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("non-status error")), "one line in the interval")
 
 	nonStatusErrLog = tools.NewIntervalLimiter(0)
-	_, _ = MapGRPCRegistryError(failure, nil, configtypes.RPCGRPCStatusToCodeTransforms{}, configtypes.RPCRegistryAppError{}, nil, false)
+	_, _ = MapGRPCRegistryError(failure, nil, configtypes.RPCGRPCStatusToCodeTransforms{}, configtypes.RPCRegistryAppError{}, nil)
 	require.Equal(t, 2, bytes.Count(buf.Bytes(), []byte("non-status error")))
 	require.Contains(t, buf.String(), `"suppressed":2`)
 }

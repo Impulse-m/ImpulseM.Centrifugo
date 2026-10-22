@@ -176,7 +176,6 @@ func TestMapGRPCRegistryErrorBackendCanceledUsesInternalClass(t *testing.T) {
 		nil,
 		configtypes.RPCRegistryAppError{},
 		nil,
-		false,
 	)
 	require.Nil(t, disconnect)
 	require.NotNil(t, protocolError)

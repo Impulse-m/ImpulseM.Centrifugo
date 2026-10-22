@@ -191,7 +191,7 @@ func registryCallError(err error, trailers metadata.MD, m *rpcregistry.Method, c
 	if cancelled {
 		return registryError(cfg.Errors.Cancelled)
 	}
-	protoErr, disconnect := proxy.MapGRPCRegistryError(err, trailers, cfg.GRPCStatusToCodeTransforms, cfg.AppError, m.ErrorMetadata, cfg.FixedNonStatusErrorMessage)
+	protoErr, disconnect := proxy.MapGRPCRegistryError(err, trailers, cfg.GRPCStatusToCodeTransforms, cfg.AppError, m.ErrorMetadata)
 	if disconnect != nil {
 		return disconnect
 	}

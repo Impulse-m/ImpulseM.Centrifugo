@@ -14,7 +14,7 @@ import (
 // TestSkipLogIsSampled skips 10000 records of an unknown method. Every skip is counted, but only one warning is logged
 // within the skip log interval.
 func TestSkipLogIsSampled(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, _ := newSourceTest(t, sourceTestConfig(), clock)
 	var logged bytes.Buffer
 	previous := log.Logger

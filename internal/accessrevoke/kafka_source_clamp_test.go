@@ -12,14 +12,14 @@ import (
 // clampedCount returns the number of expire_at clamps counted for the source.
 func clampedCount(t *testing.T, source string) float64 {
 	t.Helper()
-	return metricWithLabel(t, "expire_at_clamped_total", "source", source)
+	return labeledCounterValue(t, "centrifugo_access_revoke_expire_at_clamped_total", "source", source)
 }
 
 // TestKafkaSourceClampsFromProcessingTime applies a block whose record is two hours old, with a far expire_at and a max
 // TTL of one hour. The clamp counts from the processing time, so the block is applied with now plus the max TTL as its
 // expiry. Counted from the record time, the clamp would give a time in the past and the block would be skipped as stale.
 func TestKafkaSourceClampsFromProcessingTime(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	cfg := sourceTestConfig()
 	cfg.AccessRevoke.MaxTTL = configtypes.Duration(time.Hour)
 	source, store := newSourceTest(t, cfg, clock)

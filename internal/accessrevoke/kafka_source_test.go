@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -29,17 +28,8 @@ func sessionVerdict(store *Store, sessionID string, issuedAt int64) Verdict {
 	return store.Check("", Identity(sessionID, 0, issuedAt), allAccessChecks).Verdict
 }
 
-// sourceTestClock is a fake clock for KafkaSource tests.
-type sourceTestClock struct {
-	now time.Time
-}
-
-func (c *sourceTestClock) Now() time.Time {
-	return c.now
-}
-
 // newSourceTest creates a KafkaSource over a real Revoker with a fake clock for the store and the source.
-func newSourceTest(t *testing.T, cfg config.Config, clock *sourceTestClock) (*KafkaSource, *Store) {
+func newSourceTest(t *testing.T, cfg config.Config, clock *fakeClock) (*KafkaSource, *Store) {
 	t.Helper()
 	node := tools.NodeWithMemoryEngineNoHandlers()
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })
@@ -85,7 +75,7 @@ func testRecord(method string, body string, timestamp time.Time) *kgo.Record {
 }
 
 func TestKafkaSourceAppliesBlockUserRecord(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 	before := appliedCount(t, KindBlockUser)
 
@@ -98,7 +88,7 @@ func TestKafkaSourceAppliesBlockUserRecord(t *testing.T) {
 }
 
 func TestKafkaSourceUsesRecordTimeForDefaults(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 
 	recordTime := clock.now.Add(-10 * time.Minute)
@@ -113,7 +103,7 @@ func TestKafkaSourceUsesRecordTimeForDefaults(t *testing.T) {
 }
 
 func TestKafkaSourceRevokeTokenRecord(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 
 	recordTime := clock.now.Add(-time.Minute)
@@ -123,7 +113,7 @@ func TestKafkaSourceRevokeTokenRecord(t *testing.T) {
 }
 
 func TestKafkaSourceInvalidateUserTokensRecord(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 
 	recordTime := clock.now.Add(-time.Minute)
@@ -134,7 +124,7 @@ func TestKafkaSourceInvalidateUserTokensRecord(t *testing.T) {
 }
 
 func TestKafkaSourceUnblockUserRecord(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 
 	source.handleRecord(testRecord("block_user", `{"user":"user-1"}`, clock.now))
@@ -145,7 +135,7 @@ func TestKafkaSourceUnblockUserRecord(t *testing.T) {
 }
 
 func TestKafkaSourceSkipRules(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	recordTime := clock.now.Add(-time.Minute)
 
 	tests := []struct {
@@ -214,7 +204,7 @@ func TestKafkaSourceSkipRules(t *testing.T) {
 }
 
 func TestKafkaSourceTargetIsLastStableOffset(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, _ := newSourceTest(t, sourceTestConfig(), clock)
 
 	// High watermark is ahead of the last stable offset: an open transaction at offset 2 must not
@@ -237,7 +227,7 @@ func TestKafkaSourceTargetIsLastStableOffset(t *testing.T) {
 }
 
 func TestKafkaSourceBeyondWindowIsCountedAndApplied(t *testing.T) {
-	clock := &sourceTestClock{now: time.Now()}
+	clock := &fakeClock{now: time.Now()}
 	source, store := newSourceTest(t, sourceTestConfig(), clock)
 	before := beyondWindowCount(t)
 
@@ -485,13 +475,13 @@ func TestSeedBackOffStaysWithinHalfAndWholeNominal(t *testing.T) {
 // appliedCount returns the number of applied events of the kind.
 func appliedCount(t *testing.T, kind string) float64 {
 	t.Helper()
-	return metricWithLabel(t, "source_events_applied_total", "kind", kind)
+	return labeledCounterValue(t, "centrifugo_access_revoke_source_events_applied_total", "kind", kind)
 }
 
 // skippedCount returns the number of skipped events with the reason.
 func skippedCount(t *testing.T, reason string) float64 {
 	t.Helper()
-	return metricWithLabel(t, "source_events_skipped_total", "reason", reason)
+	return labeledCounterValue(t, "centrifugo_access_revoke_source_events_skipped_total", "reason", reason)
 }
 
 func beyondWindowCount(t *testing.T) float64 {
@@ -499,22 +489,3 @@ func beyondWindowCount(t *testing.T) float64 {
 	return counterValue(t, "centrifugo_access_revoke_source_events_beyond_window_total")
 }
 
-// metricWithLabel returns the value of the metric with the given name suffix and label value.
-func metricWithLabel(t *testing.T, nameSuffix string, labelName string, labelValue string) float64 {
-	t.Helper()
-	families, err := testRegistry.Gather()
-	require.NoError(t, err)
-	for _, family := range families {
-		if !strings.HasSuffix(family.GetName(), nameSuffix) {
-			continue
-		}
-		for _, metric := range family.GetMetric() {
-			for _, label := range metric.GetLabel() {
-				if label.GetName() == labelName && label.GetValue() == labelValue {
-					return metric.GetCounter().GetValue()
-				}
-			}
-		}
-	}
-	return 0
-}

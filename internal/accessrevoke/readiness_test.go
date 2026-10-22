@@ -7,21 +7,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeReadinessClock is a manually advanced clock.
-type fakeReadinessClock struct {
+// fakeClock is a manually advanced clock, shared by the tests of the package.
+type fakeClock struct {
 	now time.Time
 }
 
-func (c *fakeReadinessClock) Now() time.Time {
+func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
-func (c *fakeReadinessClock) Advance(d time.Duration) {
+func (c *fakeClock) Advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-func newReadinessTest(strict bool) (*ReadinessTracker, *fakeReadinessClock) {
-	clock := &fakeReadinessClock{now: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}
+func newReadinessTest(strict bool) (*ReadinessTracker, *fakeClock) {
+	clock := &fakeClock{now: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}
 	tracker := NewReadinessTracker(ReadinessConfig{
 		StartupTimeout: time.Minute,
 		LagThreshold:   30 * time.Second,
@@ -388,7 +388,7 @@ func TestReadinessNextCheckHasFloor(t *testing.T) {
 // lag and fetches stop again. Each check is armed for the delay the previous one returned. The check after the fetch
 // must come within the lag threshold, so that the new silence is seen at its deadline and not at the startup timeout.
 func TestReadinessNextCheckIsCappedByLagThreshold(t *testing.T) {
-	clock := &fakeReadinessClock{now: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}
+	clock := &fakeClock{now: time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)}
 	start := clock.now
 	tracker := NewReadinessTracker(ReadinessConfig{
 		StartupTimeout: 5 * time.Minute,

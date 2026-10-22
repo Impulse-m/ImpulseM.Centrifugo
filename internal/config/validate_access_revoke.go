@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
@@ -62,6 +63,9 @@ func validateAccessRevoke(cfg Config) error {
 	}
 	if cfg.AccessRevoke.MaxTTL.ToDuration() < 0 {
 		return fmt.Errorf("access_revoke.max_ttl must not be negative, use 0 to turn the limit off")
+	}
+	if maxTTL := cfg.AccessRevoke.MaxTTL.ToDuration(); maxTTL > 0 && maxTTL < time.Second {
+		return fmt.Errorf("access_revoke.max_ttl must be at least one second, use 0 to turn the limit off")
 	}
 	if cfg.AccessRevoke.SweepInterval.ToDuration() <= 0 {
 		return fmt.Errorf("access_revoke.sweep_interval must be greater than zero")

@@ -174,6 +174,13 @@ func TestValidateAccessRevoke(t *testing.T) {
 			wantErr: "access_revoke.max_ttl must not be negative",
 		},
 		{
+			name: "sub-second max ttl is invalid",
+			modify: func(c *Config) {
+				c.AccessRevoke.MaxTTL = configtypes.Duration(500 * time.Millisecond)
+			},
+			wantErr: "access_revoke.max_ttl must be at least one second",
+		},
+		{
 			name: "zero sweep interval is invalid",
 			modify: func(c *Config) {
 				c.AccessRevoke.SweepInterval = 0

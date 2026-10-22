@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -197,12 +196,11 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 		return nil, err
 	}
 	next.enabled = cfg.Enabled
-	next.emulatedHeaders = make(map[string]struct{})
+	lists := make([][]string, 0, len(next.targets))
 	for _, target := range next.targets {
-		for _, name := range target.Config.EmulatedHeaders {
-			next.emulatedHeaders[strings.ToLower(name)] = struct{}{}
-		}
+		lists = append(lists, target.Config.EmulatedHeaders)
 	}
+	next.emulatedHeaders = config.EmulatedHeaderSet(lists...)
 	return &prepared{
 		cfg:     cfg,
 		next:    next,

@@ -1,8 +1,6 @@
 package app
 
 import (
-	"strings"
-
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
@@ -26,11 +24,9 @@ func emulatedHeaderNames(cfg config.Config) map[string]struct{} {
 	for _, named := range cfg.Proxies {
 		proxies = append(proxies, named.Proxy)
 	}
-	names := make(map[string]struct{})
+	lists := make([][]string, 0, len(proxies))
 	for _, p := range proxies {
-		for _, name := range p.EmulatedHeaders {
-			names[strings.ToLower(name)] = struct{}{}
-		}
+		lists = append(lists, p.EmulatedHeaders)
 	}
-	return names
+	return config.EmulatedHeaderSet(lists...)
 }

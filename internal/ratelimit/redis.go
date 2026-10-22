@@ -101,7 +101,7 @@ func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key strin
 }
 
 // ConnectAllowed checks and consumes one connect of userID. Anonymous users are not limited. On Redis
-// errors and while not connected the connect is allowed.
+// errors and while not connected the connect is allowed, unless on_error denies it.
 func (l *RedisUserLimiter) ConnectAllowed(userID string) bool {
 	if userID == "" {
 		return true
@@ -145,8 +145,8 @@ func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 		return l.errorWait()
 	}
 	key := redisKey(l.prefix, userID, s.redisName)
-	start := time.Now()
-	if wait, ok := l.refusals.refused(key, start.UnixNano()); ok {
+	now := refusalClock()
+	if wait, ok := l.refusals.refused(key, now); ok {
 		return wait
 	}
 	shard := list[redisshard.ShardIndex(userID, len(list))]
@@ -162,8 +162,17 @@ func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 		l.logError(err)
 		return l.errorWait()
 	}
-	l.refusals.refuse(key, start.UnixNano(), wait)
+	l.refusals.refuse(key, now, wait)
 	return wait
+}
+
+// refusalClockStart is the origin of refusalClock.
+var refusalClockStart = time.Now()
+
+// refusalClock returns the nanoseconds since the process started. It reads the monotonic clock, so a step of the wall
+// clock does not change how long a cached refusal lasts.
+func refusalClock() int64 {
+	return int64(time.Since(refusalClockStart))
 }
 
 // errorWait is the wait of a command when Redis failed: none, unless on_error denies commands.

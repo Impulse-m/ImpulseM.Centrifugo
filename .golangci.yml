@@ -10,6 +10,7 @@ linters:
     - unused
     - bodyclose
     - gosec
+    - forbidigo
   settings:
     staticcheck:
       checks:
@@ -27,9 +28,16 @@ linters:
     gosec:
       excludes:
         - "G115"  # Integer overflow check - sth to fix.
+    forbidigo:
+      forbid:
+        - pattern: '^time\.(NewTicker|NewTimer|Tick|After|AfterFunc|Sleep)$'
+          msg: "timers and sleeps are not allowed in internal/push, use per-request deadlines"
   exclusions:
     rules:
       - path: "_test\\.go"
         linters:
           - bodyclose # Disable in tests, sth to fix.
           - gosec # Disable in tests, sth to fix.
+      - path-except: "^internal/push/"
+        linters:
+          - forbidigo # The timer rule covers internal/push only.

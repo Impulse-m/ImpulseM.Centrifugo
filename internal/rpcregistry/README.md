@@ -191,6 +191,8 @@ When `client.rebind.enabled`, the registry or `auth_class_claim` is on, the conn
 
 A connection gets a record only when a feature needs one: rebind, the registry, the auth class claim, or a user or client rate limit. With the access revocation store set, which the defaults do, a connection with no user whose token carries a session gets a record at connect, anonymous ones included, and is indexed by that session from connect on. A connection with no user and no session at connect gets none: the refresh which gives it a session attaches a 32-byte index membership and a disconnect hook to it, nothing else, so a revocation of that session reaches it through the index. With rebind, the registry, the auth class claim and the rate limiters off, a connection with no session allocates nothing for the record, with or without a user.
 
+With the registry on, every connection keeps its full connect token for its whole life, because each non-anonymous call forwards it to the backend as the bearer. That is about 0.3-1 KB per connection, bounded by the websocket read limit, and it is held in memory only while the registry is on. Keeping a hash instead is not possible, since the backend needs the bearer itself.
+
 ### Token exchange over the connection
 
 An SDK can obtain its connection token over the connection it has just opened, instead of receiving it from the app before connect. The app keeps a long-lived refresh token, and the SDK exchanges it for a short access token and renews that before it expires. The server needs three settings for this, all off by default:

@@ -19,14 +19,18 @@ func TestRevokerApplyClampsToMaxTTL(t *testing.T) {
 	clampsBefore := clampedCount(t, ClampSourceNotify)
 
 	farExpireAt := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
+	before := time.Now().Unix()
 	require.NoError(t, revoker.Apply(Notification{Kind: KindBlockUser, User: "user-1", ExpireAt: farExpireAt}))
+	after := time.Now().Unix()
 
 	require.Equal(t, clampsBefore+1, clampedCount(t, ClampSourceNotify))
 	key, _ := Key("user-1")
 	store.blockedMu.RLock()
 	expireAt := store.blocked[key]
 	store.blockedMu.RUnlock()
-	require.InDelta(t, time.Now().Add(time.Hour).Unix(), expireAt, 5)
+	// The clamp reads the clock once inside Apply, so the limit lies between the two reads plus the max TTL.
+	require.GreaterOrEqual(t, expireAt, before+int64(time.Hour/time.Second))
+	require.LessOrEqual(t, expireAt, after+int64(time.Hour/time.Second))
 }
 
 // TestRevokerApplyWithoutMaxTTLKeepsExpireAt applies a block with a far expire_at through a revoker with no limit, which

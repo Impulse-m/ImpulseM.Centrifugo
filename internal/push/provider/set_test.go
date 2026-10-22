@@ -42,7 +42,7 @@ func (s *recordingSender) Send(ctx context.Context, job *Job) *apiproto.PushItem
 	s.ends = append(s.ends, time.Now())
 	s.mu.Unlock()
 
-	return newResult(job, StatusSent)
+	return NewResult(job, StatusSent)
 }
 
 func (s *recordingSender) callCount() int {

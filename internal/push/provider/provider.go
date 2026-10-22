@@ -47,8 +47,8 @@ type Sender interface {
 	Send(ctx context.Context, job *Job) *apiproto.PushItemResult
 }
 
-// newResult returns a result of job with status and without any provider data.
-func newResult(job *Job, status string) *apiproto.PushItemResult {
+// NewResult returns a result of job with status and without any provider data.
+func NewResult(job *Job, status string) *apiproto.PushItemResult {
 	return &apiproto.PushItemResult{
 		Index:  uint32(job.Index),
 		Ref:    job.Target.GetRef(),
@@ -56,30 +56,25 @@ func newResult(job *Job, status string) *apiproto.PushItemResult {
 	}
 }
 
-// newCodeResult returns a rejected result of job for a server refusal with code.
-func newCodeResult(job *Job, code string) *apiproto.PushItemResult {
-	result := newResult(job, StatusRejected)
+// NewCodeResult returns a rejected result of job for a server refusal with code.
+func NewCodeResult(job *Job, code string) *apiproto.PushItemResult {
+	result := NewResult(job, StatusRejected)
 	result.Code = code
 	return result
 }
 
-// payloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.
-func payloadOf(job *Job) []byte {
+// ApnsPayloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.
+func ApnsPayloadOf(job *Job) []byte {
 	if len(job.Target.GetApnsPayload()) > 0 {
 		return job.Target.GetApnsPayload()
 	}
 	return job.Notification.GetApns().GetPayload()
 }
 
-// fcmMessageOf returns the FCM message of job: the target's own message when set, else the request message.
-func fcmMessageOf(job *Job) []byte {
+// FCMMessageOf returns the FCM message of job: the target's own message when set, else the request message.
+func FCMMessageOf(job *Job) []byte {
 	if len(job.Target.GetFcmMessage()) > 0 {
 		return job.Target.GetFcmMessage()
 	}
 	return job.Notification.GetFcm().GetMessage()
-}
-
-// expireAtOf returns the expire_at of job in Unix seconds, zero when unset.
-func expireAtOf(job *Job) int64 {
-	return job.Notification.GetExpireAt()
 }

@@ -43,12 +43,12 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
 	limited, ok := s.limited[job.Target.GetProvider()]
 	if !ok {
-		return newResult(job, StatusRejected)
+		return NewResult(job, StatusRejected)
 	}
 
 	err := limited.slots.Acquire(syncCtx, 1)
 	if err != nil {
-		return newResult(job, StatusPending)
+		return NewResult(job, StatusPending)
 	}
 	defer limited.slots.Release(1)
 

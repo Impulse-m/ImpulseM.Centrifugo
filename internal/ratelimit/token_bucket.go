@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	_ "embed"
+	"math"
 	"strconv"
 	"time"
 
@@ -82,10 +83,16 @@ func gcra(emission int64, tolerance int64, tat int64, now int64) (int64, int64) 
 	if tat < now {
 		tat = now
 	}
-	newTAT := tat + emission
-	wait := newTAT - now - tolerance
+	// The wait is newTAT - now - tolerance, computed as (tat - now) - (tolerance - emission) so that no sum overflows:
+	// tolerance is at least emission, and tat is at least now.
+	wait := tat - now - (tolerance - emission)
 	if wait < 0 {
 		wait = 0
+	}
+	// A TAT which would pass the largest int64 saturates there, so a long interval cannot wrap it negative.
+	newTAT := int64(math.MaxInt64)
+	if emission <= math.MaxInt64-tat {
+		newTAT = tat + emission
 	}
 	return newTAT, wait
 }

@@ -160,7 +160,8 @@ func fakeRedisRunner(allowed bool, err error, calls *[]string) redisScriptRunner
 		if allowed {
 			return 0, err
 		}
-		return time.Second, err
+		// The refusal waits a minute, far longer than a test takes, so a cached wait does not depend on the timing.
+		return time.Minute, err
 	}
 }
 
@@ -329,10 +330,10 @@ func TestRedisUserLimiterCachesRefusal(t *testing.T) {
 	require.NotZero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.Len(t, calls, 1)
 
-	// The refusal waits a second, so the same user and scope is refused locally inside that second.
+	// The refusal waits a minute, so the same user and scope is refused locally inside that minute.
 	wait := l.CommandAllowed("42", OperationPublish, "chat")
-	require.Positive(t, wait)
-	require.LessOrEqual(t, wait, time.Second)
+	require.Greater(t, wait, time.Second)
+	require.LessOrEqual(t, wait, time.Minute)
 	require.Len(t, calls, 1)
 
 	// Another scope of the same user is a different key and reaches Redis.

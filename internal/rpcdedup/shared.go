@@ -225,7 +225,7 @@ func (s *Shared) Begin(key Key, flight *Flight) (Lookup, error) {
 	}
 	switch lookup.Outcome {
 	case OutcomeDone:
-		if lookup.Record.Uncached && s.backend.Connected() {
+		if lookup.Record.Uncached && !lookup.Record.sharedUncached && s.backend.Connected() {
 			return s.pollUncached(key, lookup), nil
 		}
 		return lookup, nil
@@ -252,6 +252,13 @@ func (s *Shared) pollUncached(key Key, local Lookup) Lookup {
 	return Lookup{Outcome: OutcomeDone, Record: res.Record}
 }
 
+// sharedRecord returns rec as the shared tier holds it. A record which the tier keeps uncached is marked as such, so
+// that its duplicates on this node do not poll the tier for a reply it does not hold.
+func sharedRecord(rec Record) Record {
+	rec.sharedUncached = rec.Uncached
+	return rec
+}
+
 // beginShared starts the call of key in the shared tier, after its flight is registered locally. The call is a miss,
 // done, mismatch or running on another node. A Redis error degrades to node-local dedup with fail-open, and refuses
 // the call with fail-closed.
@@ -269,7 +276,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	}
 	switch res.State {
 	case BeginDone:
-		_ = s.local.Complete(key, flight, res.Record)
+		_ = s.local.Complete(key, flight, sharedRecord(res.Record))
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginCancelled:
 		// The tombstone keeps no fingerprint, so this node answers any duplicate with it, as the shared tier does.
@@ -426,7 +433,7 @@ func (s *Shared) endWatch(key Key, flight *Flight, res PollResult, end string) {
 	case res.State == PollCancelled:
 		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
 	default:
-		_ = s.local.Complete(key, flight, res.Record)
+		_ = s.local.Complete(key, flight, sharedRecord(res.Record))
 	}
 	s.remoteWaits.Add(-1)
 	s.lastWaitEnd.Store(time.Now().UnixNano())
@@ -522,6 +529,7 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	ctx, cancel := context.WithDeadline(context.Background(), s.completeLimit(flight))
 	defer cancel()
 	waiters := s.completeShared(ctx, key, flight, rec, errJSON)
+	rec.sharedUncached = overReplyLimit(rec, errJSON, s.maxReplyBytes)
 	s.local.complete(key, flight, rec, errJSON)
 	s.wakeWaiters(ctx, key, waiters)
 	return nil

@@ -327,7 +327,7 @@ func (m *Memory) keep(key Key, flight *Flight, rec Record, errJSON string) Recor
 	oversize := overReplyLimit(rec, errJSON, m.maxReplyBytes)
 	kept := rec
 	if oversize {
-		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		kept = Record{Uncached: true, Fingerprint: rec.Fingerprint, sharedUncached: rec.sharedUncached}
 		errJSON = ""
 	}
 	s := m.shardOf(key.Scope)

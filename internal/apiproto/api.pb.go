@@ -11220,8 +11220,9 @@ type PushItemResult struct {
 	// http_status is the HTTP status returned by the provider. Zero when no
 	// status line was received.
 	HttpStatus uint32 `protobuf:"varint,7,opt,name=http_status,json=httpStatus,proto3" json:"http_status"`
-	// provider_message_id is the APNs apns-id, or the FCM message name when
-	// the send was sent. Empty when the provider sent none.
+	// provider_message_id is the APNs apns-id on any status received, rejected
+	// included, or the FCM message name on sent only. Empty when the provider
+	// sent none.
 	ProviderMessageId string `protobuf:"bytes,8,opt,name=provider_message_id,json=providerMessageId,proto3" json:"provider_message_id,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache

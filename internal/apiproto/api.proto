@@ -2111,7 +2111,8 @@ message PushItemResult {
     // http_status is the HTTP status returned by the provider. Zero when no
     // status line was received.
     uint32 http_status = 7;
-    // provider_message_id is the APNs apns-id, or the FCM message name when
-    // the send was sent. Empty when the provider sent none.
+    // provider_message_id is the APNs apns-id on any status received, rejected
+    // included, or the FCM message name on sent only. Empty when the provider
+    // sent none.
     string provider_message_id = 8;
 }

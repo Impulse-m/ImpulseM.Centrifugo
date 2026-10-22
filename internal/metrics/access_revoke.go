@@ -16,6 +16,15 @@ func BindAccessRevokeStoreSizes(read func() AccessRevokeStoreSizes) {
 	accessRevokeStoreSizes.Bind(read)
 }
 
+// accessRevokeDisconnectQueue is the reader of the number of queued disconnects, bound by the disconnect queue while it runs.
+var accessRevokeDisconnectQueue boundReader[int]
+
+// BindAccessRevokeDisconnectQueue makes the disconnect queue fill gauge read the number of queued disconnects by read at
+// each scrape. A nil read unbinds it, and an unbound gauge reads 0.
+func BindAccessRevokeDisconnectQueue(read func() int) {
+	accessRevokeDisconnectQueue.Bind(read)
+}
+
 // AccessRevokeSourceState is the readiness of the access revocation source.
 type AccessRevokeSourceState struct {
 	Ready      bool

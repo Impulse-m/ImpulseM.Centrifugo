@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -384,6 +385,19 @@ func TestDisconnectQueueRetriesAboveHalf(t *testing.T) {
 
 	cancel()
 	require.ErrorIs(t, <-errCh, context.Canceled)
+}
+
+// TestDisconnectQueueFillGauge queues three connections and reads the fill gauge, which reads the queue at each scrape.
+func TestDisconnectQueueFillGauge(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 10)
+	metrics.BindAccessRevokeDisconnectQueue(queue.fill)
+	defer metrics.BindAccessRevokeDisconnectQueue(nil)
+	for i := range 3 {
+		conn := &fakeConnection{id: strconv.Itoa(i)}
+		require.True(t, queue.Enqueue(conn, centrifuge.DisconnectExpired, ReasonSession))
+	}
+
+	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_disconnect_queue_fill"))
 }
 
 // TestRetryKeysBoundedWhenQueueFull drops disconnects under 10000 distinct keys while the queue holds one. The kept keys

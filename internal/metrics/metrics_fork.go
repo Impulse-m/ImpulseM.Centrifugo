@@ -16,6 +16,7 @@ type forkRegistry struct {
 	accessRevokeStoreSizeBlocked        prometheus.GaugeFunc
 	accessRevokeStoreSizeSessions       prometheus.GaugeFunc
 	accessRevokeStoreSizeUsers          prometheus.GaugeFunc
+	accessRevokeDisconnectQueueFill     prometheus.GaugeFunc
 
 	// Access revocation source metrics
 	accessRevokeSourceReady              prometheus.GaugeFunc
@@ -124,6 +125,15 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 			return sizes.Users
 		},
 	)
+	m.accessRevokeDisconnectQueueFill = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "access_revoke",
+		Name:        "disconnect_queue_fill",
+		Help:        "Number of live disconnects of access revocation waiting in the disconnect queue.",
+		ConstLabels: constLabels,
+	}, func() float64 {
+		return float64(accessRevokeDisconnectQueue.Read())
+	})
 
 	m.accessRevokeSourceReady = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
@@ -425,6 +435,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.accessRevokeStoreSizeBlocked,
 		m.accessRevokeStoreSizeSessions,
 		m.accessRevokeStoreSizeUsers,
+		m.accessRevokeDisconnectQueueFill,
 		m.accessRevokeSourceReady,
 		m.accessRevokeSourceLagging,
 		m.accessRevokeSourceLagRecords,

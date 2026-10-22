@@ -143,6 +143,11 @@ func (q *DisconnectQueue) pending(connection Connection) bool {
 	return queued || connection.Closing()
 }
 
+// fill returns the number of queued disconnects. The fill gauge reads it at each scrape.
+func (q *DisconnectQueue) fill() int {
+	return len(q.items)
+}
+
 // setRetrier sets the function which re-evaluates a key of a dropped disconnect. It is called by the queue goroutine.
 func (q *DisconnectQueue) setRetrier(retrier func(key retryKey)) {
 	q.mu.Lock()
@@ -151,8 +156,10 @@ func (q *DisconnectQueue) setRetrier(retrier func(key retryKey)) {
 }
 
 // Run disconnects queued connections at the configured rate until ctx is done. A connection which is closing when it is
-// dequeued is skipped without a rate token.
+// dequeued is skipped without a rate token. While it runs, the fill gauge reads the queue.
 func (q *DisconnectQueue) Run(ctx context.Context) error {
+	metrics.BindAccessRevokeDisconnectQueue(q.fill)
+	defer metrics.BindAccessRevokeDisconnectQueue(nil)
 	for {
 		select {
 		case <-ctx.Done():

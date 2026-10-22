@@ -488,4 +488,3 @@ func beyondWindowCount(t *testing.T) float64 {
 	t.Helper()
 	return counterValue(t, "centrifugo_access_revoke_source_events_beyond_window_total")
 }
-

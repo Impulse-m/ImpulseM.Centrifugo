@@ -13,6 +13,7 @@ import (
 type blockingCancelNotifier struct {
 	running atomic.Int32
 	peak    atomic.Int32
+	sent    atomic.Int32
 	release chan struct{}
 }
 
@@ -23,6 +24,7 @@ func newBlockingCancelNotifier() *blockingCancelNotifier {
 
 // notify is the notifier of the store: it counts the notification while it blocks.
 func (n *blockingCancelNotifier) notify(_ string, _ Key) {
+	n.sent.Add(1)
 	running := n.running.Add(1)
 	for {
 		peak := n.peak.Load()
@@ -35,7 +37,7 @@ func (n *blockingCancelNotifier) notify(_ string, _ Key) {
 }
 
 // A burst of cancels of one call sends one notification at a time, not one goroutine per cancel: the cancels which come
-// while the notification of the call is pending are coalesced into it.
+// while the notification of the call is pending are coalesced into it, and into at most one more send after it.
 func TestSharedCancelNotifyCoalesced(t *testing.T) {
 	notifier := newBlockingCancelNotifier()
 	fx := newSharedFixtureWithNotifier(t, notifier.notify)
@@ -50,6 +52,23 @@ func TestSharedCancelNotifyCoalesced(t *testing.T) {
 	close(notifier.release)
 	require.Eventually(t, func() bool { return notifier.running.Load() == 0 }, 2*time.Second, time.Millisecond)
 	require.LessOrEqual(t, notifier.peak.Load(), int32(1))
+	require.LessOrEqual(t, notifier.sent.Load(), int32(2), "the burst is coalesced into at most two sends")
+}
+
+// A cancel which comes while a notification of its call is being sent is not coalesced into it: the sent notification
+// may have reached the owner before its call was registered, so the cancel is sent again.
+func TestSharedCancelNotifyDuringSendIsSent(t *testing.T) {
+	notifier := newBlockingCancelNotifier()
+	fx := newSharedFixtureWithNotifier(t, notifier.notify)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	require.Eventually(t, func() bool { return notifier.running.Load() == 1 }, 2*time.Second, time.Millisecond)
+
+	require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
+	close(notifier.release)
+	require.Eventually(t, func() bool { return notifier.sent.Load() == 2 }, 2*time.Second, time.Millisecond, "the cancel during the send is sent")
+	require.Eventually(t, func() bool { return notifier.running.Load() == 0 }, 2*time.Second, time.Millisecond)
 }
 
 // Cancels of many calls send their notifications through a bounded set of workers, not one goroutine per cancel.

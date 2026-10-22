@@ -77,18 +77,40 @@ type scope struct {
 	argv      []string
 }
 
+// tokenWait returns the largest wait of token buckets at now, 0 when all of them allow an operation. It does not
+// change state. It has no call except gcra, so the compiler inlines it into CommandPlan.allow, the hot path of the
+// default limits, which then makes no call per bucket. Keep it free of other calls: a call makes it too big to inline.
+func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
+	var worst int64
+	for i := range buckets {
+		sb := &buckets[i]
+		_, wait := gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+		worst = max(worst, wait)
+	}
+	return worst
+}
+
+// tokenCommit consumes one operation from token buckets. Must be called only after tokenWait returned 0. It is
+// inlined into CommandPlan.allow for the same reason as tokenWait.
+func tokenCommit(buckets []slotBucket, slots []int64, now int64) {
+	for i := range buckets {
+		sb := &buckets[i]
+		slots[sb.slot], _ = gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+	}
+}
+
 // wait returns the largest wait of the buckets of the scope at now, 0 when all of them allow an operation. It does not
 // change state. Token bucket scopes call the token bucket directly, the others call their algorithm.
 func (s *scope) wait(slots []int64, now int64) int64 {
-	var worst int64
 	if s.tokenOnly {
-		for i := range s.buckets {
-			sb := &s.buckets[i]
-			_, wait := gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
-			worst = max(worst, wait)
-		}
-		return worst
+		return tokenWait(s.buckets, slots, now)
 	}
+	return s.algoWait(slots, now)
+}
+
+// algoWait is wait for the scopes of the window algorithms.
+func (s *scope) algoWait(slots []int64, now int64) int64 {
+	var worst int64
 	for i := range s.buckets {
 		sb := &s.buckets[i]
 		worst = max(worst, s.algo.wait(&sb.lim, slots[sb.slot:sb.slot+s.words], now))
@@ -99,12 +121,14 @@ func (s *scope) wait(slots []int64, now int64) int64 {
 // commit consumes one operation from all buckets of the scope. Must be called only after wait returned 0.
 func (s *scope) commit(slots []int64, now int64) {
 	if s.tokenOnly {
-		for i := range s.buckets {
-			sb := &s.buckets[i]
-			slots[sb.slot], _ = gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
-		}
+		tokenCommit(s.buckets, slots, now)
 		return
 	}
+	s.algoCommit(slots, now)
+}
+
+// algoCommit is commit for the scopes of the window algorithms.
+func (s *scope) algoCommit(slots []int64, now int64) {
 	for i := range s.buckets {
 		sb := &s.buckets[i]
 		s.algo.take(&sb.lim, slots[sb.slot:sb.slot+s.words], now)
@@ -348,8 +372,13 @@ func (p *CommandPlan) needsKey(op Operation) bool {
 func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) int64 {
 	var wait int64
 	s := p.resolve(op, key)
+	// The token bucket is checked inline, see tokenWait; only the window algorithms make a call per bucket.
 	if s != nil {
-		wait = s.wait(slots, now)
+		if s.tokenOnly {
+			wait = tokenWait(s.buckets, slots, now)
+		} else {
+			wait = s.algoWait(slots, now)
+		}
 	}
 	if p.total != nil {
 		wait = max(wait, p.total.wait(slots, now))
@@ -358,7 +387,11 @@ func (p *CommandPlan) allow(slots []int64, now int64, op Operation, key string) 
 		return wait
 	}
 	if s != nil {
-		s.commit(slots, now)
+		if s.tokenOnly {
+			tokenCommit(s.buckets, slots, now)
+		} else {
+			s.algoCommit(slots, now)
+		}
 	}
 	if p.total != nil {
 		p.total.commit(slots, now)

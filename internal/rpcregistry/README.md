@@ -269,7 +269,7 @@ A failed gRPC call becomes a protocol error with the default mapping below. The 
     {"status": "UNAVAILABLE", "to_error": {"code": 100, "message": "backend unavailable", "temporary": true, "app_code": 503, "app_type": "BACKEND_UNAVAILABLE"}}
   ]
   ```
-* With the default mapping, the protocol error `message` is the gRPC status message, cut to 256 bytes.
+* With the default mapping, the protocol error `message` is the gRPC status message, cut to 256 bytes. A call which fails with a plain Go error, not with a gRPC status, gets the fixed message `backend call failed`, and the error text is logged on the server, since it can name internal addresses.
 * The application error code comes from the `app_error.code_key` trailer as a decimal `int32`. Without a valid trailer, a transform's `app_code` applies when it is set. Otherwise the code is 401 for `UNAUTHENTICATED`, 403 for `PERMISSION_DENIED`, 420 for `RESOURCE_EXHAUSTED`, 400 for `INVALID_ARGUMENT`, and 500 otherwise.
 * The application error type comes from the `app_error.type_key` trailer and must match `^[A-Z0-9_]{1,64}$`. Without a valid trailer, the status message is used when it matches that pattern, and then a transform's `app_type` applies. A transport fault has a lower-case message, so it takes the rule's type. The rule fills each field separately: a valid trailer always wins, and the rule fills only what the backend did not send.
 * Protocol error `metadata` holds only the trailers listed in the method's `error_metadata`, and the `x-centrifugo-retry` key the server sets itself, see [Exactly-once calls](#exactly-once-calls). A listed trailer whose name starts with `x-centrifugo-` is dropped: a backend cannot set those keys.

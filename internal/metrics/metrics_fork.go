@@ -522,6 +522,24 @@ func NewProxyCallChildren(protocol string, kind string, name string) *ProxyCallC
 	}
 }
 
+// DeleteProxyCallChildren deletes the proxy metric children which NewProxyCallChildren resolves with the labels
+// protocol, kind and name. It does nothing when the proxy metrics are not initialised.
+func DeleteProxyCallChildren(protocol string, kind string, name string) {
+	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
+		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
+		return
+	}
+	ProxyCallDurationHistogram.DeleteLabelValues(protocol, kind, name)
+	ProxyCallErrorCount.DeleteLabelValues(protocol, kind, name)
+	ProxyCallInflightRequests.DeleteLabelValues(protocol, kind, name)
+	// The summary is an ObserverVec interface, and only its vector type can delete a child.
+	if summary, ok := ProxyCallDurationSummary.(interface {
+		DeleteLabelValues(lvs ...string) bool
+	}); ok {
+		summary.DeleteLabelValues(protocol, kind, name)
+	}
+}
+
 // setForkMetrics assigns the fork metrics created by initForkMetrics to the package level variables.
 func (m *Registry) setForkMetrics() {
 	AccessRevokeRejectsTotal = m.accessRevokeRejectsTotal

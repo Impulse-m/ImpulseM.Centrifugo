@@ -1,11 +1,26 @@
 package metrics
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+// The set of dropped names is bounded: a drop beyond rpcRegistryDroppedMax starts the set again, and the name which
+// was dropped last is in it.
+func TestDroppedMethodNamesBounded(t *testing.T) {
+	resetRPCRegistryMetrics(t)
+	t.Cleanup(func() {
+		rpcRegistryDropped.names.Store(nil)
+	})
+	for i := range rpcRegistryDroppedMax + 1 {
+		DropRPCRegistryMethodSeries(fmt.Sprintf("drop.test.bounded.%d", i))
+	}
+	require.LessOrEqual(t, len(*rpcRegistryDropped.names.Load()), rpcRegistryDroppedMax)
+	require.True(t, rpcRegistryDropped.has(fmt.Sprintf("drop.test.bounded.%d", rpcRegistryDroppedMax)))
+}
 
 // A call of a method which a reload dropped, and which finishes after the drop, does not create its series again.
 // The method counts again once it is built again.

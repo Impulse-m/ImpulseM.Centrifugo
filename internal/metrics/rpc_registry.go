@@ -1,8 +1,10 @@
 package metrics
 
 import (
+	"maps"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -50,32 +52,72 @@ var RPCRegistryRetransmitsTotal *prometheus.CounterVec
 
 // rpcRegistryDropped holds the names of the methods whose series a reload dropped, until the method is built again.
 // A count by name from a call which was running when its series were dropped would create them again for the life of
-// the process, so such a count is skipped. The lock orders the counts with the drops: a count holds the read lock, and
-// a drop holds the write lock.
-var rpcRegistryDropped = &rpcRegistryDroppedSet{names: map[string]struct{}{}}
+// the process, so such a count is skipped.
+var rpcRegistryDropped = &rpcRegistryDroppedSet{}
 
-// rpcRegistryDroppedSet is the set of the dropped method names, see rpcRegistryDropped.
+// rpcRegistryDroppedMax bounds the set of dropped names. A drop which would exceed it starts the set again, so the
+// names dropped before are counted again only by a call which was still running when they were dropped.
+const rpcRegistryDroppedMax = 4096
+
+// rpcRegistryDroppedSet is the set of the dropped method names, see rpcRegistryDropped. The set is immutable: a drop or
+// a build stores a copy, so a count reads it with one atomic load and takes no lock. A count which loads the set before
+// a drop stores its copy can still create the series of that method once, after the drop.
 type rpcRegistryDroppedSet struct {
-	mu    sync.RWMutex
-	names map[string]struct{}
+	// mu serialises the stores of new sets.
+	mu    sync.Mutex
+	names atomic.Pointer[map[string]struct{}]
+}
+
+// has reports whether name is dropped.
+func (s *rpcRegistryDroppedSet) has(name string) bool {
+	names := s.names.Load()
+	if names == nil {
+		return false
+	}
+	_, found := (*names)[name]
+	return found
 }
 
 // count runs inc unless name is dropped.
 func (s *rpcRegistryDroppedSet) count(name string, inc func()) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if _, found := s.names[name]; found {
+	if s.has(name) {
 		return
 	}
 	inc()
 }
 
+// drop adds name to the set, and starts the set again when it is full.
+func (s *rpcRegistryDroppedSet) drop(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]struct{})
+	if current := s.names.Load(); current != nil {
+		maps.Copy(next, *current)
+	}
+	if _, found := next[name]; !found && len(next) >= rpcRegistryDroppedMax {
+		clear(next)
+	}
+	next[name] = struct{}{}
+	s.names.Store(&next)
+}
+
+// remove deletes name from the set, when the method is built again.
+func (s *rpcRegistryDroppedSet) remove(name string) {
+	if !s.has(name) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]struct{})
+	maps.Copy(next, *s.names.Load())
+	delete(next, name)
+	s.names.Store(&next)
+}
+
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
 func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
-	rpcRegistryDropped.mu.Lock()
-	delete(rpcRegistryDropped.names, rpcMethod)
-	rpcRegistryDropped.mu.Unlock()
+	rpcRegistryDropped.remove(rpcMethod)
 	if RPCRegistryCallsTotal == nil {
 		return nil
 	}
@@ -111,9 +153,7 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 // method which is still running keeps counting on the detached children, which are not exported, and its counts
 // by name are skipped until the method is built again.
 func DropRPCRegistryMethodSeries(rpcMethod string) {
-	rpcRegistryDropped.mu.Lock()
-	defer rpcRegistryDropped.mu.Unlock()
-	rpcRegistryDropped.names[rpcMethod] = struct{}{}
+	rpcRegistryDropped.drop(rpcMethod)
 	if RPCRegistryCallsTotal != nil {
 		RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
 	}
@@ -128,19 +168,7 @@ func DropRPCRegistryMethodSeries(rpcMethod string) {
 // DropRPCRegistryTargetSeries deletes the proxy metric series of a target which left the registry. It
 // deletes the children which NewProxyCallChildren resolves with the grpc protocol and the rpc kind.
 func DropRPCRegistryTargetSeries(target string) {
-	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
-		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
-		return
-	}
-	ProxyCallDurationHistogram.DeleteLabelValues("grpc", "rpc", target)
-	ProxyCallErrorCount.DeleteLabelValues("grpc", "rpc", target)
-	ProxyCallInflightRequests.DeleteLabelValues("grpc", "rpc", target)
-	// The summary is an ObserverVec interface, and only its vector type can delete a child.
-	if summary, ok := ProxyCallDurationSummary.(interface {
-		DeleteLabelValues(lvs ...string) bool
-	}); ok {
-		summary.DeleteLabelValues("grpc", "rpc", target)
-	}
+	DeleteProxyCallChildren("grpc", "rpc", target)
 }
 
 // rpcRegistryResults is the only list of the RPCRegistryResult values. The calls_total children of a

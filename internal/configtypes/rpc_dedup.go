@@ -22,6 +22,8 @@ type RPCDedupRedis struct {
 	ReuseFromEngine bool `mapstructure:"reuse_from_engine" json:"reuse_from_engine" envconfig:"reuse_from_engine" yaml:"reuse_from_engine" toml:"reuse_from_engine" doc:"Use the Redis and the prefix of the Redis engine. Requires engine.type redis."`
 	// RedisPrefixed is a Redis configuration. Ignored when ReuseFromEngine is set.
 	RedisPrefixed `mapstructure:",squash" yaml:",inline"`
+	// BeginTimeout bounds the begin of a call in the shared tier. Zero means the IO timeout of the dedup Redis only.
+	BeginTimeout Duration `mapstructure:"begin_timeout" json:"begin_timeout" envconfig:"begin_timeout" yaml:"begin_timeout" toml:"begin_timeout" doc:"Bounds the begin of a call in the dedup Redis, which the call waits for before it runs, so a stalled Redis costs each call this long instead of io_timeout. A begin which times out is a Redis failure: under on_store_error fail_closed the call is refused with dedup_unavailable, under fail_open it runs with node-local dedup. On a fast network, 100 to 250 ms suits a shared tier. Zero, the default, means the begin is bounded by io_timeout only, as before."`
 	// Wakeup is the wakeup of a duplicate which waits for a call on another node.
 	Wakeup RPCDedupWakeup `mapstructure:"wakeup" json:"wakeup" envconfig:"wakeup" yaml:"wakeup" toml:"wakeup" doc:"Wakeup of duplicates which wait for a call on another node, see rpc.registry.dedup.redis.wakeup.enabled."`
 }

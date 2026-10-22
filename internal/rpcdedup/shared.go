@@ -119,6 +119,8 @@ type SharedOptions struct {
 	// IOTimeout bounds the writes of a record to the shared tier which Complete makes, all tries together. Zero means
 	// redisshard.DefaultIOTimeout.
 	IOTimeout time.Duration
+	// BeginTimeout bounds the begin of a call in the shared tier, within IOTimeout. Zero means IOTimeout only.
+	BeginTimeout time.Duration
 }
 
 // Shared is the Store of a node which shares its records with other nodes. The node-local store is the cache of
@@ -152,9 +154,11 @@ type Shared struct {
 	ackFlushEvery time.Duration
 	ackBatch      int
 	ioTimeout     time.Duration
-	acks          chan Key
-	errorLog      *tools.IntervalLimiter
-	refusedLog    *tools.IntervalLimiter
+	// beginTimeout bounds the begin of a call in the shared tier, see SharedOptions.BeginTimeout. Zero means none.
+	beginTimeout time.Duration
+	acks         chan Key
+	errorLog     *tools.IntervalLimiter
+	refusedLog   *tools.IntervalLimiter
 	// remoteWaits is the number of waits for calls on another node which run on this node.
 	remoteWaits atomic.Int64
 	// lastWaitEnd is the time in Unix nanoseconds when the last of them ended, zero when none did.
@@ -216,6 +220,7 @@ func NewShared(opts SharedOptions) *Shared {
 		ackFlushEvery:  opts.AckFlushEvery,
 		ackBatch:       opts.AckBatch,
 		ioTimeout:      opts.IOTimeout,
+		beginTimeout:   opts.BeginTimeout,
 		acks:           make(chan Key, opts.AckQueueSize),
 		errorLog:       tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusedLog:     tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
@@ -266,12 +271,23 @@ func sharedRecord(rec Record) Record {
 	return rec
 }
 
+// beginContext returns the context of a begin in the shared tier: bounded by beginTimeout when it is set, and otherwise
+// unbounded, so that the backend's own IO timeout applies. The caller calls the cancel function.
+func (s *Shared) beginContext() (context.Context, context.CancelFunc) {
+	if s.beginTimeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), s.beginTimeout)
+}
+
 // beginShared starts the call of key in the shared tier, after its flight is registered locally. The call is a miss,
 // done, mismatch or running on another node. A Redis error degrades to node-local dedup with fail-open, and refuses
 // the call with fail-closed.
 func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 	flight.begun = time.Now().UnixNano()
-	res, err := s.backend.Begin(context.Background(), key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace, s.waiterCap())
+	ctx, cancel := s.beginContext()
+	defer cancel()
+	res, err := s.backend.Begin(ctx, key, flight.fingerprint, s.nodeID, flight.timeout+s.inflightGrace, s.waiterCap())
 	if err != nil {
 		s.logError("exactly-once RPC: the shared tier failed to begin a call", err)
 		if s.failOpen {

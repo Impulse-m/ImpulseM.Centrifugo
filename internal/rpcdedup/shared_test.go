@@ -63,6 +63,9 @@ type fakeBackend struct {
 	// blockAck makes every ack call wait until its context is done, as an unanswered Redis does. It gives up after a
 	// second, so that a flush which ignores its context fails the test instead of hanging it.
 	blockAck bool
+	// blockBegin makes every begin call wait until its context is done, as an unanswered Redis does. It gives up after a
+	// second, so that a begin which ignores its context fails the test instead of hanging it.
+	blockBegin bool
 	// onBegin, onComplete, onCancel and onAck run when the call is made, before it takes effect and outside the lock.
 	onBegin    func()
 	onComplete func()
@@ -199,6 +202,14 @@ func (f *fakeBackend) entry(key Key) (fakeEntry, bool) {
 
 // Begin implements Backend with the semantics of beginScript.
 func (f *fakeBackend) Begin(ctx context.Context, key Key, fingerprint [32]byte, nodeID string, inflightTTL time.Duration, maxWaiters int) (BeginResult, error) {
+	if f.blockBegin {
+		select {
+		case <-ctx.Done():
+			return BeginResult{}, ctx.Err()
+		case <-time.After(time.Second):
+			return BeginResult{}, errors.New("the begin was not cut by its context")
+		}
+	}
 	res, err := f.begin(ctx, key, fingerprint, nodeID, inflightTTL, maxWaiters)
 	if err == nil && f.afterBegin != nil {
 		f.afterBegin()

@@ -45,6 +45,7 @@ func (h *Handler) setupRPCDedupRedis() error {
 		Notifier:       h.notifyRPCDedupCancel,
 		Observer:       h.rpcDedup.metrics,
 		IOTimeout:      redisConf.IOTimeout.ToDuration(),
+		BeginTimeout:   dedup.Redis.BeginTimeout.ToDuration(),
 		Wakeup:         dedup.Redis.Wakeup.Enabled,
 		MaxWaiterNodes: dedup.Redis.Wakeup.MaxWaiterNodes,
 	}

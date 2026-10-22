@@ -74,3 +74,35 @@ func TestRPCAckDropsOutOfWindowAtCap(t *testing.T) {
 
 	require.Equal(t, inWindow, recorder.acked)
 }
+
+// noopAckStore acknowledges without keeping anything, so an allocation count of an ack is the ack's own.
+type noopAckStore struct {
+	rpcdedup.Store
+}
+
+// Ack does nothing.
+func (s *noopAckStore) Ack(_ string, _ []uint64) error {
+	return nil
+}
+
+// TestRPCAckDoesNotAllocate acks a frame of in-window msg_ids many times into one buffer. The ack filters the list in
+// place, so a call with acks costs no allocation on the RPC hot path.
+func TestRPCAckDoesNotAllocate(t *testing.T) {
+	backend := newDedupBackend(t)
+	h := newDedupHandler(t, dedupRegistryConfig(), backend)
+	h.rpcDedup.store = &noopAckStore{Store: h.rpcDedup.store}
+	track := &rpcTrack{scope: "scope-1"}
+
+	source := make([]uint64, 0, 64)
+	for seq := range uint64(64) {
+		source = append(source, dedupMsgID(seq+1))
+	}
+	buffer := make([]uint64, len(source))
+
+	allocs := testing.AllocsPerRun(100, func() {
+		copy(buffer, source)
+		h.rpcAck(track, buffer)
+	})
+
+	require.Zero(t, allocs)
+}

@@ -199,13 +199,13 @@ const rpcMaxAcksPerCall = 1024
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies. Only msg_ids in the window
 // reach the store, since a record of an older msg_id has expired already. The caller has checked the count against
-// rpcMaxAcksPerCall.
+// rpcMaxAcksPerCall. The msg_ids are filtered in place, so acks is changed and the caller must not read it afterwards.
 func (h *Handler) rpcAck(track *rpcTrack, acks []uint64) {
 	if track == nil || track.scope == "" || len(acks) == 0 {
 		return
 	}
 	now := time.Now()
-	inWindow := make([]uint64, 0, len(acks))
+	inWindow := acks[:0]
 	for _, msgID := range acks {
 		if rpcdedup.MsgIDInWindow(msgID, now, h.rpcDedup.window, h.rpcDedup.maxSkew) {
 			inWindow = append(inWindow, msgID)

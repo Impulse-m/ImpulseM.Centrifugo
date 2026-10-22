@@ -46,7 +46,7 @@ func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 	return revoker
 }
 
-// SetMaxTTL sets the limit which Apply clamps the expire_at of a notification to, read at each apply, so a config
+// SetMaxTTL sets the limit which ClampToMaxTTL clamps the expire_at of a notification to, read at each clamp, so a config
 // reload applies. Setup calls it once, before the node serves.
 func (r *Revoker) SetMaxTTL(maxTTL func() time.Duration) {
 	r.maxTTL = maxTTL
@@ -128,7 +128,8 @@ func (r *Revoker) ClampToMaxTTL(notification Notification, source string) Notifi
 
 // Apply applies the notification to local state. It is used both for operations received through
 // the API and for notifications from other nodes. Only local connections are disconnected. The caller
-// clamps the expire_at with ClampToMaxTTL first.
+// clamps the expire_at once before Apply: with ClampToMaxTTL, or with ClampExpireAt and its own time and limit, as the
+// Kafka source does.
 func (r *Revoker) Apply(notification Notification) error {
 	switch notification.Kind {
 	case KindBlockUser:

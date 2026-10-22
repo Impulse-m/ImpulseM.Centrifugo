@@ -80,6 +80,24 @@ func (tokenBucket) redisSuffix(_ []limit) string {
 // gcra returns the new TAT after one operation at now, and the wait of the operation. The wait is 0 when the
 // operation is allowed; then the new TAT is the state to keep. Otherwise the TAT is not changed by the caller.
 func gcra(emission int64, tolerance int64, tat int64, now int64) (int64, int64) {
+	return gcraTAT(emission, tat, now), gcraWait(emission, tolerance, tat, now)
+}
+
+// gcraTAT is the new TAT of gcra alone, so that tokenCommit stays small enough for the compiler to inline. A TAT which
+// would pass the largest int64 saturates there, so a long interval cannot wrap it negative.
+func gcraTAT(emission int64, tat int64, now int64) int64 {
+	if tat < now {
+		tat = now
+	}
+	if emission <= math.MaxInt64-tat {
+		return tat + emission
+	}
+	return math.MaxInt64
+}
+
+// gcraWait is the wait of gcra alone. It is a separate function so that tokenWait, which needs no new TAT, stays
+// small enough for the compiler to inline.
+func gcraWait(emission int64, tolerance int64, tat int64, now int64) int64 {
 	if tat < now {
 		tat = now
 	}
@@ -89,10 +107,5 @@ func gcra(emission int64, tolerance int64, tat int64, now int64) (int64, int64) 
 	if wait < 0 {
 		wait = 0
 	}
-	// A TAT which would pass the largest int64 saturates there, so a long interval cannot wrap it negative.
-	newTAT := int64(math.MaxInt64)
-	if emission <= math.MaxInt64-tat {
-		newTAT = tat + emission
-	}
-	return newTAT, wait
+	return wait
 }

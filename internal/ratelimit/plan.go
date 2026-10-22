@@ -78,14 +78,16 @@ type scope struct {
 }
 
 // tokenWait returns the largest wait of token buckets at now, 0 when all of them allow an operation. It does not
-// change state. It has no call except gcra, so the compiler inlines it into CommandPlan.allow, the hot path of the
+// change state. It has no call except gcraWait, so the compiler inlines it into CommandPlan.allow, the hot path of the
 // default limits, which then makes no call per bucket. Keep it free of other calls: a call makes it too big to inline.
 func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 	var worst int64
 	for i := range buckets {
 		sb := &buckets[i]
-		_, wait := gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
-		worst = max(worst, wait)
+		wait := gcraWait(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+		if wait > worst {
+			worst = wait
+		}
 	}
 	return worst
 }
@@ -95,7 +97,7 @@ func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 func tokenCommit(buckets []slotBucket, slots []int64, now int64) {
 	for i := range buckets {
 		sb := &buckets[i]
-		slots[sb.slot], _ = gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+		slots[sb.slot] = gcraTAT(sb.lim.emission, slots[sb.slot], now)
 	}
 }
 
@@ -179,19 +181,6 @@ type slotAllocator struct {
 // so code which describes compiled limits uses this check too.
 func HasBuckets(enabled bool, buckets configtypes.RateLimitBucketList) bool {
 	return enabled && len(buckets) > 0
-}
-
-// channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
-func channelLimitSet(cfg configtypes.RateLimitChannelBuckets) bool {
-	if HasBuckets(cfg.Enabled, cfg.Buckets) {
-		return true
-	}
-	for _, override := range cfg.NamespaceOverrides {
-		if HasBuckets(override.Enabled, override.Buckets) {
-			return true
-		}
-	}
-	return false
 }
 
 // compileScope compiles enabled buckets of the algorithm named algorithm into a scope named name. Returns nil when
@@ -314,23 +303,34 @@ func wireOperations(
 	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
 	ops[OperationTrack] = alloc.channelLimit(OperationTrack, cfg.Track, def)
 	ops[OperationUntrack] = alloc.channelLimit(OperationUntrack, cfg.Untrack, def)
-	// Map operations and track operations which have no buckets of their own count against the operation they were
-	// before they existed, as publish and sub_refresh. They share its scopes, so the budget is the same one.
+	// Map operations and track operations count against the operation they were before they existed, as publish and
+	// sub_refresh. They share its scopes, so the budget is the same one.
 	inheritUnset(ops, &cfg.MapPublish, OperationMapPublish, OperationPublish)
 	inheritUnset(ops, &cfg.MapRemove, OperationMapRemove, OperationPublish)
 	inheritUnset(ops, &cfg.Track, OperationTrack, OperationSubRefresh)
 	inheritUnset(ops, &cfg.Untrack, OperationUntrack, OperationSubRefresh)
 }
 
-// inheritUnset makes op use the limit of parent when own has no buckets, see wireOperations.
+// inheritUnset makes op resolve the buckets it has no own of from parent, see wireOperations. The base is inherited
+// when own has no base buckets. Namespace overrides of parent are inherited for the namespaces which own does not
+// override, so a namespace override of op never leaves the other namespaces unlimited.
 func inheritUnset(
 	ops *[operationCount]opLimit,
 	own *configtypes.RateLimitChannelBuckets,
 	op Operation,
 	parent Operation,
 ) {
-	if !channelLimitSet(*own) {
-		ops[op] = ops[parent]
+	if !HasBuckets(own.Enabled, own.Buckets) {
+		ops[op].base = ops[parent].base
+	}
+	for namespace, s := range ops[parent].overrides {
+		if _, ok := ops[op].overrides[namespace]; ok {
+			continue
+		}
+		if ops[op].overrides == nil {
+			ops[op].overrides = make(map[string]*scope)
+		}
+		ops[op].overrides[namespace] = s
 	}
 }
 

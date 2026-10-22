@@ -14,6 +14,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// pushRoutePaths lists the HTTP paths of the push notification methods.
+var pushRoutePaths = []string{
+	"/device_register",
+	"/device_update",
+	"/device_remove",
+	"/device_list",
+	"/device_topic_update",
+	"/device_topic_list",
+	"/user_topic_update",
+	"/user_topic_list",
+	"/send_push_notification",
+	"/update_push_status",
+	"/cancel_push",
+}
+
+// newPushTestRoutes returns the API routes of a node that has no push
+// notification subsystem, the state of a deployment with push off.
+func newPushTestRoutes(t *testing.T) map[string]http.HandlerFunc {
+	t.Helper()
+
+	n := nodeWithMemoryEngine()
+	t.Cleanup(func() { _ = n.Shutdown(context.Background()) })
+
+	cfgContainer, err := config.NewContainer(config.DefaultConfig())
+	require.NoError(t, err)
+	apiExecutor := NewExecutor(n, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
+	apiHandler := NewHandler(n, apiExecutor, Config{})
+	return apiHandler.Routes()
+}
+
 // TestPushMethodsNotAvailable checks that every push notification method
 // answers 108 with the same message while the subsystem is not available.
 func TestPushMethodsNotAvailable(t *testing.T) {
@@ -42,55 +72,57 @@ func TestPushMethodsNotAvailable(t *testing.T) {
 	}
 }
 
-// TestPushRoutesRegistered checks that the HTTP routes of the push notification
-// methods exist, so the methods answer 108 over HTTP and do not return 404.
-func TestPushRoutesRegistered(t *testing.T) {
-	routes := (&Handler{}).Routes()
+// TestPushRouteAnswers108 checks that every push notification route exists and
+// answers 108 in the response body over HTTP, not 404 or 405.
+func TestPushRouteAnswers108(t *testing.T) {
+	routes := newPushTestRoutes(t)
 
-	for _, path := range []string{
-		"/device_register",
-		"/device_update",
-		"/device_remove",
-		"/device_list",
-		"/device_topic_update",
-		"/device_topic_list",
-		"/user_topic_update",
-		"/user_topic_list",
-		"/send_push_notification",
-		"/update_push_status",
-		"/cancel_push",
-	} {
-		require.NotNil(t, routes[path], path)
+	for _, path := range pushRoutePaths {
+		handler, ok := routes[path]
+		require.True(t, ok, path)
+
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodPost, "/api"+path, strings.NewReader(`{}`)))
+
+		require.Equal(t, http.StatusOK, rec.Code, path)
+		require.Contains(t, rec.Body.String(), `"code":108`, path)
+		require.Contains(t, rec.Body.String(), "push notifications are not enabled", path)
 	}
 }
 
-// TestPushRouteAnswers108 checks that a push notification method called over
-// HTTP answers 108 in the response body, not 404 or 405.
-func TestPushRouteAnswers108(t *testing.T) {
-	n := nodeWithMemoryEngine()
-	defer func() { _ = n.Shutdown(context.Background()) }()
+// countingReader serves an endless body and counts the bytes it hands out.
+type countingReader struct {
+	read int64
+	max  int64
+}
 
-	cfgContainer, err := config.NewContainer(config.DefaultConfig())
-	require.NoError(t, err)
-	apiExecutor := NewExecutor(n, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", UseOpenTelemetry: false})
-	apiHandler := NewHandler(n, apiExecutor, Config{})
-
-	mux := http.NewServeMux()
-	for path, handler := range apiHandler.Routes() {
-		mux.Handle("/api"+path, handler)
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.read >= c.max {
+		return 0, io.EOF
 	}
-	server := httptest.NewServer(mux)
-	defer server.Close()
+	n := int64(len(p))
+	if c.read+n > c.max {
+		n = c.max - c.read
+	}
+	for i := range p[:n] {
+		p[i] = 'a'
+	}
+	c.read += n
+	return int(n), nil
+}
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/send_push_notification", strings.NewReader(`{}`))
-	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+// TestPushRouteBodyLimit checks that an oversized body on a push route answers
+// 107 and that the route does not read the body past the cap.
+func TestPushRouteBodyLimit(t *testing.T) {
+	routes := newPushTestRoutes(t)
 
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Contains(t, string(body), `"code":108`)
-	require.Contains(t, string(body), "push notifications are not enabled")
+	for _, path := range pushRoutePaths {
+		body := &countingReader{max: 64 << 20}
+		rec := httptest.NewRecorder()
+		routes[path](rec, httptest.NewRequest(http.MethodPost, "/api"+path, body))
+
+		require.Equal(t, http.StatusOK, rec.Code, path)
+		require.Contains(t, rec.Body.String(), `"code":107`, path)
+		require.LessOrEqual(t, body.read, int64(pushMaxBodyBytes+1), path)
+	}
 }

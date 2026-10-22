@@ -28,6 +28,8 @@ const (
 	sharedDefaultMaxWaiterNodes = 64
 	// maxPendingWakes is the number of wakes which a node writes in the background at once, see Shared.wakeWaiters.
 	maxPendingWakes = 64
+	// pollCapDivisor sets the longest poll interval of a wait as a share of the wait, see Shared.pollCap.
+	pollCapDivisor = 10
 	// wakeCheckDelay is the time after which a wait which has not been woken reads the record once, see watchWake.
 	wakeCheckDelay = 2 * time.Second
 	// wakeWatchIdle is how long the wake watcher of a node runs after the node's last remote wait ended. It is the
@@ -342,12 +344,20 @@ func (s *Shared) watch(key Key, flight *Flight) {
 	s.watchPolling(key, flight)
 }
 
+// pollCap returns the longest delay between two polls of a wait of the given length: PollMax, unless a tenth of the wait
+// is longer. Scaled so, a long call is polled less often than a short one, and never more often than PollMax.
+// The wait of a call is its method timeout plus the in-flight grace, so a tenth of it is over PollMax for most calls.
+func (s *Shared) pollCap(wait time.Duration) time.Duration {
+	return max(s.pollMax, wait/pollCapDivisor)
+}
+
 // watchPolling is the wait with the wakeup off: it polls the shared tier from the start, at the ramp from PollInitial
-// doubling to PollMax, until the call is done or the in-flight deadline passes.
+// doubling to pollCap, until the call is done or the in-flight deadline passes.
 func (s *Shared) watchPolling(key Key, flight *Flight) {
-	ctx, cancel := context.WithTimeout(context.Background(), flight.timeout+s.inflightGrace)
+	wait := flight.timeout + s.inflightGrace
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	schedule := newRetryBackOff(s.pollInitial, s.pollMax)
+	schedule := newRetryBackOff(s.pollInitial, s.pollCap(wait))
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {

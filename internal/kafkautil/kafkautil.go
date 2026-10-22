@@ -121,7 +121,9 @@ type assumeRoler interface {
 
 // mskAssumeRoleAuth obtains STS credentials for MSK IAM SASL handshakes. The credentials are kept until
 // mskCredentialsLifetimeShare of their lifetime has passed, so the handshakes of a reconnect burst share one AssumeRole
-// call. They are never returned past their expiry, which is the failure of CredentialsCache in franz-go #731.
+// call, and they are never returned past their expiry. The owner decided to call AssumeRole directly and not to use
+// CredentialsCache, which can return credentials MSK already considers expired (franz-go #731). The refresh margin is
+// an owner choice, so change mskCredentialsLifetimeShare only with that decision in view.
 // RoleSessionName stays constant so the broker principal is stable across re-auth (see aws-msk-iam-auth README).
 type mskAssumeRoleAuth struct {
 	stsClient assumeRoler

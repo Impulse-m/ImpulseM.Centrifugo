@@ -68,6 +68,8 @@ type fakeBackend struct {
 	onComplete func()
 	onCancel   func()
 	onAck      func()
+	// onWake runs when a wake is written, before it takes effect and outside the lock.
+	onWake func()
 	// afterBegin runs once a begin call has answered, outside the lock: a call which lands after the script does, such
 	// as the owner's completion of a call which the begin found in flight.
 	afterBegin func()
@@ -285,6 +287,9 @@ func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) Complete
 
 // Wake implements Backend: it records the call, and fails with wakeErr when that is set.
 func (f *fakeBackend) Wake(_ context.Context, key Key, nodes []string) (int, error) {
+	if f.onWake != nil {
+		f.onWake()
+	}
 	if err := f.enter("wake"); err != nil {
 		return 0, err
 	}

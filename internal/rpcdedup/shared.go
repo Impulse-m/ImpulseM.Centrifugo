@@ -26,6 +26,8 @@ const (
 	sharedDefaultPollMax     = 500 * time.Millisecond
 	// sharedDefaultMaxWaiterNodes is the cap of the waiter list of a record when SharedOptions.MaxWaiterNodes is zero.
 	sharedDefaultMaxWaiterNodes = 64
+	// maxPendingWakes is the number of wakes which a node writes in the background at once, see Shared.wakeWaiters.
+	maxPendingWakes = 64
 	// wakeCheckDelay is the time after which a wait which has not been woken reads the record once, see watchWake.
 	wakeCheckDelay = 2 * time.Second
 	// wakeWatchIdle is how long the wake watcher of a node runs after the node's last remote wait ended. It is the
@@ -133,6 +135,8 @@ type Shared struct {
 	pollMax       time.Duration
 	// wakeup is set when the waits are woken by the wake streams, see SharedOptions.Wakeup.
 	wakeup bool
+	// wakeSlots holds one token per wake which is written in the background, at most maxPendingWakes.
+	wakeSlots chan struct{}
 	// maxWaiterNodes is the cap of the waiter list of a record, sent to the begin script when wakeup is set.
 	maxWaiterNodes int
 	// checkDelay is the time of the check of a wait, wakeCheckDelay unless a test shortens it.
@@ -202,6 +206,7 @@ func NewShared(opts SharedOptions) *Shared {
 		pollInitial:    opts.PollInitial,
 		pollMax:        opts.PollMax,
 		wakeup:         opts.Wakeup,
+		wakeSlots:      make(chan struct{}, maxPendingWakes),
 		maxWaiterNodes: opts.MaxWaiterNodes,
 		checkDelay:     wakeCheckDelay,
 		watchIdleAfter: wakeWatchIdle,
@@ -531,7 +536,7 @@ func (s *Shared) Complete(key Key, flight *Flight, rec Record) error {
 	waiters := s.completeShared(ctx, key, flight, rec, errJSON)
 	rec.sharedUncached = overReplyLimit(rec, errJSON, s.maxReplyBytes)
 	s.local.complete(key, flight, rec, errJSON)
-	s.wakeWaiters(ctx, key, waiters)
+	s.wakeWaiters(key, waiters)
 	return nil
 }
 
@@ -547,20 +552,37 @@ func (s *Shared) completeLimit(flight *Flight) time.Time {
 	return limit
 }
 
-// wakeWaiters writes a wake for each of the waiter nodes of key, in the shared tier, within ctx. Nothing is written
-// without the wakeup, or without waiters. It runs after the local flight is done, so the local duplicates are answered
-// first. A failed wake is counted and logged; its wait is checked.
-func (s *Shared) wakeWaiters(ctx context.Context, key Key, waiters []string) {
+// wakeWaiters writes a wake for each of the waiter nodes of key, in the shared tier. Nothing is written without the
+// wakeup, or without waiters. The writes run in a goroutine of their own, within the IO timeout, so the owner replies
+// without waiting for them. A wake which finds no free token of maxPendingWakes is not written, and counts as failed:
+// the wait it would wake is checked at its read anyway. It runs after the local flight is done, so the local duplicates
+// are answered first. A failed wake is counted and logged; its wait is checked.
+func (s *Shared) wakeWaiters(key Key, waiters []string) {
 	if !s.wakeup || len(waiters) == 0 {
 		return
 	}
-	written, err := s.backend.Wake(ctx, key, waiters)
-	if s.observer != nil {
-		s.observer.Woke(written, len(waiters)-written)
+	select {
+	case s.wakeSlots <- struct{}{}:
+	default:
+		if s.observer != nil {
+			s.observer.Woke(0, len(waiters))
+		}
+		return
 	}
-	if err != nil {
-		s.logError("exactly-once RPC: the shared tier failed to wake a waiter, its wait is checked", err)
-	}
+	go func() {
+		defer func() {
+			<-s.wakeSlots
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), s.ioTimeout)
+		defer cancel()
+		written, err := s.backend.Wake(ctx, key, waiters)
+		if s.observer != nil {
+			s.observer.Woke(written, len(waiters)-written)
+		}
+		if err != nil {
+			s.logError("exactly-once RPC: the shared tier failed to wake a waiter, its wait is checked", err)
+		}
+	}()
 }
 
 // Wake tells the wait for the call of key, when there is one on this node, that its record may be written. It is the

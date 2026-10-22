@@ -441,8 +441,7 @@ func TestSharedCompleteWakesWaiters(t *testing.T) {
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
 	require.False(t, flightOpen(owner))
-	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}}, fx.backend.wakeCalls())
-	require.Equal(t, [2]int{2, 0}, fx.woke)
+	requireWakeEventually(t, fx, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}}, [2]int{2, 0})
 }
 
 func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
@@ -455,7 +454,7 @@ func TestSharedCompleteWakeFailureIsCounted(t *testing.T) {
 	fx.backend.wakeErr = errors.New("wake failed")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, sharedWakeupRecord))
-	require.Equal(t, [2]int{0, 2}, fx.woke)
+	requireWakeEventually(t, fx, []wakeCall{{key: sharedKey, nodes: []string{"node-b", "node-c"}}}, [2]int{0, 2})
 	require.False(t, flightOpen(owner))
 	require.Equal(t, sharedWakeupRecord.Reply, owner.Record().Reply, "the local record is kept")
 }
@@ -468,7 +467,7 @@ func TestSharedCompleteAbandonedWakesWaiters(t *testing.T) {
 	listWaiter(t, fx, sharedKey, sharedFingerprintA, "node-b")
 
 	require.NoError(t, fx.shared.Complete(sharedKey, owner, Record{Abandoned: true, NotRun: true}))
-	require.Equal(t, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}}, fx.backend.wakeCalls())
+	requireWakeEventually(t, fx, []wakeCall{{key: sharedKey, nodes: []string{"node-b"}}}, [2]int{1, 0})
 }
 
 func TestSharedCompleteNotOwnedWakesNobody(t *testing.T) {

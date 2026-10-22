@@ -228,7 +228,8 @@ func (q *DisconnectQueue) begin(connection Connection) {
 // retryKept re-evaluates kept keys on the queue goroutine. It runs after each dequeue, and only while the queue is at most
 // half full. It takes one key and runs its pass; when the pass left an item in the queue it stops, since that item's
 // dequeue carries the next retry. While the queue is empty it takes the next key, so a key which queued nothing does not
-// wait for an enqueue. A key comes back only through a drop, which needs a full queue, and a full queue stops the loop.
+// wait for an enqueue. A key comes back through a drop, which needs a full queue, or through the release of a held key at
+// half, so a key which is held does not run while the queue is above half.
 func (q *DisconnectQueue) retryKept() {
 	if len(q.items) > cap(q.items)/2 {
 		return

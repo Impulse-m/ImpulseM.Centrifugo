@@ -394,6 +394,38 @@ func TestDisconnectQueueRetriesOnceAtHalf(t *testing.T) {
 	require.Equal(t, []int{5}, *lengths)
 }
 
+// TestDisconnectQueueRetryGateIsHalfOfOddSize drops a keyed disconnect from a full queue of 9. The gate is cap/2 with integer
+// division, which is 4. The key is not retried at 5 items, and it is retried at the dequeue which leaves 4.
+func TestDisconnectQueueRetryGateIsHalfOfOddSize(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 9)
+	retrier, lengths, _ := retryRecorder(queue)
+	queue.setRetrier(retrier)
+	for i := range 9 {
+		conn := &fakeConnection{id: strconv.Itoa(i)}
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
+	}
+	dropped := &fakeConnection{id: "dropped"}
+	require.False(t, queue.enqueueKeyed(retryKey{user: "user-1"}, dropped, centrifuge.DisconnectExpired, ReasonBlocked))
+
+	for range 4 {
+		select {
+		case conn := <-queue.items:
+			queue.begin(conn)
+		default:
+			t.Fatal("queue ran empty")
+		}
+	}
+	require.Empty(t, *lengths)
+
+	select {
+	case conn := <-queue.items:
+		queue.begin(conn)
+	default:
+		t.Fatal("queue ran empty")
+	}
+	require.Equal(t, []int{4}, *lengths)
+}
+
 // TestDisconnectQueueFillGauge queues three connections and reads the fill gauge, which reads the queue at each scrape.
 func TestDisconnectQueueFillGauge(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)

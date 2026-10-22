@@ -89,12 +89,13 @@ end
 return {'done'}
 `)
 
-// ackScript deletes the done records and tombstones of the keys of one scope, given as KEYS. An in-flight record is
-// never deleted. It returns the number of deleted keys.
+// ackScript deletes the done records of the keys of one scope, given as KEYS. An in-flight record and a tombstone are
+// never deleted: a tombstone answers the retransmit of a cancelled call, so the call does not run again. It returns the
+// number of deleted keys.
 var ackScript = rueidis.NewLuaScript(`
 local n = 0
 for i = 1, #KEYS do
-	if redis.call('HGET', KEYS[i], 's') ~= 'i' then
+	if redis.call('HGET', KEYS[i], 's') == 'd' then
 		n = n + redis.call('DEL', KEYS[i])
 	end
 end

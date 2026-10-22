@@ -415,14 +415,15 @@ func (m *Memory) cancelLocked(key Key, failure *centrifuge.Error, errJSON string
 	return nil, nil
 }
 
-// Ack implements Store.
+// Ack implements Store. It removes the done records of msgIDs. A tombstone is kept: it answers the retransmit of a
+// cancelled call, so that the call does not run again.
 func (m *Memory) Ack(scope string, msgIDs []uint64) error {
 	s := m.shardOf(scope)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepSome(s.now())
 	for _, msgID := range msgIDs {
-		if r := s.done[Key{Scope: scope, MsgID: msgID}]; r != nil {
+		if r := s.done[Key{Scope: scope, MsgID: msgID}]; r != nil && !r.tombstone() {
 			s.remove(r)
 		}
 	}
@@ -529,6 +530,12 @@ func (s *shard) releaseIfEmpty(sc *scopeState) {
 			delete(s.users, sc.user)
 		}
 	}
+}
+
+// tombstone reports whether r is the tombstone of a cancelled call: a record with the error of the cancel and no call,
+// so no fingerprint. A record of a call which ran always has its fingerprint.
+func (r *storedRecord) tombstone() bool {
+	return r.rec.Fingerprint == zeroFingerprint && r.rec.Err != nil
 }
 
 // liveRecord returns the done record of key when it has not expired. An expired record is removed, and nil is

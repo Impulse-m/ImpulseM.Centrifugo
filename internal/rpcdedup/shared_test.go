@@ -383,7 +383,7 @@ func (f *fakeBackend) Ack(ctx context.Context, acks []ScopeAcks) error {
 	for _, scope := range acks {
 		for _, msgID := range scope.MsgIDs {
 			key := Key{Scope: scope.Scope, MsgID: msgID}
-			if e := f.entries[key]; e != nil && e.state != 'i' {
+			if e := f.entries[key]; e != nil && e.state == 'd' {
 				delete(f.entries, key)
 			}
 		}

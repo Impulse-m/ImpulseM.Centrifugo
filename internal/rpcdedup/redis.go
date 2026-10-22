@@ -10,6 +10,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/redis/rueidis"
+	"golang.org/x/sync/errgroup"
 )
 
 // InflightGrace is the time an in-flight record is kept beyond the method timeout of its call. The owner
@@ -135,6 +136,8 @@ type Redis struct {
 	readBlock time.Duration
 	// errorLog limits the log of the wake watchers' read errors to one per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
+	// ackFlush runs the acks of one shard group, see Redis.Ack. It is flushAckShard unless a test replaces it.
+	ackFlush func(callCtx context.Context, shard *redisshard.RedisShard, execs []rueidis.LuaExec) error
 }
 
 // NewRedis returns the Redis backend of the keys with prefix. The connector may not be connected yet: calls made
@@ -144,7 +147,7 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 	if ioTimeout <= 0 {
 		ioTimeout = redisshard.DefaultIOTimeout
 	}
-	return &Redis{
+	r := &Redis{
 		prefix:    prefix,
 		connector: connector,
 		timeout:   ioTimeout,
@@ -152,6 +155,8 @@ func NewRedis(prefix string, connector *redisshard.Connector, ioTimeout time.Dur
 		readBlock: wakeReadBlock,
 		errorLog:  tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
+	r.ackFlush = r.flushAckShard
+	return r
 }
 
 // Begin implements Backend with the begin script. maxWaiters is the cap of the waiter list, zero for none.
@@ -243,8 +248,8 @@ func (r *Redis) Poll(ctx context.Context, key Key) (PollResult, error) {
 // Ack implements Backend. The acks of each shard are one pipeline, with one ack script per scope. A failed shard
 // is counted, and the first error is returned; the records of the failed keys expire at their TTL. While the
 // connector is not connected, each call counts one error, so an outage counts once per flush. The shards are flushed
-// one after another, and a Redis which accepts connections but does not answer delays each flush by one IO timeout per
-// shard, which the shutdown flush waits for too.
+// in parallel, so a Redis which accepts connections but does not answer delays each flush by one IO timeout, however
+// many shards stall; the shutdown flush waits for it too.
 func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 	shards := r.connector.Shards()
 	if shards == nil {
@@ -259,24 +264,42 @@ func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 		index := redisshard.ShardIndex(acks[i].Scope, len(shards))
 		groups[index] = append(groups[index], ackExec(r.prefix, acks[i]))
 	}
-	var firstErr error
-	for index, execs := range groups {
-		err := r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
-			results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
-				return ackScript.ExecMulti(callCtx, client, execs...)
-			})
-			for i := range results {
-				if err := results[i].Error(); err != nil {
-					return err
-				}
-			}
-			return nil
+	return ackShards(ctx, groups, func(ctx context.Context, index int, execs []rueidis.LuaExec) error {
+		return r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
+			return r.ackFlush(callCtx, shard, execs)
 		})
-		if err != nil && firstErr == nil {
-			firstErr = err
+	})
+}
+
+// flushAckShard runs the ack script of each scope of execs on shard, as one pipeline, and returns the first failed
+// command.
+func (r *Redis) flushAckShard(callCtx context.Context, shard *redisshard.RedisShard, execs []rueidis.LuaExec) error {
+	results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
+		return ackScript.ExecMulti(callCtx, client, execs...)
+	})
+	for i := range results {
+		if err := results[i].Error(); err != nil {
+			return err
 		}
 	}
-	return firstErr
+	return nil
+}
+
+// ackShards runs flush for each shard group of groups, in a goroutine of its own, and returns when all have returned.
+// It returns the error of one of the groups which failed, or nil. Each flush bounds its own time, so the flushes of
+// stalled shards overlap.
+func ackShards(
+	ctx context.Context,
+	groups map[int][]rueidis.LuaExec,
+	flush func(ctx context.Context, index int, execs []rueidis.LuaExec) error,
+) error {
+	var eg errgroup.Group
+	for index, execs := range groups {
+		eg.Go(func() error {
+			return flush(ctx, index, execs)
+		})
+	}
+	return eg.Wait()
 }
 
 // Connected reports whether the connector has shards.

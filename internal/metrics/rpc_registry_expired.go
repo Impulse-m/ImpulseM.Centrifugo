@@ -6,5 +6,7 @@ func (m *RPCRegistryMethodMetrics) ExpiredRefusal(rpcMethod string) {
 	if m == nil || RPCRegistryCallsTotal == nil {
 		return
 	}
-	RPCRegistryCallsTotal.WithLabelValues(rpcMethod, RPCRegistryResultExpired).Inc()
+	rpcRegistryDropped.count(rpcMethod, func() {
+		RPCRegistryCallsTotal.WithLabelValues(rpcMethod, RPCRegistryResultExpired).Inc()
+	})
 }

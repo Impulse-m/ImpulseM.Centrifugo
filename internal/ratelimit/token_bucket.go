@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	_ "embed"
+	"math"
 	"strconv"
 	"time"
 
@@ -38,9 +39,9 @@ func (tokenBucket) newLimit(interval time.Duration, rate int) limit {
 	return limit{emission: emission, tolerance: emission * int64(rate)}
 }
 
-// wait returns the time until the operation is allowed, 0 when it is allowed now. The client limiter does not call
-// it: token-only scopes call gcra directly. It is the Algorithm implementation which the golden and Redis oracle
-// tests run.
+// wait returns the time until the operation is allowed, 0 when it is allowed now. The plan does not call it for token
+// buckets: tokenWait and tokenCommit in plan.go call gcraWait and gcraTAT, the two parts of gcra. Keep those in step
+// with gcra. This method is the Algorithm reference which the golden and Redis oracle tests run against.
 func (tokenBucket) wait(lim *limit, st []int64, now int64) int64 {
 	_, wait := gcra(lim.emission, lim.tolerance, st[0], now)
 	return wait
@@ -79,13 +80,32 @@ func (tokenBucket) redisSuffix(_ []limit) string {
 // gcra returns the new TAT after one operation at now, and the wait of the operation. The wait is 0 when the
 // operation is allowed; then the new TAT is the state to keep. Otherwise the TAT is not changed by the caller.
 func gcra(emission int64, tolerance int64, tat int64, now int64) (int64, int64) {
+	return gcraTAT(emission, tat, now), gcraWait(emission, tolerance, tat, now)
+}
+
+// gcraTAT is the new TAT of gcra alone, so that tokenCommit stays small enough for the compiler to inline. A TAT which
+// would pass the largest int64 saturates there, so a long interval cannot wrap it negative.
+func gcraTAT(emission int64, tat int64, now int64) int64 {
 	if tat < now {
 		tat = now
 	}
-	newTAT := tat + emission
-	wait := newTAT - now - tolerance
+	if emission <= math.MaxInt64-tat {
+		return tat + emission
+	}
+	return math.MaxInt64
+}
+
+// gcraWait is the wait of gcra alone. It is a separate function so that tokenWait, which needs no new TAT, stays
+// small enough for the compiler to inline. A TAT at or before now waits for nothing, so the TAT is not clamped here.
+func gcraWait(emission int64, tolerance int64, tat int64, now int64) int64 {
+	if tat <= now {
+		return 0
+	}
+	// The wait is newTAT - now - tolerance, computed as (tat - now) - (tolerance - emission) so that no sum overflows:
+	// tat is after now, and tolerance is at least emission, so the subtracted part is never negative.
+	wait := tat - now - (tolerance - emission)
 	if wait < 0 {
 		wait = 0
 	}
-	return newTAT, wait
+	return wait
 }

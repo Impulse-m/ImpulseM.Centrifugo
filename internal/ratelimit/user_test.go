@@ -100,9 +100,17 @@ func TestUserConnectFallsBackToDefault(t *testing.T) {
 }
 
 func TestUserIdleTimeout(t *testing.T) {
-	require.Equal(t, 60*time.Second, userIdleTimeout(time.Second))
-	require.Equal(t, 90*time.Second, userIdleTimeout(45*time.Second))
-	require.Equal(t, 10*time.Minute, userIdleTimeout(5*time.Minute))
+	require.Equal(t, 60*time.Second, userIdleTimeout(time.Second, false))
+	require.Equal(t, 90*time.Second, userIdleTimeout(45*time.Second, false))
+	require.Equal(t, 10*time.Minute, userIdleTimeout(5*time.Minute, false))
+}
+
+func TestUserIdleTimeoutTokenOnlyUsesOneInterval(t *testing.T) {
+	require.Equal(t, 24*time.Hour, userIdleTimeout(24*time.Hour, true))
+	require.Equal(t, 60*time.Second, userIdleTimeout(time.Second, true))
+
+	limiter := NewUserLimiter(userConfig(24*time.Hour, 1))
+	require.Equal(t, int64(24*time.Hour), limiter.store.idle)
 }
 
 func TestUserEvictionRefcountAndIdle(t *testing.T) {
@@ -277,7 +285,7 @@ func TestUserLinkIdleSkipsEvictedState(t *testing.T) {
 	again := store.acquire("u")
 	require.Same(t, us, again)
 	store.release(again)
-	require.Equal(t, 1, sweepAt(store, base.Add(2*userIdleTimeout(time.Second))))
+	require.Equal(t, 1, sweepAt(store, base.Add(2*userIdleTimeout(time.Second, false))))
 
 	_, linked := store.linkIdle(us)
 	require.False(t, linked)
@@ -309,7 +317,7 @@ func TestUserEvictBatchesPerShard(t *testing.T) {
 		limiter.Detach(st)
 	}
 
-	require.Equal(t, len(userIDs), sweepAt(store, base.Add(userIdleTimeout(time.Second)+time.Nanosecond)))
+	require.Equal(t, len(userIDs), sweepAt(store, base.Add(userIdleTimeout(time.Second, false)+time.Nanosecond)))
 	require.Equal(t, 0, storeSize(store))
 	require.Equal(t, 0, idleCount(store))
 }

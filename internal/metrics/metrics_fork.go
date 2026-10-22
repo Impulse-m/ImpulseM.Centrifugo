@@ -60,6 +60,7 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
 	rpcRegistryDedupAcksOverCap   prometheus.Counter
+	rpcRegistryDedupCancelDrops   prometheus.Counter
 	rpcRegistryDedupRemoteReads   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
@@ -277,7 +278,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
 		Name:        "errors_total",
-		Help:        "Number of failed RPC method registry calls by method and application error type. Cancelled calls are not counted. A trailing _<digits> in the type becomes _X, an error without a type counts as none, and types beyond 256 per process count as other.",
+		Help:        "Number of failed RPC method registry calls by method and application error type. Cancelled calls are not counted. A trailing _<digits> in the type becomes _X, an error without a type counts as none, and types beyond 256 per process count as other. A call which was still running when a reload dropped the series of its method can create them again, and the names of more than 4096 dropped methods are not remembered for that.",
 		ConstLabels: constLabels,
 	}, []string{"rpc_method", "app_type"})
 
@@ -382,6 +383,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		Subsystem:   "rpc_registry",
 		Name:        "dedup_acks_over_cap_total",
 		Help:        "Number of msg_ids of exactly-once RPC acks dropped because one call listed more than the cap of 1024. The records of such msg_ids expire at their TTL.",
+		ConstLabels: constLabels,
+	})
+
+	m.rpcRegistryDedupCancelDrops = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_cancel_drops_total",
+		Help:        "Number of cancel notifications to other nodes which the exactly-once RPC tier dropped because its notification queue was full. The call which such a notification would cancel runs to its own end.",
 		ConstLabels: constLabels,
 	})
 
@@ -491,6 +500,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
 		m.rpcRegistryDedupAcksOverCap,
+		m.rpcRegistryDedupCancelDrops,
 		m.rpcRegistryDedupRemoteReads,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
@@ -562,6 +572,24 @@ func NewProxyCallChildren(protocol string, kind string, name string) *ProxyCallC
 	}
 }
 
+// DeleteProxyCallChildren deletes the proxy metric children which NewProxyCallChildren resolves with the labels
+// protocol, kind and name. It does nothing when the proxy metrics are not initialised.
+func DeleteProxyCallChildren(protocol string, kind string, name string) {
+	if ProxyCallDurationHistogram == nil || ProxyCallDurationSummary == nil ||
+		ProxyCallErrorCount == nil || ProxyCallInflightRequests == nil {
+		return
+	}
+	ProxyCallDurationHistogram.DeleteLabelValues(protocol, kind, name)
+	ProxyCallErrorCount.DeleteLabelValues(protocol, kind, name)
+	ProxyCallInflightRequests.DeleteLabelValues(protocol, kind, name)
+	// The summary is an ObserverVec interface, and only its vector type can delete a child.
+	if summary, ok := ProxyCallDurationSummary.(interface {
+		DeleteLabelValues(lvs ...string) bool
+	}); ok {
+		summary.DeleteLabelValues(protocol, kind, name)
+	}
+}
+
 // setForkMetrics assigns the fork metrics created by initForkMetrics to the package level variables.
 func (m *Registry) setForkMetrics() {
 	NotifyEventsDroppedTotal = m.notifyEventsDroppedTotal
@@ -598,6 +626,7 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
 	RPCRegistryDedupAcksOverCapTotal = m.rpcRegistryDedupAcksOverCap
+	RPCRegistryDedupCancelDropsTotal = m.rpcRegistryDedupCancelDrops
 	RPCRegistryDedupRemoteReadsTotal = m.rpcRegistryDedupRemoteReads
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications

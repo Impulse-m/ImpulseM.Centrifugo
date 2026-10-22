@@ -106,6 +106,13 @@ func TestValidateRPCDedupRules(t *testing.T) {
 			wantErr: "rpc.registry.dedup.max_skew: must not be negative",
 		},
 		{
+			name: "redis begin timeout must not be negative",
+			modify: func(cfg *Config) {
+				cfg.RPC.Registry.Dedup.Redis.BeginTimeout = configtypes.Duration(-time.Millisecond)
+			},
+			wantErr: "rpc.registry.dedup.redis.begin_timeout: must not be negative",
+		},
+		{
 			name: "window must be greater than max skew",
 			modify: func(cfg *Config) {
 				cfg.RPC.Registry.Dedup.MaxSkew = configtypes.Duration(120 * time.Second)

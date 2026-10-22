@@ -48,6 +48,9 @@ type ProxyMap struct {
 	// When false there is no point keeping the client's emulated headers in the
 	// connection context.
 	UsesEmulatedHeaders bool
+	// EmulatedHeaderNames is the lower-case union of the emulated_headers names of all
+	// configured proxies. Only these client headers are kept in the connection context.
+	EmulatedHeaderNames map[string]struct{}
 }
 
 // Handler for client connections.
@@ -647,13 +650,7 @@ func (h *Handler) OnClientConnecting(
 	// Only keep emulated headers in the connection context when some proxy may
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
-	if (h.proxyMap.UsesEmulatedHeaders || h.rpcRegistry.UsesEmulatedHeaders()) && len(e.Headers) > 0 {
-		if newCtx != nil {
-			newCtx = clientcontext.SetEmulatedHeadersToContext(newCtx, e.Headers)
-		} else {
-			newCtx = clientcontext.SetEmulatedHeadersToContext(ctx, e.Headers)
-		}
-	}
+	newCtx = h.setConnectEmulatedHeaders(ctx, newCtx, e.Headers)
 	if newCtx != nil {
 		finalReply.Context = newCtx
 	}

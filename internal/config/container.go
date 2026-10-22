@@ -124,6 +124,12 @@ func (n *Container) ChannelOptions(ch string) (string, string, configtypes.Chann
 	return nsName, rest, *chOpts, ok, nil
 }
 
+// ChannelNamespace returns the namespace name of channel, empty when it has none. Unlike ChannelOptions it copies nothing.
+func (n *Container) ChannelNamespace(ch string) string {
+	nsName, _, _, _ := n.channelOptions(ch)
+	return nsName
+}
+
 // ChannelOptionsRef is ChannelOptions for hot paths. It returns the options by
 // reference rather than copying them out: they are large, and a copy costs
 // stack space in every frame it passes through - enough for a goroutine which

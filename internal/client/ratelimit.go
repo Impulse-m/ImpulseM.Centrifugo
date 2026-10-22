@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
-	"github.com/rs/zerolog/log"
 )
 
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
@@ -78,27 +78,7 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
 	}
-	if rl.ClientCommand.Enabled {
-		warnDefaultFallback(limiterClientCommand, &rl.ClientCommand.RateLimitOperations)
-	}
-	if rl.UserCommand.Enabled {
-		warnDefaultFallback(limiterUserCommand, &rl.UserCommand.RateLimitOperations)
-	}
-	if rl.RedisUserCommand.Enabled {
-		warnDefaultFallback(limiterRedisUserCommand, &rl.RedisUserCommand.RateLimitOperations)
-	}
 	return nil
-}
-
-// warnDefaultFallback logs a warning for each operation which ratelimit.UnlimitedFallbacks reports for section.
-// Commands of namespaces with a namespace override are still limited, the others are not.
-func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
-	for _, op := range ratelimit.UnlimitedFallbacks(ops) {
-		log.Warn().
-			Str("section", section).
-			Str("operation", op.String()).
-			Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
-	}
 }
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit
@@ -167,8 +147,9 @@ func (h *Handler) rateLimitCommandRead(
 
 // rateLimitRefusal returns the error of a command which a rate limit refused with the given wait. An RPC of a method in
 // the registry gets rpc.registry.errors.rate_limited when its code is set: a temporary error whose metadata holds the
-// wait in whole seconds. Every other refusal is 111 too many requests. The error is read from the running config per
-// refusal, and a new error value is built each time.
+// wait in whole seconds, and whose app type has the placeholder of the wait replaced by the same seconds. Every other
+// refusal is 111 too many requests. The error is read from the running config per refusal, and a new error value is
+// built each time.
 func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait time.Duration) error {
 	if op != ratelimit.OperationRPC || !h.rpcRegistry.Enabled() || h.rpcRegistry.Lookup(name) == nil {
 		return centrifuge.ErrorTooManyRequests
@@ -177,9 +158,13 @@ func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait tim
 	if cfg.Code == 0 {
 		return centrifuge.ErrorTooManyRequests
 	}
+	seconds := strconv.FormatInt(retryAfterSeconds(wait), 10)
 	protoErr := registryErrorValue(cfg)
 	protoErr.Temporary = true
-	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: strconv.FormatInt(retryAfterSeconds(wait), 10)}
+	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: seconds}
+	// The placeholder of the app type takes the same seconds as the metadata. A refusal is counted by the rate limiter's
+	// own rejects counter only, never as a registry error.
+	protoErr.AppType = strings.ReplaceAll(cfg.AppType, configtypes.RPCRetryAfterPlaceholder, seconds)
 	return protoErr
 }
 
@@ -287,11 +272,7 @@ func (h *Handler) rateLimitKey(op ratelimit.Operation, name string) string {
 
 // rateLimitNamespace returns the namespace name of a channel, empty when channel has no namespace.
 func (h *Handler) rateLimitNamespace(channel string) string {
-	nsName, _, _, _, err := h.cfgContainer.ChannelOptions(channel)
-	if err != nil {
-		return ""
-	}
-	return nsName
+	return h.cfgContainer.ChannelNamespace(channel)
 }
 
 // rateLimitOperation returns the rate limited operation of a command and the name which selects

@@ -2,10 +2,12 @@ package redisshard
 
 import (
 	"net"
+	"net/url"
 	"testing"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
+	"github.com/redis/rueidis"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,6 +49,25 @@ func TestConfigsOfNamesTheSettingInErrors(t *testing.T) {
 	_, err = ConfigsOf(configtypes.Redis{}, "setting.redis")
 	require.ErrorContains(t, err, "setting.redis: ")
 	require.ErrorContains(t, err, "no Redis address configured")
+}
+
+func TestConfigsOfRedactsPassword(t *testing.T) {
+	// The escape in the password is invalid, so the URL does not parse. The error must not repeat the URL.
+	_, err := ConfigsOf(configtypes.Redis{Address: []string{"redis://:p%zzss@host:6379"}}, "setting.redis")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "setting.redis: ")
+	require.NotContains(t, err.Error(), "p%zzss")
+	// The escape error of the parser quotes the two bytes after the percent sign, which are part of the password.
+	require.NotContains(t, err.Error(), "%zz")
+}
+
+func TestOptionsFromAddressKeepsParseErrorChainWithoutPassword(t *testing.T) {
+	_, err := optionsFromAddress("redis://:p%zzss@host:6379", rueidis.ClientOption{})
+	require.Error(t, err)
+
+	var urlErr *url.Error
+	require.ErrorAs(t, err, &urlErr)
+	require.NotContains(t, err.Error(), "p%zzss")
 }
 
 func TestNewRedisShardsFailsWhenRedisIsUnreachable(t *testing.T) {

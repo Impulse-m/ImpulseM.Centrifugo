@@ -48,7 +48,9 @@ func legacyThrottleKey(r *http.Request) string {
 }
 
 // legacyLogAddr is the address written to the request log when client_address is disabled: the
-// X-Real-IP header, then X-Forwarded-For, then the remote address, all taken from any peer.
+// X-Real-IP header, then X-Forwarded-For, then the remote address, all taken from any peer. Known gap: a client can
+// choose the address it logs this way. It is kept until the trust rule of the request log is decided, because the
+// default log must not change. The throttle key does not use these headers, see legacyThrottleKey.
 func legacyLogAddr(r *http.Request) string {
 	addr := r.Header.Get("X-Real-IP")
 	if addr == "" {

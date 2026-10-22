@@ -528,6 +528,7 @@ func buildProxyMap(cfg config.Config) (*client.ProxyMap, bool, error) {
 	}
 
 	proxyMap.UsesEmulatedHeaders = keepEmulatedHeadersInContext
+	proxyMap.EmulatedHeaderNames = emulatedHeaderNames(cfg)
 
 	return proxyMap, keepHeadersInContext, nil
 }

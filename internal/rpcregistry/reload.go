@@ -170,7 +170,7 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 	switch {
 	case cfg.Enabled && cfg.File != "":
 		if snap == nil {
-			loaded, err := snapshotFile(cfg.File)
+			loaded, err := snapshotFile(cfg.File, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -196,11 +196,11 @@ func (r *Registry) prepare(cfg configtypes.RPCRegistry, snap *fileSnapshot) (*pr
 		return nil, err
 	}
 	next.enabled = cfg.Enabled
+	lists := make([][]string, 0, len(next.targets))
 	for _, target := range next.targets {
-		if len(target.Config.EmulatedHeaders) > 0 {
-			next.usesEmulatedHeaders = true
-		}
+		lists = append(lists, target.Config.EmulatedHeaders)
 	}
+	next.emulatedHeaders = config.EmulatedHeaderSet(lists...)
 	return &prepared{
 		cfg:     cfg,
 		next:    next,
@@ -220,10 +220,12 @@ func (r *Registry) stage(p *prepared, reloads *metrics.RPCRegistryReloadMetrics)
 		if !settled.CompareAndSwap(false, true) {
 			return
 		}
+		old := r.current.Load()
 		r.cfg = p.cfg
 		r.source = p.source
 		r.current.Store(p.next)
 		r.retire(p.removed, p.drain)
+		dropRemovedSeries(old, p.next)
 		reloads.Inc(true)
 		r.reloadMu.Unlock()
 	}
@@ -284,6 +286,7 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 	}
 
 	defaults := file.Defaults
+	built := make([]string, 0, len(file.Methods))
 	for _, def := range file.Methods {
 		target := next.targets[def.Target]
 		authClassName := def.AuthClass
@@ -313,7 +316,9 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 			Headers:          sortedCopy(def.Headers),
 			ErrorMetadata:    sortedCopy(def.ErrorMetadata),
 		}
+		built = append(built, def.Method)
 	}
+	metrics.ReviveRPCRegistryMethodSeries(built...)
 
 	var removed []*Target
 	for name, prev := range old.targets {
@@ -322,6 +327,27 @@ func (r *Registry) buildTable(file configtypes.RPCRegistryFile, old *table) (*ta
 		}
 	}
 	return next, removed, created, nil
+}
+
+// dropRemovedSeries deletes the metric series of the targets and methods which the new table drops.
+// A name the new table keeps keeps its series, also when its target is replaced. Old is nil for the
+// first table, which has nothing to drop.
+func dropRemovedSeries(old *table, next *table) {
+	if old == nil {
+		return
+	}
+	for name := range old.targets {
+		if _, ok := next.targets[name]; !ok {
+			metrics.DropRPCRegistryTargetSeries(name)
+		}
+	}
+	var removed []string
+	for name := range old.methods {
+		if _, ok := next.methods[name]; !ok {
+			removed = append(removed, name)
+		}
+	}
+	metrics.DropRPCRegistryMethodSeries(removed...)
 }
 
 // retire closes the connections of targets which left the table once the drain timeout has

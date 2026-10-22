@@ -48,12 +48,23 @@ func validateRPCRegistry(c Config) error {
 	if code := c.RPC.Registry.Errors.RateLimited.Code; code != 0 && (code < 400 || code > 1999) {
 		return fmt.Errorf("rpc.registry.errors.rate_limited.code: must be 0 or between 400 and 1999, got %d", code)
 	}
+	err = validateRPCRateLimitedAppType(c.RPC.Registry.Errors.RateLimited.AppType)
+	if err != nil {
+		return err
+	}
+	err = validateRPCRetryAfterPlaceholder(c.RPC.Registry.Errors)
+	if err != nil {
+		return err
+	}
 	err = validateRefuseExpiredTokens(c)
 	if err != nil {
 		return err
 	}
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
+	}
+	if c.RPC.Registry.PollMaxFileSize < 0 {
+		return fmt.Errorf("rpc.registry.poll_max_file_size: must not be negative, got %d", c.RPC.Registry.PollMaxFileSize)
 	}
 	if c.RPC.Registry.PendingMaxLifetime.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.pending_2fa_max_lifetime: must not be negative, got %s", c.RPC.Registry.PendingMaxLifetime.ToDuration())
@@ -64,6 +75,54 @@ func validateRPCRegistry(c Config) error {
 	}
 	for _, warning := range rpcRegistryLimitWarnings(c, file) {
 		log.Warn().Msg(warning)
+	}
+	return nil
+}
+
+// validateRPCRateLimitedAppType checks the app type of rate limit refusals when it holds a template, that is a brace.
+// The placeholder must occur once, at the end after an underscore, so the expanded type ends in _<digits> and the
+// errors counter normalises it. The placeholder is replaced by its widest value, and the result must match the app
+// type pattern. A plain app type is not checked, as it was before the placeholder.
+func validateRPCRateLimitedAppType(appType string) error {
+	if strings.Contains(appType, configtypes.RPCRetryAfterPlaceholder) {
+		trailing := "_" + configtypes.RPCRetryAfterPlaceholder
+		if strings.Count(appType, configtypes.RPCRetryAfterPlaceholder) != 1 || !strings.HasSuffix(appType, trailing) {
+			return fmt.Errorf("rpc.registry.errors.rate_limited.app_type: %s must occur once, at the end after an underscore, as in QUOTA_WAIT_%s, got %q", configtypes.RPCRetryAfterPlaceholder, configtypes.RPCRetryAfterPlaceholder, appType)
+		}
+	}
+	if !strings.ContainsAny(appType, "{}") {
+		return nil
+	}
+	expanded := strings.ReplaceAll(appType, configtypes.RPCRetryAfterPlaceholder, configtypes.RPCRetryAfterMaxValue)
+	if !configtypes.RPCAppErrorTypePattern.MatchString(expanded) {
+		return fmt.Errorf("rpc.registry.errors.rate_limited.app_type: must match %s with %s replaced by %s, got %q", configtypes.RPCAppErrorTypePattern.String(), configtypes.RPCRetryAfterPlaceholder, configtypes.RPCRetryAfterMaxValue, appType)
+	}
+	return nil
+}
+
+// validateRPCRetryAfterPlaceholder refuses the placeholder of the wait in the app type of every protocol error but
+// rate_limited. Only a rate limit refusal has a wait to put in its app type.
+func validateRPCRetryAfterPlaceholder(errs configtypes.RPCRegistryErrors) error {
+	others := []struct {
+		name string
+		err  configtypes.RPCRegistryError
+	}{
+		{name: "unknown_method", err: errs.UnknownMethod},
+		{name: "auth_class", err: errs.AuthClass},
+		{name: "request_too_large", err: errs.RequestTooLarge},
+		{name: "response_too_large", err: errs.ResponseTooLarge},
+		{name: "cancelled", err: errs.Cancelled},
+		{name: "msg_id_invalid", err: errs.MsgIDInvalid},
+		{name: "msg_id_reused", err: errs.MsgIDReused},
+		{name: "result_evicted", err: errs.ResultEvicted},
+		{name: "overloaded", err: errs.Overloaded},
+		{name: "token_expired", err: errs.TokenExpired},
+		{name: "dedup_unavailable", err: errs.DedupUnavailable},
+	}
+	for _, other := range others {
+		if strings.Contains(other.err.AppType, configtypes.RPCRetryAfterPlaceholder) {
+			return fmt.Errorf("rpc.registry.errors.%s.app_type: %s is allowed only in rpc.registry.errors.rate_limited.app_type", other.name, configtypes.RPCRetryAfterPlaceholder)
+		}
 	}
 	return nil
 }
@@ -86,6 +145,9 @@ func validateRPCDedup(c Config) error {
 	}
 	if dedup.MaxSkew.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.dedup.max_skew: must not be negative, got %s", dedup.MaxSkew.ToDuration())
+	}
+	if dedup.Redis.BeginTimeout.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.dedup.redis.begin_timeout: must not be negative, got %s", dedup.Redis.BeginTimeout.ToDuration())
 	}
 	if dedup.Window.ToDuration() <= dedup.MaxSkew.ToDuration() {
 		return fmt.Errorf("rpc.registry.dedup.window: must be greater than max_skew, got window %s and max_skew %s", dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration())

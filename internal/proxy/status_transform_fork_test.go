@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -94,4 +95,17 @@ func TestMapGRPCRegistryErrorTransformAppFields(t *testing.T) {
 			require.Equal(t, tt.wantAppType, protocolError.AppType)
 		})
 	}
+}
+
+// TestRawGoErrorMessageNotForwarded verifies that the text of a plain Go error, which may name internal addresses, does
+// not reach the client: the client gets the fixed message.
+func TestRawGoErrorMessageNotForwarded(t *testing.T) {
+	appKeys := configtypes.RPCRegistryAppError{CodeKey: "app-code", TypeKey: "app-type"}
+	err := errors.New("dial tcp 10.0.0.5:9000: connect: connection refused")
+
+	protocolError, disconnect := MapGRPCRegistryError(err, nil, nil, appKeys, nil)
+	require.Nil(t, disconnect)
+	require.NotNil(t, protocolError)
+	require.Equal(t, rpcRegistryNonStatusMessage, protocolError.Message)
+	require.NotContains(t, protocolError.Message, "10.0.0.5")
 }

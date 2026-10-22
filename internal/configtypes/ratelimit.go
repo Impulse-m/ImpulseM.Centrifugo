@@ -28,6 +28,12 @@ var RateLimitAlgorithmNames = []string{
 	RateLimitAlgorithmFixedWindow,
 }
 
+// Values of RateLimitRedisUserCommand.OnError. The empty value is allow.
+const (
+	RateLimitOnErrorAllow = "allow"
+	RateLimitOnErrorDeny  = "deny"
+)
+
 // RateLimit is a configuration of operation rate limits. See PRO docs for details.
 type RateLimit struct {
 	// ClientCommand is a per-connection rate limit of client commands.
@@ -234,6 +240,13 @@ type RateLimitRedisUserCommand struct {
 	Total RateLimitBuckets `mapstructure:"total" json:"total" envconfig:"total" yaml:"total" toml:"total" doc:"Not supported for Redis rate limits. Setting it is a configuration error."`
 	// Connect operation buckets.
 	Connect RateLimitBuckets `mapstructure:"connect" json:"connect" envconfig:"connect" yaml:"connect" toml:"connect" doc:"Connect operation buckets."`
+	// CommandTimeout bounds the Redis call of one command or connect check. A call which times out is handled as any
+	// Redis error is: allowed, or refused for one second when on_error is deny. Zero means the io_timeout of the Redis
+	// configuration.
+	CommandTimeout Duration `mapstructure:"command_timeout" json:"command_timeout" envconfig:"command_timeout" yaml:"command_timeout" toml:"command_timeout" doc:"Timeout of the Redis call of one command or connect check. A call which times out is handled as any Redis error is: allowed, or refused for one second when on_error is deny. Zero means the io_timeout of the Redis configuration."`
+	// OnError is what happens to a command when Redis fails: allow (the default) or deny. Denied commands are refused
+	// with a wait of one second, and a connect is refused.
+	OnError string `mapstructure:"on_error" json:"on_error" envconfig:"on_error" yaml:"on_error" toml:"on_error" doc:"What happens to a command when Redis fails or is not reachable: allow (the default) or deny. Denied commands are refused with a wait of one second, and connects are refused."`
 	// RateLimitOperations are the operation buckets of client commands of a user, kept in Redis.
 	RateLimitOperations `mapstructure:",squash" yaml:",inline"`
 }

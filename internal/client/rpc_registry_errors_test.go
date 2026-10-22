@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -280,6 +281,19 @@ func TestRegistryAppTypeFallsBackToStatusMessage(t *testing.T) {
 	require.Equal(t, "QUOTA_EXCEEDED_17", protoErr.Message)
 	require.Equal(t, "QUOTA_EXCEEDED_17", protoErr.AppType)
 	require.Equal(t, int32(420), protoErr.AppCode)
+}
+
+// A call which fails with a plain Go error, such as a failed dial, gets the fixed message under the default config: the
+// text can name an internal address, and the server log keeps it.
+func TestRegistryCallErrorHidesPlainGoErrorText(t *testing.T) {
+	failure := errors.New("dial tcp 10.0.0.5:9000: connect: connection refused")
+	m := &rpcregistry.Method{Name: "users.put"}
+	cfg := registryErrorTestRegistry(nil)
+
+	err := registryCallError(failure, nil, m, cfg, false)
+	protoErr := requireProtocolError(t, err)
+	require.Equal(t, "backend call failed", protoErr.Message)
+	require.NotContains(t, protoErr.Message, "10.0.0.5")
 }
 
 func TestRegistryCancelledCallIsCancelledError(t *testing.T) {

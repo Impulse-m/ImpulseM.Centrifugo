@@ -1,8 +1,10 @@
 package metrics
 
 import (
+	"maps"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
@@ -48,6 +50,78 @@ type RPCRegistryMethodMetrics struct {
 // transport loss. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryRetransmitsTotal *prometheus.CounterVec
 
+// rpcRegistryDropped holds the names of the methods whose series a reload dropped, until the method is built again.
+// A count by name from a call which was running when its series were dropped would create them again for the life of
+// the process, so such a count is skipped.
+var rpcRegistryDropped = &rpcRegistryDroppedSet{}
+
+// rpcRegistryDroppedMax bounds the set of dropped names. A drop which would exceed it starts the set again, so the
+// names dropped before are counted again only by a call which was still running when they were dropped.
+const rpcRegistryDroppedMax = 4096
+
+// rpcRegistryDroppedSet is the set of the dropped method names, see rpcRegistryDropped. The set is immutable: a drop or
+// a build stores a copy, so a count reads it with one atomic load and takes no lock. A count which loads the set before
+// a drop stores its copy can still create the series of that method once, after the drop.
+type rpcRegistryDroppedSet struct {
+	// mu serialises the stores of new sets.
+	mu    sync.Mutex
+	names atomic.Pointer[map[string]struct{}]
+}
+
+// has reports whether name is dropped.
+func (s *rpcRegistryDroppedSet) has(name string) bool {
+	names := s.names.Load()
+	if names == nil {
+		return false
+	}
+	_, found := (*names)[name]
+	return found
+}
+
+// count runs inc unless name is dropped.
+func (s *rpcRegistryDroppedSet) count(name string, inc func()) {
+	if s.has(name) {
+		return
+	}
+	inc()
+}
+
+// drop adds names to the set, and starts the set again when it is full. The set is copied once for all names.
+func (s *rpcRegistryDroppedSet) drop(names ...string) {
+	if len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]struct{})
+	if current := s.names.Load(); current != nil {
+		maps.Copy(next, *current)
+	}
+	for _, name := range names {
+		if _, found := next[name]; !found && len(next) >= rpcRegistryDroppedMax {
+			clear(next)
+		}
+		next[name] = struct{}{}
+	}
+	s.names.Store(&next)
+}
+
+// removeAll deletes names from the set, when the methods are built again. The set is copied once for all names.
+func (s *rpcRegistryDroppedSet) removeAll(names ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.names.Load()
+	if current == nil {
+		return
+	}
+	next := make(map[string]struct{}, len(*current))
+	maps.Copy(next, *current)
+	for _, name := range names {
+		delete(next, name)
+	}
+	s.names.Store(&next)
+}
+
 // NewRPCRegistryMethodMetrics resolves the calls_total child of rpcMethod for every result. It returns
 // nil when the registry metrics are not initialised.
 func NewRPCRegistryMethodMetrics(rpcMethod string) *RPCRegistryMethodMetrics {
@@ -79,6 +153,37 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 		return
 	}
 	m.calls[rpcRegistryResultIndex(result)].Inc()
+}
+
+// DropRPCRegistryMethodSeries deletes the calls_total, errors_total and retransmits series of the methods which
+// left the registry, so a removed name does not keep its series for the life of the process. A call of an old
+// method which is still running keeps counting on the detached children, which are not exported, and its counts
+// by name are skipped until the method is built again.
+func DropRPCRegistryMethodSeries(rpcMethods ...string) {
+	rpcRegistryDropped.drop(rpcMethods...)
+	for _, rpcMethod := range rpcMethods {
+		if RPCRegistryCallsTotal != nil {
+			RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+		}
+		if RPCRegistryErrorsTotal != nil {
+			RPCRegistryErrorsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+		}
+		if RPCRegistryRetransmitsTotal != nil {
+			RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)
+		}
+	}
+}
+
+// ReviveRPCRegistryMethodSeries lifts the skip of the counts of rpcMethods, which a reload built again after
+// DropRPCRegistryMethodSeries dropped them. A reload calls it once, after it has built all its methods.
+func ReviveRPCRegistryMethodSeries(rpcMethods ...string) {
+	rpcRegistryDropped.removeAll(rpcMethods...)
+}
+
+// DropRPCRegistryTargetSeries deletes the proxy metric series of a target which left the registry. It
+// deletes the children which NewProxyCallChildren resolves with the grpc protocol and the rpc kind.
+func DropRPCRegistryTargetSeries(target string) {
+	DeleteProxyCallChildren("grpc", "rpc", target)
 }
 
 // rpcRegistryResults is the only list of the RPCRegistryResult values. The calls_total children of a
@@ -171,7 +276,10 @@ func IncRPCRegistryError(rpcMethod string, appType string) {
 	if RPCRegistryErrorsTotal == nil {
 		return
 	}
-	RPCRegistryErrorsTotal.WithLabelValues(rpcMethod, rpcRegistryAppTypeLabel(appType)).Inc()
+	label := rpcRegistryAppTypeLabel(appType)
+	rpcRegistryDropped.count(rpcMethod, func() {
+		RPCRegistryErrorsTotal.WithLabelValues(rpcMethod, label).Inc()
+	})
 }
 
 // rpcRegistryResultLabel returns result when it is a known result, and RPCRegistryResultError otherwise.
@@ -343,6 +451,10 @@ var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
 // which were dropped. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupAcksOverCapTotal prometheus.Counter
 
+// RPCRegistryDedupCancelDropsTotal counts the cancel notifications to other nodes which the shared tier dropped because
+// its notification queue was full. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupCancelDropsTotal prometheus.Counter
+
 // RPCRegistryDedupRemoteReadsTotal counts the reads of the shared tier which the waits for calls on other nodes make.
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRemoteReadsTotal prometheus.Counter
@@ -456,6 +568,7 @@ type RPCRegistryDedupMetrics struct {
 	redisErrors      prometheus.Counter
 	redisDuration    prometheus.Histogram
 	ackDrops         prometheus.Counter
+	cancelDrops      prometheus.Counter
 	remoteReads      prometheus.Counter
 	waitWoken        prometheus.Counter
 	waitChecked      prometheus.Counter
@@ -481,6 +594,7 @@ func NewRPCRegistryDedupMetrics() *RPCRegistryDedupMetrics {
 		redisErrors:   RPCRegistryDedupRedisErrorsTotal,
 		redisDuration: RPCRegistryDedupRedisDuration,
 		ackDrops:      RPCRegistryDedupRedisAckDropsTotal,
+		cancelDrops:   RPCRegistryDedupCancelDropsTotal,
 	}
 	for i, label := range rpcRegistryDedupOutcomeLabels {
 		m.outcomes[i] = RPCRegistryDedupTotal.WithLabelValues(label)
@@ -643,6 +757,15 @@ func (m *RPCRegistryDedupMetrics) AckDropped() {
 		return
 	}
 	incCounter(m.ackDrops)
+}
+
+// CancelDropped counts one cancel notification which the shared tier dropped because its queue was full. It implements
+// rpcdedup.SharedObserver.
+func (m *RPCRegistryDedupMetrics) CancelDropped() {
+	if m == nil {
+		return
+	}
+	incCounter(m.cancelDrops)
 }
 
 // LostOwnership counts one call whose answer the shared tier does not hold for this node. It is counted as a Redis

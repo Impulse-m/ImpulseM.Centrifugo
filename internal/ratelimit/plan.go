@@ -78,24 +78,24 @@ type scope struct {
 }
 
 // tokenWait returns the largest wait of token buckets at now, 0 when all of them allow an operation. It does not
-// change state. It has no call except gcra, so the compiler inlines it into CommandPlan.allow, the hot path of the
-// default limits, which then makes no call per bucket. Keep it free of other calls: a call makes it too big to inline.
+// change state. Its only call is gcraWait, which the compiler inlines into it, and the compiler inlines tokenWait into
+// CommandPlan.allow, the hot path of the default limits, so that makes no call per bucket. Both inlinings are checked
+// with -gcflags=-m. Keep the body small: the inlining depends on its size.
 func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 	var worst int64
 	for i := range buckets {
 		sb := &buckets[i]
-		_, wait := gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
-		worst = max(worst, wait)
+		worst = max(worst, gcraWait(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now))
 	}
 	return worst
 }
 
-// tokenCommit consumes one operation from token buckets. Must be called only after tokenWait returned 0. It is
-// inlined into CommandPlan.allow for the same reason as tokenWait.
+// tokenCommit consumes one operation from token buckets. Must be called only after tokenWait returned 0. Its only call
+// is gcraTAT, which is inlined into it, and the compiler inlines tokenCommit into CommandPlan.allow, see tokenWait.
 func tokenCommit(buckets []slotBucket, slots []int64, now int64) {
 	for i := range buckets {
 		sb := &buckets[i]
-		slots[sb.slot], _ = gcra(sb.lim.emission, sb.lim.tolerance, slots[sb.slot], now)
+		slots[sb.slot] = gcraTAT(sb.lim.emission, slots[sb.slot], now)
 	}
 }
 
@@ -162,61 +162,23 @@ type CommandPlan struct {
 	numSlots int
 	// maxInterval is the longest interval of all buckets. Only the user plan sets and reads it, for userIdleTimeout.
 	maxInterval time.Duration
-	total       *scope
-	ops         [operationCount]opLimit
+	// tokenOnly is set when no scope of the plan uses a window algorithm. Only the user plan sets and reads it.
+	tokenOnly bool
+	total     *scope
+	ops       [operationCount]opLimit
 }
 
 // slotAllocator assigns static slot indexes to buckets while a plan is compiled.
 type slotAllocator struct {
 	next        int
 	maxInterval time.Duration
+	windowed    bool
 }
 
 // HasBuckets reports whether a limit is enabled and has at least one bucket. Only such a limit is compiled,
 // so code which describes compiled limits uses this check too.
 func HasBuckets(enabled bool, buckets configtypes.RateLimitBucketList) bool {
 	return enabled && len(buckets) > 0
-}
-
-// UnlimitedFallbacks returns the map and track operations which have no base buckets while their previous
-// operation (publish or sub_refresh) has buckets, and default has none. Before the map operations existed such
-// a command counted as the previous operation, so after an upgrade it is not limited for namespaces without an
-// override: it falls back to default only. A namespace override of the previous operation counts as buckets.
-func UnlimitedFallbacks(cfg *configtypes.RateLimitOperations) []Operation {
-	if HasBuckets(cfg.Default.Enabled, cfg.Default.Buckets) {
-		return nil
-	}
-	var ops []Operation
-	if channelLimitSet(cfg.Publish) {
-		if !HasBuckets(cfg.MapPublish.Enabled, cfg.MapPublish.Buckets) {
-			ops = append(ops, OperationMapPublish)
-		}
-		if !HasBuckets(cfg.MapRemove.Enabled, cfg.MapRemove.Buckets) {
-			ops = append(ops, OperationMapRemove)
-		}
-	}
-	if channelLimitSet(cfg.SubRefresh) {
-		if !HasBuckets(cfg.Track.Enabled, cfg.Track.Buckets) {
-			ops = append(ops, OperationTrack)
-		}
-		if !HasBuckets(cfg.Untrack.Enabled, cfg.Untrack.Buckets) {
-			ops = append(ops, OperationUntrack)
-		}
-	}
-	return ops
-}
-
-// channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
-func channelLimitSet(cfg configtypes.RateLimitChannelBuckets) bool {
-	if HasBuckets(cfg.Enabled, cfg.Buckets) {
-		return true
-	}
-	for _, override := range cfg.NamespaceOverrides {
-		if HasBuckets(override.Enabled, override.Buckets) {
-			return true
-		}
-	}
-	return false
 }
 
 // compileScope compiles enabled buckets of the algorithm named algorithm into a scope named name. Returns nil when
@@ -250,6 +212,7 @@ func (a *slotAllocator) compileScope(
 		a.next += s.words
 	}
 	a.maxInterval = max(a.maxInterval, maxInterval)
+	a.windowed = a.windowed || !tokenOnly
 	s.redisName = name + algo.redisSuffix(lims)
 	s.argv = algo.redisArgs(lims, maxInterval)
 	return s
@@ -338,6 +301,36 @@ func wireOperations(
 	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
 	ops[OperationTrack] = alloc.channelLimit(OperationTrack, cfg.Track, def)
 	ops[OperationUntrack] = alloc.channelLimit(OperationUntrack, cfg.Untrack, def)
+	// Map operations and track operations count against the operation they were before they existed, as publish and
+	// sub_refresh. They share its scopes, so the budget is the same one.
+	inheritUnset(ops, &cfg.MapPublish, OperationMapPublish, OperationPublish)
+	inheritUnset(ops, &cfg.MapRemove, OperationMapRemove, OperationPublish)
+	inheritUnset(ops, &cfg.Track, OperationTrack, OperationSubRefresh)
+	inheritUnset(ops, &cfg.Untrack, OperationUntrack, OperationSubRefresh)
+}
+
+// inheritUnset makes op resolve the buckets it has no own of from parent, see wireOperations. Nothing is inherited when
+// own has base buckets: then op keeps them, in every namespace. Otherwise the base and the namespace overrides of parent
+// are inherited, and the namespace overrides of op take precedence over them.
+func inheritUnset(
+	ops *[operationCount]opLimit,
+	own *configtypes.RateLimitChannelBuckets,
+	op Operation,
+	parent Operation,
+) {
+	if HasBuckets(own.Enabled, own.Buckets) {
+		return
+	}
+	ops[op].base = ops[parent].base
+	for namespace, s := range ops[parent].overrides {
+		if _, ok := ops[op].overrides[namespace]; ok {
+			continue
+		}
+		if ops[op].overrides == nil {
+			ops[op].overrides = make(map[string]*scope)
+		}
+		ops[op].overrides[namespace] = s
+	}
 }
 
 // newUserPlan compiles user command rate limits. Resolution is the same as for client commands,
@@ -352,6 +345,7 @@ func newUserPlan(cfg configtypes.RateLimitUserCommand) *CommandPlan {
 
 	p.numSlots = alloc.next
 	p.maxInterval = alloc.maxInterval
+	p.tokenOnly = !alloc.windowed
 	return p
 }
 

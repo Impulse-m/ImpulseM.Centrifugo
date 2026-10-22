@@ -27,6 +27,12 @@ type Record struct {
 	// NotRun marks an abandoned call which did not run: the shared tier failed to begin it under fail_closed, so no
 	// backend call was made. Its duplicates are answered with the later retry signal, not the no-signal error.
 	NotRun bool
+	// sharedUncached marks an uncached record which the shared tier keeps uncached too, so its reply is not in Redis, and
+	// a duplicate on this node does not poll Redis for it. It is local state, not on the wire.
+	sharedUncached bool
+	// tombstone marks the record of a cancelled call, which has no call and so no fingerprint. An ack keeps it, as the
+	// shared tier does. It is local state, not on the wire.
+	tombstone bool
 	// Fingerprint is the fingerprint of the call which the record answers. Zero for a cancelled record,
 	// which has no call, and answers any duplicate.
 	Fingerprint [32]byte

@@ -25,8 +25,9 @@ type redisScriptRunner func(ctx context.Context, shard *redisshard.RedisShard, s
 
 // RedisUserLimiter holds compiled redis_user_command limits. Limits of a user are kept in Redis, on the
 // shard chosen by consistent hash of the user ID, so all nodes sharing Redis share the limits.
-// Redis errors allow commands: a Redis outage must not take down connections, and neither must a Redis
-// which is unreachable at startup. Until the limiter connects, commands are allowed too.
+// Redis errors allow commands unless on_error is deny: by default a Redis outage must not take down connections, and
+// neither must a Redis which is unreachable at startup. Until the limiter connects, commands are allowed too, unless
+// on_error is deny. A refusal cached on the node still applies during an outage, see refusalCache.
 type RedisUserLimiter struct {
 	plan    *redisPlan
 	prefix  string
@@ -38,12 +39,20 @@ type RedisUserLimiter struct {
 	run redisScriptRunner
 	// errorLog limits how often Redis errors are logged to once per redisshard.ErrorLogInterval.
 	errorLog *tools.IntervalLimiter
+	// refusals holds the refusals of this node, so that refused commands need no Redis call, see refusalCache.
+	refusals *refusalCache
+	// denyOnError refuses commands and connects when Redis fails, instead of allowing them, see on_error.
+	denyOnError bool
 }
+
+// denyWaitOnError is the wait of a command which is refused because Redis failed. The limit has no state to tell when
+// it is allowed again, so the client is asked to retry after this long.
+const denyWaitOnError = time.Second
 
 // NewRedisUserLimiter compiles redis_user_command limits. It does not connect to Redis: call Connect, then
 // run Run as a service, which keeps connecting until it succeeds. shardConfigs must not be empty, shards are
 // closed by Run when its context is done. prefix starts all Redis keys of the limiter. ioTimeout bounds each
-// Redis call, zero means the default.
+// Redis call, zero means the default. A command_timeout of cfg replaces it for the command and connect checks.
 func NewRedisUserLimiter(
 	cfg configtypes.RateLimitRedisUserCommand,
 	prefix string,
@@ -53,12 +62,17 @@ func NewRedisUserLimiter(
 	if ioTimeout <= 0 {
 		ioTimeout = redisshard.DefaultIOTimeout
 	}
+	if cfg.CommandTimeout > 0 {
+		ioTimeout = cfg.CommandTimeout.ToDuration()
+	}
 	limiter := &RedisUserLimiter{
-		plan:     newRedisUserPlan(cfg),
-		prefix:   prefix,
-		timeout:  ioTimeout,
-		run:      runRedisScript,
-		errorLog: tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
+		plan:        newRedisUserPlan(cfg),
+		prefix:      prefix,
+		timeout:     ioTimeout,
+		run:         runRedisScript,
+		errorLog:    tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
+		refusals:    newRefusalCache(),
+		denyOnError: cfg.OnError == configtypes.RateLimitOnErrorDeny,
 	}
 	limiter.connector = redisshard.NewConnector(shardConfigs, redisshard.LogConnect(
 		"redis_user_command rate limit",
@@ -74,7 +88,8 @@ func (l *RedisUserLimiter) NeedsKey(op Operation) bool {
 
 // CommandAllowed checks and consumes one command of op of userID. key is a namespace name for channel
 // operations and a method name for RPC. It returns 0 when the command is allowed, else the wait until it is.
-// Anonymous users (empty user ID) are not limited. On Redis errors and while not connected the command is allowed.
+// Anonymous users (empty user ID) are not limited. On Redis errors and while not connected the command is allowed,
+// unless on_error denies it.
 func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key string) time.Duration {
 	if userID == "" {
 		return 0
@@ -87,7 +102,7 @@ func (l *RedisUserLimiter) CommandAllowed(userID string, op Operation, key strin
 }
 
 // ConnectAllowed checks and consumes one connect of userID. Anonymous users are not limited. On Redis
-// errors and while not connected the connect is allowed.
+// errors and while not connected the connect is allowed, unless on_error denies it.
 func (l *RedisUserLimiter) ConnectAllowed(userID string) bool {
 	if userID == "" {
 		return true
@@ -120,30 +135,53 @@ func (l *RedisUserLimiter) connected() bool {
 	return l.connector.Shards() != nil
 }
 
-// check runs the script of scope s for userID and returns its wait. Redis errors are counted and logged, and allow the
-// operation. While not connected, the operation is allowed and counted as an error.
+// check runs the script of scope s for userID and returns its wait. A refusal which this node has cached is returned
+// without a Redis call. Redis errors are counted and logged, and allow the operation unless on_error denies it. While
+// not connected, the operation is counted as an error and is allowed unless on_error denies it.
 func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 	list := l.connector.Shards()
 	if list == nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(redisshard.ErrNotConnected)
-		return 0
+		return l.errorWait()
 	}
 	key := redisKey(l.prefix, userID, s.redisName)
+	now := refusalClock()
+	if wait, ok := l.refusals.refused(key, now); ok {
+		return wait
+	}
 	shard := list[redisshard.ShardIndex(userID, len(list))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
-	start := time.Now()
+	runStart := time.Now()
 	wait, err := l.run(ctx, shard, s.script, key, s.argv)
-	metrics.RateLimitRedisDuration.Observe(time.Since(start).Seconds())
+	metrics.RateLimitRedisDuration.Observe(time.Since(runStart).Seconds())
 	cancel()
 
 	if err != nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
 		l.logError(err)
-		return 0
+		return l.errorWait()
 	}
+	l.refusals.refuse(key, now, wait)
 	return wait
+}
+
+// refusalClockStart is the origin of refusalClock.
+var refusalClockStart = time.Now()
+
+// refusalClock returns the nanoseconds since the process started. It reads the monotonic clock, so a step of the wall
+// clock does not change how long a cached refusal lasts.
+func refusalClock() int64 {
+	return int64(time.Since(refusalClockStart))
+}
+
+// errorWait is the wait of a command when Redis failed: none, unless on_error denies commands.
+func (l *RedisUserLimiter) errorWait() time.Duration {
+	if l.denyOnError {
+		return denyWaitOnError
+	}
+	return 0
 }
 
 // logError logs a Redis error at most once per redisshard.ErrorLogInterval.

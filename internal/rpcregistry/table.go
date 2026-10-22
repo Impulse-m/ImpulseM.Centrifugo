@@ -122,8 +122,9 @@ type table struct {
 	targets map[string]*Target
 	// enabled is the enabled flag of the config the table was built from.
 	enabled bool
-	// usesEmulatedHeaders is true when a target forwards connect-time headers.
-	usesEmulatedHeaders bool
+	// emulatedHeaders is the lower-case union of the emulated_headers names of all targets. It is empty when no
+	// target forwards connect-time headers.
+	emulatedHeaders map[string]struct{}
 }
 
 // Lookup returns the method registered under name, or nil. It does a single map read and does not allocate.
@@ -151,7 +152,21 @@ func (r *Registry) UsesEmulatedHeaders() bool {
 		return false
 	}
 	t := r.current.Load()
-	return t != nil && t.enabled && t.usesEmulatedHeaders
+	return t != nil && t.enabled && len(t.emulatedHeaders) > 0
+}
+
+// EmulatedHeaderAllowed reports whether the lower-case header name is listed in the emulated_headers
+// of a target of the enabled registry. A nil registry does not list any name.
+func (r *Registry) EmulatedHeaderAllowed(name string) bool {
+	if r == nil {
+		return false
+	}
+	t := r.current.Load()
+	if t == nil || !t.enabled {
+		return false
+	}
+	_, ok := t.emulatedHeaders[name]
+	return ok
 }
 
 // normalizeTarget returns def with the defaults applied and the headers sorted. Two targets with

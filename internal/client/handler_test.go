@@ -150,6 +150,7 @@ func TestOnClientConnectingEmulatedHeadersGating(t *testing.T) {
 		require.NoError(t, err)
 		h := NewHandler(node, cfgContainer, emptyJWTVerifier(t, cfgContainer), nil, &ProxyMap{
 			UsesEmulatedHeaders: uses,
+			EmulatedHeaderNames: map[string]struct{}{"x-app-token": {}},
 		})
 
 		var connectCtx context.Context

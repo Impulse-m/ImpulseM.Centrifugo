@@ -274,8 +274,11 @@ func (h *Handler) callRPCTracked(c Client, e centrifuge.RPCEvent, m *rpcregistry
 		}
 		ctx, cancel := context.WithCancel(c.Context())
 		defer cancel()
-		release := track.inflight.Add(msgID, cancel)
-		defer release()
+		// A call with a msg_id which runs on this connection already is not registered: it would replace the cancel entry
+		// of that call, so a cancel of the msg_id would miss it. Such a call runs unregistered, and a disconnect still ends it.
+		if release, registered := track.inflight.TryAdd(msgID, cancel); registered {
+			defer release()
+		}
 		return h.invokeRPCRegistry(ctx, c, e, m, cfg, connToken, bound)
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(c.Context()))

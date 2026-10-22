@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"time"
+
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/proxyproto"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
@@ -13,6 +16,10 @@ import (
 
 // rpcRegistryNonStatusMessage is the client message of a call which failed with a plain Go error.
 const rpcRegistryNonStatusMessage = "backend call failed"
+
+// nonStatusErrLog throttles the server log of the plain Go errors of registry calls, so that a backend which fails
+// every call does not write a line per call on the request path. At most one line per interval.
+var nonStatusErrLog = tools.NewIntervalLimiter(time.Minute)
 
 // MapGRPCRegistryError maps the error of a failed gRPC registry call to the protocol error or the
 // disconnect the client receives. The configured status transforms come first, then the default
@@ -35,7 +42,9 @@ func MapGRPCRegistryError(
 	if !isStatus {
 		// A plain Go error can name internal addresses, so the client gets a fixed message and the
 		// error text is logged here.
-		log.Warn().Err(err).Msg("rpc registry call failed with a non-status error")
+		if nonStatusErrLog.Allow() {
+			log.Warn().Err(err).Msg("rpc registry call failed with a non-status error")
+		}
 		message = rpcRegistryNonStatusMessage
 	}
 

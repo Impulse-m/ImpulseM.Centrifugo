@@ -340,11 +340,13 @@ func dropRemovedSeries(old *table, next *table) {
 			metrics.DropRPCRegistryTargetSeries(name)
 		}
 	}
+	var removed []string
 	for name := range old.methods {
 		if _, ok := next.methods[name]; !ok {
-			metrics.DropRPCRegistryMethodSeries(name)
+			removed = append(removed, name)
 		}
 	}
+	metrics.DropRPCRegistryMethodSeries(removed...)
 }
 
 // retire closes the connections of targets which left the table once the drain timeout has

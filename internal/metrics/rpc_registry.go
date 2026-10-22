@@ -86,18 +86,23 @@ func (s *rpcRegistryDroppedSet) count(name string, inc func()) {
 	inc()
 }
 
-// drop adds name to the set, and starts the set again when it is full.
-func (s *rpcRegistryDroppedSet) drop(name string) {
+// drop adds names to the set, and starts the set again when it is full. The set is copied once for all names.
+func (s *rpcRegistryDroppedSet) drop(names ...string) {
+	if len(names) == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := make(map[string]struct{})
 	if current := s.names.Load(); current != nil {
 		maps.Copy(next, *current)
 	}
-	if _, found := next[name]; !found && len(next) >= rpcRegistryDroppedMax {
-		clear(next)
+	for _, name := range names {
+		if _, found := next[name]; !found && len(next) >= rpcRegistryDroppedMax {
+			clear(next)
+		}
+		next[name] = struct{}{}
 	}
-	next[name] = struct{}{}
 	s.names.Store(&next)
 }
 
@@ -148,20 +153,22 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 	m.calls[rpcRegistryResultIndex(result)].Inc()
 }
 
-// DropRPCRegistryMethodSeries deletes the calls_total, errors_total and retransmits series of a method which
-// left the registry, so a removed name does not keep its series for the life of the process. A call of the old
+// DropRPCRegistryMethodSeries deletes the calls_total, errors_total and retransmits series of the methods which
+// left the registry, so a removed name does not keep its series for the life of the process. A call of an old
 // method which is still running keeps counting on the detached children, which are not exported, and its counts
 // by name are skipped until the method is built again.
-func DropRPCRegistryMethodSeries(rpcMethod string) {
-	rpcRegistryDropped.drop(rpcMethod)
-	if RPCRegistryCallsTotal != nil {
-		RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
-	}
-	if RPCRegistryErrorsTotal != nil {
-		RPCRegistryErrorsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
-	}
-	if RPCRegistryRetransmitsTotal != nil {
-		RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)
+func DropRPCRegistryMethodSeries(rpcMethods ...string) {
+	rpcRegistryDropped.drop(rpcMethods...)
+	for _, rpcMethod := range rpcMethods {
+		if RPCRegistryCallsTotal != nil {
+			RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+		}
+		if RPCRegistryErrorsTotal != nil {
+			RPCRegistryErrorsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+		}
+		if RPCRegistryRetransmitsTotal != nil {
+			RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)
+		}
 	}
 }
 

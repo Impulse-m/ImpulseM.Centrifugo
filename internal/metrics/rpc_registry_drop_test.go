@@ -45,3 +45,17 @@ func TestDroppedMethodCountsAreSkipped(t *testing.T) {
 	IncRPCRegistryError(method, "")
 	require.Equal(t, 1, testutil.CollectAndCount(RPCRegistryErrorsTotal), "a method which is built again counts")
 }
+
+// A reload drops many names at once. The set keeps the bound, and the last name of the batch is in it.
+func TestDropRPCRegistryMethodSeriesBatchIsBounded(t *testing.T) {
+	resetRPCRegistryMetrics(t)
+	const count = rpcRegistryDroppedMax + 10
+	names := make([]string, 0, count)
+	for i := range count {
+		names = append(names, fmt.Sprintf("drop.test.batch.%d", i))
+	}
+
+	DropRPCRegistryMethodSeries(names...)
+	require.LessOrEqual(t, len(*rpcRegistryDropped.names.Load()), rpcRegistryDroppedMax)
+	require.True(t, rpcRegistryDropped.has(names[count-1]))
+}

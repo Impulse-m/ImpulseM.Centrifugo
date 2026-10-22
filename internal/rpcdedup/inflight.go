@@ -55,7 +55,9 @@ func (f *InFlight) put(msgID uint64, call *inflightCall) {
 }
 
 // releaser returns the function which removes call, when call is still the call of msgID. The map is dropped when
-// it is empty, since Go maps do not shrink and an idle connection would keep its buckets.
+// it is empty, since Go maps do not shrink and an idle connection would keep its buckets. The cost is one small map
+// allocation for each tracked call which starts on an idle connection. That is accepted: an exactly-once call already
+// makes a Redis round trip, which is far larger than the allocation, and a kept map would cost every idle connection.
 func (f *InFlight) releaser(msgID uint64, call *inflightCall) func() {
 	return func() {
 		f.mu.Lock()

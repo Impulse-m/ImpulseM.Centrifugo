@@ -1,9 +1,11 @@
 package rpcdedup
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +20,20 @@ func TestMemoryAckKeepsCancelledTombstone(t *testing.T) {
 	require.NoError(t, store.Ack(scope, []uint64{1}))
 
 	require.Equal(t, 1, int(store.Stats().Entries), "the tombstone is kept")
+}
+
+// An ack keeps a tombstone which is downgraded to uncached for its size: the downgrade keeps the tombstone flag.
+func TestMemoryAckKeepsDowngradedTombstone(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	store := NewMemory(testMemoryOptions(clock, 1<<20))
+	scope := testScope("a", "a")
+	key := Key{Scope: scope, MsgID: 1}
+	failure := &centrifuge.Error{Code: 107, Message: strings.Repeat("x", 4096)}
+
+	require.NoError(t, store.Tombstone(key, failure))
+	require.NoError(t, store.Ack(scope, []uint64{1}))
+
+	require.Equal(t, 1, int(store.Stats().Entries), "the downgraded tombstone is kept")
 }
 
 // An ack removes a done record, even one with an error and no fingerprint: the shared tier removes it too, since only

@@ -575,7 +575,7 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 	key.Scope = sc.scope
 	size := recordSize(rec, errJSON)
 	if !rec.Uncached && size > p.recordBytes {
-		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+		rec = Record{Uncached: true, Fingerprint: rec.Fingerprint, tombstone: rec.tombstone}
 		size = RecordOverhead
 		s.observe(EvictionUncached)
 	}
@@ -607,7 +607,7 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 			continue
 		}
 		if !rec.Uncached {
-			rec = Record{Uncached: true, Fingerprint: rec.Fingerprint}
+			rec = Record{Uncached: true, Fingerprint: rec.Fingerprint, tombstone: rec.tombstone}
 			size = RecordOverhead
 			s.observe(EvictionUncached)
 			continue

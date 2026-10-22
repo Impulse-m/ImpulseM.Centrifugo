@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
@@ -652,7 +651,7 @@ func (h *Handler) OnClientConnecting(
 	// actually forward them - otherwise they would be retained for the whole
 	// connection lifetime for nothing.
 	if (h.proxyMap.UsesEmulatedHeaders || h.rpcRegistry.UsesEmulatedHeaders()) && len(e.Headers) > 0 {
-		if kept := h.keepEmulatedHeaders(e.Headers); len(kept) > 0 {
+		if kept := keepEmulatedHeaders(e.Headers, h.proxyMap.EmulatedHeaderNames, h.rpcRegistry.EmulatedHeaderAllowed); len(kept) > 0 {
 			if newCtx != nil {
 				newCtx = clientcontext.SetEmulatedHeadersToContext(newCtx, kept)
 			} else {
@@ -664,24 +663,6 @@ func (h *Handler) OnClientConnecting(
 		finalReply.Context = newCtx
 	}
 	return finalReply, nil
-}
-
-// keepEmulatedHeaders returns a copy of the connect headers whose names are listed in the
-// emulated_headers of a proxy or a registry target, or nil when none is.
-func (h *Handler) keepEmulatedHeaders(headers map[string]string) map[string]string {
-	var kept map[string]string
-	for name, value := range headers {
-		lower := strings.ToLower(name)
-		_, inProxy := h.proxyMap.EmulatedHeaderNames[lower]
-		if !inProxy && !h.rpcRegistry.EmulatedHeaderAllowed(lower) {
-			continue
-		}
-		if kept == nil {
-			kept = make(map[string]string)
-		}
-		kept[name] = value
-	}
-	return kept
 }
 
 type RefreshExtra struct {

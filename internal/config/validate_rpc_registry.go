@@ -55,6 +55,9 @@ func validateRPCRegistry(c Config) error {
 	if c.RPC.Registry.PollInterval.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.poll_interval: must not be negative, got %s", c.RPC.Registry.PollInterval.ToDuration())
 	}
+	if c.RPC.Registry.PollMaxFileSize < 0 {
+		return fmt.Errorf("rpc.registry.poll_max_file_size: must not be negative, got %d", c.RPC.Registry.PollMaxFileSize)
+	}
 	if c.RPC.Registry.PendingMaxLifetime.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.pending_2fa_max_lifetime: must not be negative, got %s", c.RPC.Registry.PendingMaxLifetime.ToDuration())
 	}

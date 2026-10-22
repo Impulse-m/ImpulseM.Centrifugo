@@ -26,10 +26,6 @@ func (r *Registry) pollInterval() time.Duration {
 	return interval
 }
 
-// maxPollFileSize is the largest registry file a poll reads. A larger file is refused, and the current
-// registry stays.
-const maxPollFileSize = 16 << 20
-
 // pollStartPhase returns the delay before the first check of a node: a random value within one
 // interval. The nodes which share a registry file then do not check, and reload, on the same tick.
 func pollStartPhase(interval time.Duration) time.Duration {
@@ -89,11 +85,11 @@ func (p *poller) check() {
 		p.lastErr = ""
 		return
 	}
-	if err == nil && info.Size() > maxPollFileSize {
-		p.logFailure(fmt.Errorf("registry file of %d bytes is over the poll limit of %d bytes, keeping the current registry", info.Size(), maxPollFileSize))
+	if err == nil && cfg.PollMaxFileSize > 0 && info.Size() > cfg.PollMaxFileSize {
+		p.logFailure(fmt.Errorf("registry file of %d bytes is over the poll limit of %d bytes, keeping the current registry", info.Size(), cfg.PollMaxFileSize))
 		return
 	}
-	snap, err := snapshotFile(path, maxPollFileSize)
+	snap, err := snapshotFile(path, cfg.PollMaxFileSize)
 	if err != nil {
 		p.logFailure(err)
 		return

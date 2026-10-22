@@ -91,6 +91,8 @@ type RPCRegistry struct {
 	// PollInterval is how often the registry file is checked for changes. Zero means the file is read only at start and on a configuration reload.
 	// The poll starts at process start, so a change of the value takes effect after a restart.
 	PollInterval Duration `mapstructure:"poll_interval" json:"poll_interval" envconfig:"poll_interval" yaml:"poll_interval" toml:"poll_interval" doc:"How often the registry file is checked for changes, for example <<5s>>. A changed file is applied as a whole, and an invalid one keeps the current registry. Zero means the file is read only at start and on a configuration reload (SIGHUP). Read at start: a change of this value takes effect after a restart."`
+	// PollMaxFileSize is the largest registry file in bytes which a poll reads. Zero means no limit.
+	PollMaxFileSize int64 `mapstructure:"poll_max_file_size" json:"poll_max_file_size" envconfig:"poll_max_file_size" yaml:"poll_max_file_size" toml:"poll_max_file_size" expose:"full" doc:"Largest registry file in bytes which a poll of poll_interval reads. A larger file is refused by the poll, and the current registry stays. Zero means no limit. A reload on SIGHUP reads the file whole, so this limit does not apply to it."`
 	// DrainTimeout is how long connections of removed or replaced targets are kept before they are closed.
 	DrainTimeout Duration `mapstructure:"drain_timeout" default:"30s" json:"drain_timeout" envconfig:"drain_timeout" yaml:"drain_timeout" toml:"drain_timeout" doc:"How long connections of removed or replaced targets stay open before they are closed. Default <<30s>>."`
 	// PendingMaxLifetime is the longest lifetime each connection token of class pending_2fa may have. Zero means no limit.

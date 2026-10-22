@@ -23,7 +23,7 @@ func TestPollDropsSnapshotOvertakenByReload(t *testing.T) {
 
 	// The poll reads the content which has the list method.
 	replaceRegistryFile(t, path, registryContent("user.list"))
-	snap, err := snapshotFile(path, maxPollFileSize)
+	snap, err := snapshotFile(path, 0)
 	require.NoError(t, err)
 
 	// A reload applies newer content while the poll's read is in flight.

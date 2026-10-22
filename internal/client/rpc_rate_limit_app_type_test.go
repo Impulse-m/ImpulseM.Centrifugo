@@ -62,13 +62,30 @@ func TestRPCRefusalAppTypeOverWire(t *testing.T) {
 	require.Equal(t, "QUOTA_WAIT_"+seconds, reply.Error.AppType)
 }
 
-// The errors counter counts the expanded app type, normalised: QUOTA_WAIT_17 and QUOTA_WAIT_2 share QUOTA_WAIT_X.
+// The errors counter counts the expanded app type, normalised: every wait of QUOTA_WAIT_{retry_after} shares QUOTA_WAIT_X.
 func TestRPCRefusalAppTypeCounted(t *testing.T) {
 	h := newDedupHandler(t, rateLimitedPlaceholderRegistry("QUOTA_WAIT_{retry_after}"), newDedupBackend(t))
 	before := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X"))
 
-	_ = h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", 17*time.Second)
-	_ = h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", 2*time.Second)
+	waits := []time.Duration{time.Millisecond, 2 * time.Second, 17 * time.Second, time.Minute, time.Hour}
+	for _, wait := range waits {
+		refused := h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", wait).(*centrifuge.Error)
+		require.Equal(t, "QUOTA_WAIT_"+refused.Metadata["x-centrifugo-retry-after"], refused.AppType)
+	}
 
-	require.Equal(t, before+2, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X")))
+	require.Equal(t, before+float64(len(waits)), testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X")))
+}
+
+// A zero code keeps 111 too many requests, which the errors counter does not count: only a refusal with a code is
+// an error of the registry.
+func TestRPCRefusalZeroCodeNotCounted(t *testing.T) {
+	reg := rateLimitedPlaceholderRegistry("QUOTA_WAIT_{retry_after}")
+	reg.Errors.RateLimited.Code = 0
+	h := newDedupHandler(t, reg, newDedupBackend(t))
+	before := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "none"))
+
+	refused := h.rateLimitRefusal(ratelimit.OperationRPC, "users.get", 17*time.Second)
+	require.Equal(t, centrifuge.ErrorTooManyRequests, refused)
+
+	require.Equal(t, before, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "none")))
 }

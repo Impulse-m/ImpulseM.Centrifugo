@@ -18,14 +18,30 @@ func rateLimitedAppTypeOf(appType string) configtypes.RPCRegistry {
 	return reg
 }
 
+// The placeholder is valid at the end of the app type, after an underscore, so the expanded type ends in _<digits>
+// and the errors counter normalises every wait to _X.
 func TestValidateRateLimitedAppTypePlaceholder(t *testing.T) {
 	for _, appType := range []string{
 		"QUOTA_WAIT_{retry_after}",
-		"{retry_after}",
-		"QUOTA_{retry_after}_WAIT_{retry_after}",
-		strings.Repeat("A", 54) + "{retry_after}",
+		"QUOTA_{retry_after}",
+		strings.Repeat("A", 53) + "_{retry_after}",
 	} {
 		require.NoError(t, validateRPCRegistry(configWithRegistry(rateLimitedAppTypeOf(appType))), appType)
+	}
+}
+
+// The placeholder must occur once, at the end after an underscore. Any other place gives a series for each wait.
+func TestValidateRateLimitedAppTypePlaceholderPosition(t *testing.T) {
+	for _, appType := range []string{
+		"{retry_after}",
+		"QUOTA{retry_after}",
+		"QUOTA_{retry_after}_WAIT",
+		"QUOTA_{retry_after}_WAIT_{retry_after}",
+		"QUOTA_{retry_after}_{retry_after}",
+		"QUOTA_WAIT_{retry_after}_",
+	} {
+		require.EqualError(t, validateRPCRegistry(configWithRegistry(rateLimitedAppTypeOf(appType))),
+			fmt.Sprintf("rpc.registry.errors.rate_limited.app_type: {retry_after} must occur once, at the end after an underscore, as in QUOTA_WAIT_{retry_after}, got %q", appType), appType)
 	}
 }
 
@@ -36,11 +52,19 @@ func TestValidateRateLimitedAppTypePlaceholderInvalid(t *testing.T) {
 		"quota_{retry_after}",
 		"QUOTA WAIT_{retry_after}",
 		"QUOTA_WAIT_{retry-after}",
-		strings.Repeat("A", 55) + "{retry_after}",
+		strings.Repeat("A", 54) + "_{retry_after}",
 	} {
 		require.EqualError(t, validateRPCRegistry(configWithRegistry(rateLimitedAppTypeOf(appType))),
-			fmt.Sprintf("rpc.registry.errors.rate_limited.app_type: must match ^[A-Z0-9_]{1,64}$ with {retry_after} replaced by 9999999999, got %q", appType))
+			fmt.Sprintf("rpc.registry.errors.rate_limited.app_type: must match ^[A-Z0-9_]{1,64}$ with {retry_after} replaced by 9999999999, got %q", appType), appType)
 	}
+}
+
+// A disabled registry is not checked, as with its other settings, so the app type of rate_limited is read only when
+// the registry is on.
+func TestValidateRateLimitedAppTypeDisabledRegistryUnchecked(t *testing.T) {
+	reg := rateLimitedAppTypeOf("QUOTA_{retry_after}_WAIT_{retry_after}")
+	reg.Enabled = false
+	require.NoError(t, validateRPCRegistry(configWithRegistry(reg)))
 }
 
 // Plain app types of rate_limited are not checked against the pattern, as before the placeholder.

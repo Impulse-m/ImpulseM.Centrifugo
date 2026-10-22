@@ -147,8 +147,9 @@ func (h *Handler) rateLimitCommandRead(
 
 // rateLimitRefusal returns the error of a command which a rate limit refused with the given wait. An RPC of a method in
 // the registry gets rpc.registry.errors.rate_limited when its code is set: a temporary error whose metadata holds the
-// wait in whole seconds, and whose app type has the placeholder of the wait replaced by the same seconds. Every other refusal is 111 too many requests. The error is read from the running config per
-// refusal, and a new error value is built each time.
+// wait in whole seconds, and whose app type has the placeholder of the wait replaced by the same seconds. Every other
+// refusal is 111 too many requests. The error is read from the running config per refusal, and a new error value is
+// built each time.
 func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait time.Duration) error {
 	if op != ratelimit.OperationRPC || !h.rpcRegistry.Enabled() || h.rpcRegistry.Lookup(name) == nil {
 		return centrifuge.ErrorTooManyRequests

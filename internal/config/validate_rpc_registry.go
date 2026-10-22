@@ -80,9 +80,16 @@ func validateRPCRegistry(c Config) error {
 }
 
 // validateRPCRateLimitedAppType checks the app type of rate limit refusals when it holds a template, that is a brace.
-// Each placeholder is replaced by its widest value, and the result must match the app type pattern. A plain app type
-// is not checked, as it was before the placeholder.
+// The placeholder must occur once, at the end after an underscore, so the expanded type ends in _<digits> and the
+// errors counter normalises it. The placeholder is replaced by its widest value, and the result must match the app
+// type pattern. A plain app type is not checked, as it was before the placeholder.
 func validateRPCRateLimitedAppType(appType string) error {
+	if strings.Contains(appType, configtypes.RPCRetryAfterPlaceholder) {
+		trailing := "_" + configtypes.RPCRetryAfterPlaceholder
+		if strings.Count(appType, configtypes.RPCRetryAfterPlaceholder) != 1 || !strings.HasSuffix(appType, trailing) {
+			return fmt.Errorf("rpc.registry.errors.rate_limited.app_type: %s must occur once, at the end after an underscore, as in QUOTA_WAIT_%s, got %q", configtypes.RPCRetryAfterPlaceholder, configtypes.RPCRetryAfterPlaceholder, appType)
+		}
+	}
 	if !strings.ContainsAny(appType, "{}") {
 		return nil
 	}

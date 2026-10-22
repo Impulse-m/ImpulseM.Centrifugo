@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -182,13 +181,8 @@ func waitOf(v int64) (time.Duration, error) {
 	return 0, errMalformedWait
 }
 
-// userIDEscaper escapes the characters which would make the key of a user ambiguous: a closing brace ends the user ID
-// in the key, and a percent sign starts an escape. IDs without them keep their keys.
-var userIDEscaper = strings.NewReplacer("%", "%25", "}", "%7D")
-
 // redisKey returns the key of a scope of userID: {prefix}.rl.{userID}.{scope}. Braces around the user ID
-// make it the Redis Cluster hash tag, so all scopes of a user live in one slot. The user ID is escaped, so the
-// first closing brace ends it, and the scope name after it, which may hold braces, cannot shift the key.
+// make it the Redis Cluster hash tag, so all scopes of a user live in one slot.
 func redisKey(prefix string, userID string, scopeName string) string {
-	return prefix + ".rl.{" + userIDEscaper.Replace(userID) + "}." + scopeName
+	return prefix + ".rl.{" + userID + "}." + scopeName
 }

@@ -17,7 +17,8 @@ unreachable at startup. The node starts when Redis is unreachable: it allows com
 
 A refused command is remembered on the node until its wait ends, so a client which keeps sending during the wait costs
 no Redis call. The memory is 100000 refusals per node at most. A refusal remembered this way still applies during a Redis
-outage until its wait ends, even though fail-open allows commands otherwise. Every command checks this memory first,
+outage until its wait ends, even though fail-open allows commands otherwise. Only a refusal which Redis already decided is
+remembered, so outside such a refusal an outage follows `on_error` as before. Every command checks this memory first,
 one short mutex per command, so many connections of one user contend on one lock.
 
 Every command of a user ID which is shared by many clients still reaches its one Redis shard key while it is allowed,

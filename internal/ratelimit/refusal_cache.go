@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
-// The refusal cache is hand-rolled, although github.com/maypok86/otter/v2 is in the module graph. Otter can run its
-// maintenance inline, but its eviction is policy-driven across the whole cache, while this design skips an insert into
-// a full shard and sweeps the ended refusals of that shard. The behaviour the design needs is not otter's. The sweep
-// below is the only maintenance, and it runs inside an insert.
+// The refusal cache is hand-rolled, although github.com/maypok86/otter/v2 is in the module graph. Per-entry expiry in
+// otter needs an ExpiryCalculator, and that starts a background goroutine per cache which ticks once a second
+// (otter v2.3.0, cache_impl.go:193-195). The inline Executor option does not remove that ticker, so otter would keep a
+// timer per cache. Its eviction is also policy-driven across the whole cache, while this design skips an insert into a
+// full shard and sweeps the ended refusals of that shard. The sweep below is the only maintenance, and it runs inside
+// an insert.
 
 const (
 	// refusalCacheCapacity is the number of refusals a node keeps for redis_user_command limits, in all shards together.

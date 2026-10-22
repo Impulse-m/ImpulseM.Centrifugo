@@ -37,6 +37,31 @@ func TestSweepConnectionsDisconnectsRejectedOnly(t *testing.T) {
 	waitConnections(t, node, "user-2", 1)
 }
 
+// TestSweepRetriesDroppedDisconnects sweeps three rejected connections of one user while the queue holds one. The
+// dropped disconnects are retried by user once the queue runs, so all three are disconnected.
+func TestSweepRetriesDroppedDisconnects(t *testing.T) {
+	node := newRevokeTestNode(t)
+	store := NewStore(time.Minute)
+	queue := NewDisconnectQueue(10000, 1)
+	NewRevoker(store, node.Hub(), queue)
+
+	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
+	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
+	connectTestClient(t, node, "user-1|"+testUUID+"|0|100")
+	waitConnections(t, node, "user-1", 3)
+	require.NoError(t, store.RevokeSession(testUUID, 0, 0, nil))
+
+	rejected := SweepConnections(node.Hub(), store, queue, allAccessChecks)
+	require.Equal(t, 3, rejected)
+
+	cancel, errCh := runQueue(t, queue)
+	t.Cleanup(func() {
+		cancel()
+		<-errCh
+	})
+	waitConnections(t, node, "user-1", 0)
+}
+
 func TestSweepConnectionsDisabledChecksRejectNothing(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)

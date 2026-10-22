@@ -6,24 +6,45 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
+	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
 )
 
 // SweepConnections checks every local connection against the store and enqueues a disconnect for each
 // rejected one. It is the catch-up pass after a fail-open start; no revocation runs it. It returns the number
-// of rejected connections. Disconnects dropped by a full queue are counted by the queue and still rejected by
-// the refresh check within the token lifetime.
+// of rejected connections. A disconnect dropped by a full queue is retried by the user, or the session of a
+// connection without user, once the queue has room.
 func SweepConnections(hub Hub, store *Store, queue *DisconnectQueue, opts CheckOptions) int {
+	rejected, _ := sweepConnections(hub, store, queue, opts)
+	return rejected
+}
+
+// sweepConnections is SweepConnections which also returns the number of rejected connections whose disconnect the
+// queue dropped.
+func sweepConnections(hub Hub, store *Store, queue *DisconnectQueue, opts CheckOptions) (int, int) {
 	var rejected int
+	var dropped int
 	for _, client := range hub.Connections() {
 		disconnect, reason, revoked := CheckConnection(store, client, opts, stageSweep)
 		if !revoked {
 			continue
 		}
 		rejected++
-		queue.Enqueue(client, disconnect, reason)
+		userID, identity := IdentityOf(client)
+		if !queue.enqueueKeyed(sweepRetryKey(userID, identity), client, disconnect, reason) {
+			dropped++
+		}
 	}
-	return rejected
+	return rejected, dropped
+}
+
+// sweepRetryKey returns the key a dropped sweep disconnect is retried by: the user of the connection, or its session
+// when the connection has no user.
+func sweepRetryKey(userID string, identity centrifuge.TokenIdentity) retryKey {
+	if userID != "" {
+		return retryKey{user: userID}
+	}
+	return retryKey{session: identity.Session}
 }
 
 // CatchUpSweeper runs one SweepConnections after the source caught up following a fail-open start.
@@ -63,8 +84,8 @@ func (s *CatchUpSweeper) Run(ctx context.Context) error {
 		return ctx.Err()
 	case <-s.caughtUp:
 	}
-	rejected := SweepConnections(s.hub, s.store, s.queue, s.options())
-	log.Info().Int("rejected", rejected).Msg("access revocation catch-up sweep done")
+	rejected, dropped := sweepConnections(s.hub, s.store, s.queue, s.options())
+	log.Info().Int("rejected", rejected).Int("dropped", dropped).Msg("access revocation catch-up sweep done")
 	return nil
 }
 

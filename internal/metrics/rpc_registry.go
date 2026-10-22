@@ -205,13 +205,18 @@ func normalizeNumericSuffix(value string) string {
 }
 
 // label returns value when it is known or still fits under the cap, and rpcRegistryOtherAppType otherwise.
-// A known value is found under the read lock, so concurrent errors do not queue behind each other.
+// A known value is found under the read lock, and so is a value which is over the cap, since the set never
+// shrinks. Concurrent errors do not queue behind each other, and only a new value under the cap takes the write lock.
 func (s *rpcRegistryAppTypeSet) label(value string) string {
 	s.mu.RLock()
 	_, known := s.values[value]
+	full := len(s.values) >= rpcRegistryMaxAppTypes
 	s.mu.RUnlock()
 	if known {
 		return value
+	}
+	if full {
+		return rpcRegistryOtherAppType
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

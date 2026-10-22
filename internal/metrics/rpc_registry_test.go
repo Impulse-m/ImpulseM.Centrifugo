@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -147,6 +148,28 @@ func TestRPCRegistryAppTypeLabelCap(t *testing.T) {
 	require.Equal(t, rpcRegistryOtherAppType, rpcRegistryAppTypeLabel("BRAND_NEW_TYPE"))
 	require.Equal(t, "TYPE_0_A", rpcRegistryAppTypeLabel("TYPE_0_A"))
 	require.Len(t, rpcRegistryAppTypes.values, rpcRegistryMaxAppTypes)
+}
+
+// TestRPCRegistryAppTypeLabelOverflowDoesNotTakeWriteLock fills the set to the cap, then holds the read lock as concurrent
+// errors do. An overflow value must be answered under the read lock, without waiting for the write lock.
+func TestRPCRegistryAppTypeLabelOverflowDoesNotTakeWriteLock(t *testing.T) {
+	resetRPCRegistryMetrics(t)
+	for i := 0; i < rpcRegistryMaxAppTypes; i++ {
+		rpcRegistryAppTypeLabel(fmt.Sprintf("TYPE_%d_A", i))
+	}
+
+	rpcRegistryAppTypes.mu.RLock()
+	defer rpcRegistryAppTypes.mu.RUnlock()
+	answered := make(chan string, 1)
+	go func() {
+		answered <- rpcRegistryAppTypeLabel("BRAND_NEW_TYPE")
+	}()
+	select {
+	case label := <-answered:
+		require.Equal(t, rpcRegistryOtherAppType, label)
+	case <-time.After(time.Second):
+		t.Fatal("an overflow app_type waited for the write lock")
+	}
 }
 
 func TestRPCRegistryAppTypeLabelCapCountsNormalisedValues(t *testing.T) {

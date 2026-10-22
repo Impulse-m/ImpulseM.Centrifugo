@@ -19,16 +19,16 @@ type inflightCall struct {
 	cancel context.CancelFunc
 }
 
-// NewInFlight returns an empty map.
+// NewInFlight returns an empty map. The map is allocated by the first call and dropped when the last one is released.
 func NewInFlight() *InFlight {
-	return &InFlight{calls: map[uint64]*inflightCall{}}
+	return &InFlight{}
 }
 
 // Add registers the call msgID with its cancel function. The returned function removes the call.
 func (f *InFlight) Add(msgID uint64, cancel context.CancelFunc) func() {
 	call := &inflightCall{cancel: cancel}
 	f.mu.Lock()
-	f.calls[msgID] = call
+	f.put(msgID, call)
 	f.mu.Unlock()
 	return f.releaser(msgID, call)
 }
@@ -42,17 +42,29 @@ func (f *InFlight) TryAdd(msgID uint64, cancel context.CancelFunc) (func(), bool
 	if f.calls[msgID] != nil {
 		return nil, false
 	}
-	f.calls[msgID] = call
+	f.put(msgID, call)
 	return f.releaser(msgID, call), true
 }
 
-// releaser returns the function which removes call, when call is still the call of msgID.
+// put stores call under msgID, allocating the map when it is nil. The caller holds mu.
+func (f *InFlight) put(msgID uint64, call *inflightCall) {
+	if f.calls == nil {
+		f.calls = map[uint64]*inflightCall{}
+	}
+	f.calls[msgID] = call
+}
+
+// releaser returns the function which removes call, when call is still the call of msgID. The map is dropped when
+// it is empty, since Go maps do not shrink and an idle connection would keep its buckets.
 func (f *InFlight) releaser(msgID uint64, call *inflightCall) func() {
 	return func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if f.calls[msgID] == call {
 			delete(f.calls, msgID)
+		}
+		if len(f.calls) == 0 {
+			f.calls = nil
 		}
 	}
 }

@@ -3,9 +3,11 @@ package client
 import (
 	"testing"
 
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,9 +23,9 @@ func (s *ackRecordingStore) Ack(_ string, msgIDs []uint64) error {
 	return nil
 }
 
-// TestRPCAckRefusesFrameOverCap sends an ack frame with one msg_id more than the cap. The call is refused with a protocol
-// error before anything is acknowledged, so the store gets no msg_id.
-func TestRPCAckRefusesFrameOverCap(t *testing.T) {
+// TestRPCAckTakesFirstCapOverCap sends an ack frame with one msg_id more than the cap. The store gets the first cap msg_ids,
+// the last one is dropped and counted, and the call is not refused.
+func TestRPCAckTakesFirstCapOverCap(t *testing.T) {
 	backend := newDedupBackend(t)
 	h := newDedupHandler(t, dedupRegistryConfig(), backend)
 	recorder := &ackRecordingStore{Store: h.rpcDedup.store}
@@ -34,15 +36,18 @@ func TestRPCAckRefusesFrameOverCap(t *testing.T) {
 	for seq := range uint64(rpcMaxAcksPerCall + 1) {
 		acks = append(acks, dedupMsgID(seq+1))
 	}
+	droppedBefore := testutil.ToFloat64(metrics.RPCRegistryDedupAcksOverCapTotal)
 
+	// The reply does not matter here: the call runs after the ack, and only a refusal is checked.
 	_, err := h.OnRPC(client, centrifuge.RPCEvent{
 		Method: "system.config",
 		Data:   []byte("ack"),
 		Call:   centrifuge.RPCCallOptions{Ack: acks},
 	}, nil)
 
-	require.ErrorIs(t, err, centrifuge.ErrorBadRequest)
-	require.Empty(t, recorder.acked)
+	require.NotErrorIs(t, err, centrifuge.ErrorBadRequest)
+	require.Equal(t, acks[:rpcMaxAcksPerCall], recorder.acked)
+	require.Equal(t, droppedBefore+1, testutil.ToFloat64(metrics.RPCRegistryDedupAcksOverCapTotal))
 }
 
 // TestRPCAckDropsOutOfWindowAtCap sends an ack frame at the cap: out-of-window msg_ids followed by in-window ones. The

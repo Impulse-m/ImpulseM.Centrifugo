@@ -193,16 +193,25 @@ func (h *Handler) rpcTrackCall(c Client, caller registryCaller, call centrifuge.
 	return &rpcTrack{scope: scope, inflight: inflight}
 }
 
-// rpcMaxAcksPerCall bounds how many msg_ids one call may acknowledge. A call which lists more is refused with a protocol
-// error before anything is acknowledged, so a frame cannot make the store work on an unbounded list.
+// rpcMaxAcksPerCall bounds how many msg_ids one call may acknowledge. A call which lists more has the first
+// rpcMaxAcksPerCall taken, and the rest are dropped: their records expire at their TTL, and the call still runs.
 const rpcMaxAcksPerCall = 1024
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies. Only msg_ids in the window
-// reach the store, since a record of an older msg_id has expired already. The caller has checked the count against
-// rpcMaxAcksPerCall. The msg_ids are filtered in place, so acks is changed and the caller must not read it afterwards.
+// reach the store, since a record of an older msg_id has expired already. At most rpcMaxAcksPerCall msg_ids are taken,
+// and the rest are dropped and counted. The msg_ids are filtered in place, so acks is changed and the caller must not
+// read it afterwards.
 func (h *Handler) rpcAck(track *rpcTrack, acks []uint64) {
 	if track == nil || track.scope == "" || len(acks) == 0 {
 		return
+	}
+	if len(acks) > rpcMaxAcksPerCall {
+		dropped := len(acks) - rpcMaxAcksPerCall
+		if metrics.RPCRegistryDedupAcksOverCapTotal != nil {
+			metrics.RPCRegistryDedupAcksOverCapTotal.Add(float64(dropped))
+		}
+		log.Debug().Int("acks", len(acks)).Int("dropped", dropped).Msg("exactly-once RPC ack list is over the cap, the rest of it is dropped")
+		acks = acks[:rpcMaxAcksPerCall]
 	}
 	now := time.Now()
 	inWindow := acks[:0]

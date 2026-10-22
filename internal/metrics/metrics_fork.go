@@ -59,6 +59,7 @@ type forkRegistry struct {
 	rpcRegistryDedupRedisErrors   prometheus.Counter
 	rpcRegistryDedupRedisDuration prometheus.Histogram
 	rpcRegistryDedupRedisAckDrops prometheus.Counter
+	rpcRegistryDedupAcksOverCap   prometheus.Counter
 	rpcRegistryDedupRemoteReads   prometheus.Counter
 	rpcRegistryDedupRemoteWaits   *prometheus.CounterVec
 	rpcRegistryDedupNotifications *prometheus.CounterVec
@@ -376,6 +377,14 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
+	m.rpcRegistryDedupAcksOverCap = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "rpc_registry",
+		Name:        "dedup_acks_over_cap_total",
+		Help:        "Number of msg_ids of exactly-once RPC acks dropped because one call listed more than the cap of 1024. The records of such msg_ids expire at their TTL.",
+		ConstLabels: constLabels,
+	})
+
 	m.rpcRegistryDedupRemoteReads = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "rpc_registry",
@@ -481,6 +490,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryDedupRedisErrors,
 		m.rpcRegistryDedupRedisDuration,
 		m.rpcRegistryDedupRedisAckDrops,
+		m.rpcRegistryDedupAcksOverCap,
 		m.rpcRegistryDedupRemoteReads,
 		m.rpcRegistryDedupRemoteWaits,
 		m.rpcRegistryDedupNotifications,
@@ -587,6 +597,7 @@ func (m *Registry) setForkMetrics() {
 	RPCRegistryDedupRedisErrorsTotal = m.rpcRegistryDedupRedisErrors
 	RPCRegistryDedupRedisDuration = m.rpcRegistryDedupRedisDuration
 	RPCRegistryDedupRedisAckDropsTotal = m.rpcRegistryDedupRedisAckDrops
+	RPCRegistryDedupAcksOverCapTotal = m.rpcRegistryDedupAcksOverCap
 	RPCRegistryDedupRemoteReadsTotal = m.rpcRegistryDedupRemoteReads
 	RPCRegistryDedupRemoteWaitsTotal = m.rpcRegistryDedupRemoteWaits
 	RPCRegistryDedupNotificationsTotal = m.rpcRegistryDedupNotifications

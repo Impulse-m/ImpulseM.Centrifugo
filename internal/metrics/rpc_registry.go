@@ -339,6 +339,10 @@ var RPCRegistryDedupRedisDuration prometheus.Histogram
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRedisAckDropsTotal prometheus.Counter
 
+// RPCRegistryDedupAcksOverCapTotal counts the msg_ids of exactly-once RPC acks which a call listed beyond its cap, and
+// which were dropped. It is set by the fork metrics setup, and is nil when the metrics are not initialised.
+var RPCRegistryDedupAcksOverCapTotal prometheus.Counter
+
 // RPCRegistryDedupRemoteReadsTotal counts the reads of the shared tier which the waits for calls on other nodes make.
 // It is set by the fork metrics setup, and is nil when the metrics are not initialised.
 var RPCRegistryDedupRemoteReadsTotal prometheus.Counter

@@ -265,11 +265,7 @@ func (h *Handler) rateLimitKey(op ratelimit.Operation, name string) string {
 
 // rateLimitNamespace returns the namespace name of a channel, empty when channel has no namespace.
 func (h *Handler) rateLimitNamespace(channel string) string {
-	nsName, _, _, _, err := h.cfgContainer.ChannelOptions(channel)
-	if err != nil {
-		return ""
-	}
-	return nsName
+	return h.cfgContainer.ChannelNamespace(channel)
 }
 
 // rateLimitOperation returns the rate limited operation of a command and the name which selects

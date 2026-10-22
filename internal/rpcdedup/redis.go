@@ -3,6 +3,7 @@ package rpcdedup
 import (
 	"context"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/centrifugal/centrifuge"
@@ -243,8 +244,8 @@ func (r *Redis) Poll(ctx context.Context, key Key) (PollResult, error) {
 // Ack implements Backend. The acks of each shard are one pipeline, with one ack script per scope. A failed shard
 // is counted, and the first error is returned; the records of the failed keys expire at their TTL. While the
 // connector is not connected, each call counts one error, so an outage counts once per flush. The shards are flushed
-// one after another, and a Redis which accepts connections but does not answer delays each flush by one IO timeout per
-// shard, which the shutdown flush waits for too.
+// in parallel, so a Redis which accepts connections but does not answer delays each flush by one IO timeout, however
+// many shards stall; the shutdown flush waits for it too.
 func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 	shards := r.connector.Shards()
 	if shards == nil {
@@ -259,9 +260,8 @@ func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 		index := redisshard.ShardIndex(acks[i].Scope, len(shards))
 		groups[index] = append(groups[index], ackExec(r.prefix, acks[i]))
 	}
-	var firstErr error
-	for index, execs := range groups {
-		err := r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
+	return ackShards(ctx, groups, func(ctx context.Context, index int, execs []rueidis.LuaExec) error {
+		return r.call(ctx, shards[index], func(callCtx context.Context, shard *redisshard.RedisShard) error {
 			results := shard.RunMulti(func(client rueidis.Client) []rueidis.RedisResult {
 				return ackScript.ExecMulti(callCtx, client, execs...)
 			})
@@ -272,10 +272,34 @@ func (r *Redis) Ack(ctx context.Context, acks []ScopeAcks) error {
 			}
 			return nil
 		})
-		if err != nil && firstErr == nil {
-			firstErr = err
-		}
+	})
+}
+
+// ackShards runs flush for each shard group of groups, in a goroutine of its own, and returns when all have returned.
+// It returns the error of one of the groups which failed, or nil. Each flush bounds its own time, so the flushes of
+// stalled shards overlap.
+func ackShards(
+	ctx context.Context,
+	groups map[int][]rueidis.LuaExec,
+	flush func(ctx context.Context, index int, execs []rueidis.LuaExec) error,
+) error {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for index, execs := range groups {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := flush(ctx, index, execs); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
 	}
+	wg.Wait()
 	return firstErr
 }
 

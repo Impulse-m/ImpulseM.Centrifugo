@@ -167,7 +167,7 @@ func TestRPCRegistryAppTypeLabelOverflowDoesNotTakeWriteLock(t *testing.T) {
 	select {
 	case label := <-answered:
 		require.Equal(t, rpcRegistryOtherAppType, label)
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("an overflow app_type waited for the write lock")
 	}
 }

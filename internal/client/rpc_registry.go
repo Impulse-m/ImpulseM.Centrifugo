@@ -40,6 +40,9 @@ func (h *Handler) onRPCRegistry(c rebindableClient, e centrifuge.RPCEvent, rpcPr
 	// The identity of the call is read once here, so its dedup scope, its token and its class come from the same identity.
 	caller := registryConnection(c, h.registryConfig().AuthClassClaim)
 	if h.rpcDedup != nil {
+		if len(e.Call.Ack) > rpcMaxAcksPerCall {
+			return centrifuge.RPCReply{}, true, centrifuge.ErrorBadRequest
+		}
 		track = h.rpcTrackCall(c, caller, e.Call)
 		h.rpcAck(track, e.Call.Ack)
 		if e.Call.Cancel != 0 {

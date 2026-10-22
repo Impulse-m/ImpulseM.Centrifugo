@@ -193,22 +193,20 @@ func (h *Handler) rpcTrackCall(c Client, caller registryCaller, call centrifuge.
 	return &rpcTrack{scope: scope, inflight: inflight}
 }
 
-// rpcMaxAcksPerCall bounds how many msg_ids one call acknowledges, so a frame cannot make the store work on an unbounded
-// list. An ack left out keeps its record until the record expires, and the client may acknowledge it again.
+// rpcMaxAcksPerCall bounds how many msg_ids one call may acknowledge. A call which lists more is refused with a protocol
+// error before anything is acknowledged, so a frame cannot make the store work on an unbounded list.
 const rpcMaxAcksPerCall = 1024
 
 // rpcAck forgets the done records which a call acknowledges: the client has their replies. Only msg_ids in the window
-// reach the store, since a record of an older msg_id has expired already, and at most rpcMaxAcksPerCall of them do.
+// reach the store, since a record of an older msg_id has expired already. The caller has checked the count against
+// rpcMaxAcksPerCall.
 func (h *Handler) rpcAck(track *rpcTrack, acks []uint64) {
 	if track == nil || track.scope == "" || len(acks) == 0 {
 		return
 	}
 	now := time.Now()
-	inWindow := make([]uint64, 0, min(len(acks), rpcMaxAcksPerCall))
+	inWindow := make([]uint64, 0, len(acks))
 	for _, msgID := range acks {
-		if len(inWindow) == rpcMaxAcksPerCall {
-			break
-		}
 		if rpcdedup.MsgIDInWindow(msgID, now, h.rpcDedup.window, h.rpcDedup.maxSkew) {
 			inWindow = append(inWindow, msgID)
 		}

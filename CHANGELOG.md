@@ -1,3 +1,8 @@
+Unreleased
+==========
+
+* Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
+
 v5.1.2 and higher
 =================
 

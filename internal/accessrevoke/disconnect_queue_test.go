@@ -403,11 +403,11 @@ func TestDisconnectQueueFillGauge(t *testing.T) {
 	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_disconnect_queue_fill"))
 }
 
-// TestDisconnectQueueHoldsKeyDroppedByRetry gives one user 100 connections and a queue of 10, and dequeues 60 times. Each
-// retry pass of the user re-drops most of its connections, so the key is held until the queue is at or below half, and a
-// pass runs about once per 5 dequeues. A pass per dequeue would scan the user 60 times, and the bound is 13 passes.
-// The drops of the passes are not counted as dropped disconnects, so only the first drop counts.
-func TestDisconnectQueueHoldsKeyDroppedByRetry(t *testing.T) {
+// TestDisconnectQueueRetriesDroppedKeyAtNextDequeue gives one user 100 connections and a queue of 10, and dequeues 60
+// times. Each retry pass of the user re-drops most of its connections, and the key stays kept, so the user runs again at
+// every dequeue with room: one pass per dequeue, 60 passes. A user with many connections is not held back while the
+// queue is above half. The drops of the passes are not counted as dropped disconnects, so only the first drop counts.
+func TestDisconnectQueueRetriesDroppedKeyAtNextDequeue(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)
 	for i := range 10 {
 		conn := &fakeConnection{id: "fill-" + strconv.Itoa(i)}
@@ -440,8 +440,7 @@ func TestDisconnectQueueHoldsKeyDroppedByRetry(t *testing.T) {
 		}
 	}
 
-	require.Positive(t, passes)
-	require.LessOrEqual(t, passes, 13)
+	require.Equal(t, 60, passes)
 	require.Equal(t, droppedBefore, counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total"))
 }
 

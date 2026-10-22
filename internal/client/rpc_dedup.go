@@ -193,12 +193,30 @@ func (h *Handler) rpcTrackCall(c Client, caller registryCaller, call centrifuge.
 	return &rpcTrack{scope: scope, inflight: inflight}
 }
 
-// rpcAck forgets the done records which a call acknowledges: the client has their replies.
+// rpcMaxAcksPerCall bounds how many msg_ids one call acknowledges, so a frame cannot make the store work on an unbounded
+// list. An ack left out keeps its record until the record expires, and the client may acknowledge it again.
+const rpcMaxAcksPerCall = 1024
+
+// rpcAck forgets the done records which a call acknowledges: the client has their replies. Only msg_ids in the window
+// reach the store, since a record of an older msg_id has expired already, and at most rpcMaxAcksPerCall of them do.
 func (h *Handler) rpcAck(track *rpcTrack, acks []uint64) {
 	if track == nil || track.scope == "" || len(acks) == 0 {
 		return
 	}
-	if err := h.rpcDedup.store.Ack(track.scope, acks); err != nil {
+	now := time.Now()
+	inWindow := make([]uint64, 0, min(len(acks), rpcMaxAcksPerCall))
+	for _, msgID := range acks {
+		if len(inWindow) == rpcMaxAcksPerCall {
+			break
+		}
+		if rpcdedup.MsgIDInWindow(msgID, now, h.rpcDedup.window, h.rpcDedup.maxSkew) {
+			inWindow = append(inWindow, msgID)
+		}
+	}
+	if len(inWindow) == 0 {
+		return
+	}
+	if err := h.rpcDedup.store.Ack(track.scope, inWindow); err != nil {
 		log.Error().Err(err).Msg("error acknowledging exactly-once RPC records")
 	}
 	h.observeDedupStore()

@@ -60,6 +60,9 @@ func validateAccessRevoke(cfg Config) error {
 	if cfg.AccessRevoke.DefaultTTL.ToDuration() <= 0 {
 		return fmt.Errorf("access_revoke.default_ttl must be greater than zero")
 	}
+	if cfg.AccessRevoke.MaxTTL.ToDuration() < 0 {
+		return fmt.Errorf("access_revoke.max_ttl must not be negative, use 0 to turn the limit off")
+	}
 	if cfg.AccessRevoke.SweepInterval.ToDuration() <= 0 {
 		return fmt.Errorf("access_revoke.sweep_interval must be greater than zero")
 	}

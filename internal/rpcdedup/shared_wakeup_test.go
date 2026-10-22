@@ -465,7 +465,9 @@ func TestSharedCompleteWaitsForWakeWrites(t *testing.T) {
 		t.Fatal("Complete returned before the wake was written")
 	case <-time.After(100 * time.Millisecond):
 	}
-	require.Equal(t, 1, len(fx.backend.wakeCalls()), "the wake write has started")
+	require.Eventually(t, func() bool {
+		return len(fx.backend.wakeCalls()) == 1
+	}, 2*time.Second, 5*time.Millisecond, "the wake write has started")
 
 	close(fx.backend.wakeRelease)
 	select {

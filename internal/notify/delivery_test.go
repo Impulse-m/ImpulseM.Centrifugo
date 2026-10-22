@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -182,4 +184,35 @@ func TestDeliveryIgnoresOpWithoutHandler(t *testing.T) {
 	require.NotPanics(t, func() {
 		d.deliver(eventOf("unknown", 0))
 	})
+}
+
+// TestDeliveryFullDroppingQueueDoesNotBlock stalls the handler of a dropping op and delivers five events. The handler holds
+// one event and the queue holds one, so at least three events are dropped and counted, and deliver never waits.
+func TestDeliveryFullDroppingQueueDoesNotBlock(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	const op = "dropping_op"
+	const count = 5
+	d := newDeliveryWithDropping(map[string]centrifuge.NotificationHandler{
+		op: func(centrifuge.NotificationEvent) {
+			<-release
+		},
+	}, 1, nil, map[string]bool{op: true})
+	droppedBefore := testutil.ToFloat64(metrics.NotifyEventsDroppedTotal.WithLabelValues(op))
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < count; i++ {
+			d.deliver(eventOf(op, i))
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliver blocked on a full queue of a dropping op")
+	}
+
+	dropped := testutil.ToFloat64(metrics.NotifyEventsDroppedTotal.WithLabelValues(op)) - droppedBefore
+	require.GreaterOrEqual(t, dropped, float64(count-2))
 }

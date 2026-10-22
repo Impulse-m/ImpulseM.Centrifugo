@@ -13,8 +13,17 @@ func RegisterHandlers(
 	extra map[string]centrifuge.NotificationHandler,
 ) {
 	handlers := mergeHandlers(notificationHandlers(node, statsSender, revoker), extra)
-	deliveries := newDelivery(handlers, queueSize, inlineOps())
+	deliveries := newDeliveryWithDropping(handlers, queueSize, inlineOps(), droppingOps())
 	node.OnNotification(deliveries.deliver)
+}
+
+// droppingOps returns the ops which drop an event when their queue is full, instead of waiting for room. Their events are
+// advisory: the usage stats are sent again with the next report, so a dropped update costs little, and the Core control
+// reader never waits on them.
+func droppingOps() map[string]bool {
+	return map[string]bool{
+		usage.LastSentUpdateNotificationOp: true,
+	}
 }
 
 func notificationHandlers(

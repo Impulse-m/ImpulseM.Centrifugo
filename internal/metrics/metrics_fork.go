@@ -4,12 +4,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// AccessRevokeExpireAtClampedTotal is not declared in the upstream accessors.go, so it is declared here.
-var AccessRevokeExpireAtClampedTotal *prometheus.CounterVec
+// AccessRevokeExpireAtClampedTotal and NotifyEventsDroppedTotal are not declared in the upstream accessors.go, so they are
+// declared here.
+var (
+	AccessRevokeExpireAtClampedTotal *prometheus.CounterVec
+	NotifyEventsDroppedTotal         *prometheus.CounterVec
+)
 
 // forkRegistry holds metrics of fork features: access revocation, rate limits and the RPC registry. It is embedded
 // into Registry, so the metrics are created by initForkMetrics and exported by setForkMetrics.
 type forkRegistry struct {
+	// Notification metrics
+	notifyEventsDroppedTotal *prometheus.CounterVec
+
 	// Access revocation metrics
 	accessRevokeRejectsTotal            *prometheus.CounterVec
 	accessRevokeDisconnectsTotal        *prometheus.CounterVec
@@ -64,6 +71,14 @@ type forkRegistry struct {
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
 // registration.
 func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
+	m.notifyEventsDroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   metricsNamespace,
+		Subsystem:   "notify",
+		Name:        "events_dropped_total",
+		Help:        "Number of notification events dropped because the queue of their op was full, by op. Only the ops which drop on a full queue count here, such as usage stats; the other ops wait for their handler.",
+		ConstLabels: constLabels,
+	}, []string{"op"})
+
 	m.accessRevokeRejectsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "access_revoke",
@@ -430,6 +445,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 	})
 
 	return []prometheus.Collector{
+		m.notifyEventsDroppedTotal,
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
 		m.accessRevokeDisconnectsDroppedTotal,
@@ -538,6 +554,8 @@ func NewProxyCallChildren(protocol string, kind string, name string) *ProxyCallC
 
 // setForkMetrics assigns the fork metrics created by initForkMetrics to the package level variables.
 func (m *Registry) setForkMetrics() {
+	NotifyEventsDroppedTotal = m.notifyEventsDroppedTotal
+
 	AccessRevokeRejectsTotal = m.accessRevokeRejectsTotal
 	AccessRevokeDisconnectsTotal = m.accessRevokeDisconnectsTotal
 	AccessRevokeDisconnectsDroppedTotal = m.accessRevokeDisconnectsDroppedTotal

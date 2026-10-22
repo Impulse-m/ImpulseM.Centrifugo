@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge"
+	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 )
 
@@ -24,6 +25,9 @@ const fullLogInterval = 10 * time.Second
 // node. The publisher is the node's notification path, so handlers must stay fast and must not call
 // Node.Notify: a handler which waits on its own full queue would deadlock.
 //
+// The exception is a dropping op, whose events are advisory, such as usage stats. Its full queue drops the event
+// and counts it in centrifugo_notify_events_dropped_total, so the publisher never waits on it.
+//
 // An inline op has no queue. Its handler runs on the goroutine which delivers the event, so it must never block.
 // The events of an inline op which one goroutine delivers keep their order. The Core control reader delivers the events
 // of other nodes, one at a time. A local event runs on the calling goroutine, which is not ordered against the reader,
@@ -33,12 +37,13 @@ type delivery struct {
 }
 
 type opQueue struct {
-	op        string
-	handler   centrifuge.NotificationHandler
-	inline    bool
-	events    chan centrifuge.NotificationEvent
-	startOnce sync.Once
-	fullLog   *tools.SampledLog
+	op           string
+	handler      centrifuge.NotificationHandler
+	inline       bool
+	dropWhenFull bool
+	events       chan centrifuge.NotificationEvent
+	startOnce    sync.Once
+	fullLog      *tools.SampledLog
 }
 
 // newDelivery returns a delivery which runs handlers, each with a queue of size events. The ops in inline have no
@@ -47,6 +52,17 @@ func newDelivery(
 	handlers map[string]centrifuge.NotificationHandler,
 	size int,
 	inline map[string]bool,
+) *delivery {
+	return newDeliveryWithDropping(handlers, size, inline, nil)
+}
+
+// newDeliveryWithDropping is newDelivery with the ops in dropping, whose events are dropped and counted when their queue is
+// full, instead of waiting for room. An inline op has no queue, so an op in both sets is inline.
+func newDeliveryWithDropping(
+	handlers map[string]centrifuge.NotificationHandler,
+	size int,
+	inline map[string]bool,
+	dropping map[string]bool,
 ) *delivery {
 	d := &delivery{
 		queues: make(map[string]*opQueue, len(handlers)),
@@ -60,6 +76,7 @@ func newDelivery(
 		if !q.inline {
 			q.events = make(chan centrifuge.NotificationEvent, size)
 			q.fullLog = tools.NewSampledLog(fullLogInterval)
+			q.dropWhenFull = dropping[op]
 		}
 		d.queues[op] = q
 	}
@@ -84,6 +101,13 @@ func (d *delivery) deliver(event centrifuge.NotificationEvent) {
 	case q.events <- event:
 		return
 	default:
+	}
+	if q.dropWhenFull {
+		metrics.NotifyEventsDroppedTotal.WithLabelValues(q.op).Inc()
+		if logEvent := q.fullLog.Event(); logEvent != nil {
+			logEvent.Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, the event is dropped")
+		}
+		return
 	}
 	if logEvent := q.fullLog.Event(); logEvent != nil {
 		logEvent.Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, waiting for the handler")

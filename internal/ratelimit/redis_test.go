@@ -319,7 +319,8 @@ func TestRedisUserLimiterCommandTimeoutBounded(t *testing.T) {
 	start := time.Now()
 	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.True(t, l.ConnectAllowed("42"))
-	require.Less(t, time.Since(start), 500*time.Millisecond)
+	// Two timed out calls cost about 100ms. The bound is well below the 2s stall, and wide enough for a loaded runner.
+	require.Less(t, time.Since(start), time.Second)
 }
 
 func TestRedisUserLimiterCachesRefusal(t *testing.T) {

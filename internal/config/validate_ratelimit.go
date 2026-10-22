@@ -17,8 +17,9 @@ const (
 	windowMaxRate     = 1 << 21
 )
 
-// The caps bound the state of a connection, which holds one slot per bucket of every scope of the plan, see
-// ratelimit.CommandPlan. Each list of buckets is one scope, and every method override is one scope too.
+// The caps bound the state of a connection, which holds the state words of every bucket of every scope of the plan, see
+// ratelimit.CommandPlan: one word per bucket of a token bucket, and the words of the algorithm for the others (see
+// the README formula). Each list of buckets is one scope, and every method override is one scope too.
 const (
 	rateLimitMaxBuckets         = 16
 	rateLimitMaxMethodOverrides = 4096

@@ -109,6 +109,29 @@ func TestSessionIndexDroppedDisconnectIsRetried(t *testing.T) {
 	}, 200*time.Millisecond, 5*time.Millisecond)
 }
 
+// TestRetryOverflowSweepsNode blocks four users while the queue holds one and keeps two retry keys. The fourth user's
+// drop is not kept, so the overflow runs a pass over every local connection, which disconnects it.
+func TestRetryOverflowSweepsNode(t *testing.T) {
+	node := newRevokeTestNode(t)
+	store := NewStore(time.Minute)
+	revoker, start := newDroppingRevoker(t, node.Hub(), store)
+	for i := range 4 {
+		connectTestClient(t, node, fmt.Sprintf("user-%d|%s|0|100", i, testUUID))
+	}
+	for i := range 4 {
+		waitConnections(t, node, fmt.Sprintf("user-%d", i), 1)
+	}
+
+	for i := range 4 {
+		require.NoError(t, revoker.BlockUser(fmt.Sprintf("user-%d", i), 0))
+	}
+	start()
+
+	for i := range 4 {
+		waitConnections(t, node, fmt.Sprintf("user-%d", i), 0)
+	}
+}
+
 // TestRetryIgnoresExpiredRevocation drops a session disconnect and lets the revocation expire before the queue runs. The
 // retry reads the store, finds no revocation, and disconnects nothing more.
 func TestRetryIgnoresExpiredRevocation(t *testing.T) {

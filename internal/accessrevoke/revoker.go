@@ -169,20 +169,20 @@ func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect cent
 // retry re-evaluates a key of dropped disconnects on the queue goroutine. The store is read again, so a connection is
 // disconnected only when the store still rejects it, and an entry which expired is not applied.
 func (r *Revoker) retry(key retryKey) {
+	// Every kind is checked, so a retry applies whatever the store still holds.
+	opts := CheckOptions{Block: true, Session: true, UserTokens: true}
+	if key.all {
+		metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindSweep).Inc()
+		for _, client := range r.hub.Connections() {
+			userID, identity := IdentityOf(client)
+			r.retryConnection(client, opts, sweepRetryKey(userID, identity))
+		}
+		return
+	}
 	if key.user != "" {
 		metrics.AccessRevokeDisconnectRetriesTotal.WithLabelValues(retryKindUser).Inc()
-		// Every kind is checked, so a retry applies whatever the store still holds for the user.
-		opts := CheckOptions{Block: true, Session: true, UserTokens: true}
 		for _, client := range r.hub.UserConnections(key.user) {
-			// A queued or closing connection needs no check: the queue holds it already, and a check would count it
-			// as a reject again on every pass.
-			if r.queue.pending(client) {
-				continue
-			}
-			disconnect, reason, revoked := CheckConnection(r.store, client, opts, stageRetry)
-			if revoked {
-				r.queue.enqueueKeyed(key, client, disconnect, reason)
-			}
+			r.retryConnection(client, opts, key)
 		}
 		return
 	}
@@ -193,4 +193,17 @@ func (r *Revoker) retry(key retryKey) {
 	}
 	closeConn := closeWith(r.store.sessionDisconnect(key.session), centrifuge.DisconnectExpired)
 	r.disconnectSessionConnections(key.session, closeConn)
+}
+
+// retryConnection disconnects a local connection which the store still rejects, and keeps a dropped disconnect under key.
+// A queued or closing connection needs no check: the queue holds it already, and a check would count it as a reject
+// again on every pass.
+func (r *Revoker) retryConnection(client *centrifuge.Client, opts CheckOptions, key retryKey) {
+	if r.queue.pending(client) {
+		return
+	}
+	disconnect, reason, revoked := CheckConnection(r.store, client, opts, stageRetry)
+	if revoked {
+		r.queue.enqueueKeyed(key, client, disconnect, reason)
+	}
 }

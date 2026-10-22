@@ -28,4 +28,5 @@ const stageRetry = "retry"
 const (
 	retryKindUser    = "user"
 	retryKindSession = "session"
+	retryKindSweep   = "sweep"
 )

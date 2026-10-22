@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -12,52 +13,42 @@ import (
 // grpcErrorMessageMaxLength limits the message of protocol errors built from gRPC statuses.
 const grpcErrorMessageMaxLength = 256
 
-// transformGRPCStatus returns the first transform rule which matches a gRPC status code and sets a
-// protocol error or a disconnect. ok is false when no transform matches the code. Status names which
-// are not gRPC status codes are skipped, validation rejects them before they get here.
+// transformGRPCStatus returns the first transform rule which matches a gRPC status code. ok is false when
+// no transform matches the code.
 func transformGRPCStatus(code codes.Code, transforms configtypes.RPCGRPCStatusToCodeTransforms) (statusRule[codes.Code], bool) {
-	for _, t := range transforms {
-		status, ok := grpcStatusByName(t.Status)
-		if !ok || status != code {
-			continue
-		}
-		if t.ToError.Code > 0 || t.ToDisconnect.Code > 0 {
-			return statusRule[codes.Code]{
-				status:       status,
-				toError:      t.ToError,
-				toDisconnect: t.ToDisconnect,
-			}, true
-		}
+	if len(transforms) == 0 {
+		return statusRule[codes.Code]{}, false
 	}
-	return statusRule[codes.Code]{}, false
+	return findStatusRule(code, grpcStatusRules(transforms))
 }
 
-// grpcStatusCodesByName holds the names which codes.Code.UnmarshalJSON accepts, so a lookup needs no
-// parse. The config validates the names with that parser, and a test keeps this table equal to it.
-var grpcStatusCodesByName = map[string]codes.Code{
-	"OK":                  codes.OK,
-	"CANCELLED":           codes.Canceled,
-	"UNKNOWN":             codes.Unknown,
-	"INVALID_ARGUMENT":    codes.InvalidArgument,
-	"DEADLINE_EXCEEDED":   codes.DeadlineExceeded,
-	"NOT_FOUND":           codes.NotFound,
-	"ALREADY_EXISTS":      codes.AlreadyExists,
-	"PERMISSION_DENIED":   codes.PermissionDenied,
-	"RESOURCE_EXHAUSTED":  codes.ResourceExhausted,
-	"FAILED_PRECONDITION": codes.FailedPrecondition,
-	"ABORTED":             codes.Aborted,
-	"OUT_OF_RANGE":        codes.OutOfRange,
-	"UNIMPLEMENTED":       codes.Unimplemented,
-	"INTERNAL":            codes.Internal,
-	"UNAVAILABLE":         codes.Unavailable,
-	"DATA_LOSS":           codes.DataLoss,
-	"UNAUTHENTICATED":     codes.Unauthenticated,
+// grpcStatusRules converts gRPC status transforms to status rules. Status names which are not gRPC
+// status codes are skipped, validation rejects them before they get here.
+func grpcStatusRules(transforms configtypes.RPCGRPCStatusToCodeTransforms) []statusRule[codes.Code] {
+	rules := make([]statusRule[codes.Code], 0, len(transforms))
+	for _, t := range transforms {
+		code, ok := grpcStatusByName(t.Status)
+		if !ok {
+			continue
+		}
+		rules = append(rules, statusRule[codes.Code]{
+			status:       code,
+			toError:      t.ToError,
+			toDisconnect: t.ToDisconnect,
+		})
+	}
+	return rules
 }
 
 // grpcStatusByName returns the gRPC status code with the exact name, for example UNAUTHENTICATED.
 func grpcStatusByName(name string) (codes.Code, bool) {
-	code, ok := grpcStatusCodesByName[name]
-	return code, ok
+	var code codes.Code
+	// The same parser validates the names at config load, so both accept exactly the same names.
+	err := code.UnmarshalJSON([]byte(strconv.Quote(name)))
+	if err != nil {
+		return codes.OK, false
+	}
+	return code, true
 }
 
 // defaultGRPCStatusError returns the protocol error for a gRPC status when no transform matches it.

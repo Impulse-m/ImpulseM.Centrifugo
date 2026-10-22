@@ -162,9 +162,9 @@ func (h *Handler) rateLimitRefusal(op ratelimit.Operation, name string, wait tim
 	protoErr := registryErrorValue(cfg)
 	protoErr.Temporary = true
 	protoErr.Metadata = map[string]string{rpcRetryAfterMetadataKey: seconds}
-	// The placeholder of the app type takes the same seconds as the metadata. The errors counter counts the expanded type.
+	// The placeholder of the app type takes the same seconds as the metadata. A refusal is counted by the rate limiter's
+	// own rejects counter only, never as a registry error.
 	protoErr.AppType = strings.ReplaceAll(cfg.AppType, configtypes.RPCRetryAfterPlaceholder, seconds)
-	metrics.IncRPCRegistryError(name, protoErr.AppType)
 	return protoErr
 }
 

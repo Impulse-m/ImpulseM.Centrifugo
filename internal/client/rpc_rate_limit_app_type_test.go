@@ -62,8 +62,9 @@ func TestRPCRefusalAppTypeOverWire(t *testing.T) {
 	require.Equal(t, "QUOTA_WAIT_"+seconds, reply.Error.AppType)
 }
 
-// The errors counter counts the expanded app type, normalised: every wait of QUOTA_WAIT_{retry_after} shares QUOTA_WAIT_X.
-func TestRPCRefusalAppTypeCounted(t *testing.T) {
+// Every refusal expands the placeholder with its own wait, and no refusal is counted as a registry error: rate limit
+// refusals are counted by the rate limiter's rejects counter only.
+func TestRPCRefusalAppTypeExpandsAndIsNotCountedAsRegistryError(t *testing.T) {
 	h := newDedupHandler(t, rateLimitedPlaceholderRegistry("QUOTA_WAIT_{retry_after}"), newDedupBackend(t))
 	before := testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X"))
 
@@ -73,7 +74,7 @@ func TestRPCRefusalAppTypeCounted(t *testing.T) {
 		require.Equal(t, "QUOTA_WAIT_"+refused.Metadata["x-centrifugo-retry-after"], refused.AppType)
 	}
 
-	require.Equal(t, before+float64(len(waits)), testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X")))
+	require.Equal(t, before, testutil.ToFloat64(metrics.RPCRegistryErrorsTotal.WithLabelValues("users.get", "QUOTA_WAIT_X")))
 }
 
 // A zero code keeps 111 too many requests, which the errors counter does not count: only a refusal with a code is

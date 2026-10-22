@@ -29,21 +29,28 @@ const fullLogInterval = 10 * time.Second
 // The events of an inline op which one goroutine delivers keep their order. The Core control reader delivers the events
 // of other nodes, one at a time. A local event runs on the calling goroutine, which is not ordered against the reader,
 // so the order of an inline op holds per delivering goroutine only.
+//
+// A best effort op has a queue which never blocks the publisher. When its queue is full, the event is dropped and
+// counted in a sampled log line. Only the ops whose loss the sender already accepts are best effort, such as the cancel
+// of an exactly-once RPC call: the call then runs to its end on its node.
 type delivery struct {
 	queues map[string]*opQueue
 }
 
 type opQueue struct {
-	op        string
-	handler   centrifuge.NotificationHandler
-	inline    bool
-	events    chan centrifuge.NotificationEvent
-	startOnce sync.Once
-	fullLog   *tools.IntervalLimiter
+	op         string
+	handler    centrifuge.NotificationHandler
+	inline     bool
+	bestEffort bool
+	events     chan centrifuge.NotificationEvent
+	startOnce  sync.Once
+	fullLog    *tools.IntervalLimiter
+	dropLog    *tools.SampledLog
 }
 
 // newDelivery returns a delivery which runs handlers, each with a queue of size events. The ops in inline have no
-// queue, and their handlers run on the delivering goroutine.
+// queue, and their handlers run on the delivering goroutine. The ops of bestEffortOps drop an event when their queue is
+// full, instead of waiting for the handler.
 func newDelivery(
 	handlers map[string]centrifuge.NotificationHandler,
 	size int,
@@ -52,6 +59,7 @@ func newDelivery(
 	d := &delivery{
 		queues: make(map[string]*opQueue, len(handlers)),
 	}
+	bestEffort := bestEffortOps()
 	for op, handler := range handlers {
 		q := &opQueue{
 			op:      op,
@@ -61,6 +69,8 @@ func newDelivery(
 		if !q.inline {
 			q.events = make(chan centrifuge.NotificationEvent, size)
 			q.fullLog = tools.NewIntervalLimiter(fullLogInterval)
+			q.bestEffort = bestEffort[op]
+			q.dropLog = tools.NewSampledLog(fullLogInterval)
 		}
 		d.queues[op] = q
 	}
@@ -85,6 +95,12 @@ func (d *delivery) deliver(event centrifuge.NotificationEvent) {
 	case q.events <- event:
 		return
 	default:
+	}
+	if q.bestEffort {
+		if logEvent := q.dropLog.Event(); logEvent != nil {
+			logEvent.Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, dropped a best effort notification")
+		}
+		return
 	}
 	if q.fullLog.Allow() {
 		log.Warn().Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, waiting for the handler")

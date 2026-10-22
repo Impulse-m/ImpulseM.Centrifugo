@@ -14,6 +14,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/cenkalti/backoff/v5"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -46,10 +47,10 @@ type KafkaSource struct {
 	clock        func() time.Time
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
-	// skipLogs limits the warnings of skipped records, one limiter per reason.
-	skipLogs map[string]*tools.IntervalLimiter
+	// skipLogs limits the warnings of skipped records, one sampled log per reason.
+	skipLogs map[string]*sampledLog
 	// beyondWindowLog limits the warnings of events which expire beyond the window.
-	beyondWindowLog *tools.IntervalLimiter
+	beyondWindowLog *sampledLog
 
 	// readinessMu guards the readiness timer fields below.
 	readinessMu sync.Mutex
@@ -86,18 +87,46 @@ func newKafkaSource(
 		clock:           clock,
 		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
 		skipLogs:        newSkipLogs(),
-		beyondWindowLog: tools.NewIntervalLimiter(skipLogInterval),
+		beyondWindowLog: newSampledLog(),
 	}
 }
 
-// newSkipLogs returns a limiter of the warnings for each skip reason.
-func newSkipLogs() map[string]*tools.IntervalLimiter {
-	reasons := []string{skipUnknownMethod, skipDecodeError, skipValidation, skipDisabled, skipStale, skipApplyError}
-	limiters := make(map[string]*tools.IntervalLimiter, len(reasons))
-	for _, reason := range reasons {
-		limiters[reason] = tools.NewIntervalLimiter(skipLogInterval)
+// sampledLog limits a warning to one line per skipLogInterval. It counts the warnings it suppresses, and the next line
+// it logs carries the count, so an operator sees how many were hidden.
+type sampledLog struct {
+	limiter    *tools.IntervalLimiter
+	suppressed atomic.Int64
+}
+
+// newSampledLog returns a sampledLog which logs at most one warning per skipLogInterval.
+func newSampledLog() *sampledLog {
+	return &sampledLog{
+		limiter: tools.NewIntervalLimiter(skipLogInterval),
 	}
-	return limiters
+}
+
+// event returns the warning to fill in when it may be logged now, with the count of the warnings suppressed since the
+// last one logged. It returns nil when the warning is suppressed, and counts it.
+func (l *sampledLog) event() *zerolog.Event {
+	if !l.limiter.Allow() {
+		l.suppressed.Add(1)
+		return nil
+	}
+	event := log.Warn()
+	if suppressed := l.suppressed.Swap(0); suppressed > 0 {
+		event = event.Int64("suppressed", suppressed)
+	}
+	return event
+}
+
+// newSkipLogs returns a sampled log for each skip reason.
+func newSkipLogs() map[string]*sampledLog {
+	reasons := []string{skipUnknownMethod, skipDecodeError, skipValidation, skipDisabled, skipStale, skipApplyError}
+	logs := make(map[string]*sampledLog, len(reasons))
+	for _, reason := range reasons {
+		logs[reason] = newSampledLog()
+	}
+	return logs
 }
 
 // Ready implements Source.
@@ -311,8 +340,8 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 	}
 	if notification.Kind != KindUnblockUser && notification.ExpireAt-recordTime.Unix() > int64(s.source.Window.ToDuration()/time.Second) {
 		metrics.AccessRevokeSourceEventsBeyondWindow.Inc()
-		if s.beyondWindowLog.Allow() {
-			log.Warn().
+		if event := s.beyondWindowLog.event(); event != nil {
+			event.
 				Str("kind", notification.Kind).
 				Int64("expire_at", notification.ExpireAt).
 				Time("record_time", recordTime).
@@ -330,11 +359,14 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 // skip counts and logs a record which is not applied.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
-	limiter, ok := s.skipLogs[reason]
-	if ok && !limiter.Allow() {
-		return
+	event := log.Warn()
+	if sampled, ok := s.skipLogs[reason]; ok {
+		event = sampled.event()
+		if event == nil {
+			return
+		}
 	}
-	log.Warn().
+	event.
 		Err(err).
 		Str("reason", reason).
 		Str("method", method).

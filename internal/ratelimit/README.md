@@ -13,7 +13,7 @@ sooner, and a timed out check is handled as any Redis error is: allowed, or refu
 
 On Redis errors commands are allowed (fail-open), or refused for one second with
 `client.rate_limit.redis_user_command.on_error: deny`. Connects are then refused too, including while Redis is
-unreachable at startup. The node starts when Redis is unreachable: it allows commands and reconnects in the background.
+unreachable at startup. With `on_error: allow` (the default) the node starts when Redis is unreachable: it allows commands and reconnects in the background. With `on_error: deny` it starts too, and refuses commands (one second each) and connects until Redis connects.
 
 A refused command is remembered on the node until its wait ends, so a client which keeps sending during the wait costs
 no Redis call. The memory is 100000 refusals per node at most. A refusal remembered this way still applies during a Redis

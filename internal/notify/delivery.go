@@ -19,7 +19,10 @@ const fullLogInterval = 10 * time.Second
 // inlineOps are the ops whose handler runs on the goroutine that delivers the event, with no queue. Such a handler
 // must not wait: the access revocation handler writes the store and enqueues its disconnects without blocking, so
 // the node's notification path is never held by a full queue. The delivering goroutine is serial, so the events of
-// the op keep their order.
+// the op keep their order. The order holds for one delivering goroutine only. The reader of the Core control messages
+// and the local Node.Notify path both run inline handlers, so an event of one path can interleave with one of the
+// other. The store and the queue are locked, so no event is lost, but a block and an unblock from different paths
+// can leave a connection disconnected after the user was unblocked.
 var inlineOps = map[string]bool{
 	accessrevoke.NotifyOp: true,
 }
@@ -53,13 +56,16 @@ func newDelivery(handlers map[string]centrifuge.NotificationHandler, size int) *
 		queues: make(map[string]*opQueue, len(handlers)),
 	}
 	for op, handler := range handlers {
-		d.queues[op] = &opQueue{
+		q := &opQueue{
 			op:      op,
 			handler: handler,
 			inline:  inlineOps[op],
-			events:  make(chan centrifuge.NotificationEvent, size),
 			fullLog: tools.NewIntervalLimiter(fullLogInterval),
 		}
+		if !q.inline {
+			q.events = make(chan centrifuge.NotificationEvent, size)
+		}
+		d.queues[op] = q
 	}
 	return d
 }

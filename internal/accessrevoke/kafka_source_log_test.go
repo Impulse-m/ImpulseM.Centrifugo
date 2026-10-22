@@ -28,5 +28,7 @@ func TestSkipLogIsSampled(t *testing.T) {
 	}
 
 	require.Equal(t, before+10000, skippedCount(t, skipUnknownMethod))
-	require.Equal(t, 1, strings.Count(logged.String(), "\n"))
+	// The limiter reads the wall clock, so a run which takes longer than the skip log interval, as a race build on a slow
+	// runner can, logs one more line. The sampling is what is tested: the lines stay at a few, not one per record.
+	require.LessOrEqual(t, strings.Count(logged.String(), "\n"), 2)
 }

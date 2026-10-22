@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// useRegistryCallMetrics replaces the proxy call vectors and the method calls vector for one test, and
-// restores the previous ones when it ends.
+// useRegistryCallMetrics replaces the proxy call vectors, the method calls vector and the method errors vector
+// for one test, and restores the previous ones when it ends.
 func useRegistryCallMetrics(t *testing.T) {
 	t.Helper()
 	previousHistogram := metrics.ProxyCallDurationHistogram
@@ -20,12 +20,14 @@ func useRegistryCallMetrics(t *testing.T) {
 	previousErrors := metrics.ProxyCallErrorCount
 	previousInflight := metrics.ProxyCallInflightRequests
 	previousCalls := metrics.RPCRegistryCallsTotal
+	previousMethodErrors := metrics.RPCRegistryErrorsTotal
 	t.Cleanup(func() {
 		metrics.ProxyCallDurationHistogram = previousHistogram
 		metrics.ProxyCallDurationSummary = previousSummary
 		metrics.ProxyCallErrorCount = previousErrors
 		metrics.ProxyCallInflightRequests = previousInflight
 		metrics.RPCRegistryCallsTotal = previousCalls
+		metrics.RPCRegistryErrorsTotal = previousMethodErrors
 	})
 
 	proxyLabels := []string{"protocol", "kind", "name"}
@@ -44,6 +46,9 @@ func useRegistryCallMetrics(t *testing.T) {
 	metrics.RPCRegistryCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "test_rpc_registry_calls",
 	}, []string{"rpc_method", "result"})
+	metrics.RPCRegistryErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "test_rpc_registry_errors",
+	}, []string{"rpc_method", "app_type"})
 }
 
 // seriesWithLabel returns how many series of the collector carry the label with the value.
@@ -77,6 +82,8 @@ func TestReloadRemovesMetricSeriesOfRemovedTarget(t *testing.T) {
 
 	require.Equal(t, 1, seriesWithLabel(t, metrics.ProxyCallDurationHistogram, "name", "users"))
 	require.Positive(t, seriesWithLabel(t, metrics.RPCRegistryCallsTotal, "rpc_method", testGetUserMethod))
+	metrics.RPCRegistryErrorsTotal.WithLabelValues(testGetUserMethod, "none").Inc()
+	require.Positive(t, seriesWithLabel(t, metrics.RPCRegistryErrorsTotal, "rpc_method", testGetUserMethod))
 
 	reg.Targets = []configtypes.RPCTarget{{Name: "files", Endpoint: "dns:///files:9000"}}
 	reg.Methods = []configtypes.RPCMethod{
@@ -87,6 +94,7 @@ func TestReloadRemovesMetricSeriesOfRemovedTarget(t *testing.T) {
 	require.Zero(t, seriesWithLabel(t, metrics.ProxyCallDurationHistogram, "name", "users"))
 	require.Zero(t, seriesWithLabel(t, metrics.ProxyCallErrorCount, "name", "users"))
 	require.Zero(t, seriesWithLabel(t, metrics.RPCRegistryCallsTotal, "rpc_method", testGetUserMethod))
+	require.Zero(t, seriesWithLabel(t, metrics.RPCRegistryErrorsTotal, "rpc_method", testGetUserMethod))
 	require.Equal(t, 1, seriesWithLabel(t, metrics.ProxyCallDurationHistogram, "name", "files"))
 }
 

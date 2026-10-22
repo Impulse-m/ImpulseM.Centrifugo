@@ -81,12 +81,15 @@ func (m *RPCRegistryMethodMetrics) IncCall(result string) {
 	m.calls[rpcRegistryResultIndex(result)].Inc()
 }
 
-// DropRPCRegistryMethodSeries deletes the calls_total and retransmits series of a method which left the
-// registry, so a removed name does not keep its series for the life of the process. A call of the old
+// DropRPCRegistryMethodSeries deletes the calls_total, errors_total and retransmits series of a method which
+// left the registry, so a removed name does not keep its series for the life of the process. A call of the old
 // method which is still running keeps counting on the detached children, which are not exported.
 func DropRPCRegistryMethodSeries(rpcMethod string) {
 	if RPCRegistryCallsTotal != nil {
 		RPCRegistryCallsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
+	}
+	if RPCRegistryErrorsTotal != nil {
+		RPCRegistryErrorsTotal.DeletePartialMatch(prometheus.Labels{"rpc_method": rpcMethod})
 	}
 	if RPCRegistryRetransmitsTotal != nil {
 		RPCRegistryRetransmitsTotal.DeleteLabelValues(rpcMethod)

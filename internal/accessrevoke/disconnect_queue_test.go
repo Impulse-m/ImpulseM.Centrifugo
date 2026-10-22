@@ -247,8 +247,8 @@ func retryRecorder(queue *DisconnectQueue) (func(key retryKey), *[]int, *sync.Mu
 	return retrier, &lengths, &mu
 }
 
-// TestDisconnectQueueRetriesOneKeyWhileItemsQueued fills a queue of 4 and drops three keys. The retries run one per
-// dequeue while the queue holds items, so the queue lengths seen by the retrier are 3, 2 and 1.
+// TestDisconnectQueueRetriesOneKeyWhileItemsQueued fills a queue of 4 and drops three keys. The retries run once the queue
+// is at most half full, one per dequeue while the queue holds items, so the queue lengths seen by the retrier are 2, 1 and 0.
 func TestDisconnectQueueRetriesOneKeyWhileItemsQueued(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 4)
 	retrier, lengths, mu := retryRecorder(queue)
@@ -277,7 +277,7 @@ func TestDisconnectQueueRetriesOneKeyWhileItemsQueued(t *testing.T) {
 		return len(*lengths) > 3
 	}, 100*time.Millisecond, 5*time.Millisecond)
 	mu.Lock()
-	require.Equal(t, []int{3, 2, 1}, *lengths)
+	require.Equal(t, []int{2, 1, 0}, *lengths)
 	mu.Unlock()
 
 	cancel()
@@ -321,8 +321,8 @@ func TestDisconnectQueueRetriesNextKeyWhileEmpty(t *testing.T) {
 	require.ErrorIs(t, <-errCh, context.Canceled)
 }
 
-// TestDisconnectQueueRetriesDroppedKeyWhenRoom drops a keyed disconnect from a full queue. The key is re-evaluated
-// once the queue has room, at the first dequeue, and it is removed by the retry, so it is evaluated once.
+// TestDisconnectQueueRetriesDroppedKeyWhenRoom drops a keyed disconnect from a full queue of 4. The key is re-evaluated
+// once the queue is at most half full, at the second dequeue, and it is removed by the retry, so it is evaluated once.
 func TestDisconnectQueueRetriesDroppedKeyWhenRoom(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 4)
 	var mu sync.Mutex
@@ -354,18 +354,19 @@ func TestDisconnectQueueRetriesDroppedKeyWhenRoom(t *testing.T) {
 		return len(retried) > 1
 	}, 100*time.Millisecond, 5*time.Millisecond)
 	mu.Lock()
-	require.Equal(t, 3, retried[0])
+	require.Equal(t, 2, retried[0])
 	mu.Unlock()
 
 	cancel()
 	require.ErrorIs(t, <-errCh, context.Canceled)
 }
 
-// TestDisconnectQueueRetriesAboveHalf drops a keyed disconnect from a full queue of 10 and dequeues one item. The key is
-// retried at once, while the queue still holds 9 items, so a burst does not hold the retry until the queue is half empty.
-func TestDisconnectQueueRetriesAboveHalf(t *testing.T) {
+// TestDisconnectQueueRetriesOnceAtHalf drops a keyed disconnect from a full queue of 10 and dequeues four items. The key is
+// not retried while the queue is above half, so a burst does not run a pass per dequeue. It is retried at the dequeue
+// which leaves 5 items, the first point at which the queue is at most half full.
+func TestDisconnectQueueRetriesOnceAtHalf(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)
-	retrier, lengths, mu := retryRecorder(queue)
+	retrier, lengths, _ := retryRecorder(queue)
 	queue.setRetrier(retrier)
 	for i := range 10 {
 		conn := &fakeConnection{id: strconv.Itoa(i)}
@@ -374,20 +375,23 @@ func TestDisconnectQueueRetriesAboveHalf(t *testing.T) {
 	dropped := &fakeConnection{id: "dropped"}
 	require.False(t, queue.enqueueKeyed(retryKey{user: "user-1"}, dropped, centrifuge.DisconnectExpired, ReasonBlocked))
 
-	cancel, errCh := runQueue(t, queue)
-	defer cancel()
+	for range 4 {
+		select {
+		case conn := <-queue.items:
+			queue.begin(conn)
+		default:
+			t.Fatal("queue ran empty")
+		}
+	}
+	require.Empty(t, *lengths)
 
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(*lengths) == 1
-	}, 5*time.Second, 5*time.Millisecond)
-	mu.Lock()
-	require.Equal(t, []int{9}, *lengths)
-	mu.Unlock()
-
-	cancel()
-	require.ErrorIs(t, <-errCh, context.Canceled)
+	select {
+	case conn := <-queue.items:
+		queue.begin(conn)
+	default:
+		t.Fatal("queue ran empty")
+	}
+	require.Equal(t, []int{5}, *lengths)
 }
 
 // TestDisconnectQueueFillGauge queues three connections and reads the fill gauge, which reads the queue at each scrape.
@@ -403,11 +407,11 @@ func TestDisconnectQueueFillGauge(t *testing.T) {
 	require.Equal(t, 3.0, counterValue(t, "centrifugo_access_revoke_disconnect_queue_fill"))
 }
 
-// TestDisconnectQueueRetriesDroppedKeyAtNextDequeue gives one user 100 connections and a queue of 10, and dequeues 60
-// times. Each retry pass of the user re-drops most of its connections, and the key stays kept, so the user runs again at
-// every dequeue with room: one pass per dequeue, 60 passes. A user with many connections is not held back while the
-// queue is above half. The drops of the passes are not counted as dropped disconnects, so only the first drop counts.
-func TestDisconnectQueueRetriesDroppedKeyAtNextDequeue(t *testing.T) {
+// TestDisconnectQueueHoldsKeyDroppedByRetry gives one user 100 connections and a queue of 10, and dequeues 60 times. Each
+// retry pass of the user re-drops most of its connections, so the key is held until the queue is at or below half, and a
+// pass runs about once per 5 dequeues. A pass per dequeue would scan the user 60 times, and the bound is 13 passes.
+// The drops of the passes are not counted as dropped disconnects, so only the first drop counts.
+func TestDisconnectQueueHoldsKeyDroppedByRetry(t *testing.T) {
 	queue := NewDisconnectQueue(1000, 10)
 	for i := range 10 {
 		conn := &fakeConnection{id: "fill-" + strconv.Itoa(i)}
@@ -440,7 +444,55 @@ func TestDisconnectQueueRetriesDroppedKeyAtNextDequeue(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, 60, passes)
+	require.Positive(t, passes)
+	require.LessOrEqual(t, passes, 13)
+	require.Equal(t, droppedBefore, counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total"))
+}
+
+// TestDisconnectQueueReleasesHeldKeyAtHalf drops a keyed disconnect from a full queue of 10. The first pass runs once the
+// queue is at or below half, that is at the fifth dequeue, and it drops again, so the key is held. The held key comes back
+// only when the queue is at or below half again, which is five dequeues later, not at the next dequeue.
+func TestDisconnectQueueReleasesHeldKeyAtHalf(t *testing.T) {
+	queue := NewDisconnectQueue(1000, 10)
+	for i := range 10 {
+		conn := &fakeConnection{id: "fill-" + strconv.Itoa(i)}
+		require.True(t, queue.enqueueKeyed(testRetryKey, conn, centrifuge.DisconnectExpired, ReasonSession))
+	}
+	key := retryKey{user: "held-user"}
+	require.False(t, queue.enqueueKeyed(key, &fakeConnection{id: "dropped"}, centrifuge.DisconnectExpired, ReasonBlocked))
+	droppedBefore := counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total")
+
+	passes := 0
+	queue.setRetrier(func(retryKey) {
+		passes++
+		for i := range 100 {
+			conn := &fakeConnection{id: "pass-" + strconv.Itoa(passes) + "-" + strconv.Itoa(i)}
+			queue.requeueRetry(key, conn, centrifuge.DisconnectExpired, ReasonBlocked)
+		}
+	})
+	dequeue := func() {
+		select {
+		case conn := <-queue.items:
+			queue.begin(conn)
+		default:
+			t.Fatal("queue ran empty")
+		}
+	}
+
+	for range 4 {
+		dequeue()
+	}
+	require.Equal(t, 0, passes, "no pass while the queue is above half")
+	dequeue()
+	require.Equal(t, 1, passes, "the first pass runs at half")
+	require.Len(t, queue.items, 10, "the first pass fills the queue again and drops")
+
+	for range 4 {
+		dequeue()
+	}
+	require.Equal(t, 1, passes, "a held key does not come back while the queue is above half")
+	dequeue()
+	require.Equal(t, 2, passes, "the held key comes back at half")
 	require.Equal(t, droppedBefore, counterValue(t, "centrifugo_access_revoke_disconnects_dropped_total"))
 }
 

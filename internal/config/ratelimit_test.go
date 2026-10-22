@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -446,4 +447,54 @@ func TestMigrateRateLimitMethodOverrideBothSetNotMigrated(t *testing.T) {
 	require.Empty(t, warnings)
 	require.Len(t, migrated.Client.RateLimit.ClientCommand.RPC.MethodOverride, 1)
 	require.ErrorContains(t, migrated.Validate(), "cannot be used together")
+}
+
+func testRateLimitBucketsOf(count int) configtypes.RateLimitBucketList {
+	buckets := make(configtypes.RateLimitBucketList, 0, count)
+	for i := 0; i < count; i++ {
+		buckets = append(buckets, configtypes.RateLimitBucket{Interval: configtypes.Duration(time.Second), Rate: 10})
+	}
+	return buckets
+}
+
+func TestValidateRateLimitMethodOverridesCount(t *testing.T) {
+	overridesOf := func(count int) configtypes.RateLimitMethodOverrides {
+		overrides := make(configtypes.RateLimitMethodOverrides, 0, count)
+		for i := 0; i < count; i++ {
+			overrides = append(overrides, configtypes.RateLimitMethodOverride{
+				Method:  fmt.Sprintf("method_%d", i),
+				Enabled: true,
+				Buckets: testRateLimitBuckets(time.Second, 1),
+			})
+		}
+		return overrides
+	}
+	withOverrides := func(count int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.ClientCommand.Enabled = true
+		cfg.Client.RateLimit.ClientCommand.RPC = configtypes.RateLimitRPCBuckets{
+			Enabled:         true,
+			Buckets:         testRateLimitBuckets(time.Second, 10),
+			MethodOverrides: overridesOf(count),
+		}
+		return cfg
+	}
+
+	require.NoError(t, withOverrides(rateLimitMaxMethodOverrides).Validate())
+	require.ErrorContains(t, withOverrides(rateLimitMaxMethodOverrides+1).Validate(), "client_command.rpc: method_overrides must not have more than 4096 entries")
+}
+
+func TestValidateRateLimitBucketsCount(t *testing.T) {
+	withBuckets := func(count int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.ClientCommand.Enabled = true
+		cfg.Client.RateLimit.ClientCommand.Publish = configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testRateLimitBucketsOf(count),
+		}
+		return cfg
+	}
+
+	require.NoError(t, withBuckets(rateLimitMaxBuckets).Validate())
+	require.ErrorContains(t, withBuckets(rateLimitMaxBuckets+1).Validate(), "client_command.publish: buckets must not have more than 16 entries")
 }

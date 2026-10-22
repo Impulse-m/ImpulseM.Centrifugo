@@ -17,6 +17,13 @@ const (
 	windowMaxRate     = 1 << 21
 )
 
+// The caps bound the state of a connection, which holds one slot per bucket of every scope of the plan, see
+// ratelimit.CommandPlan. Each list of buckets is one scope, and every method override is one scope too.
+const (
+	rateLimitMaxBuckets         = 16
+	rateLimitMaxMethodOverrides = 4096
+)
+
 // rateLimitBucketsEntry is a named non-channel operation buckets container.
 type rateLimitBucketsEntry struct {
 	name    string
@@ -152,6 +159,9 @@ func validateRateLimitSection(s rateLimitSection, nsNames []string) error {
 		if len(s.rpc.MethodOverride) > 0 && len(s.rpc.MethodOverrides) > 0 {
 			return fmt.Errorf("%s.rpc: method_override and method_overrides cannot be used together", s.name)
 		}
+		if len(s.rpc.MethodOverrides) > rateLimitMaxMethodOverrides {
+			return fmt.Errorf("%s.rpc: method_overrides must not have more than %d entries", s.name, rateLimitMaxMethodOverrides)
+		}
 		if err := validateRateLimitMethodNames(s.rpc.MethodOverrides); err != nil {
 			return err
 		}
@@ -178,6 +188,9 @@ func validateRateLimitBuckets(enabled bool, algorithm string, buckets configtype
 	}
 	if requireBuckets && len(buckets) == 0 {
 		return fmt.Errorf("enabled buckets must not be empty")
+	}
+	if len(buckets) > rateLimitMaxBuckets {
+		return fmt.Errorf("buckets must not have more than %d entries", rateLimitMaxBuckets)
 	}
 	window := configtypes.RateLimitAlgorithmWindows[algorithm]
 	for _, bucket := range buckets {

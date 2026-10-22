@@ -60,6 +60,11 @@ func TestAlgorithmNamesMatchConfig(t *testing.T) {
 		_, isToken := algo.(tokenBucket)
 		require.Equal(t, window, !isToken, name)
 	}
+	require.Len(t, configtypes.RateLimitAlgorithmNames, len(configtypes.RateLimitAlgorithmWindows))
+	for _, name := range configtypes.RateLimitAlgorithmNames {
+		_, ok := configtypes.RateLimitAlgorithmWindows[name]
+		require.True(t, ok, name)
+	}
 }
 
 func TestAlgorithmResolvedAtCompile(t *testing.T) {

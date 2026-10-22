@@ -11,7 +11,9 @@
 // Redis keys of a scope are {prefix}.rl.{userID}.{scope}. The token bucket keeps the plain key, the window
 // algorithms add a suffix with their short name, interval and rate, so a changed configuration starts new state.
 //
-// To add an algorithm: implement Algorithm in a new file, embed its Lua script, and add it to algorithms.
+// To add an algorithm: implement Algorithm in a new file, embed its Lua script, and add it to algorithms. Its name
+// goes to configtypes too: a constant, an entry in RateLimitAlgorithmWindows and one in RateLimitAlgorithmNames, which
+// validation messages list. TestAlgorithmNamesMatchConfig checks that both sides name the same algorithms.
 package ratelimit
 
 import (

@@ -20,6 +20,14 @@ var RateLimitAlgorithmWindows = map[string]bool{
 	RateLimitAlgorithmFixedWindow:   true,
 }
 
+// RateLimitAlgorithmNames lists the algorithm names in the order validation messages show them. It holds the names
+// of RateLimitAlgorithmWindows, and TestAlgorithmNamesMatchConfig checks that both list the same names.
+var RateLimitAlgorithmNames = []string{
+	RateLimitAlgorithmTokenBucket,
+	RateLimitAlgorithmSlidingWindow,
+	RateLimitAlgorithmFixedWindow,
+}
+
 // RateLimit is a configuration of operation rate limits. See PRO docs for details.
 type RateLimit struct {
 	// ClientCommand is a per-connection rate limit of client commands.

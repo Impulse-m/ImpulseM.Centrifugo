@@ -204,7 +204,14 @@ func validateRateLimitAlgorithm(algorithm string) error {
 	if _, ok := configtypes.RateLimitAlgorithmWindows[algorithm]; ok || algorithm == "" {
 		return nil
 	}
-	return fmt.Errorf("algorithm %q is unknown, use token_bucket, sliding_window or fixed_window", algorithm)
+	return fmt.Errorf("algorithm %q is unknown, use %s", algorithm, rateLimitAlgorithmList())
+}
+
+// rateLimitAlgorithmList returns the algorithm names of configtypes as a list for a message, such as "a, b or c".
+func rateLimitAlgorithmList() string {
+	names := configtypes.RateLimitAlgorithmNames
+	last := len(names) - 1
+	return strings.Join(names[:last], ", ") + " or " + names[last]
 }
 
 // validateWindowBucket validates the interval and rate of a bucket of a window algorithm.

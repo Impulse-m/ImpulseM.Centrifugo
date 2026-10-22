@@ -8,8 +8,9 @@ import (
 )
 
 // Algorithm is a rate limit algorithm. One Algorithm decides all buckets of a scope, in memory and in Redis.
-// Adding an algorithm: one file with its type and methods, one embedded Lua script, one entry in algorithms, and
-// its name in configtypes.RateLimitAlgorithmWindows, which validation reads. TestAlgorithmNamesMatchConfig checks both.
+// Adding an algorithm: one file with its type and methods, one embedded Lua script, one entry in algorithms, and its
+// name in configtypes: a constant, an entry in RateLimitAlgorithmWindows, which validation reads, and one in
+// RateLimitAlgorithmNames, which validation messages list. TestAlgorithmNamesMatchConfig checks both sides.
 type Algorithm interface {
 	// Name is the configuration value of the algorithm.
 	Name() string

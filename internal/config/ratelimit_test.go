@@ -463,6 +463,19 @@ func TestValidateRedisUserCommandOnError(t *testing.T) {
 	require.ErrorContains(t, withOnError("block").Validate(), "redis_user_command.on_error must be allow or deny")
 }
 
+func TestValidateRedisUserCommandRejectsNegativeCommandTimeout(t *testing.T) {
+	withTimeout := func(timeout time.Duration) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.CommandTimeout = configtypes.Duration(timeout)
+		return cfg
+	}
+
+	require.NoError(t, withTimeout(0).Validate())
+	require.NoError(t, withTimeout(20*time.Millisecond).Validate())
+	require.ErrorContains(t, withTimeout(-20*time.Millisecond).Validate(), "redis_user_command.command_timeout must not be negative")
+}
+
 func TestValidateRedisBucketRejectsSubMicrosecondEmission(t *testing.T) {
 	withRate := func(interval time.Duration, rate int) Config {
 		cfg := DefaultConfig()

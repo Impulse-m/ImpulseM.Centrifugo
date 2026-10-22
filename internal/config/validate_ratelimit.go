@@ -114,6 +114,9 @@ func validateRateLimit(c Config) error {
 	if rc.OnError != "" && rc.OnError != configtypes.RateLimitOnErrorAllow && rc.OnError != configtypes.RateLimitOnErrorDeny {
 		return fmt.Errorf("redis_user_command.on_error must be %s or %s", configtypes.RateLimitOnErrorAllow, configtypes.RateLimitOnErrorDeny)
 	}
+	if rc.CommandTimeout < 0 {
+		return fmt.Errorf("redis_user_command.command_timeout must not be negative")
+	}
 	if rc.Redis.ReuseFromEngine && rc.Enabled && c.Engine.Type != "redis" {
 		return fmt.Errorf("redis_user_command.redis.reuse_from_engine requires engine.type to be redis")
 	}

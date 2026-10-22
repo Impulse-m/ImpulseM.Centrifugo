@@ -31,7 +31,7 @@ const (
 // or the library error text, which could carry it.
 func LoadAPNSKey(keyFile string, keyPEM configtypes.PEMData) (*ecdsa.PrivateKey, error) {
 	if keyFile != "" {
-		data, err := os.ReadFile(keyFile)
+		data, err := os.ReadFile(keyFile) //nolint:gosec // The key file is named by the operator's configuration.
 		if err != nil {
 			return nil, fmt.Errorf("%s (%s): the key file cannot be read", apnsKeyFileKey, keyFile)
 		}

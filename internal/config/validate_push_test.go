@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	"github.com/centrifugal/centrifugo/v6/internal/config/envconfig"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
 	"github.com/stretchr/testify/require"
@@ -283,12 +284,27 @@ func TestPushValidationAcceptsMissingFiles(t *testing.T) {
 func TestCheckPushUnknownKeys(t *testing.T) {
 	conf := pushTestConfig()
 	conf.PushNotifications.Enabled = false
-	require.NoError(t, checkPushUnknownKeys(conf, []string{"push_notifications.queue"}))
+	require.NoError(t, checkPushUnknownKeys(conf, []string{"push_notifications.queue"}, nil))
 
 	conf.PushNotifications.Enabled = true
-	require.NoError(t, checkPushUnknownKeys(conf, []string{"some_other.key"}))
-	require.NoError(t, checkPushUnknownKeys(conf, nil))
+	require.NoError(t, checkPushUnknownKeys(conf, []string{"some_other.key"}, nil))
+	require.NoError(t, checkPushUnknownKeys(conf, nil, nil))
 
-	err := checkPushUnknownKeys(conf, []string{"push_notifications.apns.cert_p12_file", "push_notifications.queue"})
+	err := checkPushUnknownKeys(conf, []string{"push_notifications.apns.cert_p12_file", "push_notifications.queue"}, nil)
 	require.EqualError(t, err, "push_notifications.apns.cert_p12_file is not available in this build")
+}
+
+// With push notifications enabled, a push environment variable that matches no known key refuses the
+// startup, and a known one does not.
+func TestCheckPushUnknownEnvRefused(t *testing.T) {
+	clearPushEnv(t)
+	conf := pushTestConfig()
+	conf.PushNotifications.Enabled = true
+
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE", "/nonexistent/cert.p12")
+	err := checkPushUnknownKeys(conf, nil, map[string]envconfig.VarInfo{})
+	require.EqualError(t, err, "CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE is not available in this build")
+
+	known := map[string]envconfig.VarInfo{"CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE": {}}
+	require.NoError(t, checkPushUnknownKeys(conf, nil, known))
 }

@@ -17,9 +17,6 @@ import (
 
 const pushTestKeyText string = "-----BEGIN PRIVATE KEY-----SECRETKEYBYTES-----END PRIVATE KEY-----"
 
-// pushEnvPrefix is the environment prefix of every push_notifications key.
-const pushEnvPrefix string = "CENTRIFUGO_PUSH_NOTIFICATIONS_"
-
 // writePushConfigFile writes a configuration file for a push test and returns its path.
 func writePushConfigFile(t *testing.T, name string, content string) string {
 	t.Helper()
@@ -65,6 +62,19 @@ func TestPushConfigDisabledUnknownKeyIsWarning(t *testing.T) {
 	require.Contains(t, meta.UnknownKeys, "push_notifications.queue")
 }
 
+// With push notifications enabled, a push environment variable that this build does not have refuses
+// the startup, as the same key in the file does.
+func TestPushConfigEnabledUnknownEnvRefused(t *testing.T) {
+	clearPushEnv(t)
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_ENABLED", "true")
+	_, _, err := GetConfig(nil, "")
+	require.NoError(t, err)
+
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE", "/nonexistent/cert.p12")
+	_, _, err = GetConfig(nil, "")
+	require.ErrorContains(t, err, "CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE is not available in this build")
+}
+
 // With push notifications enabled, a push key that this build does not have refuses the startup.
 func TestPushConfigEnabledUnknownKeyRefused(t *testing.T) {
 	path := writePushConfigFile(t, "config.json", `{"push_notifications": {"enabled": true, "enabled_providers": ["fcm"], "fcm": {"credentials_file": "/nonexistent/sa.json"}, "queue": {"type": "redis"}}}`)
@@ -94,7 +104,9 @@ func TestPushConfigLoadReadsNoFiles(t *testing.T) {
 // TOML with a key set is not covered: go-toml v2 ignores MarshalText on string kinds, so a Secret
 // written to TOML shows its value. The only TOML marshal of the configuration is the defaultconfig
 // command, which prints the defaults, where the key is empty; the default configuration test below
-// checks that it carries no key material. defaultconfig.go is not changed.
+// checks that it carries no key material. defaultconfig.go is not changed. The config doc of
+// internal/cli/configdoc.go renders the struct tags and defaults only and reads no field value, so
+// it shows no key bytes; that is why it has no case here.
 func TestPushTokenKeyPEMMaskedInDumps(t *testing.T) {
 	path := writePushConfigFile(t, "config.json", `{"push_notifications": {"enabled": false, "apns": {"token_key_pem": "`+pushTestKeyText+`"}}}`)
 	conf, _, err := GetConfig(nil, path)

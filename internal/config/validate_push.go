@@ -3,20 +3,31 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/config/envconfig"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
 // pushKeyPrefix is the path prefix of every push notification key.
 const pushKeyPrefix string = "push_notifications."
 
+// pushEnvPrefix is the environment prefix of every push notification key.
+const pushEnvPrefix string = "CENTRIFUGO_PUSH_NOTIFICATIONS_"
+
+// pushProviderAPNs is the provider name of APNs.
+const pushProviderAPNs string = "apns"
+
+// pushProviderFCM is the provider name of FCM.
+const pushProviderFCM string = "fcm"
+
 // maxPushRecipientItems is the largest number of recipients one send call may carry.
 const maxPushRecipientItems int = 1000
 
 // knownPushProviders are the providers this build sends to.
-var knownPushProviders []string = []string{"apns", "fcm"}
+var knownPushProviders []string = []string{pushProviderAPNs, pushProviderFCM}
 
 // refusedPushProviders are provider names that the configuration model knows of but this build
 // does not send to. They are refused at startup rather than accepted and never used.
@@ -25,10 +36,11 @@ var refusedPushProviders []string = []string{"hms", "webpush"}
 // knownAPNsEndpoints are the APNs hosts.
 var knownAPNsEndpoints []string = []string{"production", "development"}
 
-// checkPushUnknownKeys refuses a push_notifications key that this build does not have, when push
-// notifications are enabled. Unknown keys of the rest of the configuration keep their warning. The
-// first refused key in sorted order is named.
-func checkPushUnknownKeys(conf Config, unknownKeys []string) error {
+// checkPushUnknownKeys refuses a push notification key that this build does not have, when push
+// notifications are enabled. A key is refused both in the configuration file and in the environment
+// (CENTRIFUGO_PUSH_NOTIFICATIONS_*, which knownEnvVars does not list). Unknown keys of the rest of
+// the configuration keep their warning. The first refused key in sorted order is named.
+func checkPushUnknownKeys(conf Config, unknownKeys []string, knownEnvVars map[string]envconfig.VarInfo) error {
 	if !conf.PushNotifications.Enabled {
 		return nil
 	}
@@ -38,18 +50,32 @@ func checkPushUnknownKeys(conf Config, unknownKeys []string) error {
 			refused = append(refused, key)
 		}
 	}
-	if len(refused) == 0 {
+	if len(refused) > 0 {
+		slices.Sort(refused)
+		return fmt.Errorf("%s is not available in this build", refused[0])
+	}
+	var refusedEnvs []string
+	for _, entry := range os.Environ() {
+		name, _, found := strings.Cut(entry, "=")
+		if !found || !strings.HasPrefix(name, pushEnvPrefix) {
+			continue
+		}
+		if _, ok := knownEnvVars[name]; !ok {
+			refusedEnvs = append(refusedEnvs, name)
+		}
+	}
+	if len(refusedEnvs) == 0 {
 		return nil
 	}
-	slices.Sort(refused)
-	return fmt.Errorf("%s is not available in this build", refused[0])
+	slices.Sort(refusedEnvs)
+	return fmt.Errorf("%s is not available in this build", refusedEnvs[0])
 }
 
 // validatePushNotifications checks the push notification settings. Nothing is checked while the
 // subsystem is disabled. The values of the settings are checked whenever it is enabled; the settings
 // that a provider needs are checked only when that provider is enabled.
 func validatePushNotifications(conf Config) error {
-	push := conf.PushNotifications
+	var push configtypes.PushNotifications = conf.PushNotifications //nolint:staticcheck // ST1023: explicit type per the owner's style rule
 	if !push.Enabled {
 		return nil
 	}
@@ -83,7 +109,7 @@ func validatePushProviderList(names []string) error {
 	if len(names) == 0 {
 		return errors.New("push_notifications.enabled_providers must name at least one provider when push notifications are enabled")
 	}
-	seen := make(map[string]struct{}, len(names))
+	var seen map[string]struct{} = make(map[string]struct{}, len(names)) //nolint:staticcheck // ST1023: explicit type per the owner's style rule
 	for _, name := range names {
 		if slices.Contains(refusedPushProviders, name) {
 			return fmt.Errorf("push_notifications.enabled_providers entry \"%s\" is not available in this build", name)
@@ -102,7 +128,7 @@ func validatePushProviderList(names []string) error {
 // validatePushAPNs checks the APNs settings. Only token authentication exists in this build, so the
 // certificate settings are refused by the unknown key check and by the auth type check here.
 func validatePushAPNs(push configtypes.PushNotifications) error {
-	apns := push.APNs
+	var apns configtypes.PushAPNs = push.APNs //nolint:staticcheck // ST1023: explicit type per the owner's style rule
 	if !slices.Contains(knownAPNsEndpoints, apns.Endpoint) {
 		return fmt.Errorf("unknown push_notifications.apns.endpoint: \"%s\"", apns.Endpoint)
 	}
@@ -118,7 +144,7 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 	if apns.TokenKeyFile != "" && apns.TokenKeyPEM != "" {
 		return errors.New("push_notifications.apns.token_key_file and push_notifications.apns.token_key_pem are mutually exclusive")
 	}
-	if !slices.Contains(push.EnabledProviders, "apns") {
+	if !slices.Contains(push.EnabledProviders, pushProviderAPNs) {
 		return nil
 	}
 	if apns.BundleID == "" {
@@ -138,14 +164,14 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 
 // validatePushFCM checks the FCM settings.
 func validatePushFCM(push configtypes.PushNotifications) error {
-	fcm := push.FCM
+	var fcm configtypes.PushFCM = push.FCM //nolint:staticcheck // ST1023: explicit type per the owner's style rule
 	if err := checkPositiveInt("push_notifications.fcm.tokens_batch_size", fcm.TokensBatchSize); err != nil {
 		return err
 	}
 	if err := checkPositiveInt("push_notifications.fcm.max_inflight", fcm.MaxInflight); err != nil {
 		return err
 	}
-	if !slices.Contains(push.EnabledProviders, "fcm") {
+	if !slices.Contains(push.EnabledProviders, pushProviderFCM) {
 		return nil
 	}
 	if fcm.CredentialsFile == "" {

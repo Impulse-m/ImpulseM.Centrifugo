@@ -78,8 +78,9 @@ type scope struct {
 }
 
 // tokenWait returns the largest wait of token buckets at now, 0 when all of them allow an operation. It does not
-// change state. It has no call except gcraWait, so the compiler inlines it into CommandPlan.allow, the hot path of the
-// default limits, which then makes no call per bucket. Keep it free of other calls: a call makes it too big to inline.
+// change state. Its only call is gcraWait, which the compiler inlines into it, and the compiler inlines tokenWait into
+// CommandPlan.allow, the hot path of the default limits, so that makes no call per bucket. Both inlinings are checked
+// with -gcflags=-m. Keep the body small: the inlining depends on its size.
 func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 	var worst int64
 	for i := range buckets {
@@ -89,8 +90,8 @@ func tokenWait(buckets []slotBucket, slots []int64, now int64) int64 {
 	return worst
 }
 
-// tokenCommit consumes one operation from token buckets. Must be called only after tokenWait returned 0. It is
-// inlined into CommandPlan.allow for the same reason as tokenWait.
+// tokenCommit consumes one operation from token buckets. Must be called only after tokenWait returned 0. Its only call
+// is gcraTAT, which is inlined into it, and the compiler inlines tokenCommit into CommandPlan.allow, see tokenWait.
 func tokenCommit(buckets []slotBucket, slots []int64, now int64) {
 	for i := range buckets {
 		sb := &buckets[i]

@@ -48,9 +48,9 @@ type KafkaSource struct {
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
 	// skipLogs limits the warnings of skipped records, one sampled log per reason.
-	skipLogs map[string]*sampledLog
+	skipLogs map[string]*tools.SampledLog
 	// beyondWindowLog limits the warnings of events which expire beyond the window.
-	beyondWindowLog *sampledLog
+	beyondWindowLog *tools.SampledLog
 
 	// readinessMu guards the readiness timer fields below.
 	readinessMu sync.Mutex
@@ -87,8 +87,18 @@ func newKafkaSource(
 		clock:           clock,
 		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
 		skipLogs:        newSkipLogs(),
-		beyondWindowLog: newSampledLog(),
+		beyondWindowLog: tools.NewSampledLog(skipLogInterval),
 	}
+}
+
+// newSkipLogs returns a sampled log for each skip reason.
+func newSkipLogs() map[string]*tools.SampledLog {
+	reasons := []string{skipUnknownMethod, skipDecodeError, skipValidation, skipDisabled, skipStale, skipApplyError}
+	logs := make(map[string]*tools.SampledLog, len(reasons))
+	for _, reason := range reasons {
+		logs[reason] = tools.NewSampledLog(skipLogInterval)
+	}
+	return logs
 }
 
 // Ready implements Source.
@@ -302,7 +312,7 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 	}
 	if notification.Kind != KindUnblockUser && notification.ExpireAt-recordTime.Unix() > int64(s.source.Window.ToDuration()/time.Second) {
 		metrics.AccessRevokeSourceEventsBeyondWindow.Inc()
-		if event := s.beyondWindowLog.event(); event != nil {
+		if event := s.beyondWindowLog.Event(); event != nil {
 			event.
 				Str("kind", notification.Kind).
 				Int64("expire_at", notification.ExpireAt).
@@ -323,7 +333,7 @@ func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method 
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
 	var event *zerolog.Event
 	if sampled, ok := s.skipLogs[reason]; ok {
-		event = sampled.event()
+		event = sampled.Event()
 	} else {
 		event = log.Warn()
 	}

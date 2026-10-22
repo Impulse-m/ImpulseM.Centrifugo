@@ -33,7 +33,7 @@ const maxPollFileSize = 16 << 20
 // pollStartPhase returns the delay before the first check of a node: a random value within one
 // interval. The nodes which share a registry file then do not check, and reload, on the same tick.
 func pollStartPhase(interval time.Duration) time.Duration {
-	return rand.N(interval)
+	return rand.N(interval) //nolint:gosec // Start phase of a poll, not a secret.
 }
 
 // poll checks the registry file every interval until ctx is done. The first check comes after a

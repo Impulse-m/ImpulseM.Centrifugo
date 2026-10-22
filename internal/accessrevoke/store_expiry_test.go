@@ -198,10 +198,12 @@ func TestStoreExpireVisitsOnlyDueItems(t *testing.T) {
 	require.NoError(t, store.InvalidateUser("early", 1, 0, 0, 1100))
 
 	visits := 0
-	next, ok := expireKind(&store.usersMu, &store.users, &store.usersExpiry, func(entry userEntry) int64 {
+	kind := store.usersKind()
+	kind.expireAtOf = func(entry userEntry) int64 {
 		visits++
 		return entry.expireAt
-	}, 1200)
+	}
+	next, ok := expireKind(kind, 1200)
 	require.True(t, ok)
 	require.Equal(t, int64(2000), next)
 	require.Equal(t, 1, visits)

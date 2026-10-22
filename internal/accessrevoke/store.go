@@ -84,16 +84,22 @@ type Store struct {
 	blocked   map[[16]byte]int64
 	// blockedExpiry is guarded by blockedMu and holds an item for every blocked key.
 	blockedExpiry expiryHeap
+	// blockedVersion is guarded by blockedMu and counts the writes of the blocked kind.
+	blockedVersion uint64
 
 	sessionsMu sync.RWMutex
 	sessions   map[[16]byte]sessionEntry
 	// sessionsExpiry is guarded by sessionsMu and holds an item for every session.
 	sessionsExpiry expiryHeap
+	// sessionsVersion is guarded by sessionsMu and counts the writes of the sessions kind.
+	sessionsVersion uint64
 
 	usersMu sync.RWMutex
 	users   map[[16]byte]userEntry
 	// usersExpiry is guarded by usersMu and holds an item for every user.
 	usersExpiry expiryHeap
+	// usersVersion is guarded by usersMu and counts the writes of the users kind.
+	usersVersion uint64
 
 	sessionConns *SessionConnections
 
@@ -148,6 +154,7 @@ func (s *Store) BlockUser(userID string, expireAt int64) error {
 	}
 	stored := max(current, expireAt)
 	s.blocked[key] = stored
+	s.blockedVersion++
 	if !existed {
 		s.blockedExpiry.push(expiryItem{expireAt: stored, key: key})
 	}
@@ -165,9 +172,10 @@ func (s *Store) UnblockUser(userID string) error {
 		return ErrEmptyID
 	}
 	s.blockedMu.Lock()
-	defer s.blockedMu.Unlock()
 	delete(s.blocked, key)
-	compactIfStale(&s.blocked, &s.blockedExpiry, blockedExpireAt)
+	s.blockedVersion++
+	s.blockedMu.Unlock()
+	compactKind(s.blockedKind())
 	return nil
 }
 
@@ -195,6 +203,7 @@ func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64,
 		disconnect: keptDisconnect(current.disconnect, disconnect),
 	}
 	s.sessions[key] = entry
+	s.sessionsVersion++
 	if !exists {
 		s.sessionsExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
 	}
@@ -229,6 +238,7 @@ func (s *Store) InvalidateUser(userID string, minGeneration uint64, issuedBefore
 		expireAt:      max(current.expireAt, expireAt),
 	}
 	s.users[key] = entry
+	s.usersVersion++
 	if !exists {
 		s.usersExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
 	}

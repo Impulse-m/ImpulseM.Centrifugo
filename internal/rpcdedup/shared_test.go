@@ -80,6 +80,10 @@ type fakeBackend struct {
 	// wakes are the calls of Wake, in order, and wakeErr is the failure of every Wake call.
 	wakes   []wakeCall
 	wakeErr error
+	// blockWake makes every wake call wait until wakeRelease is closed or its context is done, as an unanswered Redis does.
+	// It gives up after a second, so that a wake which ignores its context fails the test instead of hanging it.
+	blockWake   bool
+	wakeRelease chan struct{}
 	// wakeCh carries the keys which deliverWake sends to the wake watcher, and emptyCh the empty reads which emptyRead
 	// makes it see.
 	wakeCh  chan Key
@@ -295,15 +299,26 @@ func (f *fakeBackend) applyComplete(key Key, nodeID string, rec Record) Complete
 }
 
 // Wake implements Backend: it records the call, and fails with wakeErr when that is set.
-func (f *fakeBackend) Wake(_ context.Context, key Key, nodes []string) (int, error) {
+func (f *fakeBackend) Wake(ctx context.Context, key Key, nodes []string) (int, error) {
 	if err := f.enter("wake"); err != nil {
 		return 0, err
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.wakes = append(f.wakes, wakeCall{key: key, nodes: append([]string(nil), nodes...)})
-	if f.wakeErr != nil {
-		return 0, f.wakeErr
+	wakeErr := f.wakeErr
+	blocked := f.blockWake
+	f.mu.Unlock()
+	if blocked {
+		select {
+		case <-f.wakeRelease:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(time.Second):
+			return 0, errors.New("the wake was not cut by its context")
+		}
+	}
+	if wakeErr != nil {
+		return 0, wakeErr
 	}
 	return len(nodes), nil
 }

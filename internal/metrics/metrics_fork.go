@@ -4,6 +4,36 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Access revocation metrics - exported for use by accessrevoke and client packages
+var (
+	AccessRevokeRejectsTotal            *prometheus.CounterVec
+	AccessRevokeDisconnectsTotal        *prometheus.CounterVec
+	AccessRevokeDisconnectsDroppedTotal prometheus.Counter
+	AccessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
+	AccessRevokeExpireAtClampedTotal    *prometheus.CounterVec
+
+	AccessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
+	AccessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
+	AccessRevokeSourceEventsBeyondWindow prometheus.Counter
+	AccessRevokeSourceCatchUpDuration    prometheus.Gauge
+	AccessRevokeSourceFailOpenTotal      prometheus.Counter
+)
+
+// Rate limit metrics - exported for use by client package
+var (
+	RateLimitRejectsTotal          *prometheus.CounterVec
+	RateLimitErrorDisconnectsTotal prometheus.Counter
+	RateLimitUserEntries           prometheus.Gauge
+	RateLimitRedisErrorsTotal      prometheus.Counter
+	RateLimitRedisDuration         prometheus.Histogram
+)
+
+// RPC method registry metrics - exported for use by client and proxy packages
+var (
+	RPCRegistryCallsTotal  *prometheus.CounterVec
+	RPCRegistryErrorsTotal *prometheus.CounterVec
+)
+
 // forkRegistry holds metrics of fork features: access revocation, rate limits and the RPC registry. It is embedded
 // into Registry, so the metrics are created by initForkMetrics and exported by setForkMetrics.
 type forkRegistry struct {

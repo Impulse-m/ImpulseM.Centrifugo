@@ -52,36 +52,6 @@ var (
 	HTTPRequestsTotal *prometheus.CounterVec
 )
 
-// Access revocation metrics - exported for use by accessrevoke and client packages
-var (
-	AccessRevokeRejectsTotal            *prometheus.CounterVec
-	AccessRevokeDisconnectsTotal        *prometheus.CounterVec
-	AccessRevokeDisconnectsDroppedTotal prometheus.Counter
-	AccessRevokeDisconnectRetriesTotal  *prometheus.CounterVec
-	AccessRevokeExpireAtClampedTotal    *prometheus.CounterVec
-
-	AccessRevokeSourceEventsAppliedTotal *prometheus.CounterVec
-	AccessRevokeSourceEventsSkippedTotal *prometheus.CounterVec
-	AccessRevokeSourceEventsBeyondWindow prometheus.Counter
-	AccessRevokeSourceCatchUpDuration    prometheus.Gauge
-	AccessRevokeSourceFailOpenTotal      prometheus.Counter
-)
-
-// Rate limit metrics - exported for use by client package
-var (
-	RateLimitRejectsTotal          *prometheus.CounterVec
-	RateLimitErrorDisconnectsTotal prometheus.Counter
-	RateLimitUserEntries           prometheus.Gauge
-	RateLimitRedisErrorsTotal      prometheus.Counter
-	RateLimitRedisDuration         prometheus.Histogram
-)
-
-// RPC method registry metrics - exported for use by client and proxy packages
-var (
-	RPCRegistryCallsTotal  *prometheus.CounterVec
-	RPCRegistryErrorsTotal *prometheus.CounterVec
-)
-
 // Postgres broker metrics exported for use by pgmapbroker and pgstreambroker.
 //
 // All carry a postgres_ name prefix: these are Postgres-specific (outbox,

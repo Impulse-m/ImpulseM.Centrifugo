@@ -392,7 +392,7 @@ func (s *Shared) watch(key Key, flight *Flight) {
 
 // pollCap returns the longest delay between two polls of a wait of the given length: PollMax, unless a tenth of the wait
 // is longer. Scaled so, a long call is polled less often than a short one, and never more often than PollMax.
-// The wait of a call is its method timeout plus the in-flight grace, so with the default PollMax the cap is above PollMax
+// The wait of a call is its method timeout plus the in-flight grace, so with the default PollMax the cap is at least PollMax
 // for every call: a tenth of a wait of at least the grace is at least one second.
 func (s *Shared) pollCap(wait time.Duration) time.Duration {
 	return max(s.pollMax, wait/pollCapDivisor)

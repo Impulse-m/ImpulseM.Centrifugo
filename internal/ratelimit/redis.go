@@ -25,8 +25,9 @@ type redisScriptRunner func(ctx context.Context, shard *redisshard.RedisShard, s
 
 // RedisUserLimiter holds compiled redis_user_command limits. Limits of a user are kept in Redis, on the
 // shard chosen by consistent hash of the user ID, so all nodes sharing Redis share the limits.
-// Redis errors allow commands: a Redis outage must not take down connections, and neither must a Redis
-// which is unreachable at startup. Until the limiter connects, commands are allowed too.
+// Redis errors allow commands unless on_error is deny: by default a Redis outage must not take down connections, and
+// neither must a Redis which is unreachable at startup. Until the limiter connects, commands are allowed too, unless
+// on_error is deny. A refusal cached on the node still applies during an outage, see refusalCache.
 type RedisUserLimiter struct {
 	plan    *redisPlan
 	prefix  string

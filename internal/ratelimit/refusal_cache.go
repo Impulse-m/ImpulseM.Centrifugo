@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// The refusal cache is hand-rolled, although github.com/maypok86/otter/v2 is in the module graph. Its bounded caches run
+// periodic maintenance, by default in goroutines (see the Options doc), which the no-polling rule forbids. The sweep
+// below is the only maintenance, and it runs inside an insert.
+
 const (
 	// refusalCacheCapacity is the number of refusals a node keeps for redis_user_command limits, in all shards together.
 	refusalCacheCapacity = 100000
@@ -46,7 +50,7 @@ func newRefusalCache() *refusalCache {
 
 // shardOf returns the shard of key.
 func (c *refusalCache) shardOf(key string) *refusalShard {
-	return &c.shards[maphash.String(refusalSeed, key)%refusalShardCount]
+	return &c.shards[shardIndex(refusalSeed, key, refusalShardCount)]
 }
 
 // refused returns the time left of a cached refusal of key at now, and false when there is none. A refusal which

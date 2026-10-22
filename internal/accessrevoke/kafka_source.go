@@ -289,7 +289,7 @@ func (s *KafkaSource) handleRecord(record *kgo.Record) {
 
 // applyOperation resolves the operation with the record time and applies it locally.
 func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, record *kgo.Record, method string) {
-	cfg := s.cfgContainer.Config()
+	cfg := s.cfgContainer.ConfigRef()
 	if !kindEnabled(cfg, operation.Kind) {
 		s.skip(skipDisabled, errors.New("feature is disabled in config"), record, method)
 		return
@@ -408,7 +408,7 @@ func (h *fetchHook) OnBrokerRead(_ kgo.BrokerMetadata, key int16, _ int, _, _ ti
 }
 
 // kindEnabled reports whether the feature of the access revocation kind is enabled in config.
-func kindEnabled(cfg config.Config, kind string) bool {
+func kindEnabled(cfg *config.Config, kind string) bool {
 	switch kind {
 	case KindBlockUser, KindUnblockUser:
 		return cfg.UserBlock.Enabled

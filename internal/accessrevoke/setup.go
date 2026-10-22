@@ -31,7 +31,7 @@ func Setup(node *centrifuge.Node, cfg config.Config, cfgContainer *config.Contai
 	store := NewStore(cfg.AccessRevoke.DefaultTTL.ToDuration())
 	queue := NewDisconnectQueue(cfg.AccessRevoke.DisconnectRate, cfg.AccessRevoke.DisconnectQueueSize)
 	revoker := NewRevokerWithMaxTTL(store, node.Hub(), queue, func() time.Duration {
-		return cfgContainer.Config().AccessRevoke.MaxTTL.ToDuration()
+		return cfgContainer.ConfigRef().AccessRevoke.MaxTTL.ToDuration()
 	})
 	components := Components{
 		Store:    store,

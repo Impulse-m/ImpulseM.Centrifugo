@@ -4,7 +4,6 @@ import (
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
 	"github.com/centrifugal/centrifugo/v6/internal/usage"
-	"github.com/rs/zerolog/log"
 )
 
 func RegisterHandlers(
@@ -32,20 +31,7 @@ func notificationHandlers(
 			statsSender.UpdateLastSentAt(event.Data)
 		},
 		accessrevoke.NotifyOp: func(event centrifuge.NotificationEvent) {
-			if event.FromNodeID == node.ID() {
-				// Operation is already applied on this node by the API call.
-				return
-			}
-			notification, err := accessrevoke.DecodeNotification(event.Data)
-			if err != nil {
-				log.Error().Err(err).Str("from_node_id", event.FromNodeID).Msg("error decoding access revocation notification")
-				return
-			}
-			notification = revoker.ClampToMaxTTL(notification, accessrevoke.ClampSourceNotify)
-			err = revoker.Apply(notification)
-			if err != nil {
-				log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation notification")
-			}
+			accessrevoke.HandleNotification(revoker, node.ID(), event)
 		},
 	}
 }

@@ -299,10 +299,13 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 		s.skip(skipValidation, err, record, method)
 		return
 	}
-	notification = ClampExpireAt(notification, recordTime, cfg.AccessRevoke.MaxTTL.ToDuration(), ClampSourceKafka)
+	// The clamp counts from the processing time, as the max TTL does. A record time would put a replayed record
+	// behind the clock, and the stale check below would then drop it.
+	now := s.clock()
+	notification = ClampExpireAt(notification, now, cfg.AccessRevoke.MaxTTL.ToDuration(), ClampSourceKafka)
 	// Staleness is checked against the processing time: an event replayed after its expiration must not
 	// disconnect users, even though its record time is recent.
-	if notification.Kind != KindUnblockUser && notification.ExpireAt <= s.clock().Unix() {
+	if notification.Kind != KindUnblockUser && notification.ExpireAt <= now.Unix() {
 		s.skip(skipStale, errors.New("expire_at is in the past"), record, method)
 		return
 	}

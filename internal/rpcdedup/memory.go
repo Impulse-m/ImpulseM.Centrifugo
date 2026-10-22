@@ -318,6 +318,12 @@ func (m *Memory) complete(key Key, flight *Flight, rec Record, errJSON string) {
 // finish is complete with the fingerprint of rec as it is given. A tombstone which is restored from the shared tier
 // has no fingerprint, and keeps none, so it answers any duplicate.
 func (m *Memory) finish(key Key, flight *Flight, rec Record, errJSON string) {
+	flight.finish(m.keep(key, flight, rec, errJSON))
+}
+
+// keep is the locked part of finish. It removes the flight and keeps the record, and returns the record as it is kept.
+// The lock is released on every path, so a panic in insert does not leave the shard locked.
+func (m *Memory) keep(key Key, flight *Flight, rec Record, errJSON string) Record {
 	oversize := overReplyLimit(rec, errJSON, m.maxReplyBytes)
 	kept := rec
 	if oversize {
@@ -326,6 +332,7 @@ func (m *Memory) finish(key Key, flight *Flight, rec Record, errJSON string) {
 	}
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	sc := s.scopes[key.Scope]
 	if sc != nil && s.flights[key] == flight {
 		delete(s.flights, key)
@@ -340,8 +347,7 @@ func (m *Memory) finish(key Key, flight *Flight, rec Record, errJSON string) {
 	if sc != nil {
 		s.releaseIfEmpty(sc)
 	}
-	s.mu.Unlock()
-	flight.finish(kept)
+	return kept
 }
 
 // flightOf returns the flight of key which is registered on this store, or nil.
@@ -380,27 +386,33 @@ func (m *Memory) cancel(key Key, failure *centrifuge.Error, replace bool) error 
 	// The error is encoded outside the lock. A tombstone is within the share of a record, see configtypes.RPCDedup.ReplyLimit,
 	// so the insert below keeps it.
 	errJSON := encodeError(failure)
+	running, err := m.cancelLocked(key, failure, errJSON, replace)
+	if running != nil {
+		running.Cancel()
+	}
+	return err
+}
+
+// cancelLocked is the locked part of cancel. It returns the flight of key when one runs on this store, which the caller
+// cancels outside the lock, and otherwise keeps the cancelled record. The lock is released on every path.
+func (m *Memory) cancelLocked(key Key, failure *centrifuge.Error, errJSON string, replace bool) (*Flight, error) {
 	s := m.shardOf(key.Scope)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if running, found := s.flights[key]; found {
-		s.mu.Unlock()
-		running.Cancel()
-		return nil
+		return running, nil
 	}
 	now := s.now()
 	s.sweepSome(now)
 	if !replace && s.liveRecord(key, now) != nil {
-		s.mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	sc, err := s.admit(key.Scope, now)
 	if err != nil {
-		s.mu.Unlock()
-		return err
+		return nil, err
 	}
 	s.insert(sc, key, Record{Err: failure}, errJSON, now)
-	s.mu.Unlock()
-	return nil
+	return nil, nil
 }
 
 // Ack implements Store.
@@ -576,6 +588,12 @@ func (s *shard) insert(sc *scopeState, key Key, rec Record, errJSON string, now 
 			continue
 		}
 		if v := p.surplus.Front(); v != nil {
+			// The inserting scope may hold no record while it is still a surplus scope: drop leaves it in the
+			// surplus scopes, so it is released from them here instead of being evicted from.
+			if v.records.Front() == nil {
+				s.updateSurplus(v)
+				continue
+			}
 			s.evict(v.records.Front(), EvictionSurplus, sc)
 			continue
 		}

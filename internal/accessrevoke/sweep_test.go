@@ -29,7 +29,7 @@ func TestSweepConnectionsDisconnectsRejectedOnly(t *testing.T) {
 	require.NoError(t, store.BlockUser("user-1", 0))
 	require.NoError(t, store.RevokeSession(testOtherUUID, 0, 0, nil))
 
-	rejected := SweepConnections(node.Hub(), store, queue, allAccessChecks)
+	rejected, _ := sweepConnections(node.Hub(), store, queue, allAccessChecks)
 	require.Equal(t, 2, rejected)
 
 	waitConnections(t, node, "user-1", 0)
@@ -51,7 +51,7 @@ func TestSweepRetriesDroppedDisconnects(t *testing.T) {
 	waitConnections(t, node, "user-1", 3)
 	require.NoError(t, store.RevokeSession(testUUID, 0, 0, nil))
 
-	rejected := SweepConnections(node.Hub(), store, queue, allAccessChecks)
+	rejected, _ := sweepConnections(node.Hub(), store, queue, allAccessChecks)
 	require.Equal(t, 3, rejected)
 
 	cancel, errCh := runQueue(t, queue)
@@ -71,7 +71,7 @@ func TestSweepConnectionsDisabledChecksRejectNothing(t *testing.T) {
 	waitConnections(t, node, "user-1", 1)
 	require.NoError(t, store.BlockUser("user-1", 0))
 
-	rejected := SweepConnections(node.Hub(), store, queue, CheckOptions{})
+	rejected, _ := sweepConnections(node.Hub(), store, queue, CheckOptions{})
 	require.Equal(t, 0, rejected)
 }
 

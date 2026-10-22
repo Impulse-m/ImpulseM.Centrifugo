@@ -35,7 +35,7 @@ func BenchmarkSweepConnections(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if rejected := SweepConnections(node.Hub(), store, queue, options); rejected != 0 {
+		if rejected, _ := sweepConnections(node.Hub(), store, queue, options); rejected != 0 {
 			b.Fatalf("rejected %d connections of an empty store", rejected)
 		}
 	}

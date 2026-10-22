@@ -187,7 +187,7 @@ func TestSweepConnectionsClosesWithStoredDisconnect(t *testing.T) {
 	matching := clientsOf(t, node, "user-1", testUUID)
 	require.Len(t, matching, 1)
 	require.NoError(t, store.RevokeSession(testUUID, 0, 0, &Disconnect{Code: 4003, Reason: "swept"}))
-	rejected := SweepConnections(node.Hub(), store, queue, allAccessChecks)
+	rejected, _ := sweepConnections(node.Hub(), store, queue, allAccessChecks)
 	require.Equal(t, 1, rejected)
 
 	require.Equal(t, centrifuge.Disconnect{Code: 4003, Reason: "swept"}, recorder.waitClose(t, matching[0].ID()))

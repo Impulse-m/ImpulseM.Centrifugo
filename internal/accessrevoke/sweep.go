@@ -10,17 +10,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// SweepConnections checks every local connection against the store and enqueues a disconnect for each
-// rejected one. It is the catch-up pass after a fail-open start; no revocation runs it. It returns the number
-// of rejected connections. A disconnect dropped by a full queue is retried by the user, or the session of a
-// connection without user, once the queue has room.
-func SweepConnections(hub Hub, store *Store, queue *DisconnectQueue, opts CheckOptions) int {
-	rejected, _ := sweepConnections(hub, store, queue, opts)
-	return rejected
-}
-
-// sweepConnections is SweepConnections which also returns the number of rejected connections whose disconnect the
-// queue dropped.
+// sweepConnections checks every local connection against the store and enqueues a disconnect for each rejected one. It
+// is the catch-up pass after a fail-open start; no revocation runs it. It returns the number of rejected connections and
+// the number of those whose disconnect the queue dropped. A dropped disconnect is retried by the user, or the session of
+// a connection without user, once the queue has room.
 func sweepConnections(hub Hub, store *Store, queue *DisconnectQueue, opts CheckOptions) (int, int) {
 	var rejected int
 	var dropped int
@@ -47,7 +40,7 @@ func sweepRetryKey(userID string, identity centrifuge.TokenIdentity) retryKey {
 	return retryKey{session: identity.Session}
 }
 
-// CatchUpSweeper runs one SweepConnections after the source caught up following a fail-open start.
+// CatchUpSweeper runs one sweep of the local connections after the source caught up following a fail-open start.
 // Connections accepted while the source was still behind may hold tokens which were revoked in the
 // meantime, and they are not checked by the connect path.
 type CatchUpSweeper struct {

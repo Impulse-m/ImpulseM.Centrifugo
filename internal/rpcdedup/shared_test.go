@@ -504,7 +504,13 @@ func (fx *sharedFixture) endCount(end string) int {
 // newSharedFixture returns a shared store of node-a with the given failure mode, and the wakeup off.
 func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
 	t.Helper()
-	return newSharedFixtureWith(t, failOpen, false)
+	return newSharedFixtureWith(t, failOpen, false, nil)
+}
+
+// newSharedFixtureWithNotifier returns a shared store of node-a whose cancel notifications are sent by notifier.
+func newSharedFixtureWithNotifier(t *testing.T, notifier func(nodeID string, key Key)) *sharedFixture {
+	t.Helper()
+	return newSharedFixtureWith(t, false, false, notifier)
 }
 
 // newSharedFixtureWakeup returns a shared store of node-a with the wakeup on. Its check and its idle stop are an hour
@@ -512,7 +518,7 @@ func newSharedFixture(t *testing.T, failOpen bool) *sharedFixture {
 // when the node has remote waits.
 func newSharedFixtureWakeup(t *testing.T) *sharedFixture {
 	t.Helper()
-	fx := newSharedFixtureWith(t, false, true)
+	fx := newSharedFixtureWith(t, false, true, nil)
 	fx.shared.checkDelay = time.Hour
 	fx.shared.watchIdleAfter = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
@@ -529,11 +535,19 @@ func newSharedFixtureWakeup(t *testing.T) *sharedFixture {
 }
 
 // newSharedFixtureWith returns a shared store of node-a. With wakeup set, its waiters are registered in the shared tier
-// and woken by the wakes of the owner.
-func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool) *sharedFixture {
+// and woken by the wakes of the owner. Its cancel notifications go to notifier, or are recorded in the fixture when
+// notifier is nil.
+func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool, notifier func(nodeID string, key Key)) *sharedFixture {
 	t.Helper()
 	local, _ := newTestMemory(1024)
 	fx := &sharedFixture{local: local, backend: newFakeBackend()}
+	if notifier == nil {
+		notifier = func(nodeID string, key Key) {
+			fx.notifiedMu.Lock()
+			defer fx.notifiedMu.Unlock()
+			fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
+		}
+	}
 	fx.shared = NewShared(SharedOptions{
 		Local:         local,
 		Backend:       fx.backend,
@@ -541,11 +555,7 @@ func newSharedFixtureWith(t *testing.T, failOpen bool, wakeup bool) *sharedFixtu
 		TTL:           time.Minute,
 		MaxReplyBytes: 1024,
 		FailOpen:      failOpen,
-		Notifier: func(nodeID string, key Key) {
-			fx.notifiedMu.Lock()
-			defer fx.notifiedMu.Unlock()
-			fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
-		},
+		Notifier:      notifier,
 		Observer:      fx,
 		PollInitial:   time.Millisecond,
 		PollMax:       2 * time.Millisecond,
@@ -1441,15 +1451,15 @@ func (o *droppedAckObserver) Woke(int, int) {
 // TestSharedCancelNotifierOffReplyPath checks that the cancel notification of a call on another node is sent from a
 // goroutine of its own: a notifier which blocks does not hold the answer to the cancel.
 func TestSharedCancelNotifierOffReplyPath(t *testing.T) {
-	fx := newSharedFixture(t, false)
-	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 	release := make(chan struct{})
-	fx.shared.notifier = func(nodeID string, key Key) {
+	var fx *sharedFixture
+	fx = newSharedFixtureWithNotifier(t, func(nodeID string, key Key) {
 		<-release
 		fx.notifiedMu.Lock()
 		defer fx.notifiedMu.Unlock()
 		fx.notified = append(fx.notified, notifyCall{nodeID: nodeID, key: key})
-	}
+	})
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	cancelled := make(chan error, 1)
 	go func() {

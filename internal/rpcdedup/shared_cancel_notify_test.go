@@ -37,10 +37,9 @@ func (n *blockingCancelNotifier) notify(_ string, _ Key) {
 // A burst of cancels of one call sends one notification at a time, not one goroutine per cancel: the cancels which come
 // while the notification of the call is pending are coalesced into it.
 func TestSharedCancelNotifyCoalesced(t *testing.T) {
-	fx := newSharedFixture(t, false)
-	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 	notifier := newBlockingCancelNotifier()
-	fx.shared.notifier = notifier.notify
+	fx := newSharedFixtureWithNotifier(t, notifier.notify)
+	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 
 	for range 1000 {
 		require.NoError(t, fx.shared.Cancel(sharedKey, testCancelled))
@@ -55,9 +54,8 @@ func TestSharedCancelNotifyCoalesced(t *testing.T) {
 
 // Cancels of many calls send their notifications through a bounded set of workers, not one goroutine per cancel.
 func TestSharedCancelNotifyBoundedWorkers(t *testing.T) {
-	fx := newSharedFixture(t, false)
 	notifier := newBlockingCancelNotifier()
-	fx.shared.notifier = notifier.notify
+	fx := newSharedFixtureWithNotifier(t, notifier.notify)
 
 	const calls = 100
 	for i := range calls {

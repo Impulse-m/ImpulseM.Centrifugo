@@ -549,7 +549,7 @@ func TestSharedRunWithoutWakeupStartsNoWatcher(t *testing.T) {
 }
 
 func TestSharedRunStopsWatcher(t *testing.T) {
-	fx := newSharedFixtureWith(t, false, true)
+	fx := newSharedFixtureWith(t, false, true, nil)
 	fx.backend.put(sharedKey, 'i', sharedFingerprintA, "node-b", Record{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

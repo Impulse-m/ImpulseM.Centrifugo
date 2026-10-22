@@ -227,13 +227,8 @@ func NewShared(opts SharedOptions) *Shared {
 		errorLog:       tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusedLog:     tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 	}
-	s.cancels = newCancelNotifier(s.sendCancel)
+	s.cancels = newCancelNotifier(opts.Notifier)
 	return s
-}
-
-// sendCancel sends a cancel notification with the notifier of the node. It runs on a worker of cancels.
-func (s *Shared) sendCancel(nodeID string, key Key) {
-	s.notifier(nodeID, key)
 }
 
 // Begin implements Store. A call which the node runs is found in the node-local store. A call which runs on another
@@ -280,11 +275,17 @@ func sharedRecord(rec Record) Record {
 	return rec
 }
 
+// tombstoneRecord returns rec as the local store keeps a tombstone of the shared tier, so that an ack keeps it.
+func tombstoneRecord(rec Record) Record {
+	rec.tombstone = true
+	return rec
+}
+
 // beginContext returns the context of a begin in the shared tier: bounded by beginTimeout when it is set, and otherwise
 // unbounded, so that the backend's own IO timeout applies. The caller calls the cancel function.
 func (s *Shared) beginContext() (context.Context, context.CancelFunc) {
 	if s.beginTimeout <= 0 {
-		return context.WithCancel(context.Background())
+		return context.Background(), func() {}
 	}
 	return context.WithTimeout(context.Background(), s.beginTimeout)
 }
@@ -312,7 +313,7 @@ func (s *Shared) beginShared(key Key, flight *Flight) (Lookup, error) {
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginCancelled:
 		// The tombstone keeps no fingerprint, so this node answers any duplicate with it, as the shared tier does.
-		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
+		s.local.finish(key, flight, tombstoneRecord(res.Record), encodeError(res.Record.Err))
 		return Lookup{Outcome: OutcomeDone, Record: res.Record}, nil
 	case BeginMismatch:
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
@@ -371,7 +372,8 @@ func (s *Shared) watch(key Key, flight *Flight) {
 
 // pollCap returns the longest delay between two polls of a wait of the given length: PollMax, unless a tenth of the wait
 // is longer. Scaled so, a long call is polled less often than a short one, and never more often than PollMax.
-// The wait of a call is its method timeout plus the in-flight grace, so a tenth of it is over PollMax for most calls.
+// The wait of a call is its method timeout plus the in-flight grace, so with the default PollMax the cap is above PollMax
+// for every call: a tenth of a wait of at least the grace is at least one second.
 func (s *Shared) pollCap(wait time.Duration) time.Duration {
 	return max(s.pollMax, wait/pollCapDivisor)
 }
@@ -471,7 +473,7 @@ func (s *Shared) endWatch(key Key, flight *Flight, res PollResult, end string) {
 	case end == WatchEndDeadline || res.State == PollMissing:
 		_ = s.local.Complete(key, flight, Record{Abandoned: true})
 	case res.State == PollCancelled:
-		s.local.finish(key, flight, res.Record, encodeError(res.Record.Err))
+		s.local.finish(key, flight, tombstoneRecord(res.Record), encodeError(res.Record.Err))
 	default:
 		_ = s.local.Complete(key, flight, sharedRecord(res.Record))
 	}

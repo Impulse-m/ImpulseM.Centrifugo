@@ -412,7 +412,7 @@ func (m *Memory) cancelLocked(key Key, failure *centrifuge.Error, errJSON string
 	if err != nil {
 		return nil, err
 	}
-	s.insert(sc, key, Record{Err: failure}, errJSON, now)
+	s.insert(sc, key, Record{Err: failure, tombstone: true}, errJSON, now)
 	return nil, nil
 }
 
@@ -533,10 +533,9 @@ func (s *shard) releaseIfEmpty(sc *scopeState) {
 	}
 }
 
-// tombstone reports whether r is the tombstone of a cancelled call: a record with the error of the cancel and no call,
-// so no fingerprint. A record of a call which ran always has its fingerprint.
+// tombstone reports whether r is the tombstone of a cancelled call, see Record.tombstone.
 func (r *storedRecord) tombstone() bool {
-	return r.rec.Fingerprint == zeroFingerprint && r.rec.Err != nil
+	return r.rec.tombstone
 }
 
 // liveRecord returns the done record of key when it has not expired. An expired record is removed, and nil is

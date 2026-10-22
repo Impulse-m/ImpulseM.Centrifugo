@@ -43,6 +43,7 @@ func TestMSKAuthCachesCredentials(t *testing.T) {
 	auth := &mskAssumeRoleAuth{
 		stsClient: fake,
 		roleARN:   "arn:aws:iam::123456789012:role/msk",
+		cache:     true,
 		now:       func() time.Time { return now },
 	}
 	ctx := context.Background()
@@ -57,5 +58,24 @@ func TestMSKAuthCachesCredentials(t *testing.T) {
 	now = start.Add(50 * time.Minute)
 	_, err := auth.auth(ctx)
 	require.NoError(t, err)
+	require.Equal(t, 2, fake.calls)
+}
+
+// TestMSKAuthWithoutCacheAssumesRoleOnEveryHandshake pins the default of the consumers: each handshake calls AssumeRole.
+func TestMSKAuthWithoutCacheAssumesRoleOnEveryHandshake(t *testing.T) {
+	start := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	fake := &fakeAssumeRole{expiresAt: start.Add(time.Hour)}
+	auth := &mskAssumeRoleAuth{
+		stsClient: fake,
+		roleARN:   "arn:aws:iam::123456789012:role/msk",
+		now:       func() time.Time { return start },
+	}
+	ctx := context.Background()
+
+	for range 2 {
+		creds, err := auth.auth(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "key", creds.AccessKey)
+	}
 	require.Equal(t, 2, fake.calls)
 }

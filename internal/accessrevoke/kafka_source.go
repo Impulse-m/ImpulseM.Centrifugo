@@ -164,13 +164,14 @@ func (s *KafkaSource) Run(ctx context.Context) error {
 // clientOptions returns franz-go options for direct consumption of the topic from startMilli.
 func (s *KafkaSource) clientOptions(startMilli int64) ([]kgo.Opt, error) {
 	connOpts, err := kafkautil.Options(kafkautil.Config{
-		Name:          "access_revoke",
-		Brokers:       s.source.Kafka.Brokers,
-		TLS:           s.source.Kafka.TLS,
-		SASLMechanism: s.source.Kafka.SASLMechanism,
-		SASLUser:      s.source.Kafka.SASLUser,
-		SASLPassword:  s.source.Kafka.SASLPassword,
-		AssumeRoleARN: s.source.Kafka.AssumeRoleARN,
+		Name:            "access_revoke",
+		Brokers:         s.source.Kafka.Brokers,
+		TLS:             s.source.Kafka.TLS,
+		SASLMechanism:   s.source.Kafka.SASLMechanism,
+		SASLUser:        s.source.Kafka.SASLUser,
+		SASLPassword:    s.source.Kafka.SASLPassword,
+		AssumeRoleARN:   s.source.Kafka.AssumeRoleARN,
+		CacheAssumeRole: s.source.Kafka.AssumeRoleCache,
 	}, log.Logger)
 	if err != nil {
 		return nil, err

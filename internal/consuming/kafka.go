@@ -2,10 +2,8 @@ package consuming
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,19 +12,14 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/api"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/kafkautil"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsv2cfg "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rs/zerolog"
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
-	mskaws "github.com/twmb/franz-go/pkg/sasl/aws"
-	"github.com/twmb/franz-go/pkg/sasl/plain"
-	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
 type KafkaConfig = configtypes.KafkaConsumerConfig
@@ -177,56 +170,6 @@ func (c *KafkaConsumer) leaveGroup(ctx context.Context, client *kgo.Client) erro
 	return err
 }
 
-// mskAssumeRoleSessionName is the STS RoleSessionName for AssumeRole calls.
-const mskAssumeRoleSessionName = "centrifugo-msk"
-
-// mskAssumeRoleAuth obtains fresh STS credentials for each MSK IAM SASL handshake.
-// Call AssumeRole directly on every callback; do not use CredentialsCache, which can
-// return the same credentials MSK already considers expired (see franz-go #731).
-// RoleSessionName stays constant so the broker principal is stable across re-auth
-// (see aws-msk-iam-auth README).
-type mskAssumeRoleAuth struct {
-	stsClient *sts.Client
-	roleARN   string
-}
-
-func newMSKAssumeRoleAuth(ctx context.Context, roleARN string) (*mskAssumeRoleAuth, error) {
-	awsCfg, err := awsv2cfg.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &mskAssumeRoleAuth{
-		stsClient: sts.NewFromConfig(awsCfg),
-		roleARN:   roleARN,
-	}, nil
-}
-
-func (a *mskAssumeRoleAuth) auth(ctx context.Context) (mskaws.Auth, error) {
-	out, err := a.stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
-		RoleArn:         aws.String(a.roleARN),
-		RoleSessionName: aws.String(mskAssumeRoleSessionName),
-	})
-	if err != nil {
-		return mskaws.Auth{}, err
-	}
-	if out.Credentials == nil {
-		return mskaws.Auth{}, errors.New("assume role returned no credentials")
-	}
-	creds := out.Credentials
-	if creds.AccessKeyId == nil || creds.SecretAccessKey == nil {
-		return mskaws.Auth{}, errors.New("assume role returned incomplete credentials")
-	}
-	sessionToken := ""
-	if creds.SessionToken != nil {
-		sessionToken = *creds.SessionToken
-	}
-	return mskaws.Auth{
-		AccessKey:    *creds.AccessKeyId,
-		SecretKey:    *creds.SecretAccessKey,
-		SessionToken: sessionToken,
-	}, nil
-}
-
 // defaultKafkaDialTimeout is the fallback TCP dial timeout to a single broker.
 const defaultKafkaDialTimeout = 3 * time.Second
 
@@ -279,54 +222,24 @@ func (c *KafkaConsumer) initClient() (*kgo.Client, error) {
 		opts = append(opts, kgo.FetchIsolationLevel(kgo.ReadUncommitted()))
 	}
 	if c.config.TLS.Enabled {
-		tlsConfig, err := c.config.TLS.ToGoTLSConfig("kafka:" + c.name)
+		tlsOpt, err := kafkautil.TLSOption(c.config.TLS, c.name)
 		if err != nil {
-			return nil, fmt.Errorf("error making TLS configuration: %w", err)
+			return nil, err
 		}
-		dialer := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: 10 * time.Second},
-			Config:    tlsConfig,
-		}
-		opts = append(opts, kgo.Dialer(dialer.DialContext))
+		opts = append(opts, tlsOpt)
 	}
 
 	if c.config.SASLMechanism != "" {
-		switch c.config.SASLMechanism {
-		case "plain":
-			opts = append(opts, kgo.SASL(plain.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsMechanism()))
-		case "scram-sha-256":
-			opts = append(opts, kgo.SASL(scram.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsSha256Mechanism()))
-		case "scram-sha-512":
-			opts = append(opts, kgo.SASL(scram.Auth{
-				User: c.config.SASLUser,
-				Pass: c.config.SASLPassword,
-			}.AsSha512Mechanism()))
-		case "aws-msk-iam":
-			if c.config.AssumeRoleARN != "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				mskAuth, err := newMSKAssumeRoleAuth(ctx, c.config.AssumeRoleARN)
-				cancel()
-				if err != nil {
-					return nil, fmt.Errorf("load AWS config for MSK IAM assume role: %w", err)
-				}
-				opts = append(opts, kgo.SASL(mskaws.ManagedStreamingIAM(func(ctx context.Context) (mskaws.Auth, error) {
-					return mskAuth.auth(ctx)
-				})))
-			} else {
-				opts = append(opts, kgo.SASL(mskaws.Auth{
-					AccessKey: c.config.SASLUser,
-					SecretKey: c.config.SASLPassword,
-				}.AsManagedStreamingIAMMechanism()))
-			}
-		default:
-			return nil, fmt.Errorf("unsupported SASL mechanism: %s", c.config.SASLMechanism)
+		saslOpt, err := kafkautil.SASLOption(kafkautil.Config{
+			SASLMechanism: c.config.SASLMechanism,
+			SASLUser:      c.config.SASLUser,
+			SASLPassword:  c.config.SASLPassword,
+			AssumeRoleARN: c.config.AssumeRoleARN,
+		})
+		if err != nil {
+			return nil, err
 		}
+		opts = append(opts, saslOpt)
 	}
 
 	client, err := kgo.NewClient(opts...)

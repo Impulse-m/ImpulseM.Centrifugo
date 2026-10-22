@@ -89,4 +89,8 @@ type AccessRevokeKafkaSource struct {
 	SASLPassword  string `mapstructure:"sasl_password" json:"sasl_password" envconfig:"sasl_password" yaml:"sasl_password" toml:"sasl_password" doc:"SASL password for the access revocation Kafka source."`
 	// AssumeRoleARN, when set with sasl_mechanism aws-msk-iam, obtains MSK IAM credentials by STS AssumeRole.
 	AssumeRoleARN string `mapstructure:"assume_role_arn" json:"assume_role_arn" envconfig:"assume_role_arn" yaml:"assume_role_arn" toml:"assume_role_arn" doc:"AssumeRoleARN, when set with sasl_mechanism aws-msk-iam, obtains MSK IAM credentials by STS AssumeRole."`
+	// AssumeRoleCache, when true with assume_role_arn, keeps the assumed credentials until most of their lifetime has
+	// passed, so the handshakes of a reconnect burst share one AssumeRole call. When false, every SASL handshake calls
+	// AssumeRole.
+	AssumeRoleCache bool `mapstructure:"assume_role_cache" json:"assume_role_cache" envconfig:"assume_role_cache" yaml:"assume_role_cache" toml:"assume_role_cache" doc:"When true with assume_role_arn, keeps the assumed MSK IAM credentials until most of their lifetime has passed, so a reconnect burst shares one AssumeRole call. When false, every SASL handshake calls AssumeRole."`
 }

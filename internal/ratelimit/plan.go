@@ -181,34 +181,6 @@ func HasBuckets(enabled bool, buckets configtypes.RateLimitBucketList) bool {
 	return enabled && len(buckets) > 0
 }
 
-// UnlimitedFallbacks returns the map and track operations which have no base buckets while their previous
-// operation (publish or sub_refresh) has buckets, and default has none. Before the map operations existed such
-// a command counted as the previous operation, so after an upgrade it is not limited for namespaces without an
-// override: it falls back to default only. A namespace override of the previous operation counts as buckets.
-func UnlimitedFallbacks(cfg *configtypes.RateLimitOperations) []Operation {
-	if HasBuckets(cfg.Default.Enabled, cfg.Default.Buckets) {
-		return nil
-	}
-	var ops []Operation
-	if channelLimitSet(cfg.Publish) {
-		if !HasBuckets(cfg.MapPublish.Enabled, cfg.MapPublish.Buckets) {
-			ops = append(ops, OperationMapPublish)
-		}
-		if !HasBuckets(cfg.MapRemove.Enabled, cfg.MapRemove.Buckets) {
-			ops = append(ops, OperationMapRemove)
-		}
-	}
-	if channelLimitSet(cfg.SubRefresh) {
-		if !HasBuckets(cfg.Track.Enabled, cfg.Track.Buckets) {
-			ops = append(ops, OperationTrack)
-		}
-		if !HasBuckets(cfg.Untrack.Enabled, cfg.Untrack.Buckets) {
-			ops = append(ops, OperationUntrack)
-		}
-	}
-	return ops
-}
-
 // channelLimitSet reports whether a channel operation has base buckets or an enabled namespace override with buckets.
 func channelLimitSet(cfg configtypes.RateLimitChannelBuckets) bool {
 	if HasBuckets(cfg.Enabled, cfg.Buckets) {
@@ -342,6 +314,24 @@ func wireOperations(
 	ops[OperationMapRemove] = alloc.channelLimit(OperationMapRemove, cfg.MapRemove, def)
 	ops[OperationTrack] = alloc.channelLimit(OperationTrack, cfg.Track, def)
 	ops[OperationUntrack] = alloc.channelLimit(OperationUntrack, cfg.Untrack, def)
+	// Map operations and track operations which have no buckets of their own count against the operation they were
+	// before they existed, as publish and sub_refresh. They share its scopes, so the budget is the same one.
+	inheritUnset(ops, &cfg.MapPublish, OperationMapPublish, OperationPublish)
+	inheritUnset(ops, &cfg.MapRemove, OperationMapRemove, OperationPublish)
+	inheritUnset(ops, &cfg.Track, OperationTrack, OperationSubRefresh)
+	inheritUnset(ops, &cfg.Untrack, OperationUntrack, OperationSubRefresh)
+}
+
+// inheritUnset makes op use the limit of parent when own has no buckets, see wireOperations.
+func inheritUnset(
+	ops *[operationCount]opLimit,
+	own *configtypes.RateLimitChannelBuckets,
+	op Operation,
+	parent Operation,
+) {
+	if !channelLimitSet(*own) {
+		ops[op] = ops[parent]
+	}
 }
 
 // newUserPlan compiles user command rate limits. Resolution is the same as for client commands,

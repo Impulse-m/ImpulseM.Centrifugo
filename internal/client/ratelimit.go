@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/config"
-	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/ratelimit"
 	"github.com/centrifugal/centrifugo/v6/internal/redisshard"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
-	"github.com/rs/zerolog/log"
 )
 
 // limiterClientCommand is a value of the limiter metric label for per-connection command limits.
@@ -78,27 +76,7 @@ func (h *Handler) setupRateLimit(cfg *config.Config) error {
 	if rl.ClientError.Enabled {
 		h.node.OnCommandProcessed(h.rateLimitCommandProcessed(limiter))
 	}
-	if rl.ClientCommand.Enabled {
-		warnDefaultFallback(limiterClientCommand, &rl.ClientCommand.RateLimitOperations)
-	}
-	if rl.UserCommand.Enabled {
-		warnDefaultFallback(limiterUserCommand, &rl.UserCommand.RateLimitOperations)
-	}
-	if rl.RedisUserCommand.Enabled {
-		warnDefaultFallback(limiterRedisUserCommand, &rl.RedisUserCommand.RateLimitOperations)
-	}
 	return nil
-}
-
-// warnDefaultFallback logs a warning for each operation which ratelimit.UnlimitedFallbacks reports for section.
-// Commands of namespaces with a namespace override are still limited, the others are not.
-func warnDefaultFallback(section string, ops *configtypes.RateLimitOperations) {
-	for _, op := range ratelimit.UnlimitedFallbacks(ops) {
-		log.Warn().
-			Str("section", section).
-			Str("operation", op.String()).
-			Msg("rate limit operation has no base buckets and no default buckets, commands of namespaces without an override are not limited; set its buckets or default buckets")
-	}
 }
 
 // newRedisUserLimiter creates the redis_user_command limiter. It uses the Redis and prefix of the rate limit

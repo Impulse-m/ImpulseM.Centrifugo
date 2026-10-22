@@ -84,22 +84,16 @@ type Store struct {
 	blocked   map[[16]byte]int64
 	// blockedExpiry is guarded by blockedMu and holds an item for every blocked key.
 	blockedExpiry expiryHeap
-	// blockedVersion is guarded by blockedMu and counts the writes of the blocked kind.
-	blockedVersion uint64
 
 	sessionsMu sync.RWMutex
 	sessions   map[[16]byte]sessionEntry
 	// sessionsExpiry is guarded by sessionsMu and holds an item for every session.
 	sessionsExpiry expiryHeap
-	// sessionsVersion is guarded by sessionsMu and counts the writes of the sessions kind.
-	sessionsVersion uint64
 
 	usersMu sync.RWMutex
 	users   map[[16]byte]userEntry
 	// usersExpiry is guarded by usersMu and holds an item for every user.
 	usersExpiry expiryHeap
-	// usersVersion is guarded by usersMu and counts the writes of the users kind.
-	usersVersion uint64
 
 	sessionConns *SessionConnections
 
@@ -115,9 +109,6 @@ type Store struct {
 	expiryAt time.Time
 	// expiryLast is the start of the previous run.
 	expiryLast time.Time
-	// compactHook is a test seam, nil in production. compactOnce calls it with "rebuilt" once the rebuild is built, and
-	// with "swap" before the write lock is taken for the swap. A test sets it before the expiry pass runs.
-	compactHook func(stage string)
 }
 
 // NewStore creates an empty Store. defaultTTL is used for entries which come without expiration time.
@@ -157,7 +148,6 @@ func (s *Store) BlockUser(userID string, expireAt int64) error {
 	}
 	stored := max(current, expireAt)
 	s.blocked[key] = stored
-	s.blockedVersion++
 	if !existed {
 		s.blockedExpiry.push(expiryItem{expireAt: stored, key: key})
 	}
@@ -168,18 +158,16 @@ func (s *Store) BlockUser(userID string, expireAt int64) error {
 	return nil
 }
 
-// UnblockUser removes the block of the user. Unblocking a user which is not blocked does nothing. It never rebuilds the
-// kind: the item of the block stays in the expiry order until the expiry pass compacts it, so an unblock which arrives
-// on a reader goroutine costs one map delete.
+// UnblockUser removes the block of the user. Unblocking a user which is not blocked does nothing.
 func (s *Store) UnblockUser(userID string) error {
 	key, ok := Key(userID)
 	if !ok {
 		return ErrEmptyID
 	}
 	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
 	delete(s.blocked, key)
-	s.blockedVersion++
-	s.blockedMu.Unlock()
+	compactIfStale(&s.blocked, &s.blockedExpiry, blockedExpireAt)
 	return nil
 }
 
@@ -207,7 +195,6 @@ func (s *Store) RevokeSession(sessionID string, revokedAt int64, expireAt int64,
 		disconnect: keptDisconnect(current.disconnect, disconnect),
 	}
 	s.sessions[key] = entry
-	s.sessionsVersion++
 	if !exists {
 		s.sessionsExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
 	}
@@ -242,7 +229,6 @@ func (s *Store) InvalidateUser(userID string, minGeneration uint64, issuedBefore
 		expireAt:      max(current.expireAt, expireAt),
 	}
 	s.users[key] = entry
-	s.usersVersion++
 	if !exists {
 		s.usersExpiry.push(expiryItem{expireAt: entry.expireAt, key: key})
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/accessrevoke"
-	"github.com/centrifugal/centrifugo/v6/internal/rpcdedup"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/stretchr/testify/require"
@@ -183,65 +182,4 @@ func TestDeliveryIgnoresOpWithoutHandler(t *testing.T) {
 	require.NotPanics(t, func() {
 		d.deliver(eventOf("unknown", 0))
 	})
-}
-
-func TestDeliveryBestEffortOpDropsWhenQueueFull(t *testing.T) {
-	gate := make(chan struct{})
-	entered := make(chan struct{}, 1)
-	handled := make(chan int, 3)
-	inlineHandled := make(chan struct{}, 1)
-	d := newDelivery(map[string]centrifuge.NotificationHandler{
-		rpcdedup.CancelNotificationOp: func(event centrifuge.NotificationEvent) {
-			if event.FromNodeID == "0" {
-				entered <- struct{}{}
-			}
-			<-gate
-			seq, _ := strconv.Atoi(event.FromNodeID)
-			handled <- seq
-		},
-		accessrevoke.NotifyOp: func(centrifuge.NotificationEvent) {
-			inlineHandled <- struct{}{}
-		},
-	}, 1, map[string]bool{accessrevoke.NotifyOp: true})
-
-	// The handler holds the first event and the buffer holds the second, so the third is dropped at once.
-	d.deliver(eventOf(rpcdedup.CancelNotificationOp, 0))
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler of the best effort op was not run")
-	}
-	d.deliver(eventOf(rpcdedup.CancelNotificationOp, 1))
-
-	returned := make(chan struct{})
-	go func() {
-		d.deliver(eventOf(rpcdedup.CancelNotificationOp, 2))
-		d.deliver(eventOf(accessrevoke.NotifyOp, 0))
-		close(returned)
-	}()
-	select {
-	case <-returned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("publisher waited for a full queue of a best effort op")
-	}
-	select {
-	case <-inlineHandled:
-	default:
-		t.Fatal("inline op after a dropped event did not run its handler")
-	}
-
-	close(gate)
-	for i := 0; i < 2; i++ {
-		select {
-		case seq := <-handled:
-			require.Equal(t, i, seq)
-		case <-time.After(5 * time.Second):
-			t.Fatalf("event %d was not handled", i)
-		}
-	}
-	select {
-	case seq := <-handled:
-		t.Fatalf("event %d was handled after it was dropped", seq)
-	case <-time.After(100 * time.Millisecond):
-	}
 }

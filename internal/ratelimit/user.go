@@ -81,7 +81,7 @@ func NewUserLimiter(cfg configtypes.RateLimitUserCommand) *UserLimiter {
 	plan := newUserPlan(cfg)
 	return &UserLimiter{
 		plan:  plan,
-		store: newUserStore(plan.numSlots, userIdleTimeout(plan.maxInterval), time.Now),
+		store: newUserStore(plan.numSlots, userIdleTimeout(plan.maxInterval, plan.tokenOnly), time.Now),
 	}
 }
 
@@ -146,9 +146,16 @@ func (l *UserLimiter) Run(ctx context.Context) error {
 }
 
 // userIdleTimeout returns how long a state without references is kept: twice the longest bucket
-// interval, but at least userMinIdle. After that much idle time a state equals a fresh one for every
-// algorithm: a token bucket TAT is in the past, and a window state is two windows old, see windowAt.
-func userIdleTimeout(maxInterval time.Duration) time.Duration {
+// interval, or one interval when the plan has token buckets only, but at least userMinIdle. A token
+// bucket TAT is at most one interval ahead of the last operation, because newLimit in token_bucket.go
+// sets the tolerance to emission times rate, which is at most the interval. After that much idle time
+// a state equals a fresh one for every algorithm: a token bucket TAT is in the past, and a window state
+// is two windows old, see windowAt.
+func userIdleTimeout(maxInterval time.Duration, tokenOnly bool) time.Duration {
+	if tokenOnly {
+		// A token bucket TAT is at most one interval ahead of the last operation, so one interval of idleness suffices.
+		return max(maxInterval, userMinIdle)
+	}
 	return max(2*maxInterval, userMinIdle)
 }
 
@@ -315,5 +322,5 @@ var userShardSeed = maphash.MakeSeed()
 
 // userShardIndex returns the shard of userID. It does not allocate.
 func userShardIndex(userID string) int {
-	return int(maphash.String(userShardSeed, userID) & (userShardCount - 1))
+	return shardIndex(userShardSeed, userID, userShardCount)
 }

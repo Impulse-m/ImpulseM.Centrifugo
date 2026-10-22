@@ -17,8 +17,6 @@ import (
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/protocol"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -719,37 +717,23 @@ func TestRateLimitSharedPollTrackWithTokenIsTrack(t *testing.T) {
 	require.True(t, isRateLimited(transport.waitReply(t, 3)), "second track must be rejected")
 }
 
-// TestRateLimitDefaultFallbackWarning checks that a publish limit without map publish, map remove and default buckets
-// is reported at startup, as map publishes are not limited by it after an upgrade.
-func TestRateLimitDefaultFallbackWarning(t *testing.T) {
-	var logBuf bytes.Buffer
-	savedLogger := log.Logger
-	log.Logger = zerolog.New(&logBuf)
-	defer func() { log.Logger = savedLogger }()
-
-	newRateLimitHandler(t, configtypes.RateLimit{
+// TestRateLimitMapPublishInheritsPublishBuckets checks that map publishes without buckets of their own count against
+// the publish buckets, as before map publishes existed, so a publish limit cannot be bypassed with map publishes.
+func TestRateLimitMapPublishInheritsPublishBuckets(t *testing.T) {
+	node := newRateLimitHandler(t, configtypes.RateLimit{
 		ClientCommand: configtypes.RateLimitClientCommand{
 			Enabled: true,
 			RateLimitOperations: configtypes.RateLimitOperations{
 				Publish: rateLimitChannelOf(time.Minute, 1),
 			},
 		},
-	})
-	require.Contains(t, logBuf.String(), `"operation":"map_publish"`)
-	require.Contains(t, logBuf.String(), `"operation":"map_remove"`)
-	require.NotContains(t, logBuf.String(), `"operation":"track"`, "sub_refresh is not set, so track is not reported")
+	}, "chat")
+	client, transport, _ := connectTestClient(t, node, 0)
 
-	logBuf.Reset()
-	newRateLimitHandler(t, configtypes.RateLimit{
-		ClientCommand: configtypes.RateLimitClientCommand{
-			Enabled: true,
-			RateLimitOperations: configtypes.RateLimitOperations{
-				Publish: rateLimitChannelOf(time.Minute, 1),
-				Default: rateLimitBucketsOf(time.Minute, 1),
-			},
-		},
-	})
-	require.Empty(t, logBuf.String(), "default buckets cover the map operations, nothing is reported")
+	sendRateLimitCommand(client, &protocol.Command{Id: 2, Publish: &protocol.PublishRequest{Channel: "chat:1", Type: 1}})
+	require.False(t, isRateLimited(transport.waitReply(t, 2)))
+	sendRateLimitCommand(client, &protocol.Command{Id: 3, Publish: &protocol.PublishRequest{Channel: "chat:1", Type: 1}})
+	require.True(t, isRateLimited(transport.waitReply(t, 3)))
 }
 
 func TestRateLimitMapPublishNamespaceOverride(t *testing.T) {

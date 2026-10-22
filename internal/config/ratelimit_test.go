@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -446,4 +447,106 @@ func TestMigrateRateLimitMethodOverrideBothSetNotMigrated(t *testing.T) {
 	require.Empty(t, warnings)
 	require.Len(t, migrated.Client.RateLimit.ClientCommand.RPC.MethodOverride, 1)
 	require.ErrorContains(t, migrated.Validate(), "cannot be used together")
+}
+
+func TestValidateRedisUserCommandOnError(t *testing.T) {
+	withOnError := func(onError string) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.OnError = onError
+		return cfg
+	}
+
+	require.NoError(t, withOnError("").Validate())
+	require.NoError(t, withOnError(configtypes.RateLimitOnErrorAllow).Validate())
+	require.NoError(t, withOnError(configtypes.RateLimitOnErrorDeny).Validate())
+	require.ErrorContains(t, withOnError("block").Validate(), "redis_user_command.on_error must be allow or deny")
+}
+
+func TestValidateRedisUserCommandRejectsNegativeCommandTimeout(t *testing.T) {
+	withTimeout := func(timeout time.Duration) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.CommandTimeout = configtypes.Duration(timeout)
+		return cfg
+	}
+
+	require.NoError(t, withTimeout(0).Validate())
+	require.NoError(t, withTimeout(20*time.Millisecond).Validate())
+	require.ErrorContains(t, withTimeout(-20*time.Millisecond).Validate(), "redis_user_command.command_timeout must not be negative")
+}
+
+func TestValidateRedisBucketRejectsSubMicrosecondEmission(t *testing.T) {
+	withRate := func(interval time.Duration, rate int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.RedisUserCommand.Enabled = true
+		cfg.Client.RateLimit.RedisUserCommand.Publish = configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testRateLimitBuckets(interval, rate),
+		}
+		return cfg
+	}
+
+	// Emission of 1s / 1000000 is exactly 1us, which Redis keeps. 1s / 2000000 is 500ns, which Redis would raise to 1us.
+	require.NoError(t, withRate(time.Second, 1000000).Validate())
+	require.ErrorContains(t, withRate(time.Second, 2000000).Validate(), "redis_user_command.publish: bucket emission interval must be at least 1us")
+
+	// Only the Redis token bucket truncates, so the same bucket is valid for user_command.
+	cfg := DefaultConfig()
+	cfg.Client.RateLimit.UserCommand.Enabled = true
+	cfg.Client.RateLimit.UserCommand.Publish = configtypes.RateLimitChannelBuckets{
+		Enabled: true,
+		Buckets: testRateLimitBuckets(time.Second, 2000000),
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func testRateLimitBucketsOf(count int) configtypes.RateLimitBucketList {
+	buckets := make(configtypes.RateLimitBucketList, 0, count)
+	for i := 0; i < count; i++ {
+		buckets = append(buckets, configtypes.RateLimitBucket{Interval: configtypes.Duration(time.Second), Rate: 10})
+	}
+	return buckets
+}
+
+func TestValidateRateLimitMethodOverridesCount(t *testing.T) {
+	overridesOf := func(count int) configtypes.RateLimitMethodOverrides {
+		overrides := make(configtypes.RateLimitMethodOverrides, 0, count)
+		for i := 0; i < count; i++ {
+			overrides = append(overrides, configtypes.RateLimitMethodOverride{
+				Method:  fmt.Sprintf("method_%d", i),
+				Enabled: true,
+				Buckets: testRateLimitBuckets(time.Second, 1),
+			})
+		}
+		return overrides
+	}
+	withOverrides := func(count int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.ClientCommand.Enabled = true
+		cfg.Client.RateLimit.ClientCommand.RPC = configtypes.RateLimitRPCBuckets{
+			Enabled:         true,
+			Buckets:         testRateLimitBuckets(time.Second, 10),
+			MethodOverrides: overridesOf(count),
+		}
+		return cfg
+	}
+
+	require.NoError(t, withOverrides(rateLimitMaxMethodOverrides).Validate())
+	require.ErrorContains(t, withOverrides(rateLimitMaxMethodOverrides+1).Validate(), "client_command.rpc: method_overrides must not have more than 4096 entries")
+}
+
+func TestValidateRateLimitBucketsCount(t *testing.T) {
+	withBuckets := func(count int) Config {
+		cfg := DefaultConfig()
+		cfg.Client.RateLimit.ClientCommand.Enabled = true
+		cfg.Client.RateLimit.ClientCommand.Publish = configtypes.RateLimitChannelBuckets{
+			Enabled: true,
+			Buckets: testRateLimitBucketsOf(count),
+		}
+		return cfg
+	}
+
+	require.NoError(t, withBuckets(rateLimitMaxBuckets).Validate())
+	require.ErrorContains(t, withBuckets(rateLimitMaxBuckets+1).Validate(), "client_command.publish: buckets must not have more than 16 entries")
 }

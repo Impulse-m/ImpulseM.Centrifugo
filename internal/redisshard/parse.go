@@ -3,6 +3,7 @@ package redisshard
 import (
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
@@ -38,6 +39,28 @@ func ConfigsOf(redisConf configtypes.Redis, setting string) ([]RedisShardConfig,
 		return nil, fmt.Errorf("%s: %w", setting, err)
 	}
 	return configs, nil
+}
+
+// errInvalidEscape replaces the escape error of the URL parser, whose text quotes the two bytes after a percent sign.
+// Those bytes can be part of a password.
+var errInvalidEscape = errors.New("invalid URL escape")
+
+// redactURLError returns err with the URL of a url.Error replaced by a placeholder, so that a password in a Redis
+// address cannot reach an error message. The wrapped error stays reachable through errors.As and errors.Unwrap, except
+// that an escape error is replaced by errInvalidEscape. Other errors are returned as they are.
+// tools.RedactedLogURLs is not used because a URL which does not parse becomes "<invalid_url>", which drops the error
+// chain this function keeps.
+func redactURLError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	cause := urlErr.Err
+	var escapeErr url.EscapeError
+	if errors.As(cause, &escapeErr) {
+		cause = errInvalidEscape
+	}
+	return &url.Error{Op: urlErr.Op, URL: "<redacted>", Err: cause}
 }
 
 // validateRedisShardConfig checks the same configuration errors NewRedisShard reports before it connects.

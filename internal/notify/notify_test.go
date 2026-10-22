@@ -53,7 +53,7 @@ func TestAccessRevokeBlockThenUnblockOnFullDisconnectQueue(t *testing.T) {
 	node := newNotifyTestNode(t)
 	store := accessrevoke.NewStore(time.Minute)
 	queue := accessrevoke.NewDisconnectQueue(10000, 1)
-	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), queue, nil)
+	revoker := accessrevoke.NewRevoker(store, node.Hub(), queue)
 	deliveries := newDelivery(notificationHandlers(node, nil, revoker), queueSize, map[string]bool{accessrevoke.NotifyOp: true})
 
 	connectNotifyTestClient(t, node, "user-1")
@@ -124,7 +124,7 @@ func TestAccessRevokeNotificationHandler(t *testing.T) {
 	defer func() { _ = node.Shutdown(context.Background()) }()
 
 	store := accessrevoke.NewStore(time.Minute)
-	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100), nil)
+	revoker := accessrevoke.NewRevoker(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100))
 	handlers := notificationHandlers(node, nil, revoker)
 	handler := handlers[accessrevoke.NotifyOp]
 	require.NotNil(t, handler)

@@ -32,17 +32,24 @@ type Revoker struct {
 	maxTTL func() time.Duration
 }
 
-// NewRevokerWithMaxTTL creates a Revoker which clamps the expire_at of every notification it applies to the limit
-// maxTTL returns, read at each apply, so a config reload applies. A nil maxTTL means no limit.
-func NewRevokerWithMaxTTL(store *Store, hub Hub, queue *DisconnectQueue, maxTTL func() time.Duration) *Revoker {
+// NewRevoker creates a Revoker. It has no expire_at limit until SetMaxTTL sets one.
+func NewRevoker(store *Store, hub Hub, queue *DisconnectQueue) *Revoker {
 	revoker := &Revoker{
-		store:  store,
-		hub:    hub,
-		queue:  queue,
-		maxTTL: maxTTL,
+		store: store,
+		hub:   hub,
+		queue: queue,
+		maxTTL: func() time.Duration {
+			return 0
+		},
 	}
 	queue.setRetrier(revoker.retry)
 	return revoker
+}
+
+// SetMaxTTL sets the limit which Apply clamps the expire_at of a notification to, read at each apply, so a config
+// reload applies. Setup calls it once, before the node serves.
+func (r *Revoker) SetMaxTTL(maxTTL func() time.Duration) {
+	r.maxTTL = maxTTL
 }
 
 // BlockUser blocks the user and disconnects all local connections of the user with DisconnectUserBlocked.
@@ -82,7 +89,7 @@ func (r *Revoker) RevokeSession(
 	}
 	sessionKey, _ := Key(sessionID)
 	closeConn := closeWith(r.store.sessionDisconnect(sessionKey), centrifuge.DisconnectExpired)
-	r.disconnectSessionConnections(sessionKey, closeConn, false)
+	r.disconnectSessionConnections(sessionKey, closeConn)
 	if userID == "" {
 		return nil
 	}
@@ -114,12 +121,11 @@ func (r *Revoker) InvalidateUser(userID string, minGeneration uint64, issuedBefo
 }
 
 // Apply applies the notification to local state. It is used both for operations received through
-// the API and for notifications from other nodes. Only local connections are disconnected. The expire_at is clamped
-// to the max TTL of the revoker first, so a notification from a node which has no limit cannot exceed this node's.
-func (r *Revoker) Apply(notification Notification) error {
-	if r.maxTTL != nil {
-		notification = ClampExpireAt(notification, time.Now(), r.maxTTL(), ClampSourceNotify)
-	}
+// the API and for notifications from other nodes, and source names the one it comes from. Only local connections are
+// disconnected. The expire_at is clamped to the max TTL of the revoker first, counted under source, so a notification
+// from a node which has no limit cannot exceed this node's.
+func (r *Revoker) Apply(notification Notification, source string) error {
+	notification = ClampExpireAt(notification, time.Now(), r.maxTTL(), source)
 	switch notification.Kind {
 	case KindBlockUser:
 		return r.BlockUser(notification.User, notification.ExpireAt)
@@ -166,15 +172,20 @@ func (r *Revoker) disconnectMatching(
 
 // disconnectSessionConnections enqueues disconnect of the indexed connections of session. Such connections
 // may have no user, so disconnectMatching does not find them all. A dropped disconnect is kept under the
-// session for a retry. A retry pass passes retrying, so its drops are not counted again.
-func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect, retrying bool) {
+// session for a retry.
+func (r *Revoker) disconnectSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) {
 	key := retryKey{session: session}
 	for _, conn := range r.store.SessionConnections().Connections(session) {
-		if retrying {
-			r.queue.requeueRetry(key, conn, disconnect, ReasonSession)
-			continue
-		}
 		r.queue.enqueueKeyed(key, conn, disconnect, ReasonSession)
+	}
+}
+
+// requeueSessionConnections is disconnectSessionConnections for a retry pass of session, whose drops are not counted
+// again, see requeueRetry.
+func (r *Revoker) requeueSessionConnections(session [16]byte, disconnect centrifuge.Disconnect) {
+	key := retryKey{session: session}
+	for _, conn := range r.store.SessionConnections().Connections(session) {
+		r.queue.requeueRetry(key, conn, disconnect, ReasonSession)
 	}
 }
 
@@ -196,7 +207,7 @@ func (r *Revoker) retry(key retryKey) {
 		return
 	}
 	closeConn := closeWith(r.store.sessionDisconnect(key.session), centrifuge.DisconnectExpired)
-	r.disconnectSessionConnections(key.session, closeConn, true)
+	r.requeueSessionConnections(key.session, closeConn)
 }
 
 // retryConnection disconnects a local connection which the store still rejects, and keeps a dropped disconnect under key.

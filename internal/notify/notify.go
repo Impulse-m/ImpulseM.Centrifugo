@@ -41,7 +41,7 @@ func notificationHandlers(
 				log.Error().Err(err).Str("from_node_id", event.FromNodeID).Msg("error decoding access revocation notification")
 				return
 			}
-			err = revoker.Apply(notification)
+			err = revoker.Apply(notification, accessrevoke.ClampSourceNotify)
 			if err != nil {
 				log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation notification")
 			}

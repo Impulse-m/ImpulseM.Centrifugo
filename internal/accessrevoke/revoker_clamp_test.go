@@ -13,14 +13,15 @@ func TestRevokerApplyClampsToMaxTTL(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)
 	queue := NewDisconnectQueue(10000, 100)
-	revoker := NewRevokerWithMaxTTL(store, node.Hub(), queue, func() time.Duration {
+	revoker := NewRevoker(store, node.Hub(), queue)
+	revoker.SetMaxTTL(func() time.Duration {
 		return time.Hour
 	})
 	clampsBefore := clampedCount(t, ClampSourceNotify)
 
 	farExpireAt := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
 	before := time.Now().Unix()
-	require.NoError(t, revoker.Apply(Notification{Kind: KindBlockUser, User: "user-1", ExpireAt: farExpireAt}))
+	require.NoError(t, revoker.Apply(Notification{Kind: KindBlockUser, User: "user-1", ExpireAt: farExpireAt}, ClampSourceNotify))
 	after := time.Now().Unix()
 
 	require.Equal(t, clampsBefore+1, clampedCount(t, ClampSourceNotify))
@@ -38,11 +39,11 @@ func TestRevokerApplyClampsToMaxTTL(t *testing.T) {
 func TestRevokerApplyWithoutMaxTTLKeepsExpireAt(t *testing.T) {
 	node := newRevokeTestNode(t)
 	store := NewStore(time.Minute)
-	revoker := NewRevokerWithMaxTTL(store, node.Hub(), NewDisconnectQueue(10000, 100), nil)
+	revoker := NewRevoker(store, node.Hub(), NewDisconnectQueue(10000, 100))
 	clampsBefore := clampedCount(t, ClampSourceNotify)
 
 	farExpireAt := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
-	require.NoError(t, revoker.Apply(Notification{Kind: KindBlockUser, User: "user-1", ExpireAt: farExpireAt}))
+	require.NoError(t, revoker.Apply(Notification{Kind: KindBlockUser, User: "user-1", ExpireAt: farExpireAt}, ClampSourceNotify))
 
 	require.Equal(t, clampsBefore, clampedCount(t, ClampSourceNotify))
 	key, _ := Key("user-1")

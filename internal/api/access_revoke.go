@@ -148,7 +148,7 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 	if !h.config.AccessNotifier.Allow() {
 		return ErrorTooManyRequests
 	}
-	err := h.config.AccessRevoker.Apply(notification)
+	err := h.config.AccessRevoker.Apply(notification, accessrevoke.ClampSourceAPI)
 	if err != nil {
 		log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation")
 		return ErrorInternal
@@ -185,7 +185,7 @@ func resolveAccessRevoke(operation accessrevoke.Operation, accessRevoke configty
 		}
 		return accessrevoke.Notification{}, ErrorBadRequest
 	}
-	return accessrevoke.ClampExpireAt(notification, now, maxTTL, accessrevoke.ClampSourceAPI), nil
+	return notification, nil
 }
 
 // dispatchAccessRevoke handles access revocation commands of asynchronous consumers. handled is false

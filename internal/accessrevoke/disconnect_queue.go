@@ -89,8 +89,8 @@ func (q *DisconnectQueue) requeueRetry(
 	connection Connection,
 	disconnect centrifuge.Disconnect,
 	reason Reason,
-) bool {
-	return q.enqueue(key, connection, disconnect, reason, true)
+) {
+	q.enqueue(key, connection, disconnect, reason, true)
 }
 
 // enqueue adds the disconnect without blocking. When the queue is full it counts the drop unless retrying is set, and it

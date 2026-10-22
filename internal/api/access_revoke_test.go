@@ -31,7 +31,7 @@ func newAccessRevokeExecutor(t *testing.T, cfg config.Config, notifyRate int) (*
 	require.NoError(t, err)
 
 	store := accessrevoke.NewStore(time.Minute)
-	revoker := accessrevoke.NewRevokerWithMaxTTL(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100), nil)
+	revoker := accessrevoke.NewRevoker(store, node.Hub(), accessrevoke.NewDisconnectQueue(1000, 100))
 	executor := NewExecutor(node, cfgContainer, &testSurveyCaller{}, ExecutorConfig{
 		Protocol:       "test",
 		AccessRevoker:  revoker,

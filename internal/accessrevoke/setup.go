@@ -30,7 +30,8 @@ type Components struct {
 func Setup(node *centrifuge.Node, cfg config.Config, cfgContainer *config.Container) Components {
 	store := NewStore(cfg.AccessRevoke.DefaultTTL.ToDuration())
 	queue := NewDisconnectQueue(cfg.AccessRevoke.DisconnectRate, cfg.AccessRevoke.DisconnectQueueSize)
-	revoker := NewRevokerWithMaxTTL(store, node.Hub(), queue, func() time.Duration {
+	revoker := NewRevoker(store, node.Hub(), queue)
+	revoker.SetMaxTTL(func() time.Duration {
 		return cfgContainer.ConfigRef().AccessRevoke.MaxTTL.ToDuration()
 	})
 	components := Components{

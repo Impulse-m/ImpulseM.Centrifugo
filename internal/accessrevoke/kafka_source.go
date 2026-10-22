@@ -46,8 +46,11 @@ type KafkaSource struct {
 	clock        func() time.Time
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
-	// skipLog limits the warnings of skipped records of all reasons. The suppressed count is printed on the next line.
-	skipLog *tools.SampledLog
+	// skipLogs limits the warnings of skipped records, one sampled log per reason of skipReasons. The suppressed count is
+	// printed on the next line. It is built once and only read after that.
+	skipLogs map[string]*tools.SampledLog
+	// skipLogUnlisted limits the warnings of a reason which is not in skipReasons.
+	skipLogUnlisted *tools.SampledLog
 	// beyondWindowLog limits the warnings of events which expire beyond the window.
 	beyondWindowLog *tools.SampledLog
 
@@ -85,7 +88,8 @@ func newKafkaSource(
 		}, clock),
 		clock:           clock,
 		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
-		skipLog:         tools.NewSampledLog(skipLogInterval),
+		skipLogs:        newSkipLogs(),
+		skipLogUnlisted: tools.NewSampledLog(skipLogInterval),
 		beyondWindowLog: tools.NewSampledLog(skipLogInterval),
 	}
 }
@@ -318,10 +322,23 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 	metrics.AccessRevokeSourceEventsAppliedTotal.WithLabelValues(notification.Kind).Inc()
 }
 
-// skip counts and logs a record which is not applied.
+// newSkipLogs returns a sampled log for each reason of skipReasons.
+func newSkipLogs() map[string]*tools.SampledLog {
+	logs := make(map[string]*tools.SampledLog, len(skipReasons))
+	for _, reason := range skipReasons {
+		logs[reason] = tools.NewSampledLog(skipLogInterval)
+	}
+	return logs
+}
+
+// skip counts and logs a record which is not applied. A reason which is not in skipReasons shares one sampled log.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
-	event := s.skipLog.Event()
+	sampled, listed := s.skipLogs[reason]
+	if !listed {
+		sampled = s.skipLogUnlisted
+	}
+	event := sampled.Event()
 	if event == nil {
 		return
 	}

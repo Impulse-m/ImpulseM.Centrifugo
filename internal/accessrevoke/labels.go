@@ -10,6 +10,16 @@ const (
 	skipApplyError    = "apply_error"
 )
 
+// skipReasons is the fixed set of skip reasons of source records. The source keeps one sampled warning log per reason.
+var skipReasons = []string{
+	skipUnknownMethod,
+	skipDecodeError,
+	skipValidation,
+	skipDisabled,
+	skipStale,
+	skipApplyError,
+}
+
 // Reject reasons of connects refused by the source state, used as metric label values.
 const (
 	// RejectNotReady is used while the source is not ready.

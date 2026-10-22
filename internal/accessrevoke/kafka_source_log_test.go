@@ -35,9 +35,28 @@ func TestSkipLogIsSampled(t *testing.T) {
 	require.LessOrEqual(t, strings.Count(logged.String(), "\n"), 2)
 }
 
-// TestSkipLogIsSampledForAnotherReason skips 10000 records under a second reason. Every skip is counted, and the warnings
-// of both reasons share one sampled log, so they stay at a few lines.
-func TestSkipLogIsSampledForAnotherReason(t *testing.T) {
+// TestSkipLogIsSampledPerReason floods one reason with 10000 records. Each reason has its own sampled log, so a second
+// reason still logs its first warning while the first one is suppressed.
+func TestSkipLogIsSampledPerReason(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	source, _ := newSourceTest(t, sourceTestConfig(), clock)
+	var logged bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&logged)
+	t.Cleanup(func() { log.Logger = previous })
+
+	for range 10000 {
+		source.skip(skipApplyError, errors.New("flood"), &kgo.Record{}, "publish")
+	}
+	source.skip(skipDecodeError, errors.New("first"), &kgo.Record{}, "publish")
+
+	require.Contains(t, logged.String(), `"reason":"decode_error"`)
+	require.LessOrEqual(t, strings.Count(logged.String(), `"reason":"apply_error"`), 2)
+}
+
+// TestSkipLogIsSampledForUnlistedReason skips 10000 records under a reason which is not in the fixed set. Every skip is
+// counted, and the warnings of the unlisted reason share one sampled log, so they stay at a few lines.
+func TestSkipLogIsSampledForUnlistedReason(t *testing.T) {
 	clock := &fakeClock{now: time.Now()}
 	source, _ := newSourceTest(t, sourceTestConfig(), clock)
 	var logged bytes.Buffer

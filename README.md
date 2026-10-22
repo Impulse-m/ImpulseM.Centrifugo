@@ -60,6 +60,8 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
 
 * JWKS responses are read up to 1 MiB per key set. A larger body fails that load with an error, so the node keeps the key set it has. This is a defect fix on by default (unbounded memory from a remote endpoint), and it has no key.
 
+* Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
+
 ### Access revocation event source
 
 Each node can receive access revocation events from a replayable log and rebuild its store after a restart. Kafka is the only source type now. Without `access_revoke.source.type` nothing changes.

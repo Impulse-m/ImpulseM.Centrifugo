@@ -35,3 +35,22 @@ func TestMemoryAckRemovesDoneRecordWithError(t *testing.T) {
 
 	require.Zero(t, store.Stats().Entries, "the done record is removed")
 }
+
+// A call which is cancelled while it runs keeps no tombstone: its answer is a done record with the cancelled error, so an
+// ack removes it, and a retransmit after the ack runs the call again. The README says so; a conforming client does not
+// retransmit an acked msg_id.
+func TestMemoryAckOfRunningCancelIsNotKept(t *testing.T) {
+	clock := &testClock{t: time.Unix(1_800_000_000, 0)}
+	store := NewMemory(testMemoryOptions(clock, 2048))
+	scope := testScope("a", "a")
+	key := Key{Scope: scope, MsgID: 1}
+	flight := NewFlightWithFingerprint([32]byte{})
+
+	require.Equal(t, OutcomeMiss, testBegin(t, store, key, flight).Outcome)
+	require.NoError(t, store.Cancel(key, testCancelled))
+	require.NoError(t, store.Complete(key, flight, Record{Err: testCancelled}))
+	require.NoError(t, store.Ack(scope, []uint64{1}))
+
+	require.Zero(t, store.Stats().Entries, "the cancelled done record is removed by the ack")
+	require.Equal(t, OutcomeMiss, testBegin(t, store, key, NewFlightWithFingerprint([32]byte{})).Outcome, "a retransmit after the ack runs the call again")
+}

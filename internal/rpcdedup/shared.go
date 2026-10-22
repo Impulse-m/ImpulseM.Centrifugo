@@ -373,21 +373,19 @@ func (s *Shared) watch(key Key, flight *Flight) {
 	s.watchPolling(key, flight)
 }
 
-// pollCap returns the longest delay between two polls of a wait of the given length: PollMax, unless a tenth of the wait
-// is longer. Scaled so, a long call is polled less often than a short one, and never more often than PollMax.
-// The wait of a call is its method timeout plus the in-flight grace, so with the default PollMax the cap is at least PollMax
-// for every call: a tenth of a wait of at least the grace is at least one second.
-func (s *Shared) pollCap(wait time.Duration) time.Duration {
-	return max(s.pollMax, wait/pollCapDivisor)
+// pollCap returns the longest delay between two polls of a wait with the given time left: PollMax, unless a tenth of the
+// time left is longer. The cap follows the remaining wait, see watchPolling, and it is never below PollMax.
+func (s *Shared) pollCap(remaining time.Duration) time.Duration {
+	return max(s.pollMax, remaining/pollCapDivisor)
 }
 
 // watchPolling is the wait with the wakeup off: it polls the shared tier from the start, at the ramp from PollInitial
 // doubling to pollCap, until the call is done or the in-flight deadline passes.
 func (s *Shared) watchPolling(key Key, flight *Flight) {
-	wait := flight.timeout + s.inflightGrace
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	ctx, cancel := context.WithTimeout(context.Background(), flight.timeout+s.inflightGrace)
 	defer cancel()
-	schedule := newRetryBackOff(s.pollInitial, s.pollCap(wait))
+	deadline, _ := ctx.Deadline()
+	schedule := newRetryBackOff(s.pollInitial, s.pollMax)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -403,7 +401,9 @@ func (s *Shared) watchPolling(key Key, flight *Flight) {
 			s.endWatch(key, flight, res, WatchEndPolled)
 			return
 		}
-		// A failed poll is counted by the backend and retried at the ramp, as the wait of a call which runs is.
+		// A failed poll is counted by the backend and retried at the ramp, as the wait of a call which runs is. The cap
+		// follows the remaining wait, so it is never below PollMax.
+		schedule.MaxInterval = s.pollCap(time.Until(deadline))
 		timer.Reset(schedule.NextBackOff())
 	}
 }

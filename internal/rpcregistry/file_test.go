@@ -1,6 +1,7 @@
 package rpcregistry
 
 import (
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +19,16 @@ func TestSnapshotFileReadStopsAtLimit(t *testing.T) {
 	require.Error(t, err, "a file over the limit must be refused")
 
 	snap, err := snapshotFile(path, 64)
+	require.NoError(t, err)
+	require.Len(t, snap.data, 64)
+}
+
+// TestSnapshotFileReadAtLargestLimit verifies that the largest limit does not overflow the read: a file within it is read whole.
+func TestSnapshotFileReadAtLargestLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.yaml")
+	replaceRegistryFile(t, path, strings.Repeat("x", 64))
+
+	snap, err := snapshotFile(path, math.MaxInt64)
 	require.NoError(t, err)
 	require.Len(t, snap.data, 64)
 }

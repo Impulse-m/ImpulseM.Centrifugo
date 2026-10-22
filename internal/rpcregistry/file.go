@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 )
@@ -41,7 +42,8 @@ func snapshotFile(path string, limit int64) (*fileSnapshot, error) {
 	}()
 	var reader io.Reader = file
 	if limit > 0 {
-		reader = io.LimitReader(file, limit+1)
+		// limit+1 would overflow at the largest limit, so the reader stops one byte above the largest limit below it.
+		reader = io.LimitReader(file, min(limit, math.MaxInt64-1)+1)
 	}
 	data, err := io.ReadAll(reader)
 	if err != nil {

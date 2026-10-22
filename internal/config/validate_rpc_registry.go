@@ -90,6 +90,9 @@ func validateRPCDedup(c Config) error {
 	if dedup.MaxSkew.ToDuration() < 0 {
 		return fmt.Errorf("rpc.registry.dedup.max_skew: must not be negative, got %s", dedup.MaxSkew.ToDuration())
 	}
+	if dedup.Redis.BeginTimeout.ToDuration() < 0 {
+		return fmt.Errorf("rpc.registry.dedup.redis.begin_timeout: must not be negative, got %s", dedup.Redis.BeginTimeout.ToDuration())
+	}
 	if dedup.Window.ToDuration() <= dedup.MaxSkew.ToDuration() {
 		return fmt.Errorf("rpc.registry.dedup.window: must be greater than max_skew, got window %s and max_skew %s", dedup.Window.ToDuration(), dedup.MaxSkew.ToDuration())
 	}

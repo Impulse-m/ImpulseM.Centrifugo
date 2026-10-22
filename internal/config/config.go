@@ -309,6 +309,9 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	}
 
 	meta.UnknownKeys = findUnknownKeys(v.AllSettings(), conf, "")
+	if err := checkPushUnknownKeys(*conf, meta.UnknownKeys); err != nil {
+		return Config{}, Meta{}, err
+	}
 	meta.UnknownEnvs = checkEnvironmentVars(knownEnvVars)
 	meta.KnownEnvVars = knownEnvVars
 

@@ -6,7 +6,6 @@ import (
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
-	"github.com/rs/zerolog/log"
 )
 
 // queueSize is how many events of one op are buffered before the publisher waits for the handler.
@@ -39,7 +38,7 @@ type opQueue struct {
 	inline    bool
 	events    chan centrifuge.NotificationEvent
 	startOnce sync.Once
-	fullLog   *tools.IntervalLimiter
+	fullLog   *tools.SampledLog
 }
 
 // newDelivery returns a delivery which runs handlers, each with a queue of size events. The ops in inline have no
@@ -60,7 +59,7 @@ func newDelivery(
 		}
 		if !q.inline {
 			q.events = make(chan centrifuge.NotificationEvent, size)
-			q.fullLog = tools.NewIntervalLimiter(fullLogInterval)
+			q.fullLog = tools.NewSampledLog(fullLogInterval)
 		}
 		d.queues[op] = q
 	}
@@ -86,8 +85,8 @@ func (d *delivery) deliver(event centrifuge.NotificationEvent) {
 		return
 	default:
 	}
-	if q.fullLog.Allow() {
-		log.Warn().Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, waiting for the handler")
+	if logEvent := q.fullLog.Event(); logEvent != nil {
+		logEvent.Str("op", q.op).Int("queue_size", cap(q.events)).Msg("notification queue is full, waiting for the handler")
 	}
 	q.events <- event
 }

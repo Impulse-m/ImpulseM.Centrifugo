@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,11 +22,19 @@ func TestSampledLogCountsSuppressedWarnings(t *testing.T) {
 }
 
 // TestSampledLogLogsSuppressedCountOnNextWarning sets a count of suppressed warnings, and checks that the next warning
-// takes it and resets it, so it is reported once.
+// writes the count to its line and resets it, so it is reported once.
 func TestSampledLogLogsSuppressedCountOnNextWarning(t *testing.T) {
+	var logged bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&logged)
+	t.Cleanup(func() { log.Logger = previous })
 	sampled := &SampledLog{limiter: NewIntervalLimiter(0)}
 	sampled.suppressed.Store(3)
 
-	require.NotNil(t, sampled.Event())
+	event := sampled.Event()
+	require.NotNil(t, event)
+	event.Msg("warned")
+
 	require.Equal(t, int64(0), sampled.suppressed.Load())
+	require.Contains(t, logged.String(), `"suppressed":3`)
 }

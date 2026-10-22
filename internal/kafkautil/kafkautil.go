@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -101,14 +102,29 @@ func Options(config Config, log zerolog.Logger) ([]kgo.Opt, error) {
 // mskAssumeRoleSessionName is the STS RoleSessionName for AssumeRole calls.
 const mskAssumeRoleSessionName = "centrifugo-msk"
 
-// mskAssumeRoleAuth obtains fresh STS credentials for each MSK IAM SASL handshake.
-// Call AssumeRole directly on every callback; do not use CredentialsCache, which can
-// return the same credentials MSK already considers expired (see franz-go #731).
-// RoleSessionName stays constant so the broker principal is stable across re-auth
-// (see aws-msk-iam-auth README).
+// mskCredentialsLifetimeShare is the part of the lifetime of assumed credentials after which they are assumed again.
+// The rest is the margin for a handshake which starts close to the expiry.
+const mskCredentialsLifetimeShare = 0.75
+
+// assumeRoler is the STS call of the MSK auth. Satisfied by *sts.Client.
+type assumeRoler interface {
+	AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
+}
+
+// mskAssumeRoleAuth obtains STS credentials for MSK IAM SASL handshakes. The credentials are kept until
+// mskCredentialsLifetimeShare of their lifetime has passed, so the handshakes of a reconnect burst share one AssumeRole
+// call. They are never returned past their expiry, which is the failure of CredentialsCache in franz-go #731.
+// RoleSessionName stays constant so the broker principal is stable across re-auth (see aws-msk-iam-auth README).
 type mskAssumeRoleAuth struct {
-	stsClient *sts.Client
+	stsClient assumeRoler
 	roleARN   string
+	now       func() time.Time
+
+	// mu guards the cached credentials. It is held across the AssumeRole call, so concurrent handshakes wait for one call.
+	mu        sync.Mutex
+	creds     mskaws.Auth
+	refreshAt time.Time
+	cached    bool
 }
 
 func newMSKAssumeRoleAuth(ctx context.Context, roleARN string) (*mskAssumeRoleAuth, error) {
@@ -119,10 +135,17 @@ func newMSKAssumeRoleAuth(ctx context.Context, roleARN string) (*mskAssumeRoleAu
 	return &mskAssumeRoleAuth{
 		stsClient: sts.NewFromConfig(awsCfg),
 		roleARN:   roleARN,
+		now:       time.Now,
 	}, nil
 }
 
 func (a *mskAssumeRoleAuth) auth(ctx context.Context) (mskaws.Auth, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	if a.cached && now.Before(a.refreshAt) {
+		return a.creds, nil
+	}
 	out, err := a.stsClient.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         aws.String(a.roleARN),
 		RoleSessionName: aws.String(mskAssumeRoleSessionName),
@@ -141,11 +164,19 @@ func (a *mskAssumeRoleAuth) auth(ctx context.Context) (mskaws.Auth, error) {
 	if creds.SessionToken != nil {
 		sessionToken = *creds.SessionToken
 	}
-	return mskaws.Auth{
+	auth := mskaws.Auth{
 		AccessKey:    *creds.AccessKeyId,
 		SecretKey:    *creds.SecretAccessKey,
 		SessionToken: sessionToken,
-	}, nil
+	}
+	// Credentials without an expiry are not cached: there is no lifetime to share.
+	if creds.Expiration != nil {
+		lifetime := creds.Expiration.Sub(now)
+		a.creds = auth
+		a.refreshAt = now.Add(time.Duration(float64(lifetime) * mskCredentialsLifetimeShare))
+		a.cached = true
+	}
+	return auth, nil
 }
 
 // zerologAdapter adapts zerolog.Logger to kgo.Logger interface.

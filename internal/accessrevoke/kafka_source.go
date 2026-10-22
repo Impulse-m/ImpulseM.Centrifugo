@@ -46,10 +46,8 @@ type KafkaSource struct {
 	clock        func() time.Time
 	// seedLog limits the warnings of a failed seed.
 	seedLog *tools.IntervalLimiter
-	// skipLogs limits the warnings of skipped records, one sampled log per reason. A reason which is not listed in
-	// skipLogs shares unlistedSkipLog, so no warning of a skip is unsampled.
-	skipLogs        map[string]*tools.SampledLog
-	unlistedSkipLog *tools.SampledLog
+	// skipLog limits the warnings of skipped records of all reasons. The suppressed count is printed on the next line.
+	skipLog *tools.SampledLog
 	// beyondWindowLog limits the warnings of events which expire beyond the window.
 	beyondWindowLog *tools.SampledLog
 
@@ -87,20 +85,9 @@ func newKafkaSource(
 		}, clock),
 		clock:           clock,
 		seedLog:         tools.NewIntervalLimiter(seedLogInterval),
-		skipLogs:        newSkipLogs(),
-		unlistedSkipLog: tools.NewSampledLog(skipLogInterval),
+		skipLog:         tools.NewSampledLog(skipLogInterval),
 		beyondWindowLog: tools.NewSampledLog(skipLogInterval),
 	}
-}
-
-// newSkipLogs returns a sampled log for each skip reason.
-func newSkipLogs() map[string]*tools.SampledLog {
-	reasons := []string{skipUnknownMethod, skipDecodeError, skipValidation, skipDisabled, skipStale, skipApplyError}
-	logs := make(map[string]*tools.SampledLog, len(reasons))
-	for _, reason := range reasons {
-		logs[reason] = tools.NewSampledLog(skipLogInterval)
-	}
-	return logs
 }
 
 // Ready implements Source.
@@ -334,11 +321,7 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 // skip counts and logs a record which is not applied.
 func (s *KafkaSource) skip(reason string, err error, record *kgo.Record, method string) {
 	metrics.AccessRevokeSourceEventsSkippedTotal.WithLabelValues(reason).Inc()
-	sampled, ok := s.skipLogs[reason]
-	if !ok {
-		sampled = s.unlistedSkipLog
-	}
-	event := sampled.Event()
+	event := s.skipLog.Event()
 	if event == nil {
 		return
 	}

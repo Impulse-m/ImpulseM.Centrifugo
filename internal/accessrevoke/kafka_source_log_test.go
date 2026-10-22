@@ -35,9 +35,9 @@ func TestSkipLogIsSampled(t *testing.T) {
 	require.LessOrEqual(t, strings.Count(logged.String(), "\n"), 2)
 }
 
-// TestSkipLogIsSampledForUnlistedReason skips 10000 records under a reason which the skip log list does not name. Every
-// skip is counted, and the warnings stay sampled as those of the listed reasons are.
-func TestSkipLogIsSampledForUnlistedReason(t *testing.T) {
+// TestSkipLogIsSampledForAnotherReason skips 10000 records under a second reason. Every skip is counted, and the warnings
+// of both reasons share one sampled log, so they stay at a few lines.
+func TestSkipLogIsSampledForAnotherReason(t *testing.T) {
 	clock := &fakeClock{now: time.Now()}
 	source, _ := newSourceTest(t, sourceTestConfig(), clock)
 	var logged bytes.Buffer
@@ -45,7 +45,7 @@ func TestSkipLogIsSampledForUnlistedReason(t *testing.T) {
 	log.Logger = zerolog.New(&logged)
 	t.Cleanup(func() { log.Logger = previous })
 
-	const reason = "unlisted_reason"
+	const reason = "another_reason"
 	before := skippedCount(t, reason)
 	for range 10000 {
 		source.skip(reason, errors.New("unlisted"), &kgo.Record{}, "publish")

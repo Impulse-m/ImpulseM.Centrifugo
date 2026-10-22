@@ -120,12 +120,16 @@ func (r *Revoker) InvalidateUser(userID string, minGeneration uint64, issuedBefo
 	return nil
 }
 
+// ClampToMaxTTL returns the notification with its expire_at clamped to the max TTL of the revoker, counted under source.
+// The caller clamps once, before Apply and before the notification is sent to other nodes, so one clamp is counted once.
+func (r *Revoker) ClampToMaxTTL(notification Notification, source string) Notification {
+	return ClampExpireAt(notification, time.Now(), r.maxTTL(), source)
+}
+
 // Apply applies the notification to local state. It is used both for operations received through
-// the API and for notifications from other nodes, and source names the one it comes from. Only local connections are
-// disconnected. The expire_at is clamped to the max TTL of the revoker first, counted under source, so a notification
-// from a node which has no limit cannot exceed this node's.
-func (r *Revoker) Apply(notification Notification, source string) error {
-	notification = ClampExpireAt(notification, time.Now(), r.maxTTL(), source)
+// the API and for notifications from other nodes. Only local connections are disconnected. The caller
+// clamps the expire_at with ClampToMaxTTL first.
+func (r *Revoker) Apply(notification Notification) error {
 	switch notification.Kind {
 	case KindBlockUser:
 		return r.BlockUser(notification.User, notification.ExpireAt)

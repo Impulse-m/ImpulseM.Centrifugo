@@ -38,7 +38,7 @@ func TestApplyUnknownKind(t *testing.T) {
 	defer func() { _ = node.Shutdown(context.Background()) }()
 	revoker := newTestRevoker(t, node, NewStore(time.Minute))
 
-	err := revoker.Apply(Notification{Kind: "unknown"}, ClampSourceNotify)
+	err := revoker.Apply(Notification{Kind: "unknown"})
 	require.ErrorIs(t, err, ErrUnknownKind)
 }
 
@@ -48,11 +48,11 @@ func TestApplyBlockAndUnblock(t *testing.T) {
 	store := NewStore(time.Minute)
 	revoker := newTestRevoker(t, node, store)
 
-	err := revoker.Apply(Notification{Kind: KindBlockUser, User: "user", ExpireAt: time.Now().Add(time.Minute).Unix()}, ClampSourceNotify)
+	err := revoker.Apply(Notification{Kind: KindBlockUser, User: "user", ExpireAt: time.Now().Add(time.Minute).Unix()})
 	require.NoError(t, err)
 	require.Equal(t, Blocked, store.Check("user", centrifuge.TokenIdentity{}, allChecks).Verdict)
 
-	err = revoker.Apply(Notification{Kind: KindUnblockUser, User: "user"}, ClampSourceNotify)
+	err = revoker.Apply(Notification{Kind: KindUnblockUser, User: "user"})
 	require.NoError(t, err)
 	require.Equal(t, Allowed, store.Check("user", centrifuge.TokenIdentity{}, allChecks).Verdict)
 }
@@ -68,7 +68,7 @@ func TestApplyRevokeSession(t *testing.T) {
 		Session:   "session",
 		RevokedAt: 1000,
 		ExpireAt:  time.Now().Add(time.Minute).Unix(),
-	}, ClampSourceNotify)
+	})
 	require.NoError(t, err)
 	result := store.Check("", Identity("session", 0, 999), allChecks)
 	require.Equal(t, Revoked, result.Verdict)
@@ -86,7 +86,7 @@ func TestApplyInvalidateUser(t *testing.T) {
 		Generation: 5,
 		RevokedAt:  1000,
 		ExpireAt:   time.Now().Add(time.Minute).Unix(),
-	}, ClampSourceNotify)
+	})
 	require.NoError(t, err)
 	require.Equal(t, Revoked, store.Check("user", Identity("s", 4, 500), allChecks).Verdict)
 	require.Equal(t, Allowed, store.Check("user", Identity("s", 5, 500), allChecks).Verdict)

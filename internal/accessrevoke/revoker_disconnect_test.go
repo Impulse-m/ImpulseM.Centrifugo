@@ -229,7 +229,7 @@ func TestRevokerApplyKeepsNotificationDisconnect(t *testing.T) {
 		RevokedAt:  1000,
 		ExpireAt:   time.Now().Add(time.Minute).Unix(),
 		Disconnect: &Disconnect{Code: 4005, Reason: "applied"},
-	}, ClampSourceNotify))
+	}))
 
 	require.Equal(t, centrifuge.Disconnect{Code: 4005, Reason: "applied"}, recorder.waitClose(t, matching[0].ID()))
 }

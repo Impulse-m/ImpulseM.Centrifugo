@@ -148,7 +148,8 @@ func (h *Executor) applyAccessRevoke(notification accessrevoke.Notification) *Er
 	if !h.config.AccessNotifier.Allow() {
 		return ErrorTooManyRequests
 	}
-	err := h.config.AccessRevoker.Apply(notification, accessrevoke.ClampSourceAPI)
+	notification = h.config.AccessRevoker.ClampToMaxTTL(notification, accessrevoke.ClampSourceAPI)
+	err := h.config.AccessRevoker.Apply(notification)
 	if err != nil {
 		log.Error().Err(err).Str("kind", notification.Kind).Msg("error applying access revocation")
 		return ErrorInternal

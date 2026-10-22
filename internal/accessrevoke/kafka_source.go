@@ -320,7 +320,7 @@ func (s *KafkaSource) applyOperation(operation Operation, recordTime time.Time, 
 				Msg("access revocation event expires beyond source window, long bans must be re-emitted")
 		}
 	}
-	err = s.revoker.Apply(notification, ClampSourceKafka)
+	err = s.revoker.Apply(notification)
 	if err != nil {
 		s.skip(skipApplyError, err, record, method)
 		return

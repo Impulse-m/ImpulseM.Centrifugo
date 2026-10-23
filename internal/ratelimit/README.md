@@ -50,3 +50,23 @@ with token buckets, and 4096 x 16 x 3 x 8 bytes = 1.5 MiB with sliding windows. 
 this, so each namespace override adds its own bytes on top. The validation caps (16 entries per list, 4096
 `method_overrides`) bound one list, not the total: size connection and user memory by the worst case times the
 connections and users seen.
+
+The state of rate limits is kept per connection and per user in memory, and per user in Redis for `redis_user_command`.
+
+## Redis sharding and engine reuse
+
+`redis_user_command` keeps per-user limits in Redis per user ID, so all nodes share one budget; it has no `total`. Users are spread over Redis shards by consistent hashing of the user ID. With `reuse_from_engine` it uses the engine Redis configuration and engine prefix, so apps sharing one Redis with different engine prefixes never share limits.
+
+## Where the PRO docs leave it open
+
+* User-level `connect` falls back to `default` but is not subject to `total`, like `connect` in `client_command`. A connect takes its connect bucket token when it is attempted, so a connect which a later check rejects, such as single-connection enforcement, keeps the token used: the bucket is not refunded. Limiters are checked in order `client_command`, `user_command`: a command rejected by the user limit still consumes its per-connection tokens.
+
+## Operation classification
+
+* Map and shared poll subscriptions count as `subscribe`. A publish with map type counts as `map_publish`, or as `map_remove` when it removes the key, whatever the channel: Core routes it to its map handlers by type, not by the channel's subscription type, so a map type publish on a stream channel is still counted as a map operation. A regular publish to a map channel counts as `publish`. On a shared poll channel, track and untrack of keys count as `track` and `untrack` (`sub_refresh` with type 1 and 2). The classification is by request type alone, as Core routes it, so a request of type 1 or 2 without a track batch is charged to `track` or `untrack` before Core rejects it. On any other channel a `sub_refresh` refreshes the subscription token and counts as `sub_refresh` whatever its type. `history`, `presence` and `presence_stats` on map channels are plain commands and count as before.
+
+## Upgrade notes
+
+* Map publishes and map removes count against the `publish` buckets, and track and untrack against the `sub_refresh` buckets, unless their own buckets are set, as before the map operations existed. When `publish` has buckets this replaces the earlier fallback to `default`, so with both set, map publishes now share the `publish` budget. A map operation with its own base buckets counts against them in every namespace: neither the parent's base nor its namespace overrides apply to it. Without its own base buckets, the parent's namespace overrides still apply to the namespaces the map operation does not override. Set `map_publish`, `map_remove`, and for shared poll `track` and `untrack`, to give them a budget of their own.
+* `redis_user_command` keys carry the user ID with `%` and `}` escaped. A user ID with either character gets new Redis keys, so its counters start empty once after the upgrade, and its budget refills at once. Other user IDs keep their keys.
+* The node refuses to start when a bucket list has more than 16 entries, `method_overrides` has more than 4096 entries, or a `redis_user_command` token bucket has an emission under 1 microsecond (its interval divided by rate: with a one second interval, a rate above 1,000,000 per second). Reduce the entries, or lengthen the interval or lower the rate.

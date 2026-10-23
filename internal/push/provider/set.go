@@ -144,8 +144,9 @@ func (s *Set) dispatch(
 	}
 	defer limited.slots.Release(1)
 
-	// Acquire takes a free slot even when slot has ended, so the end is checked again: no call starts after it.
-	if slot.Err() != nil {
+	// Acquire takes a free slot even when slot or call has ended, and a slot freed at the same instant as the call deadline
+	// goes to a waiter before the waiter's own timer has fired. Both ends are checked again: no call starts after them.
+	if slot.Err() != nil || callEnded(call) {
 		return NewNotSentResult(job, s.waitEndCode(slot, call))
 	}
 
@@ -199,7 +200,7 @@ func (s *Set) waitEndCode(slot context.Context, call context.Context) string {
 	if s.shutdownEnded() {
 		return CodeShutdown
 	}
-	if call.Err() == nil {
+	if !callEnded(call) {
 		return CodeNoSlot
 	}
 	callDeadline, hasCallDeadline := call.Deadline()
@@ -208,6 +209,16 @@ func (s *Set) waitEndCode(slot context.Context, call context.Context) string {
 		return CodeNoSlot
 	}
 	return CodeDeadline
+}
+
+// callEnded reports whether call has ended: its context is done, or its deadline has passed. The deadline is compared with
+// the clock too, because the timer that ends the context may not have fired yet when a slot is freed at the same instant.
+func callEnded(call context.Context) bool {
+	if call.Err() != nil {
+		return true
+	}
+	deadline, ok := call.Deadline()
+	return ok && !time.Now().Before(deadline)
 }
 
 // callContext returns the context of one provider call. It ends at the earlier of its own request timeout, counted from

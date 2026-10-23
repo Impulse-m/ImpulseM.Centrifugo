@@ -115,9 +115,11 @@ func TestNotSentDeadlineEndsSlotWait(t *testing.T) {
 	}()
 	<-sender.entered
 
-	slot, cancelSlot := context.WithTimeout(context.Background(), time.Minute)
+	// The slot wait ends at the call deadline, as the send path makes it: the sync timeout is not the first end.
+	deadline := time.Now().Add(50 * time.Millisecond)
+	slot, cancelSlot := context.WithDeadline(context.Background(), deadline)
 	defer cancelSlot()
-	call, cancelCall := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	call, cancelCall := context.WithDeadline(context.Background(), deadline)
 	defer cancelCall()
 	result := set.DispatchWindow(slot, call, time.Minute, newTestJob(1, ProviderAPNs))
 

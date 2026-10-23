@@ -8,7 +8,7 @@ Name:      centrifugo
 Version:   %{version}
 Release:   %{release}
 Summary:   Real-time messaging server
-License:   MIT
+License:   Apache-2.0
 URL:       https://github.com/centrifugal/centrifugo
 Group:     Apps/sys
 Buildroot: %{_tmppath}/%{name}-%{version}-%{release}-%(%{__id_u} -n)

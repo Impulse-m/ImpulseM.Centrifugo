@@ -1,14 +1,16 @@
-# ImpulseM.Centrifugo
+# Centrifugo fork
 
-ImpulseM.Centrifugo is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for large deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
+This repository is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for large deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
 **Current version: v1.15.0.** The fork uses its own semantic versioning from 1.0.0, independent of upstream version numbers.
+
+Install the server from the fork's packages:
 
 ```
 docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
 ```
 
-See [Install](#install) for image tags and binaries.
+Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](https://github.com/Impulse-m/ImpulseM.Centrifugo/releases). See [Install](#install) for image tags and details.
 
 ## What the fork adds
 
@@ -21,6 +23,14 @@ See [Install](#install) for image tags and binaries.
 * [Operation rate limits](#operation-rate-limits) and [bandwidth optimizations](#bandwidth-optimizations).
 * [Unsubscribe codes](#unsubscribe-codes), [singleflight](#singleflight), [shared position sync](#shared-position-sync), [refresh lead](#refresh-lead), [message batching](#message-batching) and the [JWKS response size limit](#jwks-response-size-limit).
 * Not yet implemented: [see the list](#not-implemented-yet).
+
+## Sibling repositories
+
+* Core: [Impulse-m/ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core), the fork of the centrifuge Go library used by the server.
+* Protocol: [Impulse-m/ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol), the fork of the protocol definitions.
+* JavaScript SDK: `npm install @impulsem/centrifuge`, from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS).
+* Java SDK: `com.github.Impulse-m:ImpulseM.Centrifugo.Client.Java:1.7.0`, from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java).
+* Swift SDK: Swift Package Manager from the version tags of [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift).
 
 ## Fork features
 
@@ -324,7 +334,7 @@ Each SDK is a fork of the upstream SDK of the same name and carries the fork's p
 
 ### JavaScript
 
-Repository: [ImpulseM.Centrifugo.Client.JS](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS). Latest version: 1.6.0.
+Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS). Latest version: 1.6.0.
 
 ```
 npm install @impulsem/centrifuge
@@ -332,7 +342,7 @@ npm install @impulsem/centrifuge
 
 ### Java (Android)
 
-Repository: [ImpulseM.Centrifugo.Client.Java](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java). Latest version: 1.7.0.
+Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java). Latest version: 1.7.0.
 
 ```groovy
 repositories {
@@ -347,12 +357,12 @@ dependencies {
 
 ### Swift (iOS)
 
-Repository: [ImpulseM.Centrifugo.Client.Swift](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift). Install with Swift Package Manager from the version tags; the latest is 2.0.0 and its breaking changes are described in [MIGRATION.md](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift/blob/v2.0.0/MIGRATION.md). Add it with `https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift` and add the `SwiftCentrifuge` product to your target. There is no CocoaPods release.
+Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift). Install with Swift Package Manager from the version tags; the latest is 2.0.0 and its breaking changes are described in [MIGRATION.md](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift/blob/v2.0.0/MIGRATION.md). Add it with `https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift` and add the `SwiftCentrifuge` product to your target. There is no CocoaPods release.
 
 ## Related repositories
 
-* [ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core): fork of the [centrifuge](https://github.com/centrifugal/centrifuge) Go library. The server uses it through a `replace` directive in its `go.mod`. It has no releases of its own and follows upstream master.
-* [ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol): fork of the [protocol](https://github.com/centrifugal/protocol) definitions. It carries the fork fields of `client.proto` used by the SDKs and Core.
+* Core, [repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core): fork of the [centrifuge](https://github.com/centrifugal/centrifuge) Go library. The server uses it through a `replace` directive in its `go.mod`. It has no releases of its own and is kept in sync with upstream master.
+* Protocol, [repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol): fork of the [protocol](https://github.com/centrifugal/protocol) definitions. It carries the fork fields of `client.proto` used by the SDKs and Core.
 
 The upstream projects of the SDKs, Core and Protocol are MIT-licensed; see each repository for its own license.
 

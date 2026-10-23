@@ -61,27 +61,28 @@ func checkPushUnknownKeys(conf Config, unknownKeys []string, unknownEnvs []strin
 	if !conf.PushNotifications.Enabled {
 		return nil
 	}
-	var refused []string
-	for _, key := range unknownKeys {
-		if strings.HasPrefix(key, pushKeyPrefix) {
-			refused = append(refused, key)
-		}
-	}
+	refused := withPrefix(unknownKeys, pushKeyPrefix)
 	if len(refused) > 0 {
 		slices.Sort(refused)
 		return fmt.Errorf("%s is not available in this build", refused[0])
 	}
-	var refusedEnvs []string
-	for _, name := range unknownEnvs {
-		if strings.HasPrefix(name, pushEnvPrefix) {
-			refusedEnvs = append(refusedEnvs, name)
-		}
-	}
+	refusedEnvs := withPrefix(unknownEnvs, pushEnvPrefix)
 	if len(refusedEnvs) == 0 {
 		return nil
 	}
 	slices.Sort(refusedEnvs)
 	return fmt.Errorf("%s is not available in this build", refusedEnvs[0])
+}
+
+// withPrefix returns the names that start with prefix, in their order.
+func withPrefix(names []string, prefix string) []string {
+	var matched []string
+	for _, name := range names {
+		if strings.HasPrefix(name, prefix) {
+			matched = append(matched, name)
+		}
+	}
+	return matched
 }
 
 // validatePushNotifications checks the push notification settings. Nothing is checked while the

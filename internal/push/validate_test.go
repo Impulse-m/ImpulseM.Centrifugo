@@ -215,12 +215,77 @@ func TestCheckRecipientCountBeforeDecode(t *testing.T) {
 	require.Nil(t, s.CheckRecipientCount(atLimit))
 }
 
-func TestCheckRecipientCountLeavesOtherBodiesToDecoder(t *testing.T) {
+// repeatList returns a JSON array of count copies of item, separated by commas.
+func repeatList(item string, count int) string {
+	return "[" + strings.TrimSuffix(strings.Repeat(item+",", count), ",") + "]"
+}
+
+// requireBodyCode checks that the recipient check of body answers code.
+func requireBodyCode(t *testing.T, body string, code uint32) {
+	t.Helper()
+
+	s := newTestSender(t, &countingSender{}, nil)
+	refusal := s.CheckRecipientCount([]byte(body))
+	require.NotNil(t, refusal, body)
+	require.Equal(t, code, refusal.GetCode(), body)
+}
+
+func TestCheckRecipientCountRefusesOverLimitStringLists(t *testing.T) {
+	over := repeatList(`"t"`, 1001)
+
+	requireBodyCode(t, `{"recipient":{"fcm_tokens":`+over+`}}`, 107)
+	requireBodyCode(t, `{"recipient":{"apns_tokens":`+over+`}}`, 107)
+}
+
+func TestCheckRecipientCountRefusesOverLimitTargets(t *testing.T) {
+	over := repeatList(`{}`, 1001)
+
+	requireBodyCode(t, `{"recipient":{"targets":`+over+`}}`, 107)
+}
+
+func TestCheckRecipientCountRefusesRepeatedKeyOverLimitFirst(t *testing.T) {
+	over := repeatList(`{}`, 1001)
+
+	requireBodyCode(t, `{"recipient":{"targets":`+over+`,"targets":[{}]}}`, 107)
+	requireBodyCode(t, `{"recipient":{"targets":`+over+`},"recipient":{"targets":[]}}`, 107)
+	requireBodyCode(t, `{"recipient":{"fcm_tokens":`+repeatList(`"t"`, 600)+`,"fcm_tokens":`+repeatList(`"t"`, 600)+`}}`, 107)
+}
+
+func TestCheckRecipientCountPassesAllListsAtLimit(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	body := `{"recipient":{"targets":` + repeatList(`{}`, 1000) +
+		`,"fcm_tokens":` + repeatList(`"t"`, 1000) +
+		`,"apns_tokens":` + repeatList(`"t"`, 1000) + `}}`
+	require.Nil(t, s.CheckRecipientCount([]byte(body)))
+}
+
+func TestCheckRecipientCountRefusesMalformedRecipientList(t *testing.T) {
+	requireBodyCode(t, `{"recipient":{"targets":"x"}}`, 107)
+	requireBodyCode(t, `{"recipient":{"fcm_tokens":{}}}`, 107)
+	requireBodyCode(t, `{"recipient":{"targets":[{}`, 107)
+	requireBodyCode(t, `{"recipient":`, 107)
+	requireBodyCode(t, `{"recipient":5}`, 107)
+	requireBodyCode(t, `[]`, 107)
+	requireBodyCode(t, ``, 107)
+	requireBodyCode(t, `{} {}`, 107)
+}
+
+func TestCheckRecipientCountPassesNullAndOtherKeys(t *testing.T) {
 	s := newTestSender(t, &countingSender{}, nil)
 
 	require.Nil(t, s.CheckRecipientCount([]byte(`{"recipient":{"targets":null}}`)))
-	require.Nil(t, s.CheckRecipientCount([]byte(`{"recipient":{"targets":"x"}}`)))
-	require.Nil(t, s.CheckRecipientCount([]byte(`{"recipient":`)))
+	require.Nil(t, s.CheckRecipientCount([]byte(`{"recipient":null}`)))
+	require.Nil(t, s.CheckRecipientCount([]byte(`{"other":[1,2,3],"recipient":{"fcm_tokens":["a"]}}`)))
+	require.Nil(t, s.CheckRecipientCount([]byte(`{"RECIPIENT":{"FCM_TOKENS":["a"]}}`)))
+}
+
+func TestCheckRecipientCountCountsNestedElementsOnce(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	// Each target counts once, however deep its own content is.
+	deep := repeatList(`{"a":[[1,[2]],{"b":{"c":[1,2,3]}}]}`, 1000)
+	require.Nil(t, s.CheckRecipientCount([]byte(`{"recipient":{"targets":`+deep+`}}`)))
 }
 
 func TestFCMMessageOverScanThresholdLeftToItem(t *testing.T) {

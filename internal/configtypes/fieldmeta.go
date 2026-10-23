@@ -62,12 +62,6 @@ func isTimeType(t reflect.Type) bool {
 	return t.PkgPath() == "time" && t.Name() == "Time"
 }
 
-// isSecretType reports whether t is Secret. It is a struct so that it can mask itself in every encoder, but it holds one
-// scalar value, so the config tooling shows it as a string.
-func isSecretType(t reflect.Type) bool {
-	return t == reflect.TypeOf(Secret{})
-}
-
 // TypeLabel renders a human-friendly type label for a config field type. Struct
 // and slice-of-struct types show their Go type name (e.g. "TLSConfig",
 // "[]Consumer"); every other type shows its Go type string with the internal

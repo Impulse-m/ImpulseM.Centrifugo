@@ -39,9 +39,7 @@ func (s *Sender) run(ctx context.Context, jobs []*provider.Job) []*apiproto.Push
 // pool sends the jobs at indexes with size workers. Each worker takes one index at a time and writes results[index], so
 // the results need no sort. The number of workers is bounded by the size and by the jobs of the group.
 func (s *Sender) pool(syncCtx context.Context, jobs []*provider.Job, results []*apiproto.PushItemResult, indexes []int, size int) {
-	if size > len(indexes) {
-		size = len(indexes)
-	}
+	size = min(size, len(indexes))
 
 	queue := make(chan int, len(indexes))
 	for _, index := range indexes {

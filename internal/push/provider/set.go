@@ -39,8 +39,9 @@ type limitedSender struct {
 // Set holds the senders of the providers of a node, each with its own in-flight limit. The limits of two
 // providers are never pooled.
 type Set struct {
-	limited map[string]*limitedSender
-	dryRun  bool
+	limited  map[string]*limitedSender
+	dryRun   bool
+	oversize func(*Job) bool
 }
 
 // NewSet returns an empty Set.
@@ -57,6 +58,13 @@ func NewDryRunSet() *Set {
 		limited: make(map[string]*limitedSender),
 		dryRun:  true,
 	}
+}
+
+// WithOversizeCheck sets the payload ceiling check of the set and returns the set. An item the check reports is
+// answered payload_too_large before the dry run answer and before any slot is taken.
+func (s *Set) WithOversizeCheck(check func(*Job) bool) *Set {
+	s.oversize = check
+	return s
 }
 
 // Add registers sender for the provider name with at most maxInflight provider requests in flight on the node.
@@ -85,6 +93,11 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
+	}
+
+	// The payload ceiling is checked before the dry run answer, so a dry run answers what a live send answers.
+	if s.oversize != nil && s.oversize(job) {
+		return NewCodeResult(job, CodePayloadTooLarge)
 	}
 
 	// A dry run target is valid here. The dry run check comes before the provider lookup, because a dry run set holds

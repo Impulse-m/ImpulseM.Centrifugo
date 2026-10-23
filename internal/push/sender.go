@@ -1,6 +1,6 @@
 // Package push is the direct send mode of push notifications. A sender node receives explicit provider tokens, sends
 // them to APNs and FCM inline, and returns one raw result per recipient. The mode keeps no state: there is no device
-// registry, no queue, no retry and no fan-out. It is PRO's raw-token send made synchronous.
+// registry, no queue, no retry and no fan-out. The send is inline: the response carries the provider answers.
 package push
 
 import (
@@ -78,11 +78,11 @@ func Setup(processCtx context.Context, cfg configtypes.PushNotifications) (*Send
 		return s, nil
 	}
 	if cfg.DryRun {
-		s.set = provider.NewDryRunSet()
+		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized)
 		return s, nil
 	}
 
-	s.set = provider.NewSet()
+	s.set = provider.NewSet().WithOversizeCheck(oversized)
 	err := s.load(processCtx, cfg)
 	if err != nil {
 		return nil, err
@@ -157,10 +157,54 @@ func (s *Sender) load(processCtx context.Context, cfg configtypes.PushNotificati
 
 // poolSize returns the worker count of one provider group of a call: min(tokens_batch_size, max_inflight).
 func poolSize(tokensBatchSize int, maxInflight int) int {
-	if tokensBatchSize < maxInflight {
-		return tokensBatchSize
+	return min(tokensBatchSize, maxInflight)
+}
+
+// oversized reports whether the item of job is over the payload ceiling of its provider. The set checks it before the dry
+// run answer, and the live providers check it with the same functions, so a dry run answers what a live send answers.
+func oversized(job *provider.Job) bool {
+	switch job.Target.GetProvider() {
+	case provider.ProviderAPNs:
+		return apns.Oversized(job)
+	case provider.ProviderFCM:
+		return fcm.Oversized(job)
+	default:
+		return false
 	}
-	return maxInflight
+}
+
+// admittedKey is the context key of a call that already holds a call slot of the node.
+type admittedKey struct{}
+
+// WithAdmission marks ctx as a call that holds a call slot taken by Admit. Send then takes no second slot for it.
+func WithAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, admittedKey{}, true)
+}
+
+// isAdmitted reports whether ctx is marked by WithAdmission.
+func isAdmitted(ctx context.Context) bool {
+	admitted, ok := ctx.Value(admittedKey{}).(bool)
+	return ok && admitted
+}
+
+// Admit takes one call slot of the node. It answers the too-many-requests error when max_concurrent_requests calls hold
+// the slots. The send route calls it before it reads the body, so the bodies of the calls in flight are bounded by the
+// slots. The returned release frees the slot, and it is called once.
+func (s *Sender) Admit() (func(), *apiproto.Error) {
+	if !s.IsSender() {
+		return func() {}, nil
+	}
+	if !s.calls.TryAcquire(1) {
+		return func() {}, tooManyCallsError()
+	}
+	return func() {
+		s.calls.Release(1)
+	}, nil
+}
+
+// CountRefusedRequest counts one send call that was refused before the send path, when push metrics are registered.
+func CountRefusedRequest() {
+	countRequest(requestRefused)
 }
 
 // IsSender reports whether the node sends: push notifications are on and the node is a sender.
@@ -189,7 +233,7 @@ func (s *Sender) WriteBound() time.Duration {
 // first refusal, in which case nothing is sent.
 func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationRequest) *apiproto.SendPushNotificationResponse {
 	if s == nil {
-		return errorResponse(notEnabledError())
+		return errorResponse(NotEnabledError())
 	}
 	if !s.sender {
 		return errorResponse(senderOnlyError())
@@ -201,11 +245,15 @@ func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationReq
 		return errorResponse(refusal)
 	}
 
-	if !s.calls.TryAcquire(1) {
-		countRequest(requestRefused)
-		return errorResponse(tooManyCallsError())
+	// A call from the send route holds its slot already. Any other call takes one here.
+	if !isAdmitted(ctx) {
+		release, busy := s.Admit()
+		if busy != nil {
+			countRequest(requestRefused)
+			return errorResponse(busy)
+		}
+		defer release()
 	}
-	defer s.calls.Release(1)
 
 	uid := req.GetUid()
 	if uid == "" {

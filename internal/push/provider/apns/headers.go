@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
+
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
 
 // Header names of the APNs request.
@@ -99,6 +101,13 @@ func maxPayloadBytes(pushType string) int {
 		return 5120
 	}
 	return 4096
+}
+
+// Oversized reports whether the APNs payload of job is over the ceiling of its push type. The live send and the dry run
+// both use it, so a dry run answers payload_too_large for the same payloads as a live send.
+func Oversized(job *provider.Job) bool {
+	pushType := job.Notification.GetApns().GetHeaders()[headerPushType]
+	return len(provider.ApnsPayloadOf(job)) > maxPayloadBytes(pushType)
 }
 
 // requestHeaders returns the headers of one APNs request: the server headers, and the caller headers that pass

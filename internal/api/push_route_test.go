@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,6 +157,89 @@ func TestSendRouteNonSenderAnswers108(t *testing.T) {
 	recorder := serveSend(route, sendRequest(t, ""))
 
 	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
+}
+
+// TestSendRouteNonSenderBodyOverCapAnswers107 checks that a node that is not a sender, with push on, still caps the body:
+// an oversized body is refused with the bad request code before the sender-only answer.
+func TestSendRouteNonSenderBodyOverCapAnswers107(t *testing.T) {
+	cfg := sendTestConfig(1024)
+	cfg.Sender = false
+	route := newSendRoute(t, cfg)
+
+	recorder := serveSend(route, sendRequest(t, strings.Repeat("u", 2048)))
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Equal(t, uint32(107), errorCodeOf(t, recorder.Body.Bytes()))
+}
+
+// blockingBody is a request body whose first read holds until release is closed. It shows a call that is in its body
+// read, and so holds its call slot.
+type blockingBody struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// Read signals the first read, then waits for the release. It ends the body without data.
+func (b *blockingBody) Read(_ []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.started)
+	})
+	<-b.release
+	return 0, io.EOF
+}
+
+// countingBody counts the reads of a request body.
+type countingBody struct {
+	reader *strings.Reader
+	reads  int
+}
+
+// Read counts the read and reads from the data.
+func (c *countingBody) Read(p []byte) (int, error) {
+	c.reads++
+	return c.reader.Read(p)
+}
+
+// TestSendRouteBusyAnswers111WithoutReadingBody checks that a call over max_concurrent_requests is answered 111 before its
+// body is read, so the bodies of the calls in flight are bounded by the slots.
+func TestSendRouteBusyAnswers111WithoutReadingBody(t *testing.T) {
+	cfg := sendTestConfig(1 << 20)
+	cfg.MaxConcurrentRequests = 1
+	route := newSendRoute(t, cfg)
+
+	held := &blockingBody{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		route(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send_push_notification", held))
+	}()
+	<-held.started
+
+	counting := &countingBody{reader: strings.NewReader(string(sendRequest(t, "")))}
+	recorder := httptest.NewRecorder()
+	route(recorder, httptest.NewRequest(http.MethodPost, "/send_push_notification", counting))
+
+	require.Equal(t, uint32(111), errorCodeOf(t, recorder.Body.Bytes()))
+	require.Zero(t, counting.reads)
+
+	close(held.release)
+	<-done
+}
+
+// TestPushMethodsNotBuiltWhenEnabled checks that the push methods this build does not implement answer the not available
+// message while push notifications are on, and the not enabled message only while they are off.
+func TestPushMethodsNotBuiltWhenEnabled(t *testing.T) {
+	sender, err := push.Setup(context.Background(), sendTestConfig(1<<20))
+	require.NoError(t, err)
+	h := &Executor{config: ExecutorConfig{Push: sender}}
+
+	answer := h.DeviceRegister(context.Background(), &DeviceRegisterRequest{}).Error
+	require.Equal(t, uint32(108), answer.GetCode())
+	require.Equal(t, "not available in this build", answer.GetMessage())
 }
 
 // deadlineRecorder is a response recorder that takes a write deadline, as a server connection does.

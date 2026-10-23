@@ -65,7 +65,7 @@ func newTestSender(t *testing.T, fake provider.Sender, edit func(*configtypes.Pu
 		edit(&cfg)
 	}
 	s := newSender(cfg)
-	s.set = provider.NewSet()
+	s.set = provider.NewSet().WithOversizeCheck(oversized)
 	s.set.Add(provider.ProviderAPNs, fake, int64(cfg.APNs.MaxInflight))
 	s.set.Add(provider.ProviderFCM, fake, int64(cfg.FCM.MaxInflight))
 	return s

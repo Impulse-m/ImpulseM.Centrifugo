@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/proto"
@@ -30,11 +32,8 @@ const (
 	maxScannedFCMMessageBytes  = 4096
 )
 
-// errNotArray reports a recipient list that is not a JSON array.
-var errNotArray = errors.New("recipient list is not an array")
-
-// notEnabledError returns the answer of a node with push notifications off.
-func notEnabledError() *apiproto.Error {
+// NotEnabledError returns the answer of a node with push notifications off.
+func NotEnabledError() *apiproto.Error {
 	return &apiproto.Error{
 		Code:    apiproto.ErrorNotAvailable.Code,
 		Message: "push notifications are not enabled",
@@ -266,69 +265,199 @@ func isJSONObject(data []byte) bool {
 	return gjson.ValidBytes(data) && gjson.ParseBytes(data).IsObject()
 }
 
-// recipientCounter counts the entries of a recipient list while the body is decoded, without storing them. It stops at
-// its limit, so a body with more entries costs no more than the limit to refuse.
-type recipientCounter struct {
-	limit int
-	count int
-	over  bool
+// errOverRecipientLimit reports that a recipient list of the body is above max_recipient_items.
+var errOverRecipientLimit = errors.New("recipient count is above max_recipient_items")
+
+// errMalformedRequest reports a request body that the recipient walk cannot read as the request: not one JSON object,
+// a recipient that is not an object, a recipient list that is not an array, or a trailing value.
+var errMalformedRequest = errors.New("request body is not a valid send request")
+
+// Keys of the request body that the recipient walk reads. encoding/json matches a field name without regard to case,
+// so the walk does too.
+const (
+	recipientKey  = "recipient"
+	targetsKey    = "targets"
+	fcmTokensKey  = "fcm_tokens"
+	apnsTokensKey = "apns_tokens"
+)
+
+// Indexes of the recipient lists in a recipientWalk.
+const (
+	listTargets = iota
+	listFCMTokens
+	listAPNsTokens
+	listCount
+)
+
+// recipientListKeys names the recipient lists by their index.
+var recipientListKeys = [listCount]string{targetsKey, fcmTokensKey, apnsTokensKey}
+
+// walkRole is the role of a JSON value in the recipient walk of a request body.
+type walkRole int
+
+const (
+	// roleRequest is the request object itself.
+	roleRequest walkRole = iota
+	// roleRecipient is the recipient object of the request.
+	roleRecipient
+	// roleList is a recipient list: each of its elements is one entry.
+	roleList
+	// roleOther is any other value, which is skipped.
+	roleOther
+)
+
+// maxWalkDepth bounds the nesting of the recipient walk. It is the depth limit of encoding/json, so a body the walk
+// accepts is one the generated decoder can read, and a deeper body is refused without growing the walk stack.
+const maxWalkDepth = 10000
+
+// walkFrame is one open object or array of the recipient walk.
+type walkFrame struct {
+	object bool
+	role   walkRole
+	list   int
 }
 
-// UnmarshalJSON counts the elements of the JSON array in data. A null is an empty list. A value that is not an array is
-// an error, and the generated decoder then answers the request.
-func (c *recipientCounter) UnmarshalJSON(data []byte) error {
-	c.count = 0
-	c.over = false
+// recipientWalk counts the entries of the recipient lists of a request body. It reads the body as a token stream, so no
+// entry is decoded into a value, and it sums the entries of every occurrence of a list key, because the generated
+// decoder may keep or merge any of them.
+type recipientWalk struct {
+	limit  int
+	counts [listCount]int
+}
 
-	decoder := json.NewDecoder(bytes.NewReader(data))
+// CheckRecipientCount refuses a request body whose recipient list is above max_recipient_items, before the generated
+// decoder allocates the entries. A body that the walk cannot read as a send request is refused too, so a body the
+// check does not understand is never passed on.
+func (s *Sender) CheckRecipientCount(body []byte) *apiproto.Error {
+	walk := recipientWalk{limit: s.maxRecipients}
+	err := walk.run(body)
+	if errors.Is(err, errOverRecipientLimit) {
+		return badRequest(errOverRecipientLimit.Error())
+	}
+	if err != nil {
+		return badRequest(errMalformedRequest.Error())
+	}
+	return nil
+}
+
+// run walks body once and returns errOverRecipientLimit at the first recipient list over the limit, or an error for a
+// body that is not a send request.
+func (w *recipientWalk) run(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	token, err := decoder.Token()
 	if err != nil {
-		return err
+		return errMalformedRequest
 	}
-	if token == nil {
-		return nil
-	}
-	delim, ok := token.(json.Delim)
-	if !ok || delim != '[' {
-		return errNotArray
+	if !isDelim(token, '{') {
+		return errMalformedRequest
 	}
 
-	for decoder.More() {
-		var entry struct{}
-		err = decoder.Decode(&entry)
+	stack := []walkFrame{{object: true, role: roleRequest}}
+	for len(stack) > 0 {
+		top := len(stack) - 1
+		var role walkRole
+		var list int
+
+		if stack[top].object {
+			token, err = decoder.Token()
+			if err != nil {
+				return errMalformedRequest
+			}
+			if isDelim(token, '}') {
+				stack = stack[:top]
+				continue
+			}
+			key, ok := token.(string)
+			if !ok {
+				return errMalformedRequest
+			}
+			role, list = childRole(stack[top].role, key)
+			token, err = decoder.Token()
+			if err != nil {
+				return errMalformedRequest
+			}
+		} else {
+			token, err = decoder.Token()
+			if err != nil {
+				return errMalformedRequest
+			}
+			if isDelim(token, ']') {
+				stack = stack[:top]
+				continue
+			}
+			// An element of a recipient list is counted by its list. Its value is walked with the role of other values.
+			role = roleOther
+			if stack[top].role == roleList {
+				list = stack[top].list
+				w.counts[list]++
+				if w.counts[list] > w.limit {
+					return errOverRecipientLimit
+				}
+			}
+		}
+
+		stack, err = w.value(stack, token, role, list)
 		if err != nil {
 			return err
 		}
-		c.count++
-		if c.count > c.limit {
-			c.over = true
-			return nil
-		}
+	}
+
+	_, err = decoder.Token()
+	if !errors.Is(err, io.EOF) {
+		return errMalformedRequest
 	}
 	return nil
 }
 
-// CheckRecipientCount refuses a request body whose recipient list is above max_recipient_items. It runs on the raw body
-// before the generated decoder allocates the entries. A body that does not decode here is left to the generated decoder,
-// which answers it.
-func (s *Sender) CheckRecipientCount(body []byte) *apiproto.Error {
-	var request struct {
-		Recipient struct {
-			Targets    recipientCounter `json:"targets"`
-			FcmTokens  recipientCounter `json:"fcm_tokens"`
-			ApnsTokens recipientCounter `json:"apns_tokens"`
-		} `json:"recipient"`
+// value opens the frame of a value token, or checks a scalar, for a value of the given role. A recipient must be an
+// object and a recipient list must be an array; null is allowed in both.
+func (w *recipientWalk) value(stack []walkFrame, token json.Token, role walkRole, list int) ([]walkFrame, error) {
+	delim, isDelimToken := token.(json.Delim)
+	if isDelimToken {
+		if len(stack) >= maxWalkDepth {
+			return nil, errMalformedRequest
+		}
+		switch delim {
+		case '{':
+			if role == roleList {
+				return nil, errMalformedRequest
+			}
+			return append(stack, walkFrame{object: true, role: role}), nil
+		case '[':
+			if role == roleRecipient {
+				return nil, errMalformedRequest
+			}
+			return append(stack, walkFrame{role: role, list: list}), nil
+		default:
+			return nil, errMalformedRequest
+		}
 	}
-	request.Recipient.Targets.limit = s.maxRecipients
-	request.Recipient.FcmTokens.limit = s.maxRecipients
-	request.Recipient.ApnsTokens.limit = s.maxRecipients
+	if token != nil && (role == roleRecipient || role == roleList) {
+		return nil, errMalformedRequest
+	}
+	return stack, nil
+}
 
-	err := json.Unmarshal(body, &request)
-	if err != nil {
-		return nil
+// childRole returns the role of the value of key in an object of role parent, and the index of the list when it is a
+// recipient list.
+func childRole(parent walkRole, key string) (walkRole, int) {
+	switch parent {
+	case roleRequest:
+		if strings.EqualFold(key, recipientKey) {
+			return roleRecipient, 0
+		}
+	case roleRecipient:
+		for index, name := range recipientListKeys {
+			if strings.EqualFold(key, name) {
+				return roleList, index
+			}
+		}
 	}
-	if request.Recipient.Targets.over || request.Recipient.FcmTokens.over || request.Recipient.ApnsTokens.over {
-		return badRequest("recipient count is above max_recipient_items")
-	}
-	return nil
+	return roleOther, 0
+}
+
+// isDelim reports whether token is the delimiter delim.
+func isDelim(token json.Token, delim json.Delim) bool {
+	value, ok := token.(json.Delim)
+	return ok && value == delim
 }

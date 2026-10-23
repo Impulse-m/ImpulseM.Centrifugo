@@ -106,11 +106,11 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	headers := requestHeaders(caller, job.CollapseID, job.Notification.GetExpireAt(), c.bundleID)
-	payload := provider.ApnsPayloadOf(job)
-	if len(payload) > maxPayloadBytes(headers[headerPushType]) {
+	if Oversized(job) {
 		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
 	}
+	headers := requestHeaders(caller, job.CollapseID, job.Notification.GetExpireAt(), c.bundleID)
+	payload := provider.ApnsPayloadOf(job)
 
 	token, issuedAt, err := c.credential.Current()
 	if err != nil {

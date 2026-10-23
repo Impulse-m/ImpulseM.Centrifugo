@@ -8,6 +8,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
 
 // maxMessageBytes bounds the whole message JSON after the server additions.
@@ -93,6 +95,23 @@ func injectionBound(token string, collapseID string, expireAt int64) int {
 // shared request message is never copied for every target past the limit.
 func fitsInjected(message []byte, token string, collapseID string, expireAt int64) bool {
 	return len(message)+injectionBound(token, collapseID, expireAt) <= maxMessageBytes
+}
+
+// Oversized reports whether the FCM message of job is over the message limit after the server additions. The live send
+// and the dry run both use it. A message that cannot fit is refused before any copy; one that fits is injected once and
+// measured.
+func Oversized(job *provider.Job) bool {
+	message := provider.FCMMessageOf(job)
+	token := job.Target.GetToken()
+	expireAt := job.Notification.GetExpireAt()
+	if !fitsInjected(message, token, job.CollapseID, expireAt) {
+		return true
+	}
+	injected, err := injectMessage(message, token, job.CollapseID, expireAt, time.Now())
+	if err != nil {
+		return false
+	}
+	return len(injected) > maxMessageBytes
 }
 
 // injectMessage returns the message with the server additions: the token, and the collapse id and the expiry on the

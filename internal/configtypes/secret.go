@@ -26,6 +26,12 @@ func NewSecret(value string) Secret {
 	return Secret{value: value}
 }
 
+// isSecretType reports whether t is Secret. It is a struct so that it can mask itself in every encoder, but it holds one
+// scalar value, so the config tooling shows it as a string.
+func isSecretType(t reflect.Type) bool {
+	return t == reflect.TypeOf(Secret{})
+}
+
 // Value returns the key material. It is the only reader of the value.
 func (s Secret) Value() string {
 	return s.value

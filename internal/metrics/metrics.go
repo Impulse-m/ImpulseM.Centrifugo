@@ -323,7 +323,7 @@ func newRegistry(cfg Config) (*Registry, error) {
 		[]string{"path", "method", "status"},
 	)
 
-	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels)
+	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels, cfg.PushEnabled)
 
 	// Postgres-specific broker metrics carry a postgres_ name prefix. Cleanup is
 	// Postgres-specific here: only the PG stream broker prunes rows (the "pass"
@@ -395,10 +395,6 @@ func newRegistry(cfg Config) (*Registry, error) {
 		m.mapBrokerPostgresPartitions,
 	}
 	collectors = append(collectors, forkCollectors...)
-
-	if cfg.PushEnabled {
-		collectors = append(collectors, initPushMetrics(metricsNamespace, constLabels)...)
-	}
 
 	for _, collector := range collectors {
 		err := registerer.Register(collector)

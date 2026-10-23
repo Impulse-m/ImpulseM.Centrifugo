@@ -52,3 +52,35 @@ func TestTokenGateCachesToken(t *testing.T) {
 	}
 	require.Equal(t, int64(1), source.calls.Load())
 }
+
+// blockingSource is a token source whose fetch waits until release is closed. It ignores any context, as the source of
+// x/oauth2 does for a token request.
+type blockingSource struct {
+	release chan struct{}
+}
+
+func (s *blockingSource) Token() (*oauth2.Token, error) {
+	<-s.release
+	return &oauth2.Token{
+		AccessToken: "access",
+		Expiry:      time.Now().Add(time.Hour),
+	}, nil
+}
+
+// TestTokenGateWaitEndsAtShutdown checks that a caller waiting for a fetch that does not return is released by the
+// shutdown: the wait ends with the shutdown error, and the caller does not wait for the fetch.
+func TestTokenGateWaitEndsAtShutdown(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	shutdown, stop := context.WithCancel(context.Background())
+	gate := newShutdownTokenGate(&blockingSource{release: release}, shutdown)
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := gate.Token(context.Background())
+		errChan <- err
+	}()
+	stop()
+
+	require.ErrorIs(t, <-errChan, context.Canceled)
+}

@@ -70,7 +70,7 @@ JWKS responses are read up to 1 MiB per key set, so a larger body cannot exhaust
 
 ### Push notifications
 
-Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
+Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id`, `timeout_ms` and `results` (field numbers 100 and above).
 
 * Direct push send (`SendPushNotification` with raw APNs and FCM tokens, the `timeout_ms` deadline, the per-target results and the routing to sender nodes) is documented in [docs/push-direct-send.md](docs/push-direct-send.md).
 * Push notification settings are read at startup. A change of a key, of `sender` or of `enabled_providers` needs a restart. A SIGHUP reload validates the push section like every other section, and a failing push section rejects the reload. A valid changed push section is ignored until the restart.

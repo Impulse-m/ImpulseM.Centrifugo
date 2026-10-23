@@ -42,6 +42,7 @@ type Set struct {
 	limited  map[string]*limitedSender
 	dryRun   bool
 	oversize func(*Job) bool
+	shutdown context.Context
 }
 
 // NewSet returns an empty Set.
@@ -68,6 +69,13 @@ func (s *Set) WithOversizeCheck(check func(*Job) bool) *Set {
 	return s
 }
 
+// WithShutdown sets the process-lifetime context of the set and returns the set. Its end classifies a target that was not
+// sent as shutdown, not as deadline.
+func (s *Set) WithShutdown(shutdown context.Context) *Set {
+	s.shutdown = shutdown
+	return s
+}
+
 // Add registers sender for the provider name with at most maxInflight provider requests in flight on the node.
 func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 	s.limited[name] = &limitedSender{
@@ -76,12 +84,24 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 	}
 }
 
-// Dispatch sends job to its provider. It waits for an in-flight slot until syncCtx ends: when no slot is free in
-// time, the result is pending and no provider call is made. The provider call then runs on a context with its own
-// requestTimeout, created after the slot is acquired, so a call that starts late still gets the full timeout. The
-// call is not stopped by the end of syncCtx. The in-flight gauge of the provider counts the slot while it is held.
+// Dispatch is DispatchWindow with a call context that never ends, so the provider call ends at its request timeout
+// only. It is a test seam: the send path calls DispatchWindow with the call deadline of the request.
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
-	result := s.dispatch(syncCtx, requestTimeout, job)
+	return s.DispatchWindow(syncCtx, context.Background(), requestTimeout, job)
+}
+
+// DispatchWindow sends job to its provider. It waits for an in-flight slot until slot ends: when no slot is free in
+// time, the target is not sent. The provider call then runs on a context with its own requestTimeout, created after the
+// slot is acquired, so a call that starts late still gets the full timeout. The call also ends at the deadline of call,
+// the call deadline of the request, and it is cancelled when call ends. The call is not stopped by the end of slot. The
+// in-flight gauge of the provider counts the slot while it is held.
+func (s *Set) DispatchWindow(
+	slot context.Context,
+	call context.Context,
+	requestTimeout time.Duration,
+	job *Job,
+) *apiproto.PushItemResult {
+	result := s.dispatch(slot, call, requestTimeout, job)
 	// A dry run sends nothing, so it is not counted.
 	if result.GetStatus() != StatusDryRun {
 		countNotification(job, result)
@@ -90,7 +110,12 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 }
 
 // dispatch is the body of Dispatch: the server checks, the wait for a slot and the provider call.
-func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
+func (s *Set) dispatch(
+	slot context.Context,
+	call context.Context,
+	requestTimeout time.Duration,
+	job *Job,
+) *apiproto.PushItemResult {
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
@@ -113,16 +138,16 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		return NewResult(job, StatusRejected)
 	}
 
-	err := limited.slots.Acquire(syncCtx, 1)
+	err := limited.slots.Acquire(slot, 1)
 	if err != nil {
-		return NewResult(job, StatusPending)
+		return NewNotSentResult(job, s.waitEndCode(slot, call))
 	}
 	defer limited.slots.Release(1)
 
-	// Acquire takes a free slot even when syncCtx has ended, so the end is checked again: no call starts after the
-	// sync deadline.
-	if syncCtx.Err() != nil {
-		return NewResult(job, StatusPending)
+	// Acquire takes a free slot even when slot or call has ended, and a slot freed at the same instant as the call deadline
+	// goes to a waiter before the waiter's own timer has fired. Both ends are checked again: no call starts after them.
+	if slot.Err() != nil || callEnded(call) {
+		return NewNotSentResult(job, s.waitEndCode(slot, call))
 	}
 
 	// The gauge is nil while push metrics are not registered.
@@ -132,10 +157,93 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		defer inflight.WithLabelValues(name).Dec()
 	}
 
-	callCtx, cancel := context.WithTimeout(context.WithoutCancel(syncCtx), requestTimeout)
+	callCtx, cancel := callContext(call, requestTimeout)
 	defer cancel()
 
-	return limited.sender.Send(callCtx, job)
+	result := limited.sender.Send(callCtx, job)
+	// A provider returns not_sent with no code when its call context ended before the write: the set names the cause.
+	if result.GetStatus() == StatusNotSent && result.GetCode() == "" {
+		result.Code = s.endCode()
+	}
+	return result
+}
+
+// ShutdownContext returns the process-lifetime context of the set, or a context that never ends when there is none. Its
+// end stops the waits and the calls of every send. A nil set has no shutdown, so it returns a context that never ends.
+func (s *Set) ShutdownContext() context.Context {
+	if s == nil || s.shutdown == nil {
+		return context.Background()
+	}
+	return s.shutdown
+}
+
+// shutdownEnded reports whether the shutdown context of the set has ended.
+func (s *Set) shutdownEnded() bool {
+	return s.shutdown != nil && s.shutdown.Err() != nil
+}
+
+// endCode returns the code of a target that was not sent because a wait or a call ended. When the shutdown has ended,
+// the code is shutdown, even if a call deadline has ended too: both ends are seen only after the fact, so the shutdown
+// takes precedence. Otherwise the code is deadline.
+func (s *Set) endCode() string {
+	if s.shutdownEnded() {
+		return CodeShutdown
+	}
+	return CodeDeadline
+}
+
+// waitEndCode returns the code of a target that got no slot because its slot wait ended. The shutdown takes precedence.
+// Otherwise the code is deadline when the call deadline ended first, and no_slot when the sync timeout (the slot wait)
+// ended first. The slot wait ends at the earlier of the sync timeout and the call deadline, so the call deadline ended
+// first when it is not after the slot deadline.
+func (s *Set) waitEndCode(slot context.Context, call context.Context) string {
+	if s.shutdownEnded() {
+		return CodeShutdown
+	}
+	if !callEnded(call) {
+		return CodeNoSlot
+	}
+	callDeadline, hasCallDeadline := call.Deadline()
+	slotDeadline, hasSlotDeadline := slot.Deadline()
+	if hasCallDeadline && hasSlotDeadline && slotDeadline.Before(callDeadline) {
+		return CodeNoSlot
+	}
+	return CodeDeadline
+}
+
+// callEnded reports whether call has ended: its context is done, or its deadline has passed. The deadline is compared with
+// the clock too, because the timer that ends the context may not have fired yet when a slot is freed at the same instant.
+func callEnded(call context.Context) bool {
+	if call.Err() != nil {
+		return true
+	}
+	deadline, ok := call.Deadline()
+	return ok && !time.Now().Before(deadline)
+}
+
+// callContext returns the context of one provider call. It ends at the earlier of its own request timeout, counted from
+// now, and the deadline of call. It ends when call ends, so a shutdown or the call deadline cancels it. It is not bound to
+// the slot wait, so the end of the slot wait does not stop a call that started.
+func callContext(call context.Context, requestTimeout time.Duration) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(requestTimeout)
+	if callDeadline, ok := call.Deadline(); ok {
+		deadline = earlierOf(deadline, callDeadline)
+	}
+
+	callCtx, cancel := context.WithDeadline(context.WithoutCancel(call), deadline)
+	stop := context.AfterFunc(call, cancel)
+	return callCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+// earlierOf returns the earlier of two times.
+func earlierOf(first time.Time, second time.Time) time.Time {
+	if first.Before(second) {
+		return first
+	}
+	return second
 }
 
 // countNotification counts one result in the notification count, with the bounded labels of the result. Only the APNs
@@ -161,7 +269,7 @@ func countNotification(job *Job, result *apiproto.PushItemResult) {
 	counter.WithLabelValues(name, recipientToken, platform, success, errCodeOf(result)).Inc()
 }
 
-// errCodeOf returns the err_code label of result: a status class, a refusal code or a pending wait. A provider reason is
+// errCodeOf returns the err_code label of result: a status class, a refusal code or a not_sent target. A provider reason is
 // never a label. A rejected result with no status line and no code is counted as http_other.
 func errCodeOf(result *apiproto.PushItemResult) string {
 	status := result.GetStatus()
@@ -171,7 +279,7 @@ func errCodeOf(result *apiproto.PushItemResult) string {
 	switch {
 	case status == StatusSent:
 		return errCodeOK
-	case status == StatusPending:
+	case status == StatusNotSent:
 		return errCodeNotSent
 	case status == StatusUnanswered:
 		return errCodeUnanswered

@@ -33,11 +33,20 @@ func withFCMEndpoint(endpoint string) Option {
 	}
 }
 
+// withFCMTransport replaces the transport of the send requests, so a test can fail a write the way a connection does.
+func withFCMTransport(roundTripper http.RoundTripper) Option {
+	return func(client *Client) {
+		client.httpClient.Transport = roundTripper
+	}
+}
+
 // Client sends the targets of one FCM service account.
 type Client struct {
 	endpoint   string
 	gate       *tokenGate
 	httpClient *http.Client
+	// shutdown is the process-lifetime context. Its end classifies a token fetch that failed as shutdown.
+	shutdown context.Context
 }
 
 // NewClient returns the client of account. processCtx is the process-lifetime context: it ends the token fetches at
@@ -59,10 +68,11 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 
 	client := &Client{
 		endpoint: endpointBase + account.ProjectID + "/messages:send",
-		gate:     newTokenGate(account.JWT.TokenSource(tokenCtx)),
+		gate:     newShutdownTokenGate(account.JWT.TokenSource(tokenCtx), processCtx),
 		httpClient: &http.Client{
 			Transport: transport,
 		},
+		shutdown: processCtx,
 	}
 	for _, option := range options {
 		option(client)
@@ -70,18 +80,25 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 	return client, nil
 }
 
-// fcmError is the error body of a failed send request: the status, and the details that name the cause.
+// fcmError is the error body of a failed send request: the status, and the details that name the cause. The details
+// stay raw, so that the array can be passed on unchanged; they are decoded only to name the cause.
 type fcmError struct {
 	Error struct {
-		Status  string `json:"status"`
-		Details []struct {
-			ErrorCode       string `json:"errorCode"`
-			FieldViolations []struct {
-				Field string `json:"field"`
-			} `json:"fieldViolations"`
-		} `json:"details"`
+		Status  string          `json:"status"`
+		Details json.RawMessage `json:"details"`
 	} `json:"error"`
 }
+
+// fcmDetail is one element of the details of an error: an error code, or field violations of the request.
+type fcmDetail struct {
+	ErrorCode       string `json:"errorCode"`
+	FieldViolations []struct {
+		Field string `json:"field"`
+	} `json:"fieldViolations"`
+}
+
+// maxProviderDetailsBytes bounds the raw details array of a result.
+const maxProviderDetailsBytes = 4 << 10
 
 // Send sends the job to FCM and returns its raw result. It implements provider.Sender.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
@@ -110,16 +127,24 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	// The token wait is not a provider call. When it ends without a token, whether the caller's context ended or the
-	// fetch failed, nothing was sent: the item is pending, so a resend cannot duplicate a message.
+	// The token wait is not a provider call. When it ends without a token, nothing was sent, so the item is not_sent and a
+	// resend cannot duplicate a message. A wait that ended with the call context has no code: the set names the cause.
+	// A fetch that failed while the call context was alive is token_fetch, unless the node is shutting down: a fetch
+	// that the shutdown cancelled is shutdown, because the fetch failed for the shutdown and not for the provider.
 	token, err := c.gate.Token(ctx)
 	if err != nil {
-		return provider.NewResult(job, provider.StatusPending)
+		if ctx.Err() != nil {
+			return provider.NewNotSentResult(job, "")
+		}
+		if c.shutdown != nil && c.shutdown.Err() != nil {
+			return provider.NewNotSentResult(job, provider.CodeShutdown)
+		}
+		return provider.NewNotSentResult(job, provider.CodeTokenFetch)
 	}
 	// The token can be ready in the same moment as ctx ends, and the select then picks it. A call past its deadline
 	// is still not made.
 	if ctx.Err() != nil {
-		return provider.NewResult(job, provider.StatusPending)
+		return provider.NewNotSentResult(job, "")
 	}
 
 	// The OAuth access token is only the bearer of the request. The message token is the device token of the target,
@@ -129,7 +154,8 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 
 // post sends one request with body. Its errors are dropped: a net/http error text can carry the URL.
 func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string, body []byte) *apiproto.PushItemResult {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	trace := &provider.WriteTrace{}
+	request, err := http.NewRequestWithContext(trace.Trace(ctx), http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
@@ -138,7 +164,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 
 	httpResponse, err := c.httpClient.Do(request)
 	if err != nil {
-		return provider.NewResult(job, provider.StatusUnanswered)
+		return provider.NoAnswerResult(ctx, job, trace.Written())
 	}
 	defer func() {
 		_ = httpResponse.Body.Close()
@@ -172,30 +198,57 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 		return result
 	}
 	result.ProviderCode = provider.Truncate(failure.Error.Status)
-	result.ProviderDetail = failureDetail(failure)
+	// The details array is split into its elements once. The typed details and the raw result both read the elements.
+	elements := rawElements(failure.Error.Details)
+	details := decodeDetails(elements)
+	result.ProviderDetail = failureDetail(failure.Error.Status, details)
+	result.ProviderDetails, result.ProviderDetailsTruncated = providerDetails(failure.Error.Details, elements)
 	return result
+}
+
+// rawElements returns the elements of a raw details array. A value that is not an array has none, and nil is returned.
+func rawElements(raw json.RawMessage) []json.RawMessage {
+	var elements []json.RawMessage
+	if json.Unmarshal(raw, &elements) != nil {
+		return nil
+	}
+	return elements
+}
+
+// decodeDetails returns the typed details of the elements of a details array. One element that is not an object makes
+// the whole array have no typed details.
+func decodeDetails(elements []json.RawMessage) []fcmDetail {
+	details := make([]fcmDetail, 0, len(elements))
+	for _, element := range elements {
+		var detail fcmDetail
+		if json.Unmarshal(element, &detail) != nil {
+			return nil
+		}
+		details = append(details, detail)
+	}
+	return details
 }
 
 // failureDetail returns the first FCM error code of the details, else the first field violation, truncated. For an
 // INVALID_ARGUMENT answer the field violation comes first: it names the bad field, such as message.token, and an error
 // code of the same answer would hide which field is bad.
-func failureDetail(failure fcmError) string {
-	if failure.Error.Status == statusInvalidArgument {
-		if field := firstFieldViolation(failure); field != "" {
+func failureDetail(status string, details []fcmDetail) string {
+	if status == statusInvalidArgument {
+		if field := firstFieldViolation(details); field != "" {
 			return provider.Truncate(field)
 		}
 	}
-	for _, detail := range failure.Error.Details {
+	for _, detail := range details {
 		if detail.ErrorCode != "" {
 			return provider.Truncate(detail.ErrorCode)
 		}
 	}
-	return provider.Truncate(firstFieldViolation(failure))
+	return provider.Truncate(firstFieldViolation(details))
 }
 
 // firstFieldViolation returns the first non-empty field of the field violations of the details, or empty.
-func firstFieldViolation(failure fcmError) string {
-	for _, detail := range failure.Error.Details {
+func firstFieldViolation(details []fcmDetail) string {
+	for _, detail := range details {
 		for _, violation := range detail.FieldViolations {
 			if violation.Field != "" {
 				return violation.Field
@@ -203,4 +256,38 @@ func firstFieldViolation(failure fcmError) string {
 		}
 	}
 	return ""
+}
+
+// providerDetails returns the raw details array of a failed answer for the result, and whether it is not the array the
+// provider sent. An array within the limit is returned as it was sent, and it is not flagged. An array over the limit is
+// returned as a valid JSON array of its elements: the elements that fit are kept whole and in order, with the whitespace
+// between them removed, and the result is flagged. The flag is set for every array over the limit, because a cut array
+// and a compacted array are both not the bytes of the provider. A value that is not an array, and no details, give no
+// bytes.
+func providerDetails(raw json.RawMessage, elements []json.RawMessage) ([]byte, bool) {
+	if elements == nil {
+		return nil, false
+	}
+	if len(raw) <= maxProviderDetailsBytes {
+		return raw, false
+	}
+
+	var out bytes.Buffer
+	out.WriteByte('[')
+	for index, element := range elements {
+		separator := 0
+		if index > 0 {
+			separator = 1
+		}
+		// The closing bracket is counted with the element, so the cut array never exceeds the limit.
+		if out.Len()+separator+len(element)+1 > maxProviderDetailsBytes {
+			break
+		}
+		if separator == 1 {
+			out.WriteByte(',')
+		}
+		out.Write(element)
+	}
+	out.WriteByte(']')
+	return out.Bytes(), true
 }

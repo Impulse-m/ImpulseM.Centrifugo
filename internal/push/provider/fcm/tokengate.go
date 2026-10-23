@@ -25,6 +25,9 @@ const fetchKey = "fcm-token"
 // reads the cache without that lock, and the fetch runs in a singleflight call that the callers select on.
 type tokenGate struct {
 	source oauth2.TokenSource
+	// shutdown is the process-lifetime context. Its end ends a wait for a fetch, and no fetch starts after it. The
+	// source of x/oauth2 does not stop its own request when its context ends, so the gate must stop the wait itself.
+	shutdown context.Context
 
 	mu    sync.Mutex
 	token *oauth2.Token
@@ -32,10 +35,16 @@ type tokenGate struct {
 	group singleflight.Group
 }
 
-// newTokenGate returns a gate over source.
+// newTokenGate returns a gate over source that never ends a wait for shutdown.
 func newTokenGate(source oauth2.TokenSource) *tokenGate {
+	return newShutdownTokenGate(source, context.Background())
+}
+
+// newShutdownTokenGate returns a gate over source whose waits and fetches end with shutdown.
+func newShutdownTokenGate(source oauth2.TokenSource, shutdown context.Context) *tokenGate {
 	return &tokenGate{
-		source: source,
+		source:   source,
+		shutdown: shutdown,
 	}
 }
 
@@ -66,11 +75,15 @@ func (g *tokenGate) fetch() (any, error) {
 	return token, nil
 }
 
-// Token returns an access token for a call. It returns the context error when ctx ends before the token is ready,
-// and then no provider call may be made. A fetch error is returned as it is, and the caller answers rejected.
+// Token returns an access token for a call. It returns the context error when ctx ends before the token is ready, and
+// the shutdown error when the process shuts down first. In both cases no provider call may be made. A fetch error is
+// returned as it is, and the caller answers rejected.
 func (g *tokenGate) Token(ctx context.Context) (*oauth2.Token, error) {
 	if token := g.cached(); token != nil {
 		return token, nil
+	}
+	if err := g.shutdown.Err(); err != nil {
+		return nil, err
 	}
 
 	resultChan := g.group.DoChan(fetchKey, g.fetch)
@@ -83,5 +96,7 @@ func (g *tokenGate) Token(ctx context.Context) (*oauth2.Token, error) {
 		return result.Val.(*oauth2.Token), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-g.shutdown.Done():
+		return nil, g.shutdown.Err()
 	}
 }

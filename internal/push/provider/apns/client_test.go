@@ -556,7 +556,9 @@ func TestAPNsErrorsNeverCarryToken(t *testing.T) {
 
 	result := client.Send(context.Background(), newTestJob(0, token, nil, "{}"))
 
-	require.Equal(t, provider.StatusUnanswered, result.GetStatus())
+	// The connection was refused before the request was written, so nothing was sent.
+	require.Equal(t, provider.StatusNotSent, result.GetStatus())
+	require.Equal(t, provider.CodeConnectFailed, result.GetCode())
 	require.NotContains(t, result.String(), token)
 	require.NotContains(t, result.GetProviderDetail(), token)
 }

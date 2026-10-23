@@ -8,7 +8,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
 
-// Every result maps to one bounded err_code: a status class, a refusal or a pending wait. A provider reason never
+// Every result maps to one bounded err_code: a status class, a refusal or a not_sent target. A provider reason never
 // reaches the label.
 func TestErrCodeOf(t *testing.T) {
 	testCases := []struct {
@@ -17,7 +17,7 @@ func TestErrCodeOf(t *testing.T) {
 		expected string
 	}{
 		{name: "sent", result: &apiproto.PushItemResult{Status: StatusSent, HttpStatus: 200}, expected: errCodeOK},
-		{name: "pending", result: &apiproto.PushItemResult{Status: StatusPending}, expected: errCodeNotSent},
+		{name: "not sent", result: &apiproto.PushItemResult{Status: StatusNotSent, Code: CodeConnectFailed}, expected: errCodeNotSent},
 		{name: "unanswered", result: &apiproto.PushItemResult{Status: StatusUnanswered}, expected: errCodeUnanswered},
 		{
 			name:     "payload too large",

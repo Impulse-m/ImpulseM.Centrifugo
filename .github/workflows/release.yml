@@ -161,4 +161,5 @@ jobs:
 
           gh release create "v${VERSION}" "${args[@]}" \
             dist/*.tar.gz \
-            "dist/centrifugo_${VERSION}_checksums.txt"
+            "dist/centrifugo_${VERSION}_checksums.txt" \
+            internal/apiproto/api.proto

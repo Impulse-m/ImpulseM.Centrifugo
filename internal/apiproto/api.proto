@@ -173,6 +173,13 @@ message Error {
     // error. Retry a publication with the same idempotency_key, so that it
     // is not published twice.
     bool temporary = 3;
+
+    // ---- fork extensions ----
+
+    // metadata holds details of the error. A refusal of the direct send
+    // mode sets x-centrifugo-retry-after to the seconds to wait before a
+    // retry, the same key as a rate limited registry error.
+    map<string, string> metadata = 100;
 }
 
 // Reply is the reply to a single Command of a BatchRequest. It carries
@@ -1683,6 +1690,13 @@ message SendPushNotificationRequest {
     // collapse_id is the default collapse id of the targets that set none.
     // At most 64 bytes. Used by the direct send mode only.
     string collapse_id = 100;
+    // timeout_ms is the deadline of the whole call, in milliseconds. Zero
+    // means the default deadline: sync_timeout plus providers.request_timeout
+    // plus 5 seconds. A longer value is clamped to the default. The clock
+    // starts when the request arrives, so the upload of the body is inside
+    // it: a body that takes longer than timeout_ms to arrive gets no answer.
+    // Used by the direct send mode only.
+    uint32 timeout_ms = 101;
 }
 
 // PushLocalization holds translations for one language/locale.
@@ -2111,10 +2125,15 @@ message PushItemResult {
     uint32 index = 1;
     // ref is the echo of the target ref, when set.
     string ref = 2;
-    // status is sent, rejected, unanswered, pending or dry_run.
+    // status is sent, rejected, unanswered, not_sent or dry_run. not_sent
+    // means that the target never left the node, so a resend cannot duplicate
+    // it. unanswered means that the request was written and no answer came.
     string status = 3;
-    // code is a server refusal reason, set only when the server refused the
-    // target before any provider call: payload_too_large or expired.
+    // code names why a target did not reach a provider: payload_too_large or
+    // expired when the server refused it before any provider call, and for a
+    // not_sent target no_slot, connect_failed, deadline, token_fetch or
+    // shutdown. deadline also covers the provider request timeout. When the
+    // node's shutdown and a deadline have both ended, the code is shutdown.
     string code = 4;
     // provider_code is the APNs reason, or the FCM error status. Empty when
     // the provider sent no status or no body.
@@ -2129,4 +2148,13 @@ message PushItemResult {
     // included, or the FCM message name on sent only. Empty when the provider
     // sent none.
     string provider_message_id = 8;
+    // provider_details is the raw JSON array of the FCM error details, not
+    // mapped. An array of at most 4 KiB is returned as the provider sent it.
+    // A longer array is returned as a valid JSON array of whole elements, with
+    // the whitespace removed, and cut at an element boundary when it still does
+    // not fit. Empty for APNs and for successes.
+    bytes provider_details = 9;
+    // provider_details_truncated is true when the array was over 4 KiB, so
+    // provider_details is a cut or compacted copy and not the array as sent.
+    bool provider_details_truncated = 10;
 }

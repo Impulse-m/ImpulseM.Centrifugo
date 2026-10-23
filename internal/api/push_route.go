@@ -19,6 +19,8 @@ import (
 // count is checked on the raw body before the generated decoder allocates the entries. A body over the cap is refused
 // with the bad request error, not with a server error.
 func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
+	// The call starts with its request: the deadline of timeout_ms counts the time the body takes to arrive.
+	started := time.Now()
 	sender := s.api.config.Push
 	if sender == nil {
 		s.handleSendPushNotification(w, r)
@@ -42,10 +44,6 @@ func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The write deadline covers the inline run and the response, not the upload of the body: it is set once the body
-	// is read. A writer without deadline control ignores the error, and the server write timeout then applies.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sender.WriteBound()))
-
 	refusal := sender.CheckRecipientCount(data)
 	if refusal != nil {
 		s.writePushSendRefusal(w, r, refusal)
@@ -53,7 +51,13 @@ func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(data))
-	r = r.WithContext(push.WithAdmission(r.Context()))
+	// The write deadline is the deadline of the call, which the send sets once the request is decoded. The call deadline
+	// counts from started, so the write deadline covers the body upload, the inline run and the response. A writer without
+	// deadline control ignores the error, and the server write timeout then applies.
+	ctx := push.WithWriteDeadline(r.Context(), func(deadline time.Time) {
+		_ = http.NewResponseController(w).SetWriteDeadline(deadline)
+	})
+	r = r.WithContext(push.WithAdmission(ctx, started))
 	s.handleSendPushNotification(w, r)
 }
 

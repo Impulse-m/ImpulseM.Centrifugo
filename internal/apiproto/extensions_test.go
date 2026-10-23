@@ -51,6 +51,7 @@ func TestForkFieldNumbersAreExact(t *testing.T) {
 
 	require.Equal(t, []fieldSpec{
 		{name: "collapse_id", number: 100, kind: protoreflect.StringKind},
+		{name: "timeout_ms", number: 101, kind: protoreflect.Uint32Kind},
 	}, forkFields((&SendPushNotificationRequest{}).ProtoReflect().Descriptor()))
 
 	require.Equal(t, []fieldSpec{
@@ -98,5 +99,7 @@ func TestPushItemResultFields(t *testing.T) {
 		{name: "provider_detail", number: 6, kind: protoreflect.StringKind},
 		{name: "http_status", number: 7, kind: protoreflect.Uint32Kind},
 		{name: "provider_message_id", number: 8, kind: protoreflect.StringKind},
+		{name: "provider_details", number: 9, kind: protoreflect.BytesKind},
+		{name: "provider_details_truncated", number: 10, kind: protoreflect.BoolKind},
 	}, collectFields((&PushItemResult{}).ProtoReflect().Descriptor()))
 }

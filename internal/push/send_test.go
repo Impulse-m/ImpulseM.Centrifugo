@@ -161,9 +161,10 @@ func TestCallLimitAnswers111(t *testing.T) {
 	require.True(t, resp.GetError().GetTemporary())
 }
 
-func TestPendingAfterSyncTimeout(t *testing.T) {
+func TestNotSentAfterSyncTimeout(t *testing.T) {
 	// One slot per provider, and a call that holds its slot until its request timeout. The second and third targets wait
-	// for the slot, and the sync deadline ends the wait before the slot is free: they are pending and make no call.
+	// for the slot, and the sync deadline ends the wait before the slot is free: they are not_sent with no_slot and make
+	// no call.
 	fake := &countingSender{hold: true}
 	s := newTestSender(t, fake, func(cfg *configtypes.PushNotifications) {
 		cfg.APNs.MaxInflight = 1
@@ -183,17 +184,55 @@ func TestPendingAfterSyncTimeout(t *testing.T) {
 	resp := s.Send(context.Background(), req)
 
 	require.Nil(t, resp.GetError())
-	var pending int
+	var notSent int
 	var answered int
 	for _, result := range resp.GetResult().GetResults() {
-		if result.GetStatus() == provider.StatusPending {
-			pending++
+		if result.GetStatus() == provider.StatusNotSent {
+			require.Equal(t, provider.CodeNoSlot, result.GetCode())
+			notSent++
 			continue
 		}
 		answered++
 	}
-	require.GreaterOrEqual(t, pending, 1)
-	require.Equal(t, int32(answered), fake.calls.Load(), "a pending target makes no call")
+	require.GreaterOrEqual(t, notSent, 1)
+	require.Equal(t, int32(answered), fake.calls.Load(), "a not_sent target makes no call")
+}
+
+func TestNotSentDeadlineBeforeSyncTimeout(t *testing.T) {
+	// One slot, held by a call until the call deadline. The sync timeout is far away, so the timeout_ms deadline ends the
+	// slot wait first: the waiting targets are not_sent with deadline, not no_slot, and make no call.
+	fake := &countingSender{hold: true}
+	s := newTestSender(t, fake, func(cfg *configtypes.PushNotifications) {
+		cfg.APNs.MaxInflight = 1
+		cfg.SyncTimeout = configtypes.Duration(time.Minute)
+		cfg.Providers.RequestTimeout = configtypes.Duration(time.Minute)
+	})
+	s.set = provider.NewSet()
+	s.set.Add(provider.ProviderAPNs, fake, 1)
+
+	req := validRequest()
+	req.TimeoutMs = 150
+	req.Recipient.Targets = []*apiproto.PushTarget{
+		{Provider: provider.ProviderAPNs, Token: "a", Environment: "production"},
+		{Provider: provider.ProviderAPNs, Token: "b", Environment: "production"},
+		{Provider: provider.ProviderAPNs, Token: "c", Environment: "production"},
+	}
+
+	resp := s.Send(context.Background(), req)
+
+	require.Nil(t, resp.GetError())
+	var notSent int
+	var answered int
+	for _, result := range resp.GetResult().GetResults() {
+		if result.GetStatus() == provider.StatusNotSent {
+			require.Equal(t, provider.CodeDeadline, result.GetCode())
+			notSent++
+			continue
+		}
+		answered++
+	}
+	require.GreaterOrEqual(t, notSent, 1)
+	require.Equal(t, int32(answered), fake.calls.Load(), "a not_sent target makes no call")
 }
 
 func TestExpiredItemRejectedWithoutCall(t *testing.T) {
@@ -218,9 +257,10 @@ func TestWorkerPoolSize(t *testing.T) {
 	require.Equal(t, 200, poolSize(500, 200), "FCM: min(500, 200)")
 }
 
-func TestWriteBoundIsSyncPlusRequestPlusMargin(t *testing.T) {
+func TestDefaultCallTimeoutIsSyncPlusRequestPlusMargin(t *testing.T) {
 	s := newTestSender(t, &countingSender{}, nil)
 
 	// The default bound is sync_timeout (10 s) plus providers.request_timeout (10 s) plus 5 s.
-	require.Equal(t, 25*time.Second, s.WriteBound())
+	require.Equal(t, 25*time.Second, s.DefaultCallTimeout())
+	require.Equal(t, 25*time.Second, s.CallTimeout(0))
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -44,6 +45,13 @@ func withHost(host string) Option {
 func withTLSConfig(config *tls.Config) Option {
 	return func(client *Client) {
 		client.httpClient.Transport.(*http.Transport).TLSClientConfig = config
+	}
+}
+
+// withRoundTripper replaces the transport of the client, so a test can fail a write the way a connection does.
+func withRoundTripper(roundTripper http.RoundTripper) Option {
+	return func(client *Client) {
+		client.httpClient.Transport = roundTripper
 	}
 }
 
@@ -115,17 +123,23 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	answer, answered := c.post(ctx, job, payload, headers, token)
+	answer, answered, written, err := c.post(ctx, job, payload, headers, token)
+	if err != nil {
+		return provider.NewResult(job, provider.StatusRejected)
+	}
 	if answered && answer.status == http.StatusForbidden && providerTokenRefused(answer.reason) && issuedAt < c.credential.Window() {
 		// The bearer is of an earlier window, so one repeat with the bearer of the current window is allowed.
 		token, _, err = c.credential.Current()
 		if err == nil {
-			answer, answered = c.post(ctx, job, payload, headers, token)
+			answer, answered, written, err = c.post(ctx, job, payload, headers, token)
+			if err != nil {
+				return provider.NewResult(job, provider.StatusRejected)
+			}
 		}
 	}
 
 	if !answered {
-		return provider.NewResult(job, provider.StatusUnanswered)
+		return provider.NoAnswerResult(ctx, job, written)
 	}
 	if answer.status >= 200 && answer.status < 300 {
 		return answeredResult(job, provider.StatusSent, answer)
@@ -133,13 +147,24 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 	return answeredResult(job, provider.StatusRejected, answer)
 }
 
-// post sends one request for job with token. It reports false when no status line was received. Its errors are
-// dropped: the text of a net/http error carries the URL, and the URL carries the device token.
-func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, headers map[string]string, token string) (response, bool) {
+// errRequestBuild is the error of a request that could not be built locally. No request was made.
+var errRequestBuild = errors.New("apns request could not be built")
+
+// post sends one request for job with token. It reports whether a status line was received, and whether the request was
+// written. Its errors are dropped: the text of a net/http error carries the URL, and the URL carries the device token. A
+// request that could not be built is the only error returned, and no request was made for it.
+func (c *Client) post(
+	ctx context.Context,
+	job *provider.Job,
+	payload []byte,
+	headers map[string]string,
+	token string,
+) (response, bool, bool, error) {
 	requestURL := c.host + "/3/device/" + url.PathEscape(job.Target.GetToken())
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
+	trace := &provider.WriteTrace{}
+	request, err := http.NewRequestWithContext(trace.Trace(ctx), http.MethodPost, requestURL, bytes.NewReader(payload))
 	if err != nil {
-		return response{}, false
+		return response{}, false, false, errRequestBuild
 	}
 
 	request.Header.Set("authorization", "bearer "+token)
@@ -150,7 +175,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, he
 
 	httpResponse, err := c.httpClient.Do(request)
 	if err != nil {
-		return response{}, false
+		return response{}, false, trace.Written(), nil
 	}
 	defer func() {
 		_ = httpResponse.Body.Close()
@@ -164,7 +189,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, he
 	// A body read error keeps the status: the reason is set only from a body that was read whole.
 	body, readErr := provider.ReadAnswer(httpResponse)
 	if readErr != nil {
-		return answer, true
+		return answer, true, true, nil
 	}
 
 	var fields struct {
@@ -172,13 +197,13 @@ func (c *Client) post(ctx context.Context, job *provider.Job, payload []byte, he
 		Timestamp json.RawMessage `json:"timestamp"`
 	}
 	if json.Unmarshal(body, &fields) != nil {
-		return answer, true
+		return answer, true, true, nil
 	}
 	answer.reason = fields.Reason
 	if answer.status == http.StatusGone {
 		answer.detail = string(fields.Timestamp)
 	}
-	return answer, true
+	return answer, true, true, nil
 }
 
 // providerTokenRefused reports whether a 403 reason means that the provider token is refused.

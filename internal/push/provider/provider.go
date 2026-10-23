@@ -20,14 +20,27 @@ const (
 	StatusSent       = "sent"
 	StatusRejected   = "rejected"
 	StatusUnanswered = "unanswered"
-	StatusPending    = "pending"
+	StatusNotSent    = "not_sent"
 	StatusDryRun     = "dry_run"
 )
 
-// Item codes of a server refusal, set only when the server refused a target before any provider call.
+// Item codes. A server refusal sets CodePayloadTooLarge or CodeExpired, and no provider call is made. A not_sent item
+// sets one of the other codes, which name why the target never left the node.
 const (
 	CodePayloadTooLarge = "payload_too_large"
 	CodeExpired         = "expired"
+	// CodeNoSlot is a target that got no in-flight slot before the slot wait ended.
+	CodeNoSlot = "no_slot"
+	// CodeConnectFailed is a transport error before the request was written.
+	CodeConnectFailed = "connect_failed"
+	// CodeDeadline is a target whose call deadline, or whose provider request timeout, came before the request was
+	// written.
+	CodeDeadline = "deadline"
+	// CodeTokenFetch is an FCM target whose access token fetch failed.
+	CodeTokenFetch = "token_fetch"
+	// CodeShutdown is a target that the node's shutdown ended before the request was written. When the shutdown and a
+	// deadline have both ended, the code is shutdown.
+	CodeShutdown = "shutdown"
 )
 
 // Provider names of a target.
@@ -128,6 +141,28 @@ func NewCodeResult(job *Job, code string) *apiproto.PushItemResult {
 	result := NewResult(job, StatusRejected)
 	result.Code = code
 	return result
+}
+
+// NewNotSentResult returns a not_sent result of job: the target never left the node. The code names why, and it is
+// empty when the wait ended and the set names the cause.
+func NewNotSentResult(job *Job, code string) *apiproto.PushItemResult {
+	result := NewResult(job, StatusNotSent)
+	result.Code = code
+	return result
+}
+
+// NoAnswerResult returns the result of job for an attempt that got no status line. When the request was written, the
+// provider may have delivered it, so the result is unanswered. Otherwise the target was not sent: it is not_sent with
+// connect_failed when the call context is still alive, which is a transport error, and with no code when the call
+// context has ended, so the set names the deadline or the shutdown.
+func NoAnswerResult(call context.Context, job *Job, written bool) *apiproto.PushItemResult {
+	if written {
+		return NewResult(job, StatusUnanswered)
+	}
+	if call.Err() != nil {
+		return NewNotSentResult(job, "")
+	}
+	return NewNotSentResult(job, CodeConnectFailed)
 }
 
 // ApnsPayloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.

@@ -43,6 +43,9 @@ type Sender struct {
 	set             *provider.Set
 }
 
+// writeDeadlineKey is the context key of the write deadline setter of the send route.
+type writeDeadlineKey struct{}
+
 // apnsRouter sends each APNs target through the client of its environment. Both environments share one credential,
 // and the environment chooses only the host.
 type apnsRouter struct {
@@ -68,11 +71,11 @@ func Setup(processCtx context.Context, cfg configtypes.PushNotifications) (*Send
 		return s, nil
 	}
 	if cfg.DryRun {
-		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized)
+		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
 		return s, nil
 	}
 
-	s.set = provider.NewSet().WithOversizeCheck(oversized)
+	s.set = provider.NewSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
 	err := s.load(processCtx, cfg)
 	if err != nil {
 		return nil, err
@@ -167,15 +170,25 @@ func oversized(job *provider.Job) bool {
 // admittedKey is the context key of a call that already holds a call slot of the node.
 type admittedKey struct{}
 
-// WithAdmission marks ctx as a call that holds a call slot taken by Admit. Send then takes no second slot for it.
-func WithAdmission(ctx context.Context) context.Context {
-	return context.WithValue(ctx, admittedKey{}, true)
+// admission is the value of admittedKey: the time the call started, and the mark of the held slot.
+type admission struct {
+	started time.Time
 }
 
-// isAdmitted reports whether ctx is marked by WithAdmission.
-func isAdmitted(ctx context.Context) bool {
-	admitted, ok := ctx.Value(admittedKey{}).(bool)
-	return ok && admitted
+// WithAdmission marks ctx as a call that holds a call slot taken by Admit, and that started at started, the arrival of
+// its request. Send then takes no second slot for it, and its call deadline counts from started, so the time the body
+// takes to arrive is inside the deadline.
+func WithAdmission(ctx context.Context, started time.Time) context.Context {
+	return context.WithValue(ctx, admittedKey{}, admission{started: started})
+}
+
+// admittedAt returns the start of the call when ctx is marked by WithAdmission.
+func admittedAt(ctx context.Context) (time.Time, bool) {
+	marked, ok := ctx.Value(admittedKey{}).(admission)
+	if !ok {
+		return time.Time{}, false
+	}
+	return marked.started, true
 }
 
 // Admit takes one call slot of the node. It answers the too-many-requests error when max_concurrent_requests calls hold
@@ -220,13 +233,38 @@ func (s *Sender) MaxRequestBytes() int64 {
 	return int64(s.maxRequestBytes)
 }
 
-// WriteBound returns the longest time a send response can take: the sync wait, the provider timeout and a margin. The
-// send route sets its write deadline to this bound from the request start.
-func (s *Sender) WriteBound() time.Duration {
+// DefaultCallTimeout returns the deadline of a call that sets no timeout_ms: the sync wait, the provider timeout and a
+// margin. It is the longest time a send response can take.
+func (s *Sender) DefaultCallTimeout() time.Duration {
 	if s == nil {
 		return 0
 	}
 	return s.syncTimeout + s.requestTimeout + writeMargin
+}
+
+// CallTimeout returns the deadline of a call with timeoutMs: the default when timeoutMs is zero, and timeoutMs when it is
+// positive and below the default. A longer value is clamped to the default, not refused.
+func (s *Sender) CallTimeout(timeoutMs uint32) time.Duration {
+	limit := s.DefaultCallTimeout()
+	if timeoutMs == 0 {
+		return limit
+	}
+	return min(time.Duration(timeoutMs)*time.Millisecond, limit)
+}
+
+// WithWriteDeadline returns ctx with set as the setter of the write deadline of the response. The send route passes the
+// setter of its writer. Send calls it once, with the deadline of the call, so the response is written within the call.
+func WithWriteDeadline(ctx context.Context, set func(time.Time)) context.Context {
+	return context.WithValue(ctx, writeDeadlineKey{}, set)
+}
+
+// setWriteDeadline calls the write deadline setter of ctx, when there is one.
+func setWriteDeadline(ctx context.Context, deadline time.Time) {
+	set, ok := ctx.Value(writeDeadlineKey{}).(func(time.Time))
+	if !ok || set == nil {
+		return
+	}
+	set(deadline)
 }
 
 // Send runs one direct send. It answers with one result per recipient, in request order, or with the error of its
@@ -246,8 +284,11 @@ func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationReq
 		return errorResponse(refusal)
 	}
 
-	// A call from the send route holds its slot already. Any other call takes one here.
-	if !isAdmitted(ctx) {
+	// A call from the send route holds its slot already, and its start is the arrival of its request. Any other call
+	// takes a slot here, and starts now.
+	started, admitted := admittedAt(ctx)
+	if !admitted {
+		started = time.Now()
 		release, busy := s.Admit()
 		if busy != nil {
 			countRequest(requestRefused)
@@ -266,7 +307,12 @@ func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationReq
 		uid = generated.String()
 	}
 
-	results := s.run(ctx, jobs)
+	// The call deadline counts from the start of the call, not from the decode of the body, so the response is written
+	// within timeout_ms of the request. The write deadline is the call deadline.
+	callDeadline := started.Add(s.CallTimeout(req.GetTimeoutMs()))
+	setWriteDeadline(ctx, callDeadline)
+
+	results := s.run(ctx, jobs, callDeadline)
 	countRequest(requestCompleted)
 	log.Debug().Int("targets", len(jobs)).Msg("direct push send")
 

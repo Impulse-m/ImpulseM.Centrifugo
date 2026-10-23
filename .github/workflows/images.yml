@@ -49,6 +49,16 @@ jobs:
             -ldflags "-s -w -X github.com/centrifugal/centrifugo/v6/internal/build.Version=${VERSION}" \
             -o "docker-context/${GOARCH}/centrifugo" .
 
+      - name: Copy notices into the image context
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          context="docker-context/${ARCH}"
+          mkdir -p "$context/licenses/webui" "$context/licenses/swagger-ui"
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES.md "$context/"
+          cp internal/webui/THIRD_PARTY_LICENSES.txt "$context/licenses/webui/"
+          cp internal/swaggerui/THIRD_PARTY_LICENSES.txt "$context/licenses/swagger-ui/"
+
       - name: Package release archive
         env:
           VERSION: ${{ inputs.version }}
@@ -56,9 +66,10 @@ jobs:
         run: |
           staging="$RUNNER_TEMP/archive-${ARCH}"
           mkdir -p "$staging" dist
-          cp "docker-context/${ARCH}/centrifugo" LICENSE README.md CHANGELOG.md "$staging/"
+          cp -r "docker-context/${ARCH}/licenses" "$staging/"
+          cp "docker-context/${ARCH}/centrifugo" LICENSE NOTICE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md "$staging/"
           tar -czf "dist/centrifugo_${VERSION}_linux_${ARCH}.tar.gz" \
-            -C "$staging" centrifugo LICENSE README.md CHANGELOG.md
+            -C "$staging" centrifugo LICENSE NOTICE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md licenses
 
       - name: Upload release archive
         uses: actions/upload-artifact@v7

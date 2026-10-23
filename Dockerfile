@@ -17,4 +17,7 @@ WORKDIR /centrifugo
 
 COPY centrifugo /usr/local/bin/centrifugo
 
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/doc/centrifugo/
+COPY licenses /usr/share/doc/centrifugo/licenses
+
 CMD ["centrifugo"]

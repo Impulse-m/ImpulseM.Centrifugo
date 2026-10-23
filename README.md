@@ -1,12 +1,38 @@
 # ImpulseM.Centrifugo
 
-A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Centrifugo v6 plus features for large deployments. Upstream is merged regularly (last sync: upstream master of 2026-10, v6.9.x), and a weekly check opens an issue when the fork falls behind. The features are implemented from the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview), keeping its config keys and API shapes. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
+ImpulseM.Centrifugo is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for large deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
-## Added on top of upstream
+**Current version: v1.15.0.** The fork uses its own semantic versioning from 1.0.0, independent of upstream version numbers.
 
-* [Server-side publication tags filter](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/7): a per-subscriber filter set by the backend that the client can't widen. The filtering itself is upstream's Core implementation; the fork lets the backend set it from the subscription token, connection token `subs`, and subscribe and connect proxy results. Recovery applies the filter; an explicit history call on a filtered subscription is refused, since history is not filtered.
-* [Server tags filter template](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/18): a namespace filter rendered for each connection from its token claims, user and client, so every subscriber gets a filter of its own value, for example echo suppression by session. Combined with an explicit server tags filter by `and`; see [below](#server-tags-filter-template).
-* `require_server_tags_filter` channel option (namespace or `channel.without_namespace`): every subscriber of the namespace must carry a server tags filter, so a subscription which ends up without one is refused whichever route made it, and client history calls on the namespace are refused. A forgotten route fails closed instead of giving an unfiltered subscription.
+```
+docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
+```
+
+See [Install](#install) for image tags and binaries.
+
+## What the fork adds
+
+* [Push notifications](#push-notifications): direct send to APNs and FCM tokens, and the push API routes over HTTP and gRPC.
+* [Server-side publication tags filter](#server-side-publication-tags-filter), [server tags filter template](#server-tags-filter-template) and [require server tags filter](#require-server-tags-filter): subscription filters set by the backend that clients cannot widen.
+* [User blocking and token revocation](#user-blocking-and-token-revocation), with an optional [access revocation event source](#access-revocation-event-source).
+* [Client address behind trusted proxies](#client-address-behind-trusted-proxies).
+* [RPC method registry](#rpc-method-registry).
+* [Per-namespace engines and custom controller](#per-namespace-engines-and-custom-controller).
+* [Operation rate limits](#operation-rate-limits) and [bandwidth optimizations](#bandwidth-optimizations).
+* [Unsubscribe codes](#unsubscribe-codes), [singleflight](#singleflight), [shared position sync](#shared-position-sync), [refresh lead](#refresh-lead), [message batching](#message-batching) and the [JWKS response size limit](#jwks-response-size-limit).
+* Not yet implemented: [see the list](#not-implemented-yet).
+
+## Fork features
+
+### Server-side publication tags filter
+
+Tracking issue: [#7](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/7). A per-subscriber filter set by the backend that the client can't widen. The filtering itself is upstream's Core implementation; the fork lets the backend set it from the subscription token, connection token `subs`, and subscribe and connect proxy results. Recovery applies the filter; an explicit history call on a filtered subscription is refused, since history is not filtered.
+
+The namespace-level template that renders a filter per connection from its claims is described in [Server tags filter template](#server-tags-filter-template) (tracking issue [#18](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/18)).
+
+### Require server tags filter
+
+`require_server_tags_filter` channel option (namespace or `channel.without_namespace`): every subscriber of the namespace must carry a server tags filter, so a subscription which ends up without one is refused whichever route made it, and client history calls on the namespace are refused. A forgotten route fails closed instead of giving an unfiltered subscription.
   * Client subscribe without a filter: permission denied (103). Covers a subscription token without the claim, a subscribe proxy answer without `server_tags_filter` (for example one whose key was spelled `serverTagsFilter`, which the HTTP decoder drops silently), user-limited and `allow_subscribe_for_client` channels, and map subscriptions.
   * Connect-time server-side subscriptions the backend asserts, a connection token `channels` claim or a `subs` entry without the claim, a connect proxy `channels` list or a `null` `subs` entry: the connection is refused with 3507, which SDKs do not retry. This is the cost of failing closed on the connect path: one such channel locks the user out of the whole connection, not only that channel, so roll the option out per namespace after the token and connect proxy code carries filters. A channel a client asks for at connect is dropped and the connection is made.
   * Rebind: a token whose subscriptions lack a filter is refused as a refresh error (103) before the connection moves.
@@ -16,7 +42,10 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
   * Config errors: `subscription_type: shared_poll` and `subscribe_stream_proxy_enabled` (those subscriptions do not apply the filter), the personal channel namespace (without a template), and `client.insecure_skip_token_signature_verify` (an unverified token can carry any filter).
   * Turning it on at a config reload applies to new subscriptions; existing unfiltered subscriptions live until they resubscribe or reconnect.
   * Off by default and then free. Not a PRO option: PRO has no way to require the filter.
-* [User blocking and token revocation](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/10):
+### User blocking and token revocation
+
+Tracking issue: [#10](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/10). The fork adds:
+
   * `block_user`, `unblock_user`, `revoke_token` and `invalidate_user_tokens` server API methods;
   * extensions for session-based revocation and revocation generations;
   * an in-memory store on every node, live disconnects and cluster propagation.
@@ -33,16 +62,24 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
     * subscription tokens are not covered by revocation, only connection tokens;
     * `invalidate_user_tokens.channel` is not available;
     * `storage_type` is memory only: `redis` and `database` are rejected at startup. Use the per-node revocation source (`access_revoke.source`) as the durable delivery path.
-* `unsubscribe` server API method takes an optional `unsubscribe` code and reason, for the HTTP, gRPC, batch and consumer APIs: a code in 2100-2499 leaves clients unsubscribed, a code in 2600-2999 makes them subscribe again at once, so the subscribe proxy runs again and a changed server tags filter applies. The reason is at most 123 bytes. Without the field the default code 2000 applies; an invalid code or reason is a bad request, and in a consumer it is logged and the default code is used.
-* Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enabled`): concurrent identical calls share one broker or presence request. Helps only with a remote engine (Redis), not with the memory engine.
-* `shared_position_sync` channel option (namespace or `channel.without_namespace`): the node checks stream position once per channel per `client.channel_position_check_delay` instead of once per subscriber, so position checks cost one broker request per channel per interval.
+### Unsubscribe codes
+
+The `unsubscribe` server API method takes an optional `unsubscribe` code and reason, for the HTTP, gRPC, batch and consumer APIs: a code in 2100-2499 leaves clients unsubscribed, a code in 2600-2999 makes them subscribe again at once, so the subscribe proxy runs again and a changed server tags filter applies. The reason is at most 123 bytes. Without the field the default code 2000 applies; an invalid code or reason is a bad request, and in a consumer it is logged and the default code is used.
+### Singleflight
+
+Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enabled`): concurrent identical calls share one broker or presence request. Helps only with a remote engine (Redis), not with the memory engine.
+### Shared position sync
+
+`shared_position_sync` channel option (namespace or `channel.without_namespace`): the node checks stream position once per channel per `client.channel_position_check_delay` instead of once per subscriber, so position checks cost one broker request per channel per interval.
   * Requires `force_positioning`, `allow_positioning`, `force_recovery` or `allow_recovery`, and a `client.channel_position_check_delay` greater than zero.
   * Detection latency: one to two `client.channel_position_check_delay` intervals for a node-wide loss, one interval for a single client.
   * `client.channel_position_check_delay` must exceed the broker's worst-case PUB/SUB lag, otherwise a publication in flight is reported as a loss.
   * A broker that lost the tail of a stream but kept its epoch (e.g. a Redis failover with async replication) is detected when the stream top falls behind what the node already delivered, confirmed over two intervals. A client ahead of the cached stream top is valid unless the top was fetched after its last update.
   * Options are applied when a channel's first subscriber arrives on the node. A config change applies to a channel after it empties.
   * Enabling it for the first time (no channel used it at startup) requires a node restart: when no channel options use it, the node skips the per-publication lookup entirely.
-* Operation rate limits (`client.rate_limit`) as described in the PRO docs: per-connection `client_command` limits with `total`, `default`, channel namespace overrides and RPC method overrides, `user_command` limits per user ID (in memory, shared by all connections of a user, including user-level `connect`), and `client_error` limits that disconnect abusive connections. `redis_user_command` keeps per-user limits in Redis per user ID, so all nodes share one budget; it has no `total`. Users are spread over Redis shards by consistent hashing of the user ID. With `reuse_from_engine` it uses the engine Redis configuration and engine prefix, so apps sharing one Redis with different engine prefixes never share limits. On Redis errors commands are allowed (fail-open), or refused for one second with `client.rate_limit.redis_user_command.on_error: deny`; each Redis call is bounded by `io_timeout`, 4s by default, and `command_timeout` bounds the command and connect checks. With the default `on_error: allow` the node starts when Redis is unreachable: it allows commands and reconnects in the background. With `on_error: deny` it starts too, and refuses commands (one second each) and connects until Redis connects. The outage rules, the refusal memory, Redis sizing and the token bucket truncation are in [internal/ratelimit/README.md](internal/ratelimit/README.md).
+### Operation rate limits
+
+Operation rate limits (`client.rate_limit`) as described in the PRO docs: per-connection `client_command` limits with `total`, `default`, channel namespace overrides and RPC method overrides, `user_command` limits per user ID (in memory, shared by all connections of a user, including user-level `connect`), and `client_error` limits that disconnect abusive connections. `redis_user_command` keeps per-user limits in Redis per user ID, so all nodes share one budget; it has no `total`. Users are spread over Redis shards by consistent hashing of the user ID. With `reuse_from_engine` it uses the engine Redis configuration and engine prefix, so apps sharing one Redis with different engine prefixes never share limits. On Redis errors commands are allowed (fail-open), or refused for one second with `client.rate_limit.redis_user_command.on_error: deny`; each Redis call is bounded by `io_timeout`, 4s by default, and `command_timeout` bounds the command and connect checks. With the default `on_error: allow` the node starts when Redis is unreachable: it allows commands and reconnects in the background. With `on_error: deny` it starts too, and refuses commands (one second each) and connects until Redis connects. The outage rules, the refusal memory, Redis sizing and the token bucket truncation are in [internal/ratelimit/README.md](internal/ratelimit/README.md).
   * Where the PRO docs leave it open: user-level `connect` falls back to `default` but is not subject to `total`, like `connect` in `client_command`. A connect takes its connect bucket token when it is attempted, so a connect which a later check rejects, such as single-connection enforcement, keeps the token used: the bucket is not refunded. Limiters are checked in order `client_command`, `user_command`: a command rejected by the user limit still consumes its per-connection tokens.
   * Operation classification: map and shared poll subscriptions count as `subscribe`. A publish with map type counts as `map_publish`, or as `map_remove` when it removes the key, whatever the channel: Core routes it to its map handlers by type, not by the channel's subscription type, so a map type publish on a stream channel is still counted as a map operation. A regular publish to a map channel counts as `publish`. On a shared poll channel, track and untrack of keys count as `track` and `untrack` (`sub_refresh` with type 1 and 2). The classification is by request type alone, as Core routes it, so a request of type 1 or 2 without a track batch is charged to `track` or `untrack` before Core rejects it. On any other channel a `sub_refresh` refreshes the subscription token and counts as `sub_refresh` whatever its type. `history`, `presence` and `presence_stats` on map channels are plain commands and count as before.
   * Upgrade: map publishes and map removes count against the `publish` buckets, and track and untrack against the `sub_refresh` buckets, unless their own buckets are set, as before the map operations existed. When `publish` has buckets this replaces the earlier fallback to `default`, so with both set, map publishes now share the `publish` budget. A map operation with its own base buckets counts against them in every namespace: neither the parent's base nor its namespace overrides apply to it. Without its own base buckets, the parent's namespace overrides still apply to the namespaces the map operation does not override. Set `map_publish`, `map_remove`, and for shared poll `track` and `untrack`, to give them a budget of their own.
@@ -50,17 +87,27 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
   * Upgrade: the node refuses to start when a bucket list has more than 16 entries, `method_overrides` has more than 4096 entries, or a `redis_user_command` token bucket has an emission under 1 microsecond (its interval divided by rate: with a one second interval, a rate above 1,000,000 per second). Reduce the entries, or lengthen the interval or lower the rate.
   * Memory: the state of rate limits is kept per connection and per user in memory, and per user in Redis for `redis_user_command`. The formula and the worst case are in [internal/ratelimit/README.md](internal/ratelimit/README.md#memory).
 
-* Bandwidth optimizations (#14), following the [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/bandwidth_optimizations) and keeping its config keys:
+### Bandwidth optimizations
+
+Bandwidth optimizations (#14), following the [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/bandwidth_optimizations) and keeping its config keys:
   * `keep_latest_publication` namespace or `channel.without_namespace` option: the node keeps the latest publication of each channel while it has subscribers, so delta compression also works for at-most-once subscribers without positioning or recovery. Requires `allowed_delta_types`; publishers still set `delta` or `delta_publish`. Not used for map subscriptions: map channels with subscribers still get a channel medium, which holds no base for keyed publications, so it adds per-channel state without a delta benefit. Memory cost is one latest publication per channel with local subscribers, kept whether or not the publication was sent as a delta. Clients allowed to publish (`allow_publish_for_subscriber`) choose those payload sizes, so the retained memory is channels with subscribers times the largest allowed payload. Enabling it for the first time (no channel used it at startup) requires a node restart, like `shared_position_sync`; removing it from every namespace also takes effect only at restart, until then each publication still looks up the channel options.
   * `allow_channel_compaction`: clients negotiate a numeric channel id on subscribe, which replaces the channel name in publication, join and leave pushes. Negotiated automatically by the JS and Java SDKs. Not for server-side subscriptions.
   * `client_publish_debounce_interval`: returned to clients on subscribe. The JS SDK sends the first publish at once and coalesces the rest of the interval into the latest value (per key for map subscriptions). Fire-and-forget: pending data is dropped on unsubscribe or disconnect, and errors of the delayed publish are not reported. Must be `0` (off) or a whole number of milliseconds, at least `1ms`.
 
-* `client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is in the Core commit `bc8c5cab476ea34125c2ed10b739d1f257a3df69` of the fork, which `go.mod` pins.
-* `client.max_messages_in_frame`, as in the [PRO docs on message batching](https://centrifugal.dev/docs/pro/client_msg_batching): the maximum number of messages joined into one transport frame, default `16`, `-1` for no limit. `1` writes each message in its own frame, so `websocket.write_timeout` covers one reply. Only frame boundaries change: the same messages leave in the same order. The other batching keys of that page are not implemented.
+### Refresh lead
 
-* JWKS responses are read up to 1 MiB per key set. A larger body fails that load with an error, so the node keeps the key set it has. This is a defect fix on by default (unbounded memory from a remote endpoint), and it has no key.
+`client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is in the Core commit `bc8c5cab476ea34125c2ed10b739d1f257a3df69` of the fork, which `go.mod` pins.
+### Message batching
 
-* Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
+`client.max_messages_in_frame`, as in the [PRO docs on message batching](https://centrifugal.dev/docs/pro/client_msg_batching): the maximum number of messages joined into one transport frame, default `16`, `-1` for no limit. `1` writes each message in its own frame, so `websocket.write_timeout` covers one reply. Only frame boundaries change: the same messages leave in the same order. The other batching keys of that page are not implemented.
+
+### JWKS response size limit
+
+JWKS responses are read up to 1 MiB per key set. A larger body fails that load with an error, so the node keeps the key set it has. This is a defect fix on by default (unbounded memory from a remote endpoint), and it has no key.
+
+### Push notifications
+
+Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
 
 * Direct push send signs the APNs provider token once per 40-minute window per signing key. The token's `iat` is the start of the current window, and a node moves to a new window 60 seconds after each boundary. Nodes that share one key therefore present the same `iat`, so Apple sees at most one token update per key per window. Apple refuses token updates more often than every 20 minutes, and the node clocks must be NTP-synced for the windows to agree. The signature is deterministic (RFC 6979), so nodes that share a key and a window produce the same token bytes. A failed FCM token fetch is not held: it fails only the targets that waited on that fetch, and the next call starts a new fetch. Concurrent fetches of one credential are bounded to one at a time, and each fetch ends within `providers.request_timeout`. A target whose token fetch fails, or whose deadline ends during the wait, is answered `pending` with `err_code` `not_sent`, `http_status` 0 and no provider call, so a resend cannot duplicate it.
 
@@ -248,7 +295,6 @@ Resource costs, per entry, measured in connections and goroutines:
 
 * Redis and PostgreSQL persistence for revocation.
 * `user_connections` API.
-* Redis replica offloading.
 * Sharded PUB/SUB.
 
 Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
@@ -258,32 +304,61 @@ Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrif
 Docker images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:
 
 ```
-docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.0.0
-docker run -p 8000:8000 -v "$(pwd)/config.json:/centrifugo/config.json" ghcr.io/impulse-m/impulsem.centrifugo:1.0.0
+docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
+docker run -p 8000:8000 -v "$(pwd)/config.json:/centrifugo/config.json" ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
 ```
 
 Image tags:
 * `X.Y.Z`, `X.Y` and `latest` for releases;
 * `master` and `sha-<commit>` for builds from the `master` branch.
 
-Linux binaries are attached to [GitHub Releases](https://github.com/Impulse-m/ImpulseM.Centrifugo/releases).
+Each [GitHub Release](https://github.com/Impulse-m/ImpulseM.Centrifugo/releases) attaches Linux archives `centrifugo_<version>_linux_<arch>.tar.gz` for `amd64` and `arm64`, and a SHA-256 checksums file. The archives contain the `centrifugo` binary with the license, README and changelog.
 
 ## Versioning and releases
 
-The fork uses its own semantic versioning starting at 1.0.0, independent of upstream version numbers. A release is made either by pushing a `vX.Y.Z` tag or by running the `release` workflow manually with the version (without `v`). The workflow runs the tests, publishes the images, creates the tag and the GitHub Release.
+The fork uses its own semantic versioning starting at 1.0.0, independent of upstream version numbers; released versions are listed in the [tags](https://github.com/Impulse-m/ImpulseM.Centrifugo/tags). A release is made either by pushing a `vX.Y.Z` tag or by running the `release` workflow manually with the version (without `v`). The workflow runs the tests, publishes the images, creates the tag and the GitHub Release.
 
 ## Client SDKs
 
-* JavaScript (browser, Node.js, React Native): [ImpulseM.Centrifugo.Client.JS](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS), npm package `@impulsem/centrifuge`.
-* Swift (iOS): [ImpulseM.Centrifugo.Client.Swift](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift), Swift Package Manager.
-* Java (Android): [ImpulseM.Centrifugo.Client.Java](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java), Maven repository on GitHub Pages.
+Each SDK is a fork of the upstream SDK of the same name and carries the fork's protocol fields. Install them from the packages below.
+
+### JavaScript
+
+Repository: [ImpulseM.Centrifugo.Client.JS](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS). Latest version: 1.6.0.
+
+```
+npm install @impulsem/centrifuge
+```
+
+### Java (Android)
+
+Repository: [ImpulseM.Centrifugo.Client.Java](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java). Latest version: 1.7.0.
+
+```groovy
+repositories {
+    mavenCentral()
+    maven { url "https://impulse-m.github.io/ImpulseM.Centrifugo.Client.Java/" }
+}
+
+dependencies {
+    implementation "com.github.Impulse-m:ImpulseM.Centrifugo.Client.Java:1.7.0"
+}
+```
+
+### Swift (iOS)
+
+Repository: [ImpulseM.Centrifugo.Client.Swift](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift). Install with Swift Package Manager from the version tags; the latest is 2.0.0 and its breaking changes are described in [MIGRATION.md](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift/blob/v2.0.0/MIGRATION.md). Add it with `https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift` and add the `SwiftCentrifuge` product to your target. There is no CocoaPods release.
 
 ## Related repositories
 
-* [ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core): fork of the [centrifuge](https://github.com/centrifugal/centrifuge) core library.
-* [ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol): fork of the [protocol](https://github.com/centrifugal/protocol) definitions.
+* [ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core): fork of the [centrifuge](https://github.com/centrifugal/centrifuge) Go library. The server uses it through a `replace` directive in its `go.mod`. It has no releases of its own and follows upstream master.
+* [ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol): fork of the [protocol](https://github.com/centrifugal/protocol) definitions. It carries the fork fields of `client.proto` used by the SDKs and Core.
+
+The upstream projects of the SDKs, Core and Protocol are MIT-licensed; see each repository for its own license.
 
 ## Upstream Centrifugo
+
+The text below is the upstream description, kept as upstream wrote it. This fork changes some behaviour the upstream documentation describes; the differences are listed in [Fork features](#fork-features).
 
 Centrifugo is an open-source scalable real-time messaging server. Centrifugo can instantly deliver messages to application online users connected over supported transports (WebSocket, HTTP-streaming, Server-Sent Events (aka EventSource), GRPC, WebTransport). Centrifugo has the concept of channel subscriptions – so it's a user-facing PUB/SUB server.
 
@@ -327,6 +402,6 @@ The hard part is to make this concept production-ready, efficient, flexible and 
 * Great observability with lots of Prometheus metrics exposed and official Grafana dashboard
 * And much more, visit [Centrifugo documentation site](https://centrifugal.dev)
 
-## Credits
+## License and credits
 
-Centrifugo is created by [Centrifugal Labs](https://github.com/centrifugal) and licensed under the Apache License 2.0. This fork keeps the same license.
+Centrifugo is created by [Centrifugal Labs](https://github.com/centrifugal) and licensed under the Apache License 2.0. This fork is a modified version of it and keeps the same license; see [LICENSE](LICENSE). [NOTICE](NOTICE) states that this is a modified version and where its changes are recorded. Code and assets copied into this repository from other projects, with their licenses, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

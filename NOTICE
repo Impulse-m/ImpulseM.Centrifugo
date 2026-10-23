@@ -1,0 +1,14 @@
+Centrifugo
+Copyright 2023 Centrifugal Labs LTD
+
+This repository contains a modified version of Centrifugo, the real-time messaging
+server, https://github.com/centrifugal/centrifugo, licensed under the Apache License,
+Version 2.0. The upstream version this repository is based on is v6.10.2.
+
+The files of this repository were changed from the upstream version. The changes are
+recorded in the git history of this repository; use `git log` and `git blame` to see
+the changes made to each file.
+
+The upstream LICENSE file and the copyright notices of the upstream project are kept
+unchanged. Third-party code and assets in this repository, with their licenses and
+notices, are listed in THIRD_PARTY_NOTICES.md.

@@ -40,19 +40,19 @@ func IsSquash(f reflect.StructField) bool {
 // IsComplexType reports whether t is object-like — a struct or a slice/array of
 // structs — and therefore cannot be populated from a single environment variable
 // (its keys are set separately). Scalars, slices of scalars, and maps are not
-// complex (each maps to one env var). time.Time is treated as a scalar.
+// complex (each maps to one env var). time.Time and Secret are treated as scalars.
 func IsComplexType(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Pointer:
-		return t.Elem().Kind() == reflect.Struct && !isTimeType(t.Elem())
+		return t.Elem().Kind() == reflect.Struct && !isTimeType(t.Elem()) && !isSecretType(t.Elem())
 	case reflect.Struct:
-		return !isTimeType(t)
+		return !isTimeType(t) && !isSecretType(t)
 	case reflect.Slice, reflect.Array:
 		elem := t.Elem()
 		if elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
 		}
-		return elem.Kind() == reflect.Struct && !isTimeType(elem)
+		return elem.Kind() == reflect.Struct && !isTimeType(elem) && !isSecretType(elem)
 	default:
 		return false
 	}
@@ -62,6 +62,12 @@ func isTimeType(t reflect.Type) bool {
 	return t.PkgPath() == "time" && t.Name() == "Time"
 }
 
+// isSecretType reports whether t is Secret. It is a struct so that it can mask itself in every encoder, but it holds one
+// scalar value, so the config tooling shows it as a string.
+func isSecretType(t reflect.Type) bool {
+	return t == reflect.TypeOf(Secret{})
+}
+
 // TypeLabel renders a human-friendly type label for a config field type. Struct
 // and slice-of-struct types show their Go type name (e.g. "TLSConfig",
 // "[]Consumer"); every other type shows its Go type string with the internal
@@ -69,6 +75,9 @@ func isTimeType(t reflect.Type) bool {
 // "[]string", "map[string]string"). Used by both the configdoc generator and the
 // admin config UI (Pro) so the two surfaces present identical type labels.
 func TypeLabel(t reflect.Type) string {
+	if isSecretType(t) {
+		return "string"
+	}
 	if t.Kind() == reflect.Pointer {
 		if t.Elem().Kind() == reflect.Struct {
 			if isTimeType(t.Elem()) {

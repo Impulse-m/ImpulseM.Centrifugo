@@ -31,34 +31,43 @@ func (s Secret) Value() string {
 	return s.value
 }
 
-// String returns the mask.
-func (s Secret) String() string {
+// shown returns what every formatted and encoded form of the secret writes: the mask when a value is set, and an
+// empty string when none is, so a generated config shows no key for an unset field.
+func (s Secret) shown() string {
+	if s.value == "" {
+		return ""
+	}
 	return secretMask
+}
+
+// String returns the mask, or an empty string when no value is set.
+func (s Secret) String() string {
+	return s.shown()
 }
 
 // GoString returns the mask, so %#v does not show the value.
 func (s Secret) GoString() string {
-	return secretMask
+	return s.shown()
 }
 
 // Format writes the mask for every verb, so verbs other than %v, %+v and %#v do not show the value.
 func (s Secret) Format(state fmt.State, verb rune) {
-	_, _ = state.Write([]byte(secretMask))
+	_, _ = state.Write([]byte(s.shown()))
 }
 
-// MarshalText returns the mask.
+// MarshalText returns the mask, or an empty text when no value is set.
 func (s Secret) MarshalText() ([]byte, error) {
-	return []byte(secretMask), nil
+	return []byte(s.shown()), nil
 }
 
-// MarshalJSON returns the JSON string of the mask.
+// MarshalJSON returns the JSON string of the mask, or an empty JSON string when no value is set.
 func (s Secret) MarshalJSON() ([]byte, error) {
-	return json.Marshal(secretMask)
+	return json.Marshal(s.shown())
 }
 
-// MarshalYAML returns the mask for YAML encoders.
+// MarshalYAML returns the mask for YAML encoders, or an empty string when no value is set.
 func (s Secret) MarshalYAML() (interface{}, error) {
-	return secretMask, nil
+	return s.shown(), nil
 }
 
 // UnmarshalText sets the value from text, as the environment decoding does.

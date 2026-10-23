@@ -1,0 +1,114 @@
+name: webui-licenses
+
+# Builds the license reports with the full license texts of the production npm dependencies bundled into
+# the embedded web UI (internal/webui) and the embedded Swagger UI (internal/swaggerui). Each report is
+# uploaded as an artifact and committed next to its embedded build as THIRD_PARTY_LICENSES.txt. Run it
+# again when an embedded build is updated from a new upstream commit or tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_ref:
+        description: Commit of centrifugal/web that matches the embedded web UI build in internal/webui.
+        required: true
+        default: 9ccec9fc7619cf8320ef6c25bf01b979ca3c7489
+        type: string
+      swagger_ref:
+        description: Tag of swagger-api/swagger-ui that matches the embedded Swagger UI build in internal/swaggerui.
+        required: true
+        default: v4.18.1
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  webui:
+    name: Web UI production license report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout web UI sources
+        uses: actions/checkout@v7
+        with:
+          repository: centrifugal/web
+          ref: ${{ inputs.web_ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: source/.nvmrc
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install dependencies
+        working-directory: source
+        run: npm ci --ignore-scripts
+
+      - name: Build license report
+        working-directory: source
+        env:
+          REPORT_DIR: ${{ github.workspace }}/report
+        run: |
+          mkdir -p "$REPORT_DIR"
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production \
+            --plainVertical \
+            --out "$REPORT_DIR/THIRD_PARTY_LICENSES.txt"
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production \
+            --summary
+
+      - name: Upload report
+        uses: actions/upload-artifact@v7
+        with:
+          name: webui-licenses
+          path: report/THIRD_PARTY_LICENSES.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  swagger-ui:
+    name: Swagger UI production license report
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Swagger UI sources
+        uses: actions/checkout@v7
+        with:
+          repository: swagger-api/swagger-ui
+          ref: ${{ inputs.swagger_ref }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: source/.nvmrc
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install dependencies
+        working-directory: source
+        run: npm ci --ignore-scripts
+
+      - name: Build license report
+        working-directory: source
+        env:
+          REPORT_DIR: ${{ github.workspace }}/report
+        run: |
+          mkdir -p "$REPORT_DIR"
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production \
+            --plainVertical \
+            --out "$REPORT_DIR/THIRD_PARTY_LICENSES.txt"
+          npx --yes license-checker-rseidelsohn@4.4.2 \
+            --production \
+            --summary
+
+      - name: Upload report
+        uses: actions/upload-artifact@v7
+        with:
+          name: swagger-ui-licenses
+          path: report/THIRD_PARTY_LICENSES.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
 
@@ -32,6 +34,20 @@ const (
 const (
 	ProviderAPNs = "apns"
 	ProviderFCM  = "fcm"
+)
+
+// Environments of an APNs target. The environment chooses the APNs host, and the same names are the values of the
+// endpoint key of the configuration.
+const (
+	EnvironmentProduction  = "production"
+	EnvironmentDevelopment = "development"
+)
+
+// Payload ceilings of the providers, in bytes. The APNs ceiling of a VoIP push is the larger one.
+const (
+	MaxAPNsPayloadBytes     = 4096
+	MaxAPNsVoIPPayloadBytes = 5120
+	MaxFCMMessageBytes      = 4096
 )
 
 // MaxResponseBodyBytes bounds the body of a provider response. The body is never returned.
@@ -72,6 +88,12 @@ func DryRun(job *Job) *apiproto.PushItemResult {
 	return NewResult(job, StatusDryRun)
 }
 
+// IsJSONObject reports whether data is one valid JSON object. The check of gjson looks at the first byte only, so the
+// whole value is validated too.
+func IsJSONObject(data []byte) bool {
+	return gjson.ValidBytes(data) && gjson.ParseBytes(data).IsObject()
+}
+
 // Job is one target of a direct send, with the request values a provider reads.
 type Job struct {
 	// Index is the zero-based position of the target in the request.
@@ -82,6 +104,9 @@ type Job struct {
 	Notification *apiproto.PushNotification
 	// CollapseID is the resolved collapse id of the target: its own, else the request value, else empty.
 	CollapseID string
+	// Body is the provider body of the job when the oversize check of the set has built it, so the provider sends it
+	// without a second copy. It is nil until then.
+	Body []byte
 }
 
 // Sender sends one job to one provider. The context carries the deadline of the provider call.

@@ -44,15 +44,15 @@ func IsSquash(f reflect.StructField) bool {
 func IsComplexType(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Pointer:
-		return t.Elem().Kind() == reflect.Struct && !isTimeType(t.Elem()) && !isSecretType(t.Elem())
+		return t.Elem().Kind() == reflect.Struct && !isOpaqueStruct(t.Elem())
 	case reflect.Struct:
-		return !isTimeType(t) && !isSecretType(t)
+		return !isOpaqueStruct(t)
 	case reflect.Slice, reflect.Array:
 		elem := t.Elem()
 		if elem.Kind() == reflect.Pointer {
 			elem = elem.Elem()
 		}
-		return elem.Kind() == reflect.Struct && !isTimeType(elem) && !isSecretType(elem)
+		return elem.Kind() == reflect.Struct && !isOpaqueStruct(elem)
 	default:
 		return false
 	}
@@ -60,6 +60,11 @@ func IsComplexType(t reflect.Type) bool {
 
 func isTimeType(t reflect.Type) bool {
 	return t.PkgPath() == "time" && t.Name() == "Time"
+}
+
+// isOpaqueStruct reports whether t is a struct that is a single scalar value: time.Time, or the masked Secret.
+func isOpaqueStruct(t reflect.Type) bool {
+	return isTimeType(t) || isSecretType(t)
 }
 
 // TypeLabel renders a human-friendly type label for a config field type. Struct

@@ -95,12 +95,12 @@ func isCanonicalUUID(value string) bool {
 	return err == nil
 }
 
-// maxPayloadBytes returns the payload ceiling of a push type: 5120 bytes for VoIP, 4096 bytes otherwise.
+// maxPayloadBytes returns the payload ceiling of a push type: the VoIP ceiling for VoIP, the regular one otherwise.
 func maxPayloadBytes(pushType string) int {
 	if pushType == pushTypeVoIP {
-		return 5120
+		return provider.MaxAPNsVoIPPayloadBytes
 	}
-	return 4096
+	return provider.MaxAPNsPayloadBytes
 }
 
 // Oversized reports whether the APNs payload of job is over the ceiling of its push type. The live send and the dry run

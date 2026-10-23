@@ -13,7 +13,7 @@ import (
 )
 
 // maxMessageBytes bounds the whole message JSON after the server additions.
-const maxMessageBytes = 4096
+const maxMessageBytes = provider.MaxFCMMessageBytes
 
 // Paths of the server additions of an FCM message.
 const (
@@ -32,7 +32,7 @@ var errExpired = errors.New("expire_at is not after now")
 // so a caller token is refused. When collapseID is set, a caller collapse key on either field must equal it. When it
 // is empty, the caller values pass unchanged.
 func CheckMessage(message []byte, collapseID string) error {
-	if !gjson.ValidBytes(message) || !gjson.ParseBytes(message).IsObject() {
+	if !provider.IsJSONObject(message) {
 		return errors.New("message is not a JSON object")
 	}
 	if gjson.GetBytes(message, pathToken).Exists() {
@@ -97,10 +97,11 @@ func fitsInjected(message []byte, token string, collapseID string, expireAt int6
 	return len(message)+injectionBound(token, collapseID, expireAt) <= maxMessageBytes
 }
 
-// Oversized reports whether the FCM message of job is over the message limit after the server additions. The live send
-// and the dry run both use it. A message that cannot fit is refused before any copy; one that fits is injected once and
-// measured.
-func Oversized(job *provider.Job) bool {
+// Prepare builds the body of job once, with the server additions, and keeps it in job.Body. It reports whether the
+// message is over the message limit after the additions. A message that cannot fit is refused before any copy, and an
+// over-limit body is never kept. The set calls it before the dry run answer, so a dry run answers what a live send
+// answers, and Send then reuses the body without a second copy.
+func Prepare(job *provider.Job) bool {
 	message := provider.FCMMessageOf(job)
 	token := job.Target.GetToken()
 	expireAt := job.Notification.GetExpireAt()
@@ -111,7 +112,11 @@ func Oversized(job *provider.Job) bool {
 	if err != nil {
 		return false
 	}
-	return len(injected) > maxMessageBytes
+	if len(injected) > maxMessageBytes {
+		return true
+	}
+	job.Body = injected
+	return false
 }
 
 // injectMessage returns the message with the server additions: the token, and the collapse id and the expiry on the

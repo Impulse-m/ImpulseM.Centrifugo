@@ -8,7 +8,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
@@ -28,8 +27,8 @@ const (
 // provider, so the provider refuses its item as payload_too_large, and it is never scanned: a shared request payload
 // would otherwise be scanned once per target. The largest limit is the VoIP ceiling of APNs.
 const (
-	maxScannedAPNsPayloadBytes = 5120
-	maxScannedFCMMessageBytes  = 4096
+	maxScannedAPNsPayloadBytes = provider.MaxAPNsVoIPPayloadBytes
+	maxScannedFCMMessageBytes  = provider.MaxFCMMessageBytes
 )
 
 // NotEnabledError returns the answer of a node with push notifications off.
@@ -37,14 +36,6 @@ func NotEnabledError() *apiproto.Error {
 	return &apiproto.Error{
 		Code:    apiproto.ErrorNotAvailable.Code,
 		Message: "push notifications are not enabled",
-	}
-}
-
-// senderOnlyError returns the answer of a node that is not a sender.
-func senderOnlyError() *apiproto.Error {
-	return &apiproto.Error{
-		Code:    apiproto.ErrorNotAvailable.Code,
-		Message: "direct send is available on sender nodes only",
 	}
 }
 
@@ -177,8 +168,15 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 	}
 
 	jobs := jobsOf(targets, req)
+	// The field checks of every target run before the content checks of any target, in the order of the spec.
 	for _, job := range jobs {
-		refusal := s.checkTarget(job, req)
+		refusal := checkTargetFields(job)
+		if refusal != nil {
+			return nil, refusal
+		}
+	}
+	for _, job := range jobs {
+		refusal := checkTargetContent(job, req)
 		if refusal != nil {
 			return nil, refusal
 		}
@@ -186,8 +184,8 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 	return jobs, nil
 }
 
-// checkTarget runs the checks of one target: its fields, its payload and its headers.
-func (s *Sender) checkTarget(job *provider.Job, req *apiproto.SendPushNotificationRequest) *apiproto.Error {
+// checkTargetFields runs the field checks of one target: its token, its environment, its ref and its collapse id.
+func checkTargetFields(job *provider.Job) *apiproto.Error {
 	target := job.Target
 	index := job.Index
 
@@ -201,32 +199,42 @@ func (s *Sender) checkTarget(job *provider.Job, req *apiproto.SendPushNotificati
 		return badRequest(fmt.Sprintf("targets[%d].collapse_id is longer than 64 bytes", index))
 	}
 
+	environment := target.GetEnvironment()
 	switch target.GetProvider() {
-	case provider.ProviderAPNs:
-		return s.checkAPNsTarget(job, req)
+	case provider.ProviderFCM:
+		if environment != "" {
+			return badRequest(fmt.Sprintf("targets[%d].environment is refused for fcm", index))
+		}
+	default:
+		if environment == "" {
+			return badRequest(fmt.Sprintf("targets[%d].environment is required for apns", index))
+		}
+		if environment != provider.EnvironmentProduction && environment != provider.EnvironmentDevelopment {
+			return badRequest(fmt.Sprintf("targets[%d].environment must be production or development", index))
+		}
+	}
+	return nil
+}
+
+// checkTargetContent runs the content checks of one target: its payload or message, and for APNs its headers.
+func checkTargetContent(job *provider.Job, req *apiproto.SendPushNotificationRequest) *apiproto.Error {
+	switch job.Target.GetProvider() {
 	case provider.ProviderFCM:
 		return checkFCMTarget(job)
 	default:
-		return badRequest(fmt.Sprintf("targets[%d].provider must be apns or fcm", index))
+		return checkAPNsTarget(job, req)
 	}
 }
 
-// checkAPNsTarget checks the environment, the payload and the headers of an APNs target.
-func (s *Sender) checkAPNsTarget(job *provider.Job, req *apiproto.SendPushNotificationRequest) *apiproto.Error {
+// checkAPNsTarget checks the payload and the headers of an APNs target.
+func checkAPNsTarget(job *provider.Job, req *apiproto.SendPushNotificationRequest) *apiproto.Error {
 	index := job.Index
-	environment := job.Target.GetEnvironment()
-	if environment == "" {
-		return badRequest(fmt.Sprintf("targets[%d].environment is required for apns", index))
-	}
-	if environment != environmentProduction && environment != environmentDevelopment {
-		return badRequest(fmt.Sprintf("targets[%d].environment must be production or development", index))
-	}
 
 	payload := provider.ApnsPayloadOf(job)
 	if len(payload) == 0 {
 		return badRequest(fmt.Sprintf("targets[%d] needs an apns payload: notification.apns.payload or apns_payload", index))
 	}
-	if len(payload) <= maxScannedAPNsPayloadBytes && !isJSONObject(payload) {
+	if len(payload) <= maxScannedAPNsPayloadBytes && !provider.IsJSONObject(payload) {
 		return badRequest(fmt.Sprintf("targets[%d] apns payload is not a JSON object", index))
 	}
 
@@ -237,12 +245,10 @@ func (s *Sender) checkAPNsTarget(job *provider.Job, req *apiproto.SendPushNotifi
 	return nil
 }
 
-// checkFCMTarget checks the message of an FCM target. A message over the scan threshold is left to its item.
+// checkFCMTarget checks the message of an FCM target. A message over the scan threshold is left to its item, which is
+// answered payload_too_large. This is the one exception to the content checks of step 10 of the spec.
 func checkFCMTarget(job *provider.Job) *apiproto.Error {
 	index := job.Index
-	if job.Target.GetEnvironment() != "" {
-		return badRequest(fmt.Sprintf("targets[%d].environment is refused for fcm", index))
-	}
 
 	message := provider.FCMMessageOf(job)
 	if len(message) == 0 {
@@ -257,12 +263,6 @@ func checkFCMTarget(job *provider.Job) *apiproto.Error {
 		return badRequest(fmt.Sprintf("targets[%d] fcm message: %s", index, err.Error()))
 	}
 	return nil
-}
-
-// isJSONObject reports whether data is one valid JSON object. The check of gjson looks at the first byte only, so the
-// whole value is validated too.
-func isJSONObject(data []byte) bool {
-	return gjson.ValidBytes(data) && gjson.ParseBytes(data).IsObject()
 }
 
 // errOverRecipientLimit reports that a recipient list of the body is above max_recipient_items.

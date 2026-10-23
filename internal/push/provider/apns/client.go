@@ -18,12 +18,10 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
 
-// Environments of an APNs target and their hosts.
+// Hosts of the two APNs environments.
 const (
-	environmentProduction  = "production"
-	environmentDevelopment = "development"
-	hostProduction         = "https://api.push.apple.com"
-	hostDevelopment        = "https://api.sandbox.push.apple.com"
+	hostProduction  = "https://api.push.apple.com"
+	hostDevelopment = "https://api.sandbox.push.apple.com"
 )
 
 // Provider reasons which mean that the provider token is refused. They can repeat once with a token of a newer window.
@@ -61,12 +59,12 @@ type Client struct {
 func NewClient(credential *Credential, environment string, bundleID string, options ...Option) (*Client, error) {
 	var host string
 	switch environment {
-	case environmentProduction:
+	case provider.EnvironmentProduction:
 		host = hostProduction
-	case environmentDevelopment:
+	case provider.EnvironmentDevelopment:
 		host = hostDevelopment
 	default:
-		return nil, fmt.Errorf("apns environment must be %s or %s", environmentProduction, environmentDevelopment)
+		return nil, fmt.Errorf("apns environment must be %s or %s", provider.EnvironmentProduction, provider.EnvironmentDevelopment)
 	}
 
 	client := &Client{

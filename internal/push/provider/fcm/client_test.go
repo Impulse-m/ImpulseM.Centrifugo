@@ -304,6 +304,13 @@ func TestFCMErrorDetails(t *testing.T) {
 			expectedDetail: "message.token",
 		},
 		{
+			name:           "invalid argument with an error code keeps the field",
+			status:         http.StatusBadRequest,
+			body:           `{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"FcmError","errorCode":"INVALID_ARGUMENT"},{"@type":"BadRequest","fieldViolations":[{"field":"message.token"}]}]}}`,
+			expectedCode:   "INVALID_ARGUMENT",
+			expectedDetail: "message.token",
+		},
+		{
 			name:           "quota",
 			status:         http.StatusTooManyRequests,
 			body:           `{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"errorCode":"QUOTA_EXCEEDED"}]}}`,
@@ -513,14 +520,15 @@ func TestNewClientRejectsNonPositiveTimeout(t *testing.T) {
 	}
 }
 
-func TestFCMTokenFetchFailureIsRejectedWithoutCode(t *testing.T) {
+func TestFCMTokenFetchFailureIsPendingWithoutCode(t *testing.T) {
 	tokens := newFailingToken(t, http.StatusUnauthorized)
 	fake := newFakeFCM(t, okHandler)
 	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 
-	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	// Nothing left the node, so the item is pending, not rejected: a caller can resend it safely.
+	require.Equal(t, provider.StatusPending, result.GetStatus())
 	require.Zero(t, result.GetHttpStatus())
 	require.Empty(t, result.GetProviderCode())
 	require.Empty(t, result.GetCode())
@@ -533,8 +541,8 @@ func TestFCMTokenFailureIsNotHeld(t *testing.T) {
 	fake := newFakeFCM(t, okHandler)
 	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
-	require.Equal(t, provider.StatusRejected, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
-	require.Equal(t, provider.StatusRejected, client.Send(context.Background(), newTestJob(1, `{"data":{}}`)).GetStatus())
+	require.Equal(t, provider.StatusPending, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
+	require.Equal(t, provider.StatusPending, client.Send(context.Background(), newTestJob(1, `{"data":{}}`)).GetStatus())
 
 	require.Equal(t, int64(2), tokens.requests.Load(), "a failed fetch is not held: the next call starts a new fetch")
 	requests, _ := fake.recorded()

@@ -61,7 +61,8 @@ func NewDryRunSet() *Set {
 }
 
 // WithOversizeCheck sets the payload ceiling check of the set and returns the set. An item the check reports is
-// answered payload_too_large before the dry run answer and before any slot is taken.
+// answered payload_too_large before the dry run answer and before any slot is taken. The check may also build the
+// provider body of the item, once, so that the send does not copy it again.
 func (s *Set) WithOversizeCheck(check func(*Job) bool) *Set {
 	s.oversize = check
 	return s

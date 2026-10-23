@@ -22,12 +22,6 @@ import (
 // writeMargin is the time the send route adds to its write deadline after the longest inline run.
 const writeMargin = 5 * time.Second
 
-// Environments of an APNs target.
-const (
-	environmentProduction  = "production"
-	environmentDevelopment = "development"
-)
-
 // Values of the direct send request counter.
 const (
 	requestCompleted = "completed"
@@ -55,14 +49,10 @@ type apnsRouter struct {
 	clients map[string]*apns.Client
 }
 
-// Send sends the target through the client of its environment. A target with an unknown environment is rejected, and
-// the request validator refuses such a target before any call.
+// Send sends the target through the client of its environment. The request validator has already refused every
+// environment other than production and development, so the lookup always finds a client.
 func (r *apnsRouter) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
-	client, ok := r.clients[job.Target.GetEnvironment()]
-	if !ok {
-		return provider.NewResult(job, provider.StatusRejected)
-	}
-	return client.Send(ctx, job)
+	return r.clients[job.Target.GetEnvironment()].Send(ctx, job)
 }
 
 // Setup returns the direct send mode of cfg, or nil when push notifications are off. Only a sender node that is not in
@@ -131,7 +121,7 @@ func (s *Sender) load(processCtx context.Context, cfg configtypes.PushNotificati
 		router := &apnsRouter{
 			clients: make(map[string]*apns.Client),
 		}
-		for _, environment := range []string{environmentProduction, environmentDevelopment} {
+		for _, environment := range []string{provider.EnvironmentProduction, provider.EnvironmentDevelopment} {
 			client, err := apns.NewClient(credential, environment, cfg.APNs.BundleID)
 			if err != nil {
 				return err
@@ -160,14 +150,15 @@ func poolSize(tokensBatchSize int, maxInflight int) int {
 	return min(tokensBatchSize, maxInflight)
 }
 
-// oversized reports whether the item of job is over the payload ceiling of its provider. The set checks it before the dry
-// run answer, and the live providers check it with the same functions, so a dry run answers what a live send answers.
+// oversized reports whether the item of job is over the payload ceiling of its provider. The set calls it before the dry
+// run answer, and the live providers use the same functions, so a dry run answers what a live send answers. For an FCM
+// item it also builds the provider body once, which the send then reuses.
 func oversized(job *provider.Job) bool {
 	switch job.Target.GetProvider() {
 	case provider.ProviderAPNs:
 		return apns.Oversized(job)
 	case provider.ProviderFCM:
-		return fcm.Oversized(job)
+		return fcm.Prepare(job)
 	default:
 		return false
 	}
@@ -207,6 +198,15 @@ func CountRefusedRequest() {
 	countRequest(requestRefused)
 }
 
+// SenderOnlyError returns the answer of a node that is not a sender. The send route answers it before it reads the
+// body, and Send answers it for any other caller.
+func SenderOnlyError() *apiproto.Error {
+	return &apiproto.Error{
+		Code:    apiproto.ErrorNotAvailable.Code,
+		Message: "direct send is available on sender nodes only",
+	}
+}
+
 // IsSender reports whether the node sends: push notifications are on and the node is a sender.
 func (s *Sender) IsSender() bool {
 	return s != nil && s.sender
@@ -236,7 +236,8 @@ func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationReq
 		return errorResponse(NotEnabledError())
 	}
 	if !s.sender {
-		return errorResponse(senderOnlyError())
+		countRequest(requestRefused)
+		return errorResponse(SenderOnlyError())
 	}
 
 	jobs, refusal := s.plan(req)

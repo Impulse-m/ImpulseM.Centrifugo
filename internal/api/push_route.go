@@ -13,10 +13,11 @@ import (
 )
 
 // handlePushSendRoute serves /send_push_notification. With push notifications off, the generated handler answers the
-// not-enabled error. With them on, the body is read through a cap of max_request_bytes on every node, so a node that is
-// not a sender refuses an oversized body before it answers the sender-only error. On a sender node the call slot is taken
-// before the body is read, and the recipient count is checked on the raw body before the generated decoder allocates the
-// entries. A body over the cap is refused with the bad request error, not with a server error.
+// not-enabled error. A node that is not a sender answers the sender-only error at once, before it reads the body, as
+// the first step of the send checks. On a sender node the call slot is taken before the body is read, so the bodies of
+// the calls in flight are bounded by the slots. The body is read through a cap of max_request_bytes, and the recipient
+// count is checked on the raw body before the generated decoder allocates the entries. A body over the cap is refused
+// with the bad request error, not with a server error.
 func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
 	sender := s.api.config.Push
 	if sender == nil {
@@ -25,12 +26,7 @@ func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !sender.IsSender() {
-		data, ok := s.readCappedBody(w, r, sender)
-		if !ok {
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(data))
-		s.handleSendPushNotification(w, r)
+		s.writePushSendRefusal(w, r, push.SenderOnlyError())
 		return
 	}
 
@@ -41,14 +37,14 @@ func (s *Handler) handlePushSendRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	// The inline run ends within the bound, so the write deadline is set before the body is read. A writer without
-	// deadline control ignores the error, and the server write timeout then applies.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sender.WriteBound()))
-
 	data, ok := s.readCappedBody(w, r, sender)
 	if !ok {
 		return
 	}
+
+	// The write deadline covers the inline run and the response, not the upload of the body: it is set once the body
+	// is read. A writer without deadline control ignores the error, and the server write timeout then applies.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sender.WriteBound()))
 
 	refusal := sender.CheckRecipientCount(data)
 	if refusal != nil {

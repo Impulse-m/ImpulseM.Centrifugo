@@ -20,6 +20,9 @@ import (
 // endpointBase is the base of the FCM HTTP v1 send endpoint.
 const endpointBase = "https://fcm.googleapis.com/v1/projects/"
 
+// statusInvalidArgument is the error status of an answer about a bad field of the request.
+const statusInvalidArgument = "INVALID_ARGUMENT"
+
 // Option sets a field of a Client. The option is a test seam: production code uses none of them.
 type Option func(*Client)
 
@@ -87,11 +90,6 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewCodeResult(job, provider.CodeExpired)
 	}
 
-	// The size is checked before the message is scanned or copied. A request message is shared by its targets, so a
-	// large one would otherwise be copied once per target.
-	if Oversized(job) {
-		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
-	}
 	message := provider.FCMMessageOf(job)
 	if len(message) == 0 {
 		return provider.NewResult(job, provider.StatusRejected)
@@ -103,14 +101,20 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	// The token wait is not a provider call: when ctx ends first, nothing is sent and the item is pending. A fetch
-	// that fails while ctx is alive is a rejected item without a code and without a provider call.
+	// The body is built once: the set has built it already before the dry run answer, and a job sent without the set
+	// is built here. The size is checked before the copy, so an over-limit message is never copied.
+	if job.Body == nil && Prepare(job) {
+		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
+	}
+	if job.Body == nil {
+		return provider.NewResult(job, provider.StatusRejected)
+	}
+
+	// The token wait is not a provider call. When it ends without a token, whether the caller's context ended or the
+	// fetch failed, nothing was sent: the item is pending, so a resend cannot duplicate a message.
 	token, err := c.gate.Token(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return provider.NewResult(job, provider.StatusPending)
-		}
-		return provider.NewResult(job, provider.StatusRejected)
+		return provider.NewResult(job, provider.StatusPending)
 	}
 	// The token can be ready in the same moment as ctx ends, and the select then picks it. A call past its deadline
 	// is still not made.
@@ -118,19 +122,9 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusPending)
 	}
 
-	// The message token is the device token of the target. The OAuth access token is only the bearer of the request.
-	injected, err := injectMessage(message, job.Target.GetToken(), job.CollapseID, job.Notification.GetExpireAt(), time.Now())
-	if errors.Is(err, errExpired) {
-		return provider.NewCodeResult(job, provider.CodeExpired)
-	}
-	if err != nil {
-		return provider.NewResult(job, provider.StatusRejected)
-	}
-	if len(injected) > maxMessageBytes {
-		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
-	}
-
-	return c.post(ctx, job, token.AccessToken, requestBody(injected))
+	// The OAuth access token is only the bearer of the request. The message token is the device token of the target,
+	// and it is already in the body.
+	return c.post(ctx, job, token.AccessToken, requestBody(job.Body))
 }
 
 // post sends one request with body. Its errors are dropped: a net/http error text can carry the URL.
@@ -182,17 +176,29 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 	return result
 }
 
-// failureDetail returns the first FCM error code of the details, else the first field violation, truncated.
+// failureDetail returns the first FCM error code of the details, else the first field violation, truncated. For an
+// INVALID_ARGUMENT answer the field violation comes first: it names the bad field, such as message.token, and an error
+// code of the same answer would hide which field is bad.
 func failureDetail(failure fcmError) string {
+	if failure.Error.Status == statusInvalidArgument {
+		if field := firstFieldViolation(failure); field != "" {
+			return provider.Truncate(field)
+		}
+	}
 	for _, detail := range failure.Error.Details {
 		if detail.ErrorCode != "" {
 			return provider.Truncate(detail.ErrorCode)
 		}
 	}
+	return provider.Truncate(firstFieldViolation(failure))
+}
+
+// firstFieldViolation returns the first non-empty field of the field violations of the details, or empty.
+func firstFieldViolation(failure fcmError) string {
 	for _, detail := range failure.Error.Details {
 		for _, violation := range detail.FieldViolations {
 			if violation.Field != "" {
-				return provider.Truncate(violation.Field)
+				return violation.Field
 			}
 		}
 	}

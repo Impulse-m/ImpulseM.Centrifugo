@@ -13,7 +13,6 @@ import (
 	"time"
 
 	. "github.com/centrifugal/centrifugo/v6/internal/apiproto"
-	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/push"
 
@@ -25,16 +24,8 @@ import (
 func newSendRoute(t *testing.T, cfg configtypes.PushNotifications) http.HandlerFunc {
 	t.Helper()
 
-	n := nodeWithMemoryEngine()
-	t.Cleanup(func() { _ = n.Shutdown(context.Background()) })
-
-	sender, err := push.Setup(context.Background(), cfg)
-	require.NoError(t, err)
-
-	cfgContainer, err := config.NewContainer(config.DefaultConfig())
-	require.NoError(t, err)
-	apiExecutor := NewExecutor(n, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", Push: sender})
-	return NewHandler(n, apiExecutor, Config{}).Routes()["/send_push_notification"]
+	_, route := newSendNode(t, cfg)
+	return route
 }
 
 // sendTestConfig returns a sender configuration in dry run, with the given request size cap.
@@ -159,17 +150,19 @@ func TestSendRouteNonSenderAnswers108(t *testing.T) {
 	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
 }
 
-// TestSendRouteNonSenderBodyOverCapAnswers107 checks that a node that is not a sender, with push on, still caps the body:
-// an oversized body is refused with the bad request code before the sender-only answer.
-func TestSendRouteNonSenderBodyOverCapAnswers107(t *testing.T) {
+// TestSendRouteNonSenderAnswers108WithoutReadingBody checks that a node that is not a sender answers the sender-only
+// error before it reads the body, so an oversized body gets the same answer as any other body, and no body is buffered.
+func TestSendRouteNonSenderAnswers108WithoutReadingBody(t *testing.T) {
 	cfg := sendTestConfig(1024)
 	cfg.Sender = false
 	route := newSendRoute(t, cfg)
 
-	recorder := serveSend(route, sendRequest(t, strings.Repeat("u", 2048)))
+	counting := &countingBody{reader: strings.NewReader(string(sendRequest(t, strings.Repeat("u", 2048))))}
+	recorder := httptest.NewRecorder()
+	route(recorder, httptest.NewRequest(http.MethodPost, "/send_push_notification", counting))
 
-	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Equal(t, uint32(107), errorCodeOf(t, recorder.Body.Bytes()))
+	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
+	require.Zero(t, counting.reads)
 }
 
 // blockingBody is a request body whose first read holds until release is closed. It shows a call that is in its body

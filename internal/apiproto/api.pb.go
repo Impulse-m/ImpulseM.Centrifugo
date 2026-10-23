@@ -8724,8 +8724,10 @@ type SendPushNotificationRequest struct {
 	CollapseId string `protobuf:"bytes,100,opt,name=collapse_id,json=collapseId,proto3" json:"collapse_id,omitempty"`
 	// timeout_ms is the deadline of the whole call, in milliseconds. Zero
 	// means the default deadline: sync_timeout plus providers.request_timeout
-	// plus 5 seconds. A longer value is clamped to the default. Used by the
-	// direct send mode only.
+	// plus 5 seconds. A longer value is clamped to the default. The clock
+	// starts when the request arrives, so the upload of the body is inside
+	// it: a body that takes longer than timeout_ms to arrive gets no answer.
+	// Used by the direct send mode only.
 	TimeoutMs     uint32 `protobuf:"varint,101,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -11236,7 +11238,8 @@ type PushItemResult struct {
 	// code names why a target did not reach a provider: payload_too_large or
 	// expired when the server refused it before any provider call, and for a
 	// not_sent target no_slot, connect_failed, deadline, token_fetch or
-	// shutdown.
+	// shutdown. deadline also covers the provider request timeout. When the
+	// node's shutdown and a deadline have both ended, the code is shutdown.
 	Code string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
 	// provider_code is the APNs reason, or the FCM error status. Empty when
 	// the provider sent no status or no body.
@@ -11252,10 +11255,13 @@ type PushItemResult struct {
 	// sent none.
 	ProviderMessageId string `protobuf:"bytes,8,opt,name=provider_message_id,json=providerMessageId,proto3" json:"provider_message_id,omitempty"`
 	// provider_details is the raw JSON array of the FCM error details, not
-	// mapped. At most 4 KiB: a longer array is cut at an element boundary, so
-	// that it stays a valid JSON array. Empty for APNs and for successes.
+	// mapped. An array of at most 4 KiB is returned as the provider sent it.
+	// A longer array is returned as a valid JSON array of whole elements, with
+	// the whitespace removed, and cut at an element boundary when it still does
+	// not fit. Empty for APNs and for successes.
 	ProviderDetails Raw `protobuf:"bytes,9,opt,name=provider_details,json=providerDetails,proto3" json:"provider_details,omitempty"`
-	// provider_details_truncated is true when provider_details was cut.
+	// provider_details_truncated is true when the array was over 4 KiB, so
+	// provider_details is a cut or compacted copy and not the array as sent.
 	ProviderDetailsTruncated bool `protobuf:"varint,10,opt,name=provider_details_truncated,json=providerDetailsTruncated,proto3" json:"provider_details_truncated,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache

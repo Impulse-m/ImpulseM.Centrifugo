@@ -27,7 +27,7 @@ func (s *outcomeSender) Send(ctx context.Context, job *Job) *apiproto.PushItemRe
 	if s.hold {
 		<-ctx.Done()
 	}
-	return NoAnswerResult(job, s.written, ctx)
+	return NoAnswerResult(ctx, job, s.written)
 }
 
 // TestNotSentCodesByCause checks the status and the code of a target that got no status line, by where its call ended.

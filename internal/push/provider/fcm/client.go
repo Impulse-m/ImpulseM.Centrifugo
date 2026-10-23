@@ -33,11 +33,20 @@ func withFCMEndpoint(endpoint string) Option {
 	}
 }
 
+// withFCMTransport replaces the transport of the send requests, so a test can fail a write the way a connection does.
+func withFCMTransport(roundTripper http.RoundTripper) Option {
+	return func(client *Client) {
+		client.httpClient.Transport = roundTripper
+	}
+}
+
 // Client sends the targets of one FCM service account.
 type Client struct {
 	endpoint   string
 	gate       *tokenGate
 	httpClient *http.Client
+	// shutdown is the process-lifetime context. Its end classifies a token fetch that failed as shutdown.
+	shutdown context.Context
 }
 
 // NewClient returns the client of account. processCtx is the process-lifetime context: it ends the token fetches at
@@ -63,6 +72,7 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 		httpClient: &http.Client{
 			Transport: transport,
 		},
+		shutdown: processCtx,
 	}
 	for _, option := range options {
 		option(client)
@@ -119,11 +129,15 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 
 	// The token wait is not a provider call. When it ends without a token, nothing was sent, so the item is not_sent and a
 	// resend cannot duplicate a message. A wait that ended with the call context has no code: the set names the cause.
-	// A fetch that failed while the call context was alive is token_fetch.
+	// A fetch that failed while the call context was alive is token_fetch, unless the node is shutting down: a fetch
+	// that the shutdown cancelled is shutdown, because the fetch failed for the shutdown and not for the provider.
 	token, err := c.gate.Token(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return provider.NewNotSentResult(job, "")
+		}
+		if c.shutdown != nil && c.shutdown.Err() != nil {
+			return provider.NewNotSentResult(job, provider.CodeShutdown)
 		}
 		return provider.NewNotSentResult(job, provider.CodeTokenFetch)
 	}
@@ -150,7 +164,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 
 	httpResponse, err := c.httpClient.Do(request)
 	if err != nil {
-		return provider.NoAnswerResult(job, trace.Written(), ctx)
+		return provider.NoAnswerResult(ctx, job, trace.Written())
 	}
 	defer func() {
 		_ = httpResponse.Body.Close()
@@ -184,17 +198,33 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 		return result
 	}
 	result.ProviderCode = provider.Truncate(failure.Error.Status)
-	details := decodeDetails(failure.Error.Details)
+	// The details array is split into its elements once. The typed details and the raw result both read the elements.
+	elements := rawElements(failure.Error.Details)
+	details := decodeDetails(elements)
 	result.ProviderDetail = failureDetail(failure.Error.Status, details)
-	result.ProviderDetails, result.ProviderDetailsTruncated = providerDetails(failure.Error.Details)
+	result.ProviderDetails, result.ProviderDetailsTruncated = providerDetails(failure.Error.Details, elements)
 	return result
 }
 
-// decodeDetails returns the typed details of a raw details array. A value that is not an array has none.
-func decodeDetails(raw json.RawMessage) []fcmDetail {
-	var details []fcmDetail
-	if json.Unmarshal(raw, &details) != nil {
+// rawElements returns the elements of a raw details array. A value that is not an array has none, and nil is returned.
+func rawElements(raw json.RawMessage) []json.RawMessage {
+	var elements []json.RawMessage
+	if json.Unmarshal(raw, &elements) != nil {
 		return nil
+	}
+	return elements
+}
+
+// decodeDetails returns the typed details of the elements of a details array. One element that is not an object makes
+// the whole array have no typed details.
+func decodeDetails(elements []json.RawMessage) []fcmDetail {
+	details := make([]fcmDetail, 0, len(elements))
+	for _, element := range elements {
+		var detail fcmDetail
+		if json.Unmarshal(element, &detail) != nil {
+			return nil
+		}
+		details = append(details, detail)
 	}
 	return details
 }
@@ -228,13 +258,14 @@ func firstFieldViolation(details []fcmDetail) string {
 	return ""
 }
 
-// providerDetails returns the raw details array of a failed answer for the result, and whether it was cut. An array
-// within the limit is returned as it was sent. A longer array is cut at an element boundary, so the result is still a
-// valid JSON array: the elements that fit are kept whole, and the cut is reported. A value that is not an array, and no
-// details, give no bytes.
-func providerDetails(raw json.RawMessage) ([]byte, bool) {
-	var elements []json.RawMessage
-	if json.Unmarshal(raw, &elements) != nil || elements == nil {
+// providerDetails returns the raw details array of a failed answer for the result, and whether it is not the array the
+// provider sent. An array within the limit is returned as it was sent, and it is not flagged. An array over the limit is
+// returned as a valid JSON array of its elements: the elements that fit are kept whole and in order, with the whitespace
+// between them removed, and the result is flagged. The flag is set for every array over the limit, because a cut array
+// and a compacted array are both not the bytes of the provider. A value that is not an array, and no details, give no
+// bytes.
+func providerDetails(raw json.RawMessage, elements []json.RawMessage) ([]byte, bool) {
+	if elements == nil {
 		return nil, false
 	}
 	if len(raw) <= maxProviderDetailsBytes {
@@ -243,7 +274,6 @@ func providerDetails(raw json.RawMessage) ([]byte, bool) {
 
 	var out bytes.Buffer
 	out.WriteByte('[')
-	kept := 0
 	for index, element := range elements {
 		separator := 0
 		if index > 0 {
@@ -257,8 +287,7 @@ func providerDetails(raw json.RawMessage) ([]byte, bool) {
 			out.WriteByte(',')
 		}
 		out.Write(element)
-		kept++
 	}
 	out.WriteByte(']')
-	return out.Bytes(), kept < len(elements)
+	return out.Bytes(), true
 }

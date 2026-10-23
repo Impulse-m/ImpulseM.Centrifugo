@@ -14,21 +14,22 @@ import (
 // its request timeout and by the call deadline.
 func (s *Sender) run(ctx context.Context, jobs []*provider.Job, callDeadline time.Time) []*apiproto.PushItemResult {
 	results := make([]*apiproto.PushItemResult, len(jobs))
+	shutdown := s.set.ShutdownContext()
 
 	// callCtx ends at the call deadline, or when the node shuts down. The provider calls of the call end with it.
 	callCtx, cancelCall := context.WithDeadline(context.WithoutCancel(ctx), callDeadline)
 	defer cancelCall()
-	stopCall := context.AfterFunc(s.shutdownCtx(), cancelCall)
+	stopCall := context.AfterFunc(shutdown, cancelCall)
 	defer stopCall()
 
 	// syncCtx ends the wait for provider slots at the sync timeout or the call deadline, whichever is first: no call
 	// starts after it. The calls themselves are not stopped by it.
 	syncCtx, cancelSync := context.WithDeadline(
 		context.WithoutCancel(ctx),
-		provider.EarlierOf(callDeadline, time.Now().Add(s.syncTimeout)),
+		earlierOf(callDeadline, time.Now().Add(s.syncTimeout)),
 	)
 	defer cancelSync()
-	stopSync := context.AfterFunc(s.shutdownCtx(), cancelSync)
+	stopSync := context.AfterFunc(shutdown, cancelSync)
 	defer stopSync()
 
 	groups := make(map[string][]int)
@@ -49,12 +50,12 @@ func (s *Sender) run(ctx context.Context, jobs []*provider.Job, callDeadline tim
 	return results
 }
 
-// shutdownCtx returns the process-lifetime context of the sender, or a context that never ends when there is none.
-func (s *Sender) shutdownCtx() context.Context {
-	if s.shutdown == nil {
-		return context.Background()
+// earlierOf returns the earlier of two times.
+func earlierOf(first time.Time, second time.Time) time.Time {
+	if first.Before(second) {
+		return first
 	}
-	return s.shutdown
+	return second
 }
 
 // pool sends the jobs at indexes with size workers. Each worker takes one index at a time and writes results[index], so

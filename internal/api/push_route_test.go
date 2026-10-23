@@ -305,3 +305,48 @@ func TestSendRouteWriteDeadline(t *testing.T) {
 	require.False(t, recorder.deadline.IsZero())
 	require.WithinRange(t, recorder.deadline, before.Add(24*time.Second), before.Add(26*time.Second))
 }
+
+// slowBody is a request body that takes delay to arrive, as the body of a request on a slow uplink does.
+type slowBody struct {
+	reader *strings.Reader
+	delay  time.Duration
+	once   sync.Once
+}
+
+// Read waits for the delay once, before the first data, then reads from the data.
+func (b *slowBody) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		time.Sleep(b.delay)
+	})
+	return b.reader.Read(p)
+}
+
+// TestSendRouteDeadlineCountsFromRequestArrival checks that timeout_ms counts from the arrival of the request, so the body
+// upload is inside it: with a body that takes one second to arrive and timeout_ms of two seconds, the write deadline of the
+// response is two seconds after the request started, not three.
+func TestSendRouteDeadlineCountsFromRequestArrival(t *testing.T) {
+	route := newSendRoute(t, sendTestConfig(1<<20))
+
+	req := &SendPushNotificationRequest{
+		TimeoutMs: 2000,
+		Recipient: &PushRecipient{
+			Targets: []*PushTarget{
+				{Provider: "apns", Token: "device", Environment: "production"},
+			},
+		},
+		Notification: &PushNotification{
+			Apns: &ApnsPushNotification{Payload: []byte(`{"aps":{"alert":"hi"}}`)},
+		},
+	}
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	slow := &slowBody{reader: strings.NewReader(string(body)), delay: time.Second}
+	request := httptest.NewRequest(http.MethodPost, "/send_push_notification", slow)
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	before := time.Now()
+	route(recorder, request)
+
+	require.False(t, recorder.deadline.IsZero())
+	require.WithinDuration(t, before.Add(2*time.Second), recorder.deadline, 500*time.Millisecond)
+}

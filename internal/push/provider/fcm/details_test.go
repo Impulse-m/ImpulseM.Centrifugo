@@ -69,6 +69,30 @@ func TestFCMProviderDetailsCutAtElementBoundary(t *testing.T) {
 	}
 }
 
+// TestFCMProviderDetailsOverLimitByWhitespaceIsFlagged checks that an array over the limit only because of its whitespace
+// keeps all its elements, comes back compacted, and is flagged: the bytes are then not the provider's, so the flag is set.
+func TestFCMProviderDetailsOverLimitByWhitespaceIsFlagged(t *testing.T) {
+	element := `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SMALL"}`
+	elements := make([]string, 20)
+	for index := range elements {
+		elements[index] = element
+	}
+	details := "[" + strings.Repeat(" ", 2*maxProviderDetailsBytes) + strings.Join(elements, strings.Repeat(" ", 200)+",") + "]"
+	require.Greater(t, len(details), maxProviderDetailsBytes)
+
+	tokens := newFakeToken(t, false)
+	fake := newDetailsFake(t, details)
+	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
+
+	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
+
+	require.True(t, result.GetProviderDetailsTruncated())
+	require.LessOrEqual(t, len(result.GetProviderDetails()), maxProviderDetailsBytes)
+	var kept []json.RawMessage
+	require.NoError(t, json.Unmarshal(result.GetProviderDetails(), &kept))
+	require.Len(t, kept, len(elements))
+}
+
 // TestFCMProviderDetailsEmptyForSuccess checks that a success carries no raw details.
 func TestFCMProviderDetailsEmptyForSuccess(t *testing.T) {
 	tokens := newFakeToken(t, false)

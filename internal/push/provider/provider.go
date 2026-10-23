@@ -7,8 +7,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptrace"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -37,11 +35,13 @@ const (
 	CodeNoSlot = "no_slot"
 	// CodeConnectFailed is a transport error before the request was written.
 	CodeConnectFailed = "connect_failed"
-	// CodeDeadline is a target whose call deadline came before the request was written.
+	// CodeDeadline is a target whose call deadline, or whose provider request timeout, came before the request was
+	// written.
 	CodeDeadline = "deadline"
 	// CodeTokenFetch is an FCM target whose access token fetch failed.
 	CodeTokenFetch = "token_fetch"
-	// CodeShutdown is a target that the node's shutdown ended before the request was written.
+	// CodeShutdown is a target that the node's shutdown ended before the request was written. When the shutdown and a
+	// deadline have both ended, the code is shutdown.
 	CodeShutdown = "shutdown"
 )
 
@@ -157,7 +157,7 @@ func NewNotSentResult(job *Job, code string) *apiproto.PushItemResult {
 // provider may have delivered it, so the result is unanswered. Otherwise the target was not sent: it is not_sent with
 // connect_failed when the call context is still alive, which is a transport error, and with no code when the call
 // context has ended, so the set names the deadline or the shutdown.
-func NoAnswerResult(job *Job, written bool, call context.Context) *apiproto.PushItemResult {
+func NoAnswerResult(call context.Context, job *Job, written bool) *apiproto.PushItemResult {
 	if written {
 		return NewResult(job, StatusUnanswered)
 	}
@@ -165,28 +165,6 @@ func NoAnswerResult(job *Job, written bool, call context.Context) *apiproto.Push
 		return NewNotSentResult(job, "")
 	}
 	return NewNotSentResult(job, CodeConnectFailed)
-}
-
-// WriteTrace records whether the request of one attempt was written. The HTTP transport reports the write through
-// httptrace.ClientTrace.WroteRequest, and that hook is the only source of the written bit. The trace is set per attempt.
-type WriteTrace struct {
-	written atomic.Bool
-}
-
-// Trace returns ctx with the hook that records the write of the attempt's request.
-func (t *WriteTrace) Trace(ctx context.Context) context.Context {
-	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		WroteRequest: func(info httptrace.WroteRequestInfo) {
-			if info.Err == nil {
-				t.written.Store(true)
-			}
-		},
-	})
-}
-
-// Written reports whether the request of the attempt was written.
-func (t *WriteTrace) Written() bool {
-	return t.written.Load()
 }
 
 // ApnsPayloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.

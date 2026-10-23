@@ -84,8 +84,8 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 	}
 }
 
-// Dispatch sends job to its provider with no call deadline: the provider call ends at its request timeout only. The
-// wait for a slot ends with syncCtx. See DispatchWindow.
+// Dispatch is DispatchWindow with a call context that never ends, so the provider call ends at its request timeout
+// only. It is a test seam: the send path calls DispatchWindow with the call deadline of the request.
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
 	return s.DispatchWindow(syncCtx, context.Background(), requestTimeout, job)
 }
@@ -170,13 +170,23 @@ func (s *Set) dispatch(
 	return result
 }
 
+// ShutdownContext returns the process-lifetime context of the set, or a context that never ends when there is none. Its
+// end stops the waits and the calls of every send. A nil set has no shutdown, so it returns a context that never ends.
+func (s *Set) ShutdownContext() context.Context {
+	if s == nil || s.shutdown == nil {
+		return context.Background()
+	}
+	return s.shutdown
+}
+
 // shutdownEnded reports whether the shutdown context of the set has ended.
 func (s *Set) shutdownEnded() bool {
 	return s.shutdown != nil && s.shutdown.Err() != nil
 }
 
-// endCode returns the code of a target that was not sent because a wait or a call ended: shutdown when the node is
-// shutting down, else deadline.
+// endCode returns the code of a target that was not sent because a wait or a call ended. When the shutdown has ended,
+// the code is shutdown, even if a call deadline has ended too: both ends are seen only after the fact, so the shutdown
+// takes precedence. Otherwise the code is deadline.
 func (s *Set) endCode() string {
 	if s.shutdownEnded() {
 		return CodeShutdown
@@ -190,7 +200,7 @@ func (s *Set) endCode() string {
 func callContext(call context.Context, requestTimeout time.Duration) (context.Context, context.CancelFunc) {
 	deadline := time.Now().Add(requestTimeout)
 	if callDeadline, ok := call.Deadline(); ok {
-		deadline = EarlierOf(deadline, callDeadline)
+		deadline = earlierOf(deadline, callDeadline)
 	}
 
 	callCtx, cancel := context.WithDeadline(context.WithoutCancel(call), deadline)
@@ -201,8 +211,8 @@ func callContext(call context.Context, requestTimeout time.Duration) (context.Co
 	}
 }
 
-// EarlierOf returns the earlier of two times.
-func EarlierOf(first time.Time, second time.Time) time.Time {
+// earlierOf returns the earlier of two times.
+func earlierOf(first time.Time, second time.Time) time.Time {
 	if first.Before(second) {
 		return first
 	}

@@ -38,6 +38,7 @@ extend-exclude = [
     "*.pb.go",
     "*.proto",
     "*_test.go",
+    "THIRD_PARTY_LICENSES.txt",
 ]
 
 [type.pem]

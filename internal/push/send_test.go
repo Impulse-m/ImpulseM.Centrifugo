@@ -212,3 +212,15 @@ func TestExpiredItemRejectedWithoutCall(t *testing.T) {
 	}
 	require.Zero(t, fake.calls.Load())
 }
+
+func TestWorkerPoolSize(t *testing.T) {
+	require.Equal(t, 100, poolSize(100, 500), "APNs: min(100, 500)")
+	require.Equal(t, 200, poolSize(500, 200), "FCM: min(500, 200)")
+}
+
+func TestWriteBoundIsSyncPlusRequestPlusMargin(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	// The default bound is sync_timeout (10 s) plus providers.request_timeout (10 s) plus 5 s.
+	require.Equal(t, 25*time.Second, s.WriteBound())
+}

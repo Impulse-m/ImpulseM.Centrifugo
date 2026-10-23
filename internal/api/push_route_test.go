@@ -156,3 +156,30 @@ func TestSendRouteNonSenderAnswers108(t *testing.T) {
 
 	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
 }
+
+// deadlineRecorder is a response recorder that takes a write deadline, as a server connection does.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+// SetWriteDeadline records the deadline of the response.
+func (r *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadline = deadline
+	return nil
+}
+
+// TestSendRouteWriteDeadline checks that the send route sets its write deadline past the longest inline run: the sync
+// wait, the provider timeout and the margin.
+func TestSendRouteWriteDeadline(t *testing.T) {
+	route := newSendRoute(t, sendTestConfig(1<<20))
+
+	request := httptest.NewRequest(http.MethodPost, "/send_push_notification", bytes.NewReader(sendRequest(t, "")))
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	before := time.Now()
+	route(recorder, request)
+
+	// The bound is 10 s of sync wait, 10 s of provider timeout and 5 s of margin.
+	require.False(t, recorder.deadline.IsZero())
+	require.WithinRange(t, recorder.deadline, before.Add(24*time.Second), before.Add(26*time.Second))
+}

@@ -528,22 +528,15 @@ func TestFCMTokenFetchFailureIsRejectedWithoutCode(t *testing.T) {
 	require.Empty(t, requests, "a token failure makes no provider call")
 }
 
-func TestFCMTokenFailureHeldForAllTargets(t *testing.T) {
+func TestFCMTokenFailureIsNotHeld(t *testing.T) {
 	tokens := newFailingToken(t, http.StatusServiceUnavailable)
 	fake := newFakeFCM(t, okHandler)
 	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
-	var wg sync.WaitGroup
-	for index := 0; index < 50; index++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			client.Send(context.Background(), newTestJob(index, `{"data":{}}`))
-		}(index)
-	}
-	wg.Wait()
+	require.Equal(t, provider.StatusRejected, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
+	require.Equal(t, provider.StatusRejected, client.Send(context.Background(), newTestJob(1, `{"data":{}}`)).GetStatus())
 
-	require.Equal(t, int64(1), tokens.requests.Load(), "the failure is held, so the targets of a call share one fetch")
+	require.Equal(t, int64(2), tokens.requests.Load(), "a failed fetch is not held: the next call starts a new fetch")
 	requests, _ := fake.recorded()
 	require.Empty(t, requests)
 }

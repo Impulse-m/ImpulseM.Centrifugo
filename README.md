@@ -62,6 +62,8 @@ A fork of [Centrifugo](https://github.com/centrifugal/centrifugo): upstream Cent
 
 * Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
 
+* Direct push send signs the APNs provider token once per 40-minute window per signing key. The token's `iat` is the start of the current window, and a node moves to a new window 60 seconds after each boundary. Nodes that share one key therefore present the same `iat`, so Apple sees at most one token update per key per window. Apple refuses token updates more often than every 20 minutes, and the node clocks must be NTP-synced for the windows to agree. The signature is deterministic (RFC 6979), so nodes that share a key and a window produce the same token bytes. A failed FCM token fetch is not held: it fails only the targets that waited on that fetch, and the next call starts a new fetch. Concurrent fetches of one credential are bounded to one at a time, and each fetch ends within `providers.request_timeout`. A target whose token fetch fails while its deadline is still open is answered `rejected` with no code, `http_status` 0 and no provider call.
+
 ### Access revocation event source
 
 Each node can receive access revocation events from a replayable log and rebuild its store after a restart. Kafka is the only source type now. Without `access_revoke.source.type` nothing changes.

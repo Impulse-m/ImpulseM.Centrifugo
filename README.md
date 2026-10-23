@@ -98,7 +98,7 @@ Server API methods `block_user`, `unblock_user`, `revoke_token` and `invalidate_
 
 ### RPC method registry
 
-Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. [Details](internal/rpcregistry/README.md).
+Clients call existing gRPC methods of backend services through RPC, by method name, and the request and response bytes pass through unchanged. It is off unless `rpc.registry.enabled` is set. The config, error mapping, metrics and planned work are in [internal/rpcregistry/README.md](internal/rpcregistry/README.md).
 
 ### Client address behind trusted proxies
 

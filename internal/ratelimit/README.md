@@ -3,6 +3,10 @@
 This file holds the details of `client.rate_limit` that the root README only names: the outage rules of
 `redis_user_command`, its refusal memory, Redis sizing and the memory of the in-process limits.
 
+## Options at a glance
+
+Operation rate limits (`client.rate_limit`) as described in the PRO docs: per-connection `client_command` limits with `total`, `default`, channel namespace overrides and RPC method overrides, `user_command` limits per user ID (in memory, shared by all connections of a user, including user-level `connect`), and `client_error` limits that disconnect abusive connections. `redis_user_command` keeps per-user limits in Redis per user ID, so all nodes share one budget; it has no `total`. Users are spread over Redis shards by consistent hashing of the user ID. With `reuse_from_engine` it uses the engine Redis configuration and engine prefix, so apps sharing one Redis with different engine prefixes never share limits. On Redis errors commands are allowed (fail-open), or refused for one second with `client.rate_limit.redis_user_command.on_error: deny`; each Redis call is bounded by `io_timeout`, 4s by default, and `command_timeout` bounds the command and connect checks. With the default `on_error: allow` the node starts when Redis is unreachable: it allows commands and reconnects in the background. With `on_error: deny` it starts too, and refuses commands (one second each) and connects until Redis connects. The outage rules, the refusal memory, Redis sizing and the token bucket truncation are described in this file.
+
 ## redis_user_command
 
 Each Redis call of a command or connect check is bounded by `io_timeout`, 4s by default. A stalled Redis costs each
@@ -52,10 +56,6 @@ this, so each namespace override adds its own bytes on top. The validation caps 
 connections and users seen.
 
 The state of rate limits is kept per connection and per user in memory, and per user in Redis for `redis_user_command`.
-
-## Redis sharding and engine reuse
-
-`redis_user_command` keeps per-user limits in Redis per user ID, so all nodes share one budget; it has no `total`. Users are spread over Redis shards by consistent hashing of the user ID. With `reuse_from_engine` it uses the engine Redis configuration and engine prefix, so apps sharing one Redis with different engine prefixes never share limits.
 
 ## Where the PRO docs leave it open
 

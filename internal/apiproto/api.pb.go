@@ -11240,8 +11240,14 @@ type PushItemResult struct {
 	// included, or the FCM message name on sent only. Empty when the provider
 	// sent none.
 	ProviderMessageId string `protobuf:"bytes,8,opt,name=provider_message_id,json=providerMessageId,proto3" json:"provider_message_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// provider_details is the raw JSON array of the FCM error details, not
+	// mapped. At most 4 KiB: a longer array is cut at an element boundary, so
+	// that it stays a valid JSON array. Empty for APNs and for successes.
+	ProviderDetails Raw `protobuf:"bytes,9,opt,name=provider_details,json=providerDetails,proto3" json:"provider_details,omitempty"`
+	// provider_details_truncated is true when provider_details was cut.
+	ProviderDetailsTruncated bool `protobuf:"varint,10,opt,name=provider_details_truncated,json=providerDetailsTruncated,proto3" json:"provider_details_truncated,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *PushItemResult) Reset() {
@@ -11328,6 +11334,20 @@ func (x *PushItemResult) GetProviderMessageId() string {
 		return x.ProviderMessageId
 	}
 	return ""
+}
+
+func (x *PushItemResult) GetProviderDetails() []byte {
+	if x != nil {
+		return x.ProviderDetails
+	}
+	return nil
+}
+
+func (x *PushItemResult) GetProviderDetailsTruncated() bool {
+	if x != nil {
+		return x.ProviderDetailsTruncated
+	}
+	return false
 }
 
 var File_api_proto protoreflect.FileDescriptor
@@ -12164,7 +12184,7 @@ const file_api_proto_rawDesc = "" +
 	"collapseId\x12!\n" +
 	"\fapns_payload\x18\x06 \x01(\fR\vapnsPayload\x12\x1f\n" +
 	"\vfcm_message\x18\a \x01(\fR\n" +
-	"fcmMessage\"\x83\x02\n" +
+	"fcmMessage\"\xec\x02\n" +
 	"\x0ePushItemResult\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x16\n" +
@@ -12174,7 +12194,10 @@ const file_api_proto_rawDesc = "" +
 	"\x0fprovider_detail\x18\x06 \x01(\tR\x0eproviderDetail\x12\x1f\n" +
 	"\vhttp_status\x18\a \x01(\rR\n" +
 	"httpStatus\x12.\n" +
-	"\x13provider_message_id\x18\b \x01(\tR\x11providerMessageId2\x87$\n" +
+	"\x13provider_message_id\x18\b \x01(\tR\x11providerMessageId\x12)\n" +
+	"\x10provider_details\x18\t \x01(\fR\x0fproviderDetails\x12<\n" +
+	"\x1aprovider_details_truncated\x18\n" +
+	" \x01(\bR\x18providerDetailsTruncated2\x87$\n" +
 	"\rCentrifugoApi\x12^\n" +
 	"\x05Batch\x12(.centrifugal.centrifugo.api.BatchRequest\x1a).centrifugal.centrifugo.api.BatchResponse\"\x00\x12d\n" +
 	"\aPublish\x12*.centrifugal.centrifugo.api.PublishRequest\x1a+.centrifugal.centrifugo.api.PublishResponse\"\x00\x12j\n" +

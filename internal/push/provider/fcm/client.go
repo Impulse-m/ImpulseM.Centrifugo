@@ -70,18 +70,25 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 	return client, nil
 }
 
-// fcmError is the error body of a failed send request: the status, and the details that name the cause.
+// fcmError is the error body of a failed send request: the status, and the details that name the cause. The details
+// stay raw, so that the array can be passed on unchanged; they are decoded only to name the cause.
 type fcmError struct {
 	Error struct {
-		Status  string `json:"status"`
-		Details []struct {
-			ErrorCode       string `json:"errorCode"`
-			FieldViolations []struct {
-				Field string `json:"field"`
-			} `json:"fieldViolations"`
-		} `json:"details"`
+		Status  string          `json:"status"`
+		Details json.RawMessage `json:"details"`
 	} `json:"error"`
 }
+
+// fcmDetail is one element of the details of an error: an error code, or field violations of the request.
+type fcmDetail struct {
+	ErrorCode       string `json:"errorCode"`
+	FieldViolations []struct {
+		Field string `json:"field"`
+	} `json:"fieldViolations"`
+}
+
+// maxProviderDetailsBytes bounds the raw details array of a result.
+const maxProviderDetailsBytes = 4 << 10
 
 // Send sends the job to FCM and returns its raw result. It implements provider.Sender.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
@@ -177,30 +184,41 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 		return result
 	}
 	result.ProviderCode = provider.Truncate(failure.Error.Status)
-	result.ProviderDetail = failureDetail(failure)
+	details := decodeDetails(failure.Error.Details)
+	result.ProviderDetail = failureDetail(failure.Error.Status, details)
+	result.ProviderDetails, result.ProviderDetailsTruncated = providerDetails(failure.Error.Details)
 	return result
+}
+
+// decodeDetails returns the typed details of a raw details array. A value that is not an array has none.
+func decodeDetails(raw json.RawMessage) []fcmDetail {
+	var details []fcmDetail
+	if json.Unmarshal(raw, &details) != nil {
+		return nil
+	}
+	return details
 }
 
 // failureDetail returns the first FCM error code of the details, else the first field violation, truncated. For an
 // INVALID_ARGUMENT answer the field violation comes first: it names the bad field, such as message.token, and an error
 // code of the same answer would hide which field is bad.
-func failureDetail(failure fcmError) string {
-	if failure.Error.Status == statusInvalidArgument {
-		if field := firstFieldViolation(failure); field != "" {
+func failureDetail(status string, details []fcmDetail) string {
+	if status == statusInvalidArgument {
+		if field := firstFieldViolation(details); field != "" {
 			return provider.Truncate(field)
 		}
 	}
-	for _, detail := range failure.Error.Details {
+	for _, detail := range details {
 		if detail.ErrorCode != "" {
 			return provider.Truncate(detail.ErrorCode)
 		}
 	}
-	return provider.Truncate(firstFieldViolation(failure))
+	return provider.Truncate(firstFieldViolation(details))
 }
 
 // firstFieldViolation returns the first non-empty field of the field violations of the details, or empty.
-func firstFieldViolation(failure fcmError) string {
-	for _, detail := range failure.Error.Details {
+func firstFieldViolation(details []fcmDetail) string {
+	for _, detail := range details {
 		for _, violation := range detail.FieldViolations {
 			if violation.Field != "" {
 				return violation.Field
@@ -208,4 +226,39 @@ func firstFieldViolation(failure fcmError) string {
 		}
 	}
 	return ""
+}
+
+// providerDetails returns the raw details array of a failed answer for the result, and whether it was cut. An array
+// within the limit is returned as it was sent. A longer array is cut at an element boundary, so the result is still a
+// valid JSON array: the elements that fit are kept whole, and the cut is reported. A value that is not an array, and no
+// details, give no bytes.
+func providerDetails(raw json.RawMessage) ([]byte, bool) {
+	var elements []json.RawMessage
+	if json.Unmarshal(raw, &elements) != nil || elements == nil {
+		return nil, false
+	}
+	if len(raw) <= maxProviderDetailsBytes {
+		return raw, false
+	}
+
+	var out bytes.Buffer
+	out.WriteByte('[')
+	kept := 0
+	for index, element := range elements {
+		separator := 0
+		if index > 0 {
+			separator = 1
+		}
+		// The closing bracket is counted with the element, so the cut array never exceeds the limit.
+		if out.Len()+separator+len(element)+1 > maxProviderDetailsBytes {
+			break
+		}
+		if separator == 1 {
+			out.WriteByte(',')
+		}
+		out.Write(element)
+		kept++
+	}
+	out.WriteByte(']')
+	return out.Bytes(), kept < len(elements)
 }

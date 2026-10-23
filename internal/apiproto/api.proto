@@ -2124,4 +2124,10 @@ message PushItemResult {
     // included, or the FCM message name on sent only. Empty when the provider
     // sent none.
     string provider_message_id = 8;
+    // provider_details is the raw JSON array of the FCM error details, not
+    // mapped. At most 4 KiB: a longer array is cut at an element boundary, so
+    // that it stays a valid JSON array. Empty for APNs and for successes.
+    bytes provider_details = 9;
+    // provider_details_truncated is true when provider_details was cut.
+    bool provider_details_truncated = 10;
 }

@@ -7,6 +7,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -15,19 +17,32 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
 
-// Item statuses of a direct send result.
+// Item statuses of a direct send result. Direct send answers not_sent where the pending status of the PRO shape would
+// be: StatusPending is not produced by direct send.
 const (
 	StatusSent       = "sent"
 	StatusRejected   = "rejected"
 	StatusUnanswered = "unanswered"
 	StatusPending    = "pending"
+	StatusNotSent    = "not_sent"
 	StatusDryRun     = "dry_run"
 )
 
-// Item codes of a server refusal, set only when the server refused a target before any provider call.
+// Item codes. A server refusal sets CodePayloadTooLarge or CodeExpired, and no provider call is made. A not_sent item
+// sets one of the other codes, which name why the target never left the node.
 const (
 	CodePayloadTooLarge = "payload_too_large"
 	CodeExpired         = "expired"
+	// CodeNoSlot is a target that got no in-flight slot before the slot wait ended.
+	CodeNoSlot = "no_slot"
+	// CodeConnectFailed is a transport error before the request was written.
+	CodeConnectFailed = "connect_failed"
+	// CodeDeadline is a target whose call deadline came before the request was written.
+	CodeDeadline = "deadline"
+	// CodeTokenFetch is an FCM target whose access token fetch failed.
+	CodeTokenFetch = "token_fetch"
+	// CodeShutdown is a target that the node's shutdown ended before the request was written.
+	CodeShutdown = "shutdown"
 )
 
 // Provider names of a target.
@@ -128,6 +143,50 @@ func NewCodeResult(job *Job, code string) *apiproto.PushItemResult {
 	result := NewResult(job, StatusRejected)
 	result.Code = code
 	return result
+}
+
+// NewNotSentResult returns a not_sent result of job: the target never left the node. The code names why, and it is
+// empty when the wait ended and the set names the cause.
+func NewNotSentResult(job *Job, code string) *apiproto.PushItemResult {
+	result := NewResult(job, StatusNotSent)
+	result.Code = code
+	return result
+}
+
+// NoAnswerResult returns the result of job for an attempt that got no status line. When the request was written, the
+// provider may have delivered it, so the result is unanswered. Otherwise the target was not sent: it is not_sent with
+// connect_failed when the call context is still alive, which is a transport error, and with no code when the call
+// context has ended, so the set names the deadline or the shutdown.
+func NoAnswerResult(job *Job, written bool, call context.Context) *apiproto.PushItemResult {
+	if written {
+		return NewResult(job, StatusUnanswered)
+	}
+	if call.Err() != nil {
+		return NewNotSentResult(job, "")
+	}
+	return NewNotSentResult(job, CodeConnectFailed)
+}
+
+// WriteTrace records whether the request of one attempt was written. The HTTP transport reports the write through
+// httptrace.ClientTrace.WroteRequest, and that hook is the only source of the written bit. The trace is set per attempt.
+type WriteTrace struct {
+	written atomic.Bool
+}
+
+// Trace returns ctx with the hook that records the write of the attempt's request.
+func (t *WriteTrace) Trace(ctx context.Context) context.Context {
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				t.written.Store(true)
+			}
+		},
+	})
+}
+
+// Written reports whether the request of the attempt was written.
+func (t *WriteTrace) Written() bool {
+	return t.written.Load()
 }
 
 // ApnsPayloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.

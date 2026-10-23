@@ -385,7 +385,8 @@ func TestFCMTokenWaitBounded(t *testing.T) {
 	started := time.Now()
 	result := client.Send(ctx, newTestJob(0, `{"data":{}}`))
 
-	require.Equal(t, provider.StatusPending, result.GetStatus())
+	require.Equal(t, provider.StatusNotSent, result.GetStatus())
+	require.Empty(t, result.GetCode(), "the call deadline ended the wait: the set names the code")
 	require.Less(t, time.Since(started), time.Second)
 	requests, _ := fake.recorded()
 	require.Empty(t, requests, "a token wait is not a provider call")
@@ -520,18 +521,18 @@ func TestNewClientRejectsNonPositiveTimeout(t *testing.T) {
 	}
 }
 
-func TestFCMTokenFetchFailureIsPendingWithoutCode(t *testing.T) {
+func TestFCMTokenFetchFailureIsNotSentWithTokenFetchCode(t *testing.T) {
 	tokens := newFailingToken(t, http.StatusUnauthorized)
 	fake := newFakeFCM(t, okHandler)
 	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
 	result := client.Send(context.Background(), newTestJob(0, `{"data":{}}`))
 
-	// Nothing left the node, so the item is pending, not rejected: a caller can resend it safely.
-	require.Equal(t, provider.StatusPending, result.GetStatus())
+	// Nothing left the node, so the item is not_sent, not rejected: a caller can resend it safely.
+	require.Equal(t, provider.StatusNotSent, result.GetStatus())
+	require.Equal(t, provider.CodeTokenFetch, result.GetCode())
 	require.Zero(t, result.GetHttpStatus())
 	require.Empty(t, result.GetProviderCode())
-	require.Empty(t, result.GetCode())
 	requests, _ := fake.recorded()
 	require.Empty(t, requests, "a token failure makes no provider call")
 }
@@ -541,8 +542,8 @@ func TestFCMTokenFailureIsNotHeld(t *testing.T) {
 	fake := newFakeFCM(t, okHandler)
 	client := newTestClient(t, tokens.server.URL, time.Second, withFCMEndpoint(fake.server.URL))
 
-	require.Equal(t, provider.StatusPending, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
-	require.Equal(t, provider.StatusPending, client.Send(context.Background(), newTestJob(1, `{"data":{}}`)).GetStatus())
+	require.Equal(t, provider.StatusNotSent, client.Send(context.Background(), newTestJob(0, `{"data":{}}`)).GetStatus())
+	require.Equal(t, provider.StatusNotSent, client.Send(context.Background(), newTestJob(1, `{"data":{}}`)).GetStatus())
 
 	require.Equal(t, int64(2), tokens.requests.Load(), "a failed fetch is not held: the next call starts a new fetch")
 	requests, _ := fake.recorded()
@@ -560,7 +561,7 @@ func TestFCMPendingWhenTokenReadyAfterDeadline(t *testing.T) {
 	cancel()
 	result := client.Send(ctx, newTestJob(1, `{"data":{}}`))
 
-	require.Equal(t, provider.StatusPending, result.GetStatus())
+	require.Equal(t, provider.StatusNotSent, result.GetStatus())
 	requests, _ := fake.recorded()
 	require.Len(t, requests, 1, "a call past its deadline makes no provider call")
 }

@@ -18,6 +18,7 @@ func TestErrCodeOf(t *testing.T) {
 	}{
 		{name: "sent", result: &apiproto.PushItemResult{Status: StatusSent, HttpStatus: 200}, expected: errCodeOK},
 		{name: "pending", result: &apiproto.PushItemResult{Status: StatusPending}, expected: errCodeNotSent},
+		{name: "not sent", result: &apiproto.PushItemResult{Status: StatusNotSent, Code: CodeConnectFailed}, expected: errCodeNotSent},
 		{name: "unanswered", result: &apiproto.PushItemResult{Status: StatusUnanswered}, expected: errCodeUnanswered},
 		{
 			name:     "payload too large",

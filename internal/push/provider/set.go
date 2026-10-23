@@ -110,7 +110,12 @@ func (s *Set) DispatchWindow(
 }
 
 // dispatch is the body of Dispatch: the server checks, the wait for a slot and the provider call.
-func (s *Set) dispatch(slot context.Context, call context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
+func (s *Set) dispatch(
+	slot context.Context,
+	call context.Context,
+	requestTimeout time.Duration,
+	job *Job,
+) *apiproto.PushItemResult {
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
@@ -135,13 +140,16 @@ func (s *Set) dispatch(slot context.Context, call context.Context, requestTimeou
 
 	err := limited.slots.Acquire(slot, 1)
 	if err != nil {
-		return NewResult(job, StatusPending)
+		if s.shutdownEnded() {
+			return NewNotSentResult(job, CodeShutdown)
+		}
+		return NewNotSentResult(job, CodeNoSlot)
 	}
 	defer limited.slots.Release(1)
 
 	// Acquire takes a free slot even when slot has ended, so the end is checked again: no call starts after it.
 	if slot.Err() != nil {
-		return NewResult(job, StatusPending)
+		return NewNotSentResult(job, s.endCode())
 	}
 
 	// The gauge is nil while push metrics are not registered.
@@ -154,12 +162,31 @@ func (s *Set) dispatch(slot context.Context, call context.Context, requestTimeou
 	callCtx, cancel := callContext(call, requestTimeout)
 	defer cancel()
 
-	return limited.sender.Send(callCtx, job)
+	result := limited.sender.Send(callCtx, job)
+	// A provider returns not_sent with no code when its call context ended before the write: the set names the cause.
+	if result.GetStatus() == StatusNotSent && result.GetCode() == "" {
+		result.Code = s.endCode()
+	}
+	return result
+}
+
+// shutdownEnded reports whether the shutdown context of the set has ended.
+func (s *Set) shutdownEnded() bool {
+	return s.shutdown != nil && s.shutdown.Err() != nil
+}
+
+// endCode returns the code of a target that was not sent because a wait or a call ended: shutdown when the node is
+// shutting down, else deadline.
+func (s *Set) endCode() string {
+	if s.shutdownEnded() {
+		return CodeShutdown
+	}
+	return CodeDeadline
 }
 
 // callContext returns the context of one provider call. It ends at the earlier of its own request timeout, counted from
-// now, and the deadline of call. It ends when call ends, so a shutdown or the call deadline cancels it. The context of
-// the call has no other parent, so the end of the slot wait does not stop a call that started.
+// now, and the deadline of call. It ends when call ends, so a shutdown or the call deadline cancels it. It is not bound to
+// the slot wait, so the end of the slot wait does not stop a call that started.
 func callContext(call context.Context, requestTimeout time.Duration) (context.Context, context.CancelFunc) {
 	deadline := time.Now().Add(requestTimeout)
 	if callDeadline, ok := call.Deadline(); ok {
@@ -215,7 +242,7 @@ func errCodeOf(result *apiproto.PushItemResult) string {
 	switch {
 	case status == StatusSent:
 		return errCodeOK
-	case status == StatusPending:
+	case status == StatusNotSent, status == StatusPending:
 		return errCodeNotSent
 	case status == StatusUnanswered:
 		return errCodeUnanswered

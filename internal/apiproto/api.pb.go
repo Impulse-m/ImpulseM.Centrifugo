@@ -11218,10 +11218,14 @@ type PushItemResult struct {
 	Index uint32 `protobuf:"varint,1,opt,name=index,proto3" json:"index"`
 	// ref is the echo of the target ref, when set.
 	Ref string `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
-	// status is sent, rejected, unanswered, pending or dry_run.
+	// status is sent, rejected, unanswered, not_sent or dry_run. not_sent
+	// means that the target never left the node, so a resend cannot duplicate
+	// it. unanswered means that the request was written and no answer came.
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
-	// code is a server refusal reason, set only when the server refused the
-	// target before any provider call: payload_too_large or expired.
+	// code names why a target did not reach a provider: payload_too_large or
+	// expired when the server refused it before any provider call, and for a
+	// not_sent target no_slot, connect_failed, deadline, token_fetch or
+	// shutdown.
 	Code string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
 	// provider_code is the APNs reason, or the FCM error status. Empty when
 	// the provider sent no status or no body.

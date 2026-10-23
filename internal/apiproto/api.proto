@@ -2102,10 +2102,14 @@ message PushItemResult {
     uint32 index = 1;
     // ref is the echo of the target ref, when set.
     string ref = 2;
-    // status is sent, rejected, unanswered, pending or dry_run.
+    // status is sent, rejected, unanswered, not_sent or dry_run. not_sent
+    // means that the target never left the node, so a resend cannot duplicate
+    // it. unanswered means that the request was written and no answer came.
     string status = 3;
-    // code is a server refusal reason, set only when the server refused the
-    // target before any provider call: payload_too_large or expired.
+    // code names why a target did not reach a provider: payload_too_large or
+    // expired when the server refused it before any provider call, and for a
+    // not_sent target no_slot, connect_failed, deadline, token_fetch or
+    // shutdown.
     string code = 4;
     // provider_code is the APNs reason, or the FCM error status. Empty when
     // the provider sent no status or no body.

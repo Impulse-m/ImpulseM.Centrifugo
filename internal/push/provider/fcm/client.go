@@ -110,16 +110,20 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewResult(job, provider.StatusRejected)
 	}
 
-	// The token wait is not a provider call. When it ends without a token, whether the caller's context ended or the
-	// fetch failed, nothing was sent: the item is pending, so a resend cannot duplicate a message.
+	// The token wait is not a provider call. When it ends without a token, nothing was sent, so the item is not_sent and a
+	// resend cannot duplicate a message. A wait that ended with the call context has no code: the set names the cause.
+	// A fetch that failed while the call context was alive is token_fetch.
 	token, err := c.gate.Token(ctx)
 	if err != nil {
-		return provider.NewResult(job, provider.StatusPending)
+		if ctx.Err() != nil {
+			return provider.NewNotSentResult(job, "")
+		}
+		return provider.NewNotSentResult(job, provider.CodeTokenFetch)
 	}
 	// The token can be ready in the same moment as ctx ends, and the select then picks it. A call past its deadline
 	// is still not made.
 	if ctx.Err() != nil {
-		return provider.NewResult(job, provider.StatusPending)
+		return provider.NewNotSentResult(job, "")
 	}
 
 	// The OAuth access token is only the bearer of the request. The message token is the device token of the target,
@@ -129,7 +133,8 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 
 // post sends one request with body. Its errors are dropped: a net/http error text can carry the URL.
 func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string, body []byte) *apiproto.PushItemResult {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	trace := &provider.WriteTrace{}
+	request, err := http.NewRequestWithContext(trace.Trace(ctx), http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
@@ -138,7 +143,7 @@ func (c *Client) post(ctx context.Context, job *provider.Job, accessToken string
 
 	httpResponse, err := c.httpClient.Do(request)
 	if err != nil {
-		return provider.NewResult(job, provider.StatusUnanswered)
+		return provider.NoAnswerResult(job, trace.Written(), ctx)
 	}
 	defer func() {
 		_ = httpResponse.Body.Close()

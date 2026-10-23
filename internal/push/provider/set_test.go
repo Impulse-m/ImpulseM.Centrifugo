@@ -94,7 +94,7 @@ func newTestJob(index int, provider string) *Job {
 	}
 }
 
-func TestDispatchPendingAfterSyncDeadline(t *testing.T) {
+func TestDispatchNotSentAfterSyncDeadline(t *testing.T) {
 	sender := &recordingSender{
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
@@ -113,7 +113,8 @@ func TestDispatchPendingAfterSyncDeadline(t *testing.T) {
 	cancel()
 	result := set.Dispatch(syncCtx, time.Minute, newTestJob(1, ProviderFCM))
 
-	require.Equal(t, StatusPending, result.GetStatus())
+	require.Equal(t, StatusNotSent, result.GetStatus())
+	require.Equal(t, CodeNoSlot, result.GetCode())
 	require.Equal(t, uint32(1), result.GetIndex())
 	require.Equal(t, "ref", result.GetRef())
 	require.Equal(t, 1, sender.callCount())

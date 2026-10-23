@@ -161,9 +161,10 @@ func TestCallLimitAnswers111(t *testing.T) {
 	require.True(t, resp.GetError().GetTemporary())
 }
 
-func TestPendingAfterSyncTimeout(t *testing.T) {
+func TestNotSentAfterSyncTimeout(t *testing.T) {
 	// One slot per provider, and a call that holds its slot until its request timeout. The second and third targets wait
-	// for the slot, and the sync deadline ends the wait before the slot is free: they are pending and make no call.
+	// for the slot, and the sync deadline ends the wait before the slot is free: they are not_sent with no_slot and make
+	// no call.
 	fake := &countingSender{hold: true}
 	s := newTestSender(t, fake, func(cfg *configtypes.PushNotifications) {
 		cfg.APNs.MaxInflight = 1
@@ -183,17 +184,18 @@ func TestPendingAfterSyncTimeout(t *testing.T) {
 	resp := s.Send(context.Background(), req)
 
 	require.Nil(t, resp.GetError())
-	var pending int
+	var notSent int
 	var answered int
 	for _, result := range resp.GetResult().GetResults() {
-		if result.GetStatus() == provider.StatusPending {
-			pending++
+		if result.GetStatus() == provider.StatusNotSent {
+			require.Equal(t, provider.CodeNoSlot, result.GetCode())
+			notSent++
 			continue
 		}
 		answered++
 	}
-	require.GreaterOrEqual(t, pending, 1)
-	require.Equal(t, int32(answered), fake.calls.Load(), "a pending target makes no call")
+	require.GreaterOrEqual(t, notSent, 1)
+	require.Equal(t, int32(answered), fake.calls.Load(), "a not_sent target makes no call")
 }
 
 func TestExpiredItemRejectedWithoutCall(t *testing.T) {

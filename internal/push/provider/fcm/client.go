@@ -91,6 +91,11 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 	if len(message) == 0 {
 		return provider.NewResult(job, provider.StatusRejected)
 	}
+	// The size is checked before the message is scanned or copied. A request message is shared by its targets, so a
+	// large one would otherwise be copied once per target.
+	if !fitsInjected(message, job.Target.GetToken(), job.CollapseID, job.Notification.GetExpireAt()) {
+		return provider.NewCodeResult(job, provider.CodePayloadTooLarge)
+	}
 	// The request validator answers 107 before any provider call. This check is defence in depth only: a refusal
 	// here is a rejected item without a code, and it is never the refusal path of the request.
 	err := CheckMessage(message, job.CollapseID)

@@ -188,6 +188,21 @@ func TestDryRunMakesNoRequest(t *testing.T) {
 	require.Zero(t, testutil.CollectAndCount(metrics.PushNotificationCount))
 }
 
+func TestDryRunWithoutProvidersAnswersDryRun(t *testing.T) {
+	initPushMetricsForTest(t)
+
+	// A dry run set loads no provider, so no Add call is made. Valid targets of both providers still answer dry_run.
+	set := NewDryRunSet()
+
+	for _, name := range []string{ProviderAPNs, ProviderFCM} {
+		result := set.Dispatch(context.Background(), time.Minute, newTestJob(0, name))
+
+		require.Equal(t, StatusDryRun, result.GetStatus(), name)
+		require.Empty(t, result.GetCode(), name)
+	}
+	require.Zero(t, testutil.CollectAndCount(metrics.PushNotificationCount))
+}
+
 func TestDryRunStillRefusesExpiredBeforeAnswer(t *testing.T) {
 	// Server checks still run in dry run: an expired target is refused and no provider is called.
 	set := NewDryRunSet()

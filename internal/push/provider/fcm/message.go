@@ -49,6 +49,52 @@ func CheckMessage(message []byte, collapseID string) error {
 	return nil
 }
 
+// The widest form of each server addition of injectMessage, in bytes: its keys, quotes, wrapper objects and comma. A
+// decimal expiry is at most twenty digits. The forms are upper bounds, so a message that fits the bound fits the limit.
+const (
+	maxDecimalDigits   = 20
+	tokenAddition      = len(`"token":"",`)
+	collapseAddition   = len(`"android":{"collapse_key":""},`) + len(`"apns":{"headers":{"apns-collapse-id":""}},`)
+	ttlAddition        = len(`"android":{"ttl":"s"},`) + maxDecimalDigits
+	expirationAddition = len(`"apns":{"headers":{"apns-expiration":""}},`) + maxDecimalDigits
+)
+
+// jsonEscapedBound returns an upper bound of the length of value written as a JSON string. A byte that may be escaped
+// is counted as six bytes, the length of a \u escape, so the bound holds for any escaping of the encoder.
+func jsonEscapedBound(value string) int {
+	size := 0
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c < 0x20 || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			size += 6
+			continue
+		}
+		size++
+	}
+	return size
+}
+
+// injectionBound returns an upper bound of the growth of a message under injectMessage for the token, the collapse id
+// and the expiry. The token is written once and the collapse id twice, once on each field. Each addition is counted
+// only when injectMessage makes it, so the bound is exact for a target with a token alone.
+func injectionBound(token string, collapseID string, expireAt int64) int {
+	bound := tokenAddition + jsonEscapedBound(token)
+	if collapseID != "" {
+		bound += collapseAddition + 2*jsonEscapedBound(collapseID)
+	}
+	if expireAt > 0 {
+		bound += ttlAddition + expirationAddition
+	}
+	return bound
+}
+
+// fitsInjected reports whether message stays within the message limit after injectMessage for the token, the collapse
+// id and the expiry. It is checked before the copy: a message that cannot fit is refused without any copy, so one
+// shared request message is never copied for every target past the limit.
+func fitsInjected(message []byte, token string, collapseID string, expireAt int64) bool {
+	return len(message)+injectionBound(token, collapseID, expireAt) <= maxMessageBytes
+}
+
 // injectMessage returns the message with the server additions: the token, and the collapse id and the expiry on the
 // Android and APNs fields of the message. Each addition is made only where the caller set nothing, so the caller
 // bytes are kept otherwise. A resolved collapse id is set on both collapse fields; expireAt is in Unix seconds, zero

@@ -82,20 +82,21 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 
 // dispatch is the body of Dispatch: the server checks, the wait for a slot and the provider call.
 func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
-	name := job.Target.GetProvider()
-	limited, ok := s.limited[name]
-	if !ok {
-		return NewResult(job, StatusRejected)
-	}
-
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
 	}
 
-	// A dry run target is valid here, and no slot is taken and no provider is called for it.
+	// A dry run target is valid here. The dry run check comes before the provider lookup, because a dry run set holds
+	// no provider: no slot is taken and no provider is called for it.
 	if s.dryRun {
 		return DryRun(job)
+	}
+
+	name := job.Target.GetProvider()
+	limited, ok := s.limited[name]
+	if !ok {
+		return NewResult(job, StatusRejected)
 	}
 
 	err := limited.slots.Acquire(syncCtx, 1)

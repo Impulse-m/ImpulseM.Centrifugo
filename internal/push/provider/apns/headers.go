@@ -24,6 +24,13 @@ const (
 	priorityPowerSave = "5"
 )
 
+// Length bounds of the caller header values. Every allowed value is at most maxHeaderValueBytes, the apns-topic too, and
+// the thread id is at most maxThreadIDBytes. The bounds keep one target from copying a large header into a request.
+const (
+	maxHeaderValueBytes = 255
+	maxThreadIDBytes    = 64
+)
+
 // allowedHeaders are the caller headers an APNs request may carry. Any other name is refused: the server sets the
 // authorization and the content type itself.
 var allowedHeaders = map[string]bool{
@@ -47,6 +54,12 @@ func CheckHeaders(headers map[string]string, collapseID string) error {
 		}
 		if value == "" || !httpguts.ValidHeaderFieldValue(value) {
 			return fmt.Errorf("apns header %s has an empty or invalid value", name)
+		}
+		if len(value) > maxHeaderValueBytes {
+			return fmt.Errorf("apns header %s is longer than %d bytes", name, maxHeaderValueBytes)
+		}
+		if name == headerThreadID && len(value) > maxThreadIDBytes {
+			return fmt.Errorf("apns header %s is longer than %d bytes", name, maxThreadIDBytes)
 		}
 
 		switch name {

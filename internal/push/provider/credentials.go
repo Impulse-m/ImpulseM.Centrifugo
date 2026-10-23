@@ -45,30 +45,41 @@ func LoadAPNSKey(keyFile string, keyPEM configtypes.Secret) (*ecdsa.PrivateKey, 
 		return loadAPNSKeyFile(keyFile)
 	}
 
-	data, _, err := configtypes.PEMData(keyPEM.Value()).Load(os.Stat, os.ReadFile)
+	value := keyPEM.Value()
+	if len(value) > maxKeyFileBytes {
+		return nil, fmt.Errorf("%s: the key is larger than %d bytes", apnsKeyPEMKey, maxKeyFileBytes)
+	}
+	tooLarge := false
+	data, _, err := configtypes.PEMData(value).Load(boundedStat(&tooLarge), os.ReadFile)
 	if err != nil {
+		if tooLarge {
+			return nil, fmt.Errorf("%s: the key file is larger than %d bytes", apnsKeyPEMKey, maxKeyFileBytes)
+		}
 		return nil, fmt.Errorf("%s: the key cannot be loaded", apnsKeyPEMKey)
 	}
 	return parseAPNSKey(data, apnsKeyPEMKey)
 }
 
-// loadAPNSKeyFile loads the key file through configtypes.PEMData. Its stat is capped: a file above maxKeyFileBytes is
-// refused by the stat, before the read, and the error says so.
-func loadAPNSKeyFile(keyFile string) (*ecdsa.PrivateKey, error) {
-	tooLarge := false
-	capStat := func(name string) (fs.FileInfo, error) {
+// boundedStat returns the stat function of PEMData.Load capped at maxKeyFileBytes: a file above the bound is refused by
+// the stat, before the read, and tooLarge is set so that the caller can name the cause. The error never names the file.
+func boundedStat(tooLarge *bool) func(name string) (fs.FileInfo, error) {
+	return func(name string) (fs.FileInfo, error) {
 		info, err := os.Stat(name)
 		if err != nil {
 			return nil, err
 		}
 		if info.Size() > maxKeyFileBytes {
-			tooLarge = true
+			*tooLarge = true
 			return nil, errors.New("the key file is larger than the bound")
 		}
 		return info, nil
 	}
+}
 
-	data, _, err := configtypes.PEMData(keyFile).Load(capStat, os.ReadFile)
+// loadAPNSKeyFile loads the key file through configtypes.PEMData, with the stat capped by boundedStat.
+func loadAPNSKeyFile(keyFile string) (*ecdsa.PrivateKey, error) {
+	tooLarge := false
+	data, _, err := configtypes.PEMData(keyFile).Load(boundedStat(&tooLarge), os.ReadFile)
 	if err != nil {
 		if tooLarge {
 			return nil, fmt.Errorf("%s (%s): the key file is larger than %d bytes", apnsKeyFileKey, keyFile, maxKeyFileBytes)

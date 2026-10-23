@@ -4,8 +4,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,6 +145,44 @@ func TestBearerSignsOncePerWindow(t *testing.T) {
 	_, _, err := credential.Current()
 	require.NoError(t, err)
 	require.Equal(t, int64(2), counter.signs.Load())
+}
+
+func TestBearerTokensAreIdenticalAcrossNodes(t *testing.T) {
+	boundary := testWindow.Unix()
+	key := newTestKey(t)
+	clock := &fakeClock{now: time.Unix(boundary+500, 0)}
+
+	first, _ := newTestCredential(t, key, clock)
+	second, _ := newTestCredential(t, key, clock)
+
+	firstToken, _, err := first.Current()
+	require.NoError(t, err)
+	secondToken, _, err := second.Current()
+	require.NoError(t, err)
+
+	require.Equal(t, firstToken, secondToken)
+}
+
+func TestBearerSignatureVerifiesWithPublicKey(t *testing.T) {
+	boundary := testWindow.Unix()
+	key := newTestKey(t)
+	clock := &fakeClock{now: time.Unix(boundary+500, 0)}
+	credential, _ := newTestCredential(t, key, clock)
+
+	token, _, err := credential.Current()
+	require.NoError(t, err)
+
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3)
+
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	require.NoError(t, err)
+	require.Len(t, signature, es256Size)
+
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	r := new(big.Int).SetBytes(signature[:es256Size/2])
+	s := new(big.Int).SetBytes(signature[es256Size/2:])
+	require.True(t, ecdsa.Verify(&key.PublicKey, digest[:], r, s))
 }
 
 func TestBearerKeyIDHeader(t *testing.T) {

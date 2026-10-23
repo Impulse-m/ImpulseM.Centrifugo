@@ -43,7 +43,7 @@ type Credential struct {
 
 // NewCredential returns the credential of a P-256 signing key with keyID and teamID.
 func NewCredential(key *ecdsa.PrivateKey, keyID string, teamID string) (*Credential, error) {
-	signer, err := jwt.NewSignerES(jwt.ES256, key)
+	signer, err := newDeterministicES256(key)
 	if err != nil {
 		return nil, err
 	}

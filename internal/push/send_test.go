@@ -218,9 +218,10 @@ func TestWorkerPoolSize(t *testing.T) {
 	require.Equal(t, 200, poolSize(500, 200), "FCM: min(500, 200)")
 }
 
-func TestWriteBoundIsSyncPlusRequestPlusMargin(t *testing.T) {
+func TestDefaultCallTimeoutIsSyncPlusRequestPlusMargin(t *testing.T) {
 	s := newTestSender(t, &countingSender{}, nil)
 
 	// The default bound is sync_timeout (10 s) plus providers.request_timeout (10 s) plus 5 s.
-	require.Equal(t, 25*time.Second, s.WriteBound())
+	require.Equal(t, 25*time.Second, s.DefaultCallTimeout())
+	require.Equal(t, 25*time.Second, s.CallTimeout(0))
 }

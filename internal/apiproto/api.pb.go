@@ -8710,7 +8710,12 @@ type SendPushNotificationRequest struct {
 	UseMeta bool `protobuf:"varint,10,opt,name=use_meta,json=useMeta,proto3" json:"use_meta,omitempty"`
 	// collapse_id is the default collapse id of the targets that set none.
 	// At most 64 bytes. Used by the direct send mode only.
-	CollapseId    string `protobuf:"bytes,100,opt,name=collapse_id,json=collapseId,proto3" json:"collapse_id,omitempty"`
+	CollapseId string `protobuf:"bytes,100,opt,name=collapse_id,json=collapseId,proto3" json:"collapse_id,omitempty"`
+	// timeout_ms is the deadline of the whole call, in milliseconds. Zero
+	// means the default deadline: sync_timeout plus providers.request_timeout
+	// plus 5 seconds. A longer value is clamped to the default. Used by the
+	// direct send mode only.
+	TimeoutMs     uint32 `protobuf:"varint,101,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8820,6 +8825,13 @@ func (x *SendPushNotificationRequest) GetCollapseId() string {
 		return x.CollapseId
 	}
 	return ""
+}
+
+func (x *SendPushNotificationRequest) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
 }
 
 // PushLocalization holds translations for one language/locale.
@@ -11964,7 +11976,7 @@ const file_api_proto_rawDesc = "" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdd\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfc\x05\n" +
 	"\x1bSendPushNotificationRequest\x12G\n" +
 	"\trecipient\x18\x01 \x01(\v2).centrifugal.centrifugo.api.PushRecipientR\trecipient\x12P\n" +
 	"\fnotification\x18\x02 \x01(\v2,.centrifugal.centrifugo.api.PushNotificationR\fnotification\x12\x10\n" +
@@ -11978,7 +11990,9 @@ const file_api_proto_rawDesc = "" +
 	"\buse_meta\x18\n" +
 	" \x01(\bR\auseMeta\x12\x1f\n" +
 	"\vcollapse_id\x18d \x01(\tR\n" +
-	"collapseId\x1an\n" +
+	"collapseId\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18e \x01(\rR\ttimeoutMs\x1an\n" +
 	"\x12LocalizationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12B\n" +
 	"\x05value\x18\x02 \x01(\v2,.centrifugal.centrifugo.api.PushLocalizationR\x05value:\x028\x01\"\xb7\x01\n" +

@@ -1676,6 +1676,11 @@ message SendPushNotificationRequest {
     // collapse_id is the default collapse id of the targets that set none.
     // At most 64 bytes. Used by the direct send mode only.
     string collapse_id = 100;
+    // timeout_ms is the deadline of the whole call, in milliseconds. Zero
+    // means the default deadline: sync_timeout plus providers.request_timeout
+    // plus 5 seconds. A longer value is clamped to the default. Used by the
+    // direct send mode only.
+    uint32 timeout_ms = 101;
 }
 
 // PushLocalization holds translations for one language/locale.

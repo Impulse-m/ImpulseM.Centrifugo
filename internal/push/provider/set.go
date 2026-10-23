@@ -42,6 +42,7 @@ type Set struct {
 	limited  map[string]*limitedSender
 	dryRun   bool
 	oversize func(*Job) bool
+	shutdown context.Context
 }
 
 // NewSet returns an empty Set.
@@ -68,6 +69,13 @@ func (s *Set) WithOversizeCheck(check func(*Job) bool) *Set {
 	return s
 }
 
+// WithShutdown sets the process-lifetime context of the set and returns the set. Its end classifies a target that was not
+// sent as shutdown, not as deadline.
+func (s *Set) WithShutdown(shutdown context.Context) *Set {
+	s.shutdown = shutdown
+	return s
+}
+
 // Add registers sender for the provider name with at most maxInflight provider requests in flight on the node.
 func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 	s.limited[name] = &limitedSender{
@@ -76,12 +84,24 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 	}
 }
 
-// Dispatch sends job to its provider. It waits for an in-flight slot until syncCtx ends: when no slot is free in
-// time, the result is pending and no provider call is made. The provider call then runs on a context with its own
-// requestTimeout, created after the slot is acquired, so a call that starts late still gets the full timeout. The
-// call is not stopped by the end of syncCtx. The in-flight gauge of the provider counts the slot while it is held.
+// Dispatch sends job to its provider with no call deadline: the provider call ends at its request timeout only. The
+// wait for a slot ends with syncCtx. See DispatchWindow.
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
-	result := s.dispatch(syncCtx, requestTimeout, job)
+	return s.DispatchWindow(syncCtx, context.Background(), requestTimeout, job)
+}
+
+// DispatchWindow sends job to its provider. It waits for an in-flight slot until slot ends: when no slot is free in
+// time, the target is not sent. The provider call then runs on a context with its own requestTimeout, created after the
+// slot is acquired, so a call that starts late still gets the full timeout. The call also ends at the deadline of call,
+// the call deadline of the request, and it is cancelled when call ends. The call is not stopped by the end of slot. The
+// in-flight gauge of the provider counts the slot while it is held.
+func (s *Set) DispatchWindow(
+	slot context.Context,
+	call context.Context,
+	requestTimeout time.Duration,
+	job *Job,
+) *apiproto.PushItemResult {
+	result := s.dispatch(slot, call, requestTimeout, job)
 	// A dry run sends nothing, so it is not counted.
 	if result.GetStatus() != StatusDryRun {
 		countNotification(job, result)
@@ -90,7 +110,7 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 }
 
 // dispatch is the body of Dispatch: the server checks, the wait for a slot and the provider call.
-func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
+func (s *Set) dispatch(slot context.Context, call context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
@@ -113,15 +133,14 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		return NewResult(job, StatusRejected)
 	}
 
-	err := limited.slots.Acquire(syncCtx, 1)
+	err := limited.slots.Acquire(slot, 1)
 	if err != nil {
 		return NewResult(job, StatusPending)
 	}
 	defer limited.slots.Release(1)
 
-	// Acquire takes a free slot even when syncCtx has ended, so the end is checked again: no call starts after the
-	// sync deadline.
-	if syncCtx.Err() != nil {
+	// Acquire takes a free slot even when slot has ended, so the end is checked again: no call starts after it.
+	if slot.Err() != nil {
 		return NewResult(job, StatusPending)
 	}
 
@@ -132,10 +151,35 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 		defer inflight.WithLabelValues(name).Dec()
 	}
 
-	callCtx, cancel := context.WithTimeout(context.WithoutCancel(syncCtx), requestTimeout)
+	callCtx, cancel := callContext(call, requestTimeout)
 	defer cancel()
 
 	return limited.sender.Send(callCtx, job)
+}
+
+// callContext returns the context of one provider call. It ends at the earlier of its own request timeout, counted from
+// now, and the deadline of call. It ends when call ends, so a shutdown or the call deadline cancels it. The context of
+// the call has no other parent, so the end of the slot wait does not stop a call that started.
+func callContext(call context.Context, requestTimeout time.Duration) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(requestTimeout)
+	if callDeadline, ok := call.Deadline(); ok {
+		deadline = EarlierOf(deadline, callDeadline)
+	}
+
+	callCtx, cancel := context.WithDeadline(context.WithoutCancel(call), deadline)
+	stop := context.AfterFunc(call, cancel)
+	return callCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+// EarlierOf returns the earlier of two times.
+func EarlierOf(first time.Time, second time.Time) time.Time {
+	if first.Before(second) {
+		return first
+	}
+	return second
 }
 
 // countNotification counts one result in the notification count, with the bounded labels of the result. Only the APNs

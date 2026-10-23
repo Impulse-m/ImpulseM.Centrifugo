@@ -41,7 +41,12 @@ type Sender struct {
 	requestTimeout  time.Duration
 	calls           *semaphore.Weighted
 	set             *provider.Set
+	// shutdown is the process-lifetime context. Its end stops the waits and the calls of every send.
+	shutdown context.Context
 }
+
+// writeDeadlineKey is the context key of the write deadline setter of the send route.
+type writeDeadlineKey struct{}
 
 // apnsRouter sends each APNs target through the client of its environment. Both environments share one credential,
 // and the environment chooses only the host.
@@ -64,15 +69,16 @@ func Setup(processCtx context.Context, cfg configtypes.PushNotifications) (*Send
 	}
 
 	s := newSender(cfg)
+	s.shutdown = processCtx
 	if !cfg.Sender {
 		return s, nil
 	}
 	if cfg.DryRun {
-		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized)
+		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
 		return s, nil
 	}
 
-	s.set = provider.NewSet().WithOversizeCheck(oversized)
+	s.set = provider.NewSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
 	err := s.load(processCtx, cfg)
 	if err != nil {
 		return nil, err
@@ -220,13 +226,38 @@ func (s *Sender) MaxRequestBytes() int64 {
 	return int64(s.maxRequestBytes)
 }
 
-// WriteBound returns the longest time a send response can take: the sync wait, the provider timeout and a margin. The
-// send route sets its write deadline to this bound from the request start.
-func (s *Sender) WriteBound() time.Duration {
+// DefaultCallTimeout returns the deadline of a call that sets no timeout_ms: the sync wait, the provider timeout and a
+// margin. It is the longest time a send response can take.
+func (s *Sender) DefaultCallTimeout() time.Duration {
 	if s == nil {
 		return 0
 	}
 	return s.syncTimeout + s.requestTimeout + writeMargin
+}
+
+// CallTimeout returns the deadline of a call with timeoutMs: the default when timeoutMs is zero, and timeoutMs when it is
+// positive and below the default. A longer value is clamped to the default, not refused.
+func (s *Sender) CallTimeout(timeoutMs uint32) time.Duration {
+	limit := s.DefaultCallTimeout()
+	if timeoutMs == 0 {
+		return limit
+	}
+	return min(time.Duration(timeoutMs)*time.Millisecond, limit)
+}
+
+// WithWriteDeadline returns ctx with set as the setter of the write deadline of the response. The send route passes the
+// setter of its writer. Send calls it once, with the deadline of the call, so the response is written within the call.
+func WithWriteDeadline(ctx context.Context, set func(time.Time)) context.Context {
+	return context.WithValue(ctx, writeDeadlineKey{}, set)
+}
+
+// setWriteDeadline calls the write deadline setter of ctx, when there is one.
+func setWriteDeadline(ctx context.Context, deadline time.Time) {
+	set, ok := ctx.Value(writeDeadlineKey{}).(func(time.Time))
+	if !ok || set == nil {
+		return
+	}
+	set(deadline)
 }
 
 // Send runs one direct send. It answers with one result per recipient, in request order, or with the error of its
@@ -266,7 +297,11 @@ func (s *Sender) Send(ctx context.Context, req *apiproto.SendPushNotificationReq
 		uid = generated.String()
 	}
 
-	results := s.run(ctx, jobs)
+	// The call deadline is set from the request, once it is decoded. The response is written within it.
+	callDeadline := time.Now().Add(s.CallTimeout(req.GetTimeoutMs()))
+	setWriteDeadline(ctx, callDeadline)
+
+	results := s.run(ctx, jobs, callDeadline)
 	countRequest(requestCompleted)
 	log.Debug().Int("targets", len(jobs)).Msg("direct push send")
 

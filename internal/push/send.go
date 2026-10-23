@@ -3,6 +3,7 @@ package push
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
@@ -10,13 +11,25 @@ import (
 
 // run sends the jobs inline and returns their results in request order. Each provider group of the call has its own
 // fixed worker pool. The pools end with the call, so no goroutine outlives it except the provider calls, each bounded by
-// its request timeout.
-func (s *Sender) run(ctx context.Context, jobs []*provider.Job) []*apiproto.PushItemResult {
+// its request timeout and by the call deadline.
+func (s *Sender) run(ctx context.Context, jobs []*provider.Job, callDeadline time.Time) []*apiproto.PushItemResult {
 	results := make([]*apiproto.PushItemResult, len(jobs))
 
-	// syncCtx ends the wait for provider slots: no call starts after it. The calls themselves are not stopped by it.
-	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.syncTimeout)
-	defer cancel()
+	// callCtx ends at the call deadline, or when the node shuts down. The provider calls of the call end with it.
+	callCtx, cancelCall := context.WithDeadline(context.WithoutCancel(ctx), callDeadline)
+	defer cancelCall()
+	stopCall := context.AfterFunc(s.shutdownCtx(), cancelCall)
+	defer stopCall()
+
+	// syncCtx ends the wait for provider slots at the sync timeout or the call deadline, whichever is first: no call
+	// starts after it. The calls themselves are not stopped by it.
+	syncCtx, cancelSync := context.WithDeadline(
+		context.WithoutCancel(ctx),
+		provider.EarlierOf(callDeadline, time.Now().Add(s.syncTimeout)),
+	)
+	defer cancelSync()
+	stopSync := context.AfterFunc(s.shutdownCtx(), cancelSync)
+	defer stopSync()
 
 	groups := make(map[string][]int)
 	for index, job := range jobs {
@@ -29,16 +42,31 @@ func (s *Sender) run(ctx context.Context, jobs []*provider.Job) []*apiproto.Push
 		wg.Add(1)
 		go func(size int, indexes []int) {
 			defer wg.Done()
-			s.pool(syncCtx, jobs, results, indexes, size)
+			s.pool(syncCtx, callCtx, jobs, results, indexes, size)
 		}(s.poolSizes[name], indexes)
 	}
 	wg.Wait()
 	return results
 }
 
+// shutdownCtx returns the process-lifetime context of the sender, or a context that never ends when there is none.
+func (s *Sender) shutdownCtx() context.Context {
+	if s.shutdown == nil {
+		return context.Background()
+	}
+	return s.shutdown
+}
+
 // pool sends the jobs at indexes with size workers. Each worker takes one index at a time and writes results[index], so
 // the results need no sort. The number of workers is bounded by the size and by the jobs of the group.
-func (s *Sender) pool(syncCtx context.Context, jobs []*provider.Job, results []*apiproto.PushItemResult, indexes []int, size int) {
+func (s *Sender) pool(
+	syncCtx context.Context,
+	callCtx context.Context,
+	jobs []*provider.Job,
+	results []*apiproto.PushItemResult,
+	indexes []int,
+	size int,
+) {
 	size = min(size, len(indexes))
 
 	queue := make(chan int, len(indexes))
@@ -53,7 +81,7 @@ func (s *Sender) pool(syncCtx context.Context, jobs []*provider.Job, results []*
 		go func() {
 			defer wg.Done()
 			for index := range queue {
-				results[index] = s.set.Dispatch(syncCtx, s.requestTimeout, jobs[index])
+				results[index] = s.set.DispatchWindow(syncCtx, callCtx, s.requestTimeout, jobs[index])
 			}
 		}()
 	}

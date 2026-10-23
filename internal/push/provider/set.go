@@ -105,6 +105,12 @@ func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 	}
 	defer limited.slots.Release(1)
 
+	// Acquire takes a free slot even when syncCtx has ended, so the end is checked again: no call starts after the
+	// sync deadline.
+	if syncCtx.Err() != nil {
+		return NewResult(job, StatusPending)
+	}
+
 	// The gauge is nil while push metrics are not registered.
 	inflight := metrics.PushDirectInflight
 	if inflight != nil {

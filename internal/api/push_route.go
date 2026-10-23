@@ -78,16 +78,29 @@ func (s *Handler) readCappedBody(w http.ResponseWriter, r *http.Request, sender 
 	return nil, false
 }
 
-// writePushSendRefusal writes refusal as the Error JSON of the send method, with the HTTP status of its code. The route
-// refusal is counted as a refused call, because it never reaches the send path that counts it.
+// writePushSendRefusal answers a route refusal the way the generic handler of the send method answers its error: in the
+// transport error mode, the Error JSON with the HTTP status of its code; otherwise HTTP 200 with the error in the body of
+// the method response. The route refusal is counted as a refused call, because it never reaches the send path that counts
+// it.
 func (s *Handler) writePushSendRefusal(w http.ResponseWriter, r *http.Request, refusal *Error) {
 	metrics.IncAPIError(s.api.config.Protocol, "send_push_notification", refusal.Code)
 	push.CountRefusedRequest()
 
-	data, err := EncodeError(refusal)
+	if s.useTransportErrorMode(r) {
+		data, err := EncodeError(refusal)
+		if err != nil {
+			s.handleMarshalError(r, w, err)
+			return
+		}
+		s.writeJsonCustomStatus(w, MapErrorToHTTPCode(refusal), data)
+		return
+	}
+
+	data, err := responseEncoder.EncodeSendPushNotification(&SendPushNotificationResponse{Error: refusal})
 	if err != nil {
+		metrics.IncAPIErrorStringCode(s.api.config.Protocol, "send_push_notification", "marshal")
 		s.handleMarshalError(r, w, err)
 		return
 	}
-	s.writeJsonCustomStatus(w, MapErrorToHTTPCode(refusal), data)
+	s.writeJson(w, data)
 }

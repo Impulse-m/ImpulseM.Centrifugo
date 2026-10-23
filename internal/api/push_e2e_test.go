@@ -20,6 +20,13 @@ import (
 func newSendNode(t *testing.T, cfg configtypes.PushNotifications) (*Executor, http.HandlerFunc) {
 	t.Helper()
 
+	return newSendNodeWithHandler(t, cfg, Config{})
+}
+
+// newSendNodeWithHandler is newSendNode with the handler configuration given, for the error mode of the routes.
+func newSendNodeWithHandler(t *testing.T, cfg configtypes.PushNotifications, handlerConfig Config) (*Executor, http.HandlerFunc) {
+	t.Helper()
+
 	n := nodeWithMemoryEngine()
 	t.Cleanup(func() { _ = n.Shutdown(context.Background()) })
 
@@ -29,7 +36,7 @@ func newSendNode(t *testing.T, cfg configtypes.PushNotifications) (*Executor, ht
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
 	apiExecutor := NewExecutor(n, cfgContainer, &testSurveyCaller{}, ExecutorConfig{Protocol: "test", Push: sender})
-	return apiExecutor, NewHandler(n, apiExecutor, Config{}).Routes()["/send_push_notification"]
+	return apiExecutor, NewHandler(n, apiExecutor, handlerConfig).Routes()["/send_push_notification"]
 }
 
 // directSendRequest returns a request with two APNs targets in different environments and one FCM target. An expireAt

@@ -100,10 +100,27 @@ func errorCodeOf(t *testing.T, body []byte) uint32 {
 	return answer.Code
 }
 
-// TestSendRouteBodyOverCapAnswers107 checks that a body over max_request_bytes is refused with the bad request code and
-// the status of that code, not with a server error.
+// transportErrorConfig is the handler configuration of the transport error mode.
+func transportErrorConfig() Config {
+	return Config{UseTransportErrorMode: true}
+}
+
+// TestSendRouteBodyOverCapAnswers107 checks that a body over max_request_bytes is refused with the bad request code in
+// the method response, with HTTP 200, as the generic handler answers the error in the default mode.
 func TestSendRouteBodyOverCapAnswers107(t *testing.T) {
 	route := newSendRoute(t, sendTestConfig(1024))
+
+	body := sendRequest(t, strings.Repeat("u", 2048))
+	recorder := serveSend(route, body)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, uint32(107), errorCodeOf(t, recorder.Body.Bytes()))
+}
+
+// TestSendRouteBodyOverCapTransportErrorModeAnswers107 checks that in the transport error mode a body over
+// max_request_bytes is refused with the bad request code and the status of that code.
+func TestSendRouteBodyOverCapTransportErrorModeAnswers107(t *testing.T) {
+	_, route := newSendNodeWithHandler(t, sendTestConfig(1024), transportErrorConfig())
 
 	body := sendRequest(t, strings.Repeat("u", 2048))
 	recorder := serveSend(route, body)
@@ -113,9 +130,21 @@ func TestSendRouteBodyOverCapAnswers107(t *testing.T) {
 }
 
 // TestSendRouteRecipientCountBeforeDecode checks that a body with more recipients than max_recipient_items is refused
-// on the raw body, with the bad request code.
+// on the raw body, with the bad request code in the method response.
 func TestSendRouteRecipientCountBeforeDecode(t *testing.T) {
 	route := newSendRoute(t, sendTestConfig(1<<20))
+
+	body := []byte(`{"recipient":{"targets":[` + strings.Repeat(`{},`, 1000) + `{}]}}`)
+	recorder := serveSend(route, body)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, uint32(107), errorCodeOf(t, recorder.Body.Bytes()))
+}
+
+// TestSendRouteRecipientCountTransportErrorModeAnswers107 checks that in the transport error mode a body with too many
+// recipients is refused with the bad request code and the status of that code.
+func TestSendRouteRecipientCountTransportErrorModeAnswers107(t *testing.T) {
+	_, route := newSendNodeWithHandler(t, sendTestConfig(1<<20), transportErrorConfig())
 
 	body := []byte(`{"recipient":{"targets":[` + strings.Repeat(`{},`, 1000) + `{}]}}`)
 	recorder := serveSend(route, body)
@@ -139,7 +168,8 @@ func TestSendRouteSendsValidRequest(t *testing.T) {
 	require.Equal(t, "dry_run", answer.GetResult().GetResults()[0].GetStatus())
 }
 
-// TestSendRouteNonSenderAnswers108 checks that a node that is not a sender answers the sender-only error.
+// TestSendRouteNonSenderAnswers108 checks that a node that is not a sender answers the sender-only error in the method
+// response, with HTTP 200, as the generic handler answers the error in the default mode.
 func TestSendRouteNonSenderAnswers108(t *testing.T) {
 	cfg := sendTestConfig(1 << 20)
 	cfg.Sender = false
@@ -147,6 +177,20 @@ func TestSendRouteNonSenderAnswers108(t *testing.T) {
 
 	recorder := serveSend(route, sendRequest(t, ""))
 
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
+}
+
+// TestSendRouteNonSenderTransportErrorModeAnswers108 checks that in the transport error mode a node that is not a sender
+// answers the sender-only error as the Error JSON, with the status of its code.
+func TestSendRouteNonSenderTransportErrorModeAnswers108(t *testing.T) {
+	cfg := sendTestConfig(1 << 20)
+	cfg.Sender = false
+	_, route := newSendNodeWithHandler(t, cfg, transportErrorConfig())
+
+	recorder := serveSend(route, sendRequest(t, ""))
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Equal(t, uint32(108), errorCodeOf(t, recorder.Body.Bytes()))
 }
 

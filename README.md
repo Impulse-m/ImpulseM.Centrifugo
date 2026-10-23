@@ -2,12 +2,12 @@
 
 This repository is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for production deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
-**Current version: v1.15.0.** The fork uses its own semantic versioning from 1.0.0, independent of upstream version numbers.
+**Current version: v1.16.0.** The fork uses its own semantic versioning from 1.0.0, independent of upstream version numbers.
 
 Install the server from the fork's packages:
 
 ```
-docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
+docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.16.0
 ```
 
 Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](https://github.com/Impulse-m/ImpulseM.Centrifugo/releases). See [Install](#install) for image tags and details.
@@ -23,14 +23,6 @@ Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](htt
 * [Operation rate limits](#operation-rate-limits) and [bandwidth optimizations](#bandwidth-optimizations).
 * [Unsubscribe codes](#unsubscribe-codes), [singleflight](#singleflight), [shared position sync](#shared-position-sync), [refresh lead](#refresh-lead), [message batching](#message-batching) and the [JWKS response size limit](#jwks-response-size-limit).
 * Not yet implemented: [see the list](#not-implemented-yet).
-
-## Sibling repositories
-
-* Core: [Impulse-m/ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core), the fork of the centrifuge Go library used by the server.
-* Protocol: [Impulse-m/ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol), the fork of the protocol definitions.
-* JavaScript SDK: `npm install @impulsem/centrifuge` (latest 1.6.0), from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS).
-* Java SDK: `com.github.Impulse-m:ImpulseM.Centrifugo.Client.Java:1.7.0` (latest), from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java).
-* Swift SDK: Swift Package Manager from the version tags (latest 2.0.0) of [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift).
 
 ## Fork features
 
@@ -80,11 +72,7 @@ JWKS responses are read up to 1 MiB per key set, so a larger body cannot exhaust
 
 Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id` and `results` (field numbers 100 and above).
 
-* Direct push send signs the APNs provider token once per 40-minute window per signing key. The token's `iat` is the start of the current window, and a node moves to a new window 60 seconds after each boundary. Nodes that share one key therefore present the same `iat`, so Apple sees at most one token update per key per window. Apple refuses token updates more often than every 20 minutes, and the node clocks must be NTP-synced for the windows to agree. The signature is deterministic (RFC 6979), so nodes that share a key and a window produce the same token bytes. A failed FCM token fetch is not held: it fails only the targets that waited on that fetch, and the next call starts a new fetch. Concurrent fetches of one credential are bounded to one at a time, and each fetch ends within `providers.request_timeout`. A target whose token fetch fails, or whose deadline ends during the wait, is answered `pending` with `err_code` `not_sent`, `http_status` 0 and no provider call, so a resend cannot duplicate it.
-
-* Direct push send (`SendPushNotification` with `recipient.targets`, raw APNs and FCM tokens) is off by default. It needs `push_notifications.enabled` and `push_notifications.sender`, and it runs on sender nodes only; other nodes answer error 108. A send is synchronous: the response carries one raw result per recipient, in request order, and it takes at most `sync_timeout` plus `providers.request_timeout` plus 5 seconds. There is no database, no queue and no retry, so the caller owns the retries. A request body over `max_request_bytes` is refused with error 107. While push notifications are off, no push metric family is exported.
-* A sender node that serves push over the gRPC API sets `grpc_api.max_receive_message_size` to the push `max_request_bytes`, because gRPC decodes a message before the push checks run.
-* Route refusals of `SendPushNotification` (errors 108 and 111, the recipient count and 107) follow `http_api.error_mode` like every API method: by default HTTP 200 with the error in the response body, and with `transport` the mapped HTTP status.
+* Direct push send (`SendPushNotification` with raw APNs and FCM tokens, the `timeout_ms` deadline, the per-target results and the routing to sender nodes) is documented in [docs/push-direct-send.md](docs/push-direct-send.md).
 * Push notification settings are read at startup. A change of a key, of `sender` or of `enabled_providers` needs a restart. A SIGHUP reload validates the push section like every other section, and a failing push section rejects the reload. A valid changed push section is ignored until the restart.
 * Generated configs mask key material. `push_notifications.apns.token_key_pem` is shown as `[REDACTED]` in JSON, YAML, TOML and formatted output, and an unset key shows no mask. A key must be given by file (`token_key_file`) or by environment variable; a generated config never carries its value.
 
@@ -125,8 +113,8 @@ Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrif
 Docker images are published to GitHub Container Registry for `linux/amd64` and `linux/arm64`:
 
 ```
-docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
-docker run -p 8000:8000 -v "$(pwd)/config.json:/centrifugo/config.json" ghcr.io/impulse-m/impulsem.centrifugo:1.15.0
+docker pull ghcr.io/impulse-m/impulsem.centrifugo:1.16.0
+docker run -p 8000:8000 -v "$(pwd)/config.json:/centrifugo/config.json" ghcr.io/impulse-m/impulsem.centrifugo:1.16.0
 ```
 
 Image tags:
@@ -141,9 +129,9 @@ Each [GitHub Release](https://github.com/Impulse-m/ImpulseM.Centrifugo/releases)
 
 The fork uses its own semantic versioning starting at 1.0.0, independent of upstream version numbers; released versions are listed in the [tags](https://github.com/Impulse-m/ImpulseM.Centrifugo/tags). A release is made in one of two ways. Pushing a `vX.Y.Z` tag publishes the GitHub Release for that tag. Running the `release` workflow manually with the version (without `v`) creates the tag and then publishes the GitHub Release for it. Both ways run the tests and publish the images first.
 
-## Client SDKs
+## Client SDKs and related repositories
 
-Each SDK is a fork of its upstream SDK and carries the fork's protocol fields: the JavaScript SDK of [centrifuge-js](https://github.com/centrifugal/centrifuge-js), the Java SDK of [centrifuge-java](https://github.com/centrifugal/centrifuge-java) and the Swift SDK of [centrifuge-swift](https://github.com/centrifugal/centrifuge-swift). Install them from the packages below.
+Each SDK is a fork of its upstream SDK and carries the fork's protocol fields: the JavaScript SDK of [centrifuge-js](https://github.com/centrifugal/centrifuge-js), the Java SDK of [centrifuge-java](https://github.com/centrifugal/centrifuge-java) and the Swift SDK of [centrifuge-swift](https://github.com/centrifugal/centrifuge-swift). Install them from the packages below. The Core and Protocol repositories that the server is built from are listed after the SDKs.
 
 ### JavaScript
 
@@ -172,10 +160,13 @@ dependencies {
 
 Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift). Install with Swift Package Manager from the version tags; the latest is 2.0.0 and its breaking changes are described in [MIGRATION.md](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift/blob/v2.0.0/MIGRATION.md). Add it with `https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift` and add the `SwiftCentrifuge` product to your target. There is no CocoaPods release.
 
-## Related repositories
+### Core (Go)
 
-* Core, [repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core): fork of the [centrifuge](https://github.com/centrifugal/centrifuge) Go library. The server uses it through a `replace` directive in its `go.mod`. It has no releases of its own and is kept in sync with upstream master.
-* Protocol, [repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol): fork of the [protocol](https://github.com/centrifugal/protocol) definitions. It carries the fork fields of `client.proto` used by the SDKs and Core.
+Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core). Fork of the [centrifuge](https://github.com/centrifugal/centrifuge) Go library, which the server uses through a `replace` directive in its `go.mod`. It has no releases of its own and is kept in sync with upstream master.
+
+### Protocol
+
+Repository: [GitHub](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol). Fork of the [protocol](https://github.com/centrifugal/protocol) definitions. It carries the fork fields of `client.proto` used by the SDKs and Core.
 
 The upstream projects of the SDKs, Core and Protocol are MIT-licensed; see each repository for its own license.
 

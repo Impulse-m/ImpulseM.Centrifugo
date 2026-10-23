@@ -2,12 +2,32 @@ package provider
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"golang.org/x/sync/semaphore"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+)
+
+// Label values of the notification count: the recipient type of a token target and the platform of each provider.
+const (
+	platformIOS     = "ios"
+	platformUnknown = "unknown"
+	recipientToken  = "token"
+)
+
+// Values of the err_code label. They are an enumeration: a provider reason never becomes a label.
+const (
+	errCodeOK              = "ok"
+	errCodeHTTP4xx         = "http_4xx"
+	errCodeHTTP5xx         = "http_5xx"
+	errCodeHTTPOther       = "http_other"
+	errCodeUnanswered      = "unanswered"
+	errCodePayloadTooLarge = "payload_too_large"
+	errCodeExpired         = "expired"
+	errCodeNotSent         = "not_sent"
 )
 
 // limitedSender is a Sender with the in-flight limit of its provider on this node.
@@ -52,6 +72,16 @@ func (s *Set) Add(name string, sender Sender, maxInflight int64) {
 // requestTimeout, created after the slot is acquired, so a call that starts late still gets the full timeout. The
 // call is not stopped by the end of syncCtx. The in-flight gauge of the provider counts the slot while it is held.
 func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
+	result := s.dispatch(syncCtx, requestTimeout, job)
+	// A dry run sends nothing, so it is not counted.
+	if result.GetStatus() != StatusDryRun {
+		countNotification(job, result)
+	}
+	return result
+}
+
+// dispatch is the body of Dispatch: the server checks, the wait for a slot and the provider call.
+func (s *Set) dispatch(syncCtx context.Context, requestTimeout time.Duration, job *Job) *apiproto.PushItemResult {
 	name := job.Target.GetProvider()
 	limited, ok := s.limited[name]
 	if !ok {
@@ -85,4 +115,54 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 	defer cancel()
 
 	return limited.sender.Send(callCtx, job)
+}
+
+// countNotification counts one result in the notification count, with the bounded labels of the result. Only the APNs
+// and FCM providers are counted, so a provider name from a request never becomes a label value.
+func countNotification(job *Job, result *apiproto.PushItemResult) {
+	counter := metrics.PushNotificationCount
+	if counter == nil {
+		return
+	}
+
+	name := job.Target.GetProvider()
+	var platform string
+	switch name {
+	case ProviderAPNs:
+		platform = platformIOS
+	case ProviderFCM:
+		platform = platformUnknown
+	default:
+		return
+	}
+
+	success := strconv.FormatBool(result.GetStatus() == StatusSent)
+	counter.WithLabelValues(name, recipientToken, platform, success, errCodeOf(result)).Inc()
+}
+
+// errCodeOf returns the err_code label of result: a status class, a refusal code or a pending wait. A provider reason is
+// never a label. A rejected result with no status line and no code is counted as http_other.
+func errCodeOf(result *apiproto.PushItemResult) string {
+	status := result.GetStatus()
+	code := result.GetCode()
+	httpStatus := result.GetHttpStatus()
+
+	switch {
+	case status == StatusSent:
+		return errCodeOK
+	case status == StatusPending:
+		return errCodeNotSent
+	case status == StatusUnanswered:
+		return errCodeUnanswered
+	case code == CodePayloadTooLarge:
+		return errCodePayloadTooLarge
+	case code == CodeExpired:
+		return errCodeExpired
+	case httpStatus >= 400 && httpStatus < 500:
+		return errCodeHTTP4xx
+	case httpStatus >= 500 && httpStatus < 600:
+		return errCodeHTTP5xx
+	default:
+		return errCodeHTTPOther
+	}
 }

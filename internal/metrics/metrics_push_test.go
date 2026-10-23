@@ -41,13 +41,11 @@ func TestPushMetricsRegisteredWhenEnabled(t *testing.T) {
 
 	// A vector exports a family only after a child exists, so create one child of each.
 	PushNotificationCount.WithLabelValues("apns", "token", "ios", "true", "ok").Inc()
-	PushDirectRequestsTotal.WithLabelValues("completed").Inc()
 	PushDirectInflight.WithLabelValues("apns").Set(0)
 
 	names := pushFamilyNames(t, reg)
 	require.ElementsMatch(t, []string{
 		"centrifugo_push_notification_count",
-		"centrifugo_push_direct_requests_total",
 		"centrifugo_push_direct_inflight",
 	}, names)
 }

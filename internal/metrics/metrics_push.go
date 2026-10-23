@@ -4,15 +4,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// PushNotificationCount, PushDirectRequestsTotal and PushDirectInflight are assigned by initPushMetrics, which runs only
-// when Config.PushEnabled is set. They are nil otherwise, so no push family is exported, and a caller nil-checks them
-// before use: the direct send route of the sender must check PushDirectRequestsTotal and PushNotificationCount too.
-// Their label values are bounded: a provider, a result and a status class are enumerations, and a token, a device id,
-// a ref, a payload or error text is never a label.
+// PushNotificationCount and PushDirectInflight are assigned by initPushMetrics, which runs only when Config.PushEnabled
+// is set. They are nil otherwise, so no push family is exported, and a caller nil-checks them before use. Their label
+// values are bounded: a provider, a result and a status class are enumerations, and a token, a device id, a ref, a
+// payload or error text is never a label. The per-call counter of direct send is added with the send route that
+// increments it.
 var (
-	PushNotificationCount   *prometheus.CounterVec
-	PushDirectRequestsTotal *prometheus.CounterVec
-	PushDirectInflight      *prometheus.GaugeVec
+	PushNotificationCount *prometheus.CounterVec
+	PushDirectInflight    *prometheus.GaugeVec
 )
 
 // initPushMetrics creates the push metrics in namespace with constLabels, assigns them to the package variables and
@@ -27,14 +26,6 @@ func initPushMetrics(metricsNamespace string, constLabels prometheus.Labels) []p
 		ConstLabels: constLabels,
 	}, []string{"provider", "recipient_type", "platform", "success", "err_code"})
 
-	pushDirectRequestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   metricsNamespace,
-		Subsystem:   "push",
-		Name:        "direct_requests_total",
-		Help:        "Number of direct send calls, by result: completed or refused.",
-		ConstLabels: constLabels,
-	}, []string{"result"})
-
 	pushDirectInflight := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "push",
@@ -44,12 +35,10 @@ func initPushMetrics(metricsNamespace string, constLabels prometheus.Labels) []p
 	}, []string{"provider"})
 
 	PushNotificationCount = pushNotificationCount
-	PushDirectRequestsTotal = pushDirectRequestsTotal
 	PushDirectInflight = pushDirectInflight
 
 	return []prometheus.Collector{
 		pushNotificationCount,
-		pushDirectRequestsTotal,
 		pushDirectInflight,
 	}
 }

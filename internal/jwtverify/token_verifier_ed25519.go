@@ -30,16 +30,21 @@ func (s *algorithms) verifyEd25519(token *jwt.Token) error {
 	} else {
 		verifier = s.Ed25519[kid]
 		if verifier == nil {
-			return fmt.Errorf("%w: %q", errUnknownEd25519KeyID, kid)
+			// A single key configured with ed25519_public_key is not bound to a kid, any kid selects it.
+			unkeyed, ok := s.Ed25519[""]
+			if !ok || len(s.Ed25519) != 1 {
+				return fmt.Errorf("%w: %q", errUnknownEd25519KeyID, kid)
+			}
+			verifier = unkeyed
 		}
 	}
 	return verifier.Verify(token)
 }
 
 // setEd25519Keys creates Ed25519 verifiers for the given keys, keyed by kid.
+// Without keys the verifiers are left as they are, so the static key of newAlgorithms is kept.
 func (s *algorithms) setEd25519Keys(ed25519PubKeys map[string]ed25519.PublicKey) error {
 	if len(ed25519PubKeys) == 0 {
-		s.Ed25519 = nil
 		return nil
 	}
 	ed25519Verifiers := make(map[string]jwt.Verifier, len(ed25519PubKeys))

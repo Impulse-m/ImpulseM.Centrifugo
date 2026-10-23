@@ -125,7 +125,7 @@ func TestValidatePushNotificationsRules(t *testing.T) {
 		{
 			name: "key file and key pem are both set",
 			mutate: func(conf *Config) {
-				conf.PushNotifications.APNs.TokenKeyPEM = configtypes.Secret("-----BEGIN PRIVATE KEY-----")
+				conf.PushNotifications.APNs.TokenKeyPEM = configtypes.NewSecret("-----BEGIN PRIVATE KEY-----")
 			},
 			wantErr: "mutually exclusive",
 		},

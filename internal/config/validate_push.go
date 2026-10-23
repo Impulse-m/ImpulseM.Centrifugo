@@ -75,7 +75,7 @@ func checkPushUnknownKeys(conf Config, unknownKeys []string, knownEnvVars map[st
 // subsystem is disabled. The values of the settings are checked whenever it is enabled; the settings
 // that a provider needs are checked only when that provider is enabled.
 func validatePushNotifications(conf Config) error {
-	var push configtypes.PushNotifications = conf.PushNotifications //nolint:staticcheck // ST1023: explicit type per the owner's style rule
+	push := conf.PushNotifications
 	if !push.Enabled {
 		return nil
 	}
@@ -109,7 +109,7 @@ func validatePushProviderList(names []string) error {
 	if len(names) == 0 {
 		return errors.New("push_notifications.enabled_providers must name at least one provider when push notifications are enabled")
 	}
-	var seen map[string]struct{} = make(map[string]struct{}, len(names)) //nolint:staticcheck // ST1023: explicit type per the owner's style rule
+	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if slices.Contains(refusedPushProviders, name) {
 			return fmt.Errorf("push_notifications.enabled_providers entry \"%s\" is not available in this build", name)
@@ -128,7 +128,7 @@ func validatePushProviderList(names []string) error {
 // validatePushAPNs checks the APNs settings. Only token authentication exists in this build, so the
 // certificate settings are refused by the unknown key check and by the auth type check here.
 func validatePushAPNs(push configtypes.PushNotifications) error {
-	var apns configtypes.PushAPNs = push.APNs //nolint:staticcheck // ST1023: explicit type per the owner's style rule
+	apns := push.APNs
 	if !slices.Contains(knownAPNsEndpoints, apns.Endpoint) {
 		return fmt.Errorf("unknown push_notifications.apns.endpoint: \"%s\"", apns.Endpoint)
 	}
@@ -141,7 +141,7 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 	if err := checkPositiveInt("push_notifications.apns.max_inflight", apns.MaxInflight); err != nil {
 		return err
 	}
-	if apns.TokenKeyFile != "" && apns.TokenKeyPEM != "" {
+	if apns.TokenKeyFile != "" && apns.TokenKeyPEM.Value() != "" {
 		return errors.New("push_notifications.apns.token_key_file and push_notifications.apns.token_key_pem are mutually exclusive")
 	}
 	if !slices.Contains(push.EnabledProviders, pushProviderAPNs) {
@@ -156,7 +156,7 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 	if apns.TokenTeamID == "" {
 		return errors.New("push_notifications.apns.token_team_id is required when apns is enabled")
 	}
-	if apns.TokenKeyFile == "" && apns.TokenKeyPEM == "" {
+	if apns.TokenKeyFile == "" && apns.TokenKeyPEM.Value() == "" {
 		return errors.New("push_notifications.apns.token_key_file or push_notifications.apns.token_key_pem is required when apns is enabled")
 	}
 	return nil
@@ -164,7 +164,7 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 
 // validatePushFCM checks the FCM settings.
 func validatePushFCM(push configtypes.PushNotifications) error {
-	var fcm configtypes.PushFCM = push.FCM //nolint:staticcheck // ST1023: explicit type per the owner's style rule
+	fcm := push.FCM
 	if err := checkPositiveInt("push_notifications.fcm.tokens_batch_size", fcm.TokensBatchSize); err != nil {
 		return err
 	}

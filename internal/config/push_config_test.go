@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
-
 	"github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -100,32 +98,52 @@ func TestPushConfigLoadReadsNoFiles(t *testing.T) {
 	require.NoError(t, conf.Validate())
 }
 
-// A key held inline is masked in the JSON and YAML dumps of a configuration and in its String form.
-// TOML with a key set is not covered: go-toml v2 ignores MarshalText on string kinds, so a Secret
-// written to TOML shows its value. The only TOML marshal of the configuration is the defaultconfig
-// command, which prints the defaults, where the key is empty; the default configuration test below
-// checks that it carries no key material. defaultconfig.go is not changed. The config doc of
-// internal/cli/configdoc.go renders the struct tags and defaults only and reads no field value, so
-// it shows no key bytes; that is why it has no case here.
-func TestPushTokenKeyPEMMaskedInDumps(t *testing.T) {
-	path := writePushConfigFile(t, "config.json", `{"push_notifications": {"enabled": false, "apns": {"token_key_pem": "`+pushTestKeyText+`"}}}`)
-	conf, _, err := GetConfig(nil, path)
-	require.NoError(t, err)
-	require.Equal(t, configtypes.Secret(pushTestKeyText), conf.PushNotifications.APNs.TokenKeyPEM)
+// A key held inline is set from the configuration file and from the environment variable, and the
+// loaded value reaches no dump: the JSON, YAML and TOML dumps, the String form and the formatted
+// forms of the configuration carry the mask and never the key bytes. The TOML dump is the one of
+// the defaultconfig command, which marshals the loaded configuration; with -b the base file is the
+// configuration file read here, so the base file path is covered by the file case.
+func TestPushTokenKeyPEMSetAndMaskedInDumps(t *testing.T) {
+	sources := map[string]func(t *testing.T) (Config, error){
+		"config file": func(t *testing.T) (Config, error) {
+			clearPushEnv(t)
+			path := writePushConfigFile(t, "base.json", `{"push_notifications": {"enabled": false, "apns": {"token_key_pem": "`+pushTestKeyText+`"}}}`)
+			conf, _, err := GetConfig(nil, path)
+			return conf, err
+		},
+		"environment variable": func(t *testing.T) (Config, error) {
+			clearPushEnv(t)
+			t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_TOKEN_KEY_PEM", pushTestKeyText)
+			conf, _, err := GetConfig(nil, "")
+			return conf, err
+		},
+	}
+	for name, load := range sources {
+		t.Run(name, func(t *testing.T) {
+			conf, err := load(t)
+			require.NoError(t, err)
+			require.Equal(t, pushTestKeyText, conf.PushNotifications.APNs.TokenKeyPEM.Value())
+			require.Equal(t, "[REDACTED]", conf.PushNotifications.APNs.TokenKeyPEM.String())
 
-	jsonBytes, err := json.MarshalIndent(conf, "", "  ")
-	require.NoError(t, err)
-	require.NotContains(t, string(jsonBytes), "SECRETKEYBYTES")
-	require.Contains(t, string(jsonBytes), "[REDACTED]")
+			jsonBytes, err := json.MarshalIndent(conf, "", "  ")
+			require.NoError(t, err)
+			require.NotContains(t, string(jsonBytes), "SECRETKEYBYTES")
+			require.Contains(t, string(jsonBytes), "[REDACTED]")
 
-	yamlBytes, err := yaml.Marshal(conf)
-	require.NoError(t, err)
-	require.NotContains(t, string(yamlBytes), "SECRETKEYBYTES")
-	require.Contains(t, string(yamlBytes), "[REDACTED]")
+			yamlBytes, err := yaml.Marshal(conf)
+			require.NoError(t, err)
+			require.NotContains(t, string(yamlBytes), "SECRETKEYBYTES")
+			require.Contains(t, string(yamlBytes), "[REDACTED]")
 
-	require.Equal(t, "[REDACTED]", conf.PushNotifications.APNs.TokenKeyPEM.String())
-	formatted := fmt.Sprintf("%v|%+v|%#v", conf.PushNotifications, conf.PushNotifications, conf.PushNotifications)
-	require.NotContains(t, formatted, "SECRETKEYBYTES")
+			tomlBytes, err := toml.Marshal(conf)
+			require.NoError(t, err)
+			require.NotContains(t, string(tomlBytes), "SECRETKEYBYTES")
+			require.Contains(t, string(tomlBytes), "[REDACTED]")
+
+			formatted := fmt.Sprintf("%v|%+v|%#v", conf.PushNotifications, conf.PushNotifications, conf.PushNotifications)
+			require.NotContains(t, formatted, "SECRETKEYBYTES")
+		})
+	}
 }
 
 // The default configuration, the one the defaultconfig command prints as TOML, carries no key
@@ -134,7 +152,7 @@ func TestPushDefaultConfigTOMLHasNoKeyMaterial(t *testing.T) {
 	clearPushEnv(t)
 	conf, _, err := GetConfig(nil, "")
 	require.NoError(t, err)
-	require.Equal(t, configtypes.Secret(""), conf.PushNotifications.APNs.TokenKeyPEM)
+	require.Empty(t, conf.PushNotifications.APNs.TokenKeyPEM.Value())
 
 	tomlBytes, err := toml.Marshal(conf)
 	require.NoError(t, err)

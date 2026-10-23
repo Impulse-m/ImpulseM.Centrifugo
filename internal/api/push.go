@@ -73,11 +73,16 @@ func (h *Executor) UserTopicList(_ context.Context, _ *UserTopicListRequest) *Us
 	}
 }
 
-// SendPushNotification sends a push notification.
-func (h *Executor) SendPushNotification(_ context.Context, _ *SendPushNotificationRequest) *SendPushNotificationResponse {
-	return &SendPushNotificationResponse{
-		Error: pushNotEnabledError(),
+// SendPushNotification sends push notifications to explicit provider tokens, inline, and answers one raw result per
+// recipient. Without a direct send mode on this node the answer is the not-enabled error, and the mode answers its own
+// refusals, such as a node that is not a sender.
+func (h *Executor) SendPushNotification(ctx context.Context, req *SendPushNotificationRequest) *SendPushNotificationResponse {
+	if h.config.Push == nil {
+		return &SendPushNotificationResponse{
+			Error: pushNotEnabledError(),
+		}
 	}
+	return h.config.Push.Send(ctx, req)
 }
 
 // UpdatePushStatus saves the status of a push notification.

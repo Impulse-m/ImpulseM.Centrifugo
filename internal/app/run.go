@@ -26,6 +26,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
 	"github.com/centrifugal/centrifugo/v6/internal/notify"
 	"github.com/centrifugal/centrifugo/v6/internal/proxy"
+	"github.com/centrifugal/centrifugo/v6/internal/push"
 	"github.com/centrifugal/centrifugo/v6/internal/rpcregistry"
 	"github.com/centrifugal/centrifugo/v6/internal/service"
 	"github.com/centrifugal/centrifugo/v6/internal/survey"
@@ -132,6 +133,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		ConstLabels:      nil, // Can be populated from config in the future.
 		Registerer:       nil, // Use prometheus.DefaultRegisterer.
 		NativeHistograms: cfg.Prometheus.NativeHistograms,
+		PushEnabled:      cfg.PushNotifications.Enabled,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("error initializing metrics")
@@ -206,6 +208,11 @@ func Run(cmd *cobra.Command, configFile string) {
 	accessRevoke := accessrevoke.Setup(node, cfg, cfgContainer)
 	serviceManager.Register(accessRevoke.Services...)
 
+	pushSender, err := push.Setup(ctx, cfg.PushNotifications)
+	if err != nil {
+		log.Fatal().Err(err).Msg("error setting up push notifications")
+	}
+
 	clientHandler := client.NewHandler(node, cfgContainer, tokenVerifier, subTokenVerifier, proxyMap)
 	clientHandler.SetAccessRevoke(accessRevoke.Store, accessRevoke.Source)
 	clientHandler.SetRPCRegistry(rpcRegistry)
@@ -232,18 +239,21 @@ func Run(cmd *cobra.Command, configFile string) {
 		UseOpenTelemetry: useAPIOpentelemetry,
 		AccessRevoker:    accessRevoke.Revoker,
 		AccessNotifier:   accessRevoke.Notifier,
+		Push:             pushSender,
 	})
 	grpcAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "grpc",
 		UseOpenTelemetry: useAPIOpentelemetry,
 		AccessRevoker:    accessRevoke.Revoker,
 		AccessNotifier:   accessRevoke.Notifier,
+		Push:             pushSender,
 	})
 	consumingAPIExecutor := api.NewExecutor(node, cfgContainer, surveyCaller, api.ExecutorConfig{
 		Protocol:         "consuming",
 		UseOpenTelemetry: useConsumingOpentelemetry,
 		AccessRevoker:    accessRevoke.Revoker,
 		AccessNotifier:   accessRevoke.Notifier,
+		Push:             pushSender,
 	})
 
 	consumingHandler := api.NewConsumingHandler(node, consumingAPIExecutor, api.ConsumingHandlerConfig{

@@ -73,7 +73,7 @@ func (s *Handler) Routes() map[string]http.HandlerFunc {
 		"/device_topic_list":      s.handleDeviceTopicList,
 		"/user_topic_update":      s.handleUserTopicUpdate,
 		"/user_topic_list":        s.handleUserTopicList,
-		"/send_push_notification": s.handleSendPushNotification,
+		"/send_push_notification": s.handlePushSendRoute,
 		"/update_push_status":     s.handleUpdatePushStatus,
 		"/cancel_push":            s.handleCancelPush,
 	}

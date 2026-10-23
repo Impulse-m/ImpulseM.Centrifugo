@@ -12,6 +12,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/push"
 	"github.com/centrifugal/centrifugo/v6/internal/subsource"
 
 	"github.com/centrifugal/centrifuge"
@@ -44,6 +45,8 @@ type ExecutorConfig struct {
 	AccessRevoker *accessrevoke.Revoker
 	// AccessNotifier sends access revocation operations to other nodes.
 	AccessNotifier *accessrevoke.Notifier
+	// Push is the direct send mode of push notifications. It is nil when push notifications are off.
+	Push *push.Sender
 }
 
 // NewExecutor ...

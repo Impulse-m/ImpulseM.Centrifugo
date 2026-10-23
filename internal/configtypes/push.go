@@ -12,7 +12,7 @@ type PushNotifications struct {
 	// DryRun answers valid sends as dry run items without calling any provider.
 	DryRun bool `mapstructure:"dry_run" json:"dry_run" envconfig:"dry_run" yaml:"dry_run" toml:"dry_run" doc:"Answers valid sends as dry run items without any network call. Default <<false>>. Requires restart."`
 	// SyncTimeout bounds the inline run of one send: no provider call starts after it.
-	SyncTimeout Duration `mapstructure:"sync_timeout" default:"10s" json:"sync_timeout" envconfig:"sync_timeout" yaml:"sync_timeout" toml:"sync_timeout" doc:"How long one send waits for provider calls to start before the rest of its items are reported as pending, at most <<1m>>. Default <<10s>>. Requires restart."`
+	SyncTimeout Duration `mapstructure:"sync_timeout" default:"10s" json:"sync_timeout" envconfig:"sync_timeout" yaml:"sync_timeout" toml:"sync_timeout" doc:"How long one send waits for provider calls to start before the rest of its items are reported as not_sent, at most <<1m>>. Default <<10s>>. Requires restart."`
 	// MaxRecipientItems is the maximum number of recipients in one send.
 	MaxRecipientItems int `mapstructure:"max_recipient_items" default:"1000" json:"max_recipient_items" envconfig:"max_recipient_items" yaml:"max_recipient_items" toml:"max_recipient_items" doc:"Maximum number of recipients in one send, from <<1>> to <<1000>>. Default <<1000>>. Requires restart."`
 	// MaxRequestBytes is the maximum size of one send request in bytes.

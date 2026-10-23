@@ -68,7 +68,7 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 
 	client := &Client{
 		endpoint: endpointBase + account.ProjectID + "/messages:send",
-		gate:     newTokenGate(account.JWT.TokenSource(tokenCtx)),
+		gate:     newShutdownTokenGate(account.JWT.TokenSource(tokenCtx), processCtx),
 		httpClient: &http.Client{
 			Transport: transport,
 		},

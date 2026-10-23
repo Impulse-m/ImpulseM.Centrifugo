@@ -15,13 +15,11 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
 
-// Item statuses of a direct send result. Direct send answers not_sent where the pending status of the PRO shape would
-// be: StatusPending is not produced by direct send.
+// Item statuses of a direct send result.
 const (
 	StatusSent       = "sent"
 	StatusRejected   = "rejected"
 	StatusUnanswered = "unanswered"
-	StatusPending    = "pending"
 	StatusNotSent    = "not_sent"
 	StatusDryRun     = "dry_run"
 )

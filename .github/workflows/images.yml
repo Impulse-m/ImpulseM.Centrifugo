@@ -59,6 +59,41 @@ jobs:
           cp internal/webui/THIRD_PARTY_LICENSES.txt "$context/licenses/webui/"
           cp internal/swaggerui/THIRD_PARTY_LICENSES.txt "$context/licenses/swagger-ui/"
 
+      # The binary links every Go module below and the Go standard library, so their license files ship with it.
+      # A module without a license file fails the build: it cannot be redistributed without one.
+      - name: Collect the licenses of the Go code in the binary
+        env:
+          ARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          dest="docker-context/${ARCH}/licenses/go"
+          mkdir -p "$dest/std"
+          cp "$(go env GOROOT)/LICENSE" "$dest/std/"
+          main="$(go list -m)"
+          missing=""
+          while read -r path dir; do
+            if [ "$path" = "$main" ] || [ -z "$dir" ]; then
+              continue
+            fi
+            found=""
+            for f in "$dir"/LICENSE* "$dir"/LICENCE* "$dir"/COPYING* "$dir"/NOTICE*; do
+              if [ -f "$f" ]; then
+                mkdir -p "$dest/$path"
+                cp "$f" "$dest/$path/"
+                found=1
+              fi
+            done
+            if [ -z "$found" ]; then
+              missing="$missing $path"
+            fi
+          done < <(go list -deps -f '{{with .Module}}{{.Path}} {{with .Replace}}{{.Dir}}{{else}}{{.Dir}}{{end}}{{end}}' . | sort -u)
+          if [ -n "$missing" ]; then
+            echo "::error::Go modules without a license file:$missing"
+            exit 1
+          fi
+
       - name: Package release archive
         env:
           VERSION: ${{ inputs.version }}

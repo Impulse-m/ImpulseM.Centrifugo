@@ -1,6 +1,6 @@
 # Third-party notices
 
-This file lists third-party code and assets that are copied into this repository or embedded in its binaries and images. Go module dependencies, which the build downloads as declared in `go.mod`, are not copied here; each keeps its license in its own module.
+This file lists third-party code and assets that are copied into this repository or embedded in its binaries and images. Go module dependencies, which the build downloads as declared in `go.mod`, are not copied into the repository. The binary links them and the Go standard library, so the release archives and the Docker image carry their license files under `licenses/go/` (one folder per module path, and `std` for the Go standard library). The release build collects them from the module cache and fails when a linked module has no license file.
 
 This file, `LICENSE` and `NOTICE` ship in the Linux release archives and in the Docker image. The release archives hold the license reports of the embedded web UI and Swagger UI under `licenses/`, and the image holds them under `/usr/share/doc/centrifugo/licenses/`.
 

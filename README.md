@@ -249,6 +249,72 @@ Resource costs, per entry, measured in connections and goroutines:
 * Nats broker or controller: one connection and its reader goroutine.
 * Per channel operation, a routed channel costs one channel options lookup and one map lookup, with no allocations. Numbers are in the benchmark `BenchmarkNamespaceEnginesBroker` in `internal/app`.
 
+### Routing push calls to sender nodes
+
+Direct send (`SendPushNotification` with `recipient.targets`, or the shorthand `fcm_tokens` and `apns_tokens`) runs only on nodes with `push_notifications.sender` set. Any other node answers error 108 `direct send is available on sender nodes only`. A node with push notifications off answers 108 `push notifications are not enabled`. gRPC returns the same `Error` for both, so every protocol gives the same answer. Nodes do not forward calls to each other: the deployment routes them.
+
+Run the sender nodes as their own group, with their own Deployment or instance group, and their own Service, DNS name or load balancer pool. Point the push API calls of the backend at that address, and keep the other nodes for everything else. The sender group needs the provider credentials (`push_notifications.apns.token_key_file` or `token_key_pem`, and `push_notifications.fcm.credentials_file`) and the push settings, all read at startup.
+A Kubernetes example, with the credential in a Secret mounted as a file:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: centrifugo-push-senders
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: centrifugo-push-senders
+  template:
+    metadata:
+      labels:
+        app: centrifugo-push-senders
+    spec:
+      containers:
+        - name: centrifugo
+          image: ghcr.io/impulse-m/impulsem.centrifugo:1.0.0
+          env:
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_ENABLED
+              value: "true"
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_SENDER
+              value: "true"
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_ENABLED_PROVIDERS
+              value: "apns"
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_TOKEN_KEY_FILE
+              value: /secrets/apns/AuthKey.p8
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_TOKEN_KEY_ID
+              value: ABC123DEFG
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_TOKEN_TEAM_ID
+              value: TEAM123456
+            - name: CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_BUNDLE_ID
+              value: com.example.app
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: apns-key
+              mountPath: /secrets/apns
+              readOnly: true
+      volumes:
+        - name: apns-key
+          secret:
+            secretName: apns-auth-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: centrifugo-push-senders
+spec:
+  selector:
+    app: centrifugo-push-senders
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+```
+
+The backend then posts to the `send_push_notification` route of the HTTP API of that Service, under the API prefix of the node, with the API key, and its HTTP client timeout is at least 30 seconds. A call's answer takes at most `timeout_ms`, or the default deadline of `sync_timeout` plus `providers.request_timeout` plus 5 seconds when `timeout_ms` is zero. A call that reaches a node outside the sender group gets error 108 at once, and no provider call is made. The sender group is not a separate listener: a request is served by any sender pod behind the Service.
+
 ### Not implemented (yet)
 
 * Redis and PostgreSQL persistence for revocation.

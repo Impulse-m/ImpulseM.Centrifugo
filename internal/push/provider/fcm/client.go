@@ -45,9 +45,12 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 		return nil, errors.New("fcm request timeout must be positive")
 	}
 
+	// One transport serves the token fetch and the send, so a credential holds one set of connections. The token client
+	// keeps its own timeout, and the send is bounded by the context of its call.
+	transport := provider.NewTransport()
 	tokenHTTP := &http.Client{
 		Timeout:   requestTimeout,
-		Transport: provider.NewTransport(),
+		Transport: transport,
 	}
 	tokenCtx := context.WithValue(processCtx, oauth2.HTTPClient, tokenHTTP)
 
@@ -55,7 +58,7 @@ func NewClient(processCtx context.Context, account *provider.FCMServiceAccount, 
 		endpoint: endpointBase + account.ProjectID + "/messages:send",
 		gate:     newTokenGate(account.JWT.TokenSource(tokenCtx)),
 		httpClient: &http.Client{
-			Transport: provider.NewTransport(),
+			Transport: transport,
 		},
 	}
 	for _, option := range options {

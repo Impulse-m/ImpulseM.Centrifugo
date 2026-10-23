@@ -82,6 +82,7 @@ Copyright 2020-2021 SmartBear Software Inc.
 * Direct dependencies bundled in the interface, with their licenses:
   * MIT: `@codemirror/lang-json`, `@codemirror/lint`, `@emotion/react`, `@emotion/styled`, `@marcbachmann/cel-js`, `@mui/icons-material`, `@mui/material`, `@uiw/react-codemirror`, `react`, `react-dom`, `react-oidc-context`, `react-router-dom`, `react-syntax-highlighter`.
   * Apache License 2.0: `echarts`, `localforage`, `oidc-client-ts`.
+  * The type-only packages `@types/react` and `@types/react-dom` are not bundled.
 * NOTICE of `echarts`, reproduced unchanged:
 
 ```

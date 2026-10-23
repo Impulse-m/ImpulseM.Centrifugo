@@ -1,6 +1,6 @@
 # Centrifugo fork
 
-This repository is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for large deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
+This repository is a fork of [Centrifugo](https://github.com/centrifugal/centrifugo), the real-time messaging server. It is based on upstream Centrifugo **v6.10.2** and adds features for production deployments. Upstream is merged regularly, and a weekly workflow keeps an issue open while the fork is behind upstream. Some added features follow the public [Centrifugo PRO documentation](https://centrifugal.dev/docs/pro/overview) and keep its config keys; where the fork differs, its section says so. Planned work is tracked in the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 
 **Current version: v1.15.0.** The fork uses its own semantic versioning from 1.0.0, independent of upstream version numbers.
 
@@ -28,9 +28,9 @@ Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](htt
 
 * Core: [Impulse-m/ImpulseM.Centrifugo.Core](https://github.com/Impulse-m/ImpulseM.Centrifugo.Core), the fork of the centrifuge Go library used by the server.
 * Protocol: [Impulse-m/ImpulseM.Centrifugo.Protocol](https://github.com/Impulse-m/ImpulseM.Centrifugo.Protocol), the fork of the protocol definitions.
-* JavaScript SDK: `npm install @impulsem/centrifuge`, from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS).
-* Java SDK: `com.github.Impulse-m:ImpulseM.Centrifugo.Client.Java:1.7.0`, from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java).
-* Swift SDK: Swift Package Manager from the version tags of [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift).
+* JavaScript SDK: `npm install @impulsem/centrifuge` (latest 1.6.0), from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.JS).
+* Java SDK: `com.github.Impulse-m:ImpulseM.Centrifugo.Client.Java:1.7.0` (latest), from [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Java).
+* Swift SDK: Swift Package Manager from the version tags (latest 2.0.0) of [the repository](https://github.com/Impulse-m/ImpulseM.Centrifugo.Client.Swift).
 
 ## Fork features
 
@@ -51,7 +51,8 @@ The namespace-level template that renders a filter per connection from its claim
   * With `server_tags_filter_template`: a filter the template produces counts, so `on_missing_value: skip` with this option refuses a subscription whose template was skipped and which has no explicit filter.
   * Config errors: `subscription_type: shared_poll` and `subscribe_stream_proxy_enabled` (those subscriptions do not apply the filter), the personal channel namespace (without a template), and `client.insecure_skip_token_signature_verify` (an unverified token can carry any filter).
   * Turning it on at a config reload applies to new subscriptions; existing unfiltered subscriptions live until they resubscribe or reconnect.
-  * Off by default and then free. Not a PRO option: PRO has no way to require the filter.
+  * Off by default and then free. Not in the PRO docs: they describe no option that requires a filter.
+
 ### User blocking and token revocation
 
 Tracking issue: [#10](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/10). The fork adds:
@@ -106,7 +107,8 @@ Bandwidth optimizations (#14), following the [Centrifugo PRO documentation](http
 
 ### Refresh lead
 
-`client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is in the Core commit `bc8c5cab476ea34125c2ed10b739d1f257a3df69` of the fork, which `go.mod` pins.
+`client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is part of the Core revision that `go.mod` pins.
+
 ### Message batching
 
 `client.max_messages_in_frame`, as in the [PRO docs on message batching](https://centrifugal.dev/docs/pro/client_msg_batching): the maximum number of messages joined into one transport frame, default `16`, `-1` for no limit. `1` writes each message in its own frame, so `websocket.write_timeout` covers one reply. Only frame boundaries change: the same messages leave in the same order. The other batching keys of that page are not implemented.

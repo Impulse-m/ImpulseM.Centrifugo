@@ -1,4 +1,9 @@
 #!/bin/bash
+#
+# Note: the fork release flow does not use this script. It packages the upstream release zip for
+# centrifugo-<version>-linux-amd64.zip, which the fork does not publish; the fork publishes Linux tar.gz
+# archives and Docker images from .github/workflows/images.yml.
+#
 if [ "$1" = "" ]
 then
   echo "Usage: $0 <version>"

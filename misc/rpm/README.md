@@ -1,5 +1,7 @@
 RPM for Centrifugo
 
+Note: the fork release flow does not use this directory. The fork publishes Linux tar.gz archives and Docker images, see `.github/workflows/images.yml`; the steps below are upstream's and are kept as they are.
+
 ```
 yum -y install rpmdevtools
 ```

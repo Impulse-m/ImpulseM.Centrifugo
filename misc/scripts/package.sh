@@ -1,4 +1,9 @@
 #!/bin/sh
+#
+# Note: the fork release flow does not use this script. The release workflows (.github/workflows/release.yml
+# and images.yml) build only the Linux archives and the Docker images; this script is kept from upstream and
+# builds the DEB and RPM packages of upstream's release flow.
+#
 # 
 # Debian 7: lsb sysv
 # Debian 8: systemd

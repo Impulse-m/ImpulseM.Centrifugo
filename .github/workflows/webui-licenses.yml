@@ -10,14 +10,19 @@ on:
     inputs:
       web_ref:
         description: Commit of centrifugal/web that matches the embedded web UI build in internal/webui.
-        required: true
+        required: false
         default: 9ccec9fc7619cf8320ef6c25bf01b979ca3c7489
         type: string
       swagger_ref:
         description: Tag of swagger-api/swagger-ui that matches the embedded Swagger UI build in internal/swaggerui.
-        required: true
+        required: false
         default: v4.18.1
         type: string
+  push:
+    branches:
+      - docs/readme-license
+    paths:
+      - .github/workflows/webui-licenses.yml
 
 permissions:
   contents: read
@@ -26,12 +31,14 @@ jobs:
   webui:
     name: Web UI production license report
     runs-on: ubuntu-latest
+    env:
+      WEB_REF: ${{ inputs.web_ref || '9ccec9fc7619cf8320ef6c25bf01b979ca3c7489' }}
     steps:
       - name: Checkout web UI sources
         uses: actions/checkout@v7
         with:
           repository: centrifugal/web
-          ref: ${{ inputs.web_ref }}
+          ref: ${{ env.WEB_REF }}
           path: source
           persist-credentials: false
 
@@ -71,12 +78,14 @@ jobs:
   swagger-ui:
     name: Swagger UI production license report
     runs-on: ubuntu-latest
+    env:
+      SWAGGER_REF: ${{ inputs.swagger_ref || 'v4.18.1' }}
     steps:
       - name: Checkout Swagger UI sources
         uses: actions/checkout@v7
         with:
           repository: swagger-api/swagger-ui
-          ref: ${{ inputs.swagger_ref }}
+          ref: ${{ env.SWAGGER_REF }}
           path: source
           persist-credentials: false
 

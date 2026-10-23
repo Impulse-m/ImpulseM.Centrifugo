@@ -281,6 +281,21 @@ func TestRegistryRequestMetadataOverwritesClientForwardedFor(t *testing.T) {
 	require.Equal(t, []string{"2001:db8::1"}, md.Get("x-forwarded-for"))
 }
 
+func TestRegistryRequestMetadataSetsForwardedForOverEverySource(t *testing.T) {
+	// Client-sent values arrive through the connect headers (two entries), the per-call headers and
+	// the static metadata of the target. The registry still sends one value: the resolved address.
+	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{"x-forwarded-for": "9.9.9.9, 8.8.8.8"})
+	ctx = clientaddr.WithPeer(peer.NewContext(ctx, &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 443},
+	}))
+	m := registryForwardedTarget()
+	m.Headers = []string{"x-forwarded-for"}
+	m.Target.Config.GRPC.StaticMetadata = map[string]string{"x-forwarded-for": "6.6.6.6"}
+	call := RegistryCall{ClientID: "real-client", Headers: map[string]string{"x-forwarded-for": "7.7.7.7"}}
+	md := registryRequestMetadata(ctx, m, call)
+	require.Equal(t, []string{"203.0.113.7"}, md.Get("x-forwarded-for"))
+}
+
 func TestRegistryRequestMetadataOmitsUnresolvedForwardedFor(t *testing.T) {
 	// No resolved address: the header is omitted, and a client-sent value is dropped with it.
 	ctx := clientcontext.SetEmulatedHeadersToContext(context.Background(), map[string]string{"x-forwarded-for": "9.9.9.9"})

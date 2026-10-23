@@ -23,7 +23,7 @@ Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enable
 
 ## Refresh lead
 
-`client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is part of the Core revision that `go.mod` pins.
+`client.refresh_lead`, for example `"60s"`: the connect and refresh replies tell a client with client-side refresh to refresh that much before its connection expires, and the reply carries the time left minus the lead, but never less than half of the time left. The connection still expires at its own time, and `client.expired_close_delay` applies after it. Whole seconds, zero means no lead. Read at start; a reload does not change it. A token which lives at least twice the lead gets the full lead. The lead should exceed the backend's clock skew plus the 99th percentile of the client's token fetch. SDKs report the ttl of the auth event as the time to the refresh. Off by default and then free. The change is in the Core commit `bc8c5cab476ea34125c2ed10b739d1f257a3df69` of the fork, which the Core revision that `go.mod` pins contains.
 
 ## Message batching
 

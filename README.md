@@ -105,6 +105,7 @@ A namespace can use its own broker and presence manager, and control traffic can
 * Redis and PostgreSQL persistence for revocation.
 * `user_connections` API.
 * Sharded PUB/SUB.
+* Redis replica offloading.
 
 Some of these are on the [roadmap](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/17).
 

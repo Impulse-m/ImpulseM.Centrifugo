@@ -41,7 +41,7 @@ func writeTestFile(t *testing.T, content []byte) string {
 func TestLoadAPNSKeyFromFile(t *testing.T) {
 	path := writeTestFile(t, newTestPKCS8PEM(t, elliptic.P256()))
 
-	key, err := LoadAPNSKey(path, "")
+	key, err := LoadAPNSKey(path, configtypes.NewSecret(""))
 
 	require.NoError(t, err)
 	require.Equal(t, elliptic.P256(), key.Curve)
@@ -50,7 +50,7 @@ func TestLoadAPNSKeyFromFile(t *testing.T) {
 func TestLoadAPNSKeyFromPEM(t *testing.T) {
 	keyPEM := newTestPKCS8PEM(t, elliptic.P256())
 
-	key, err := LoadAPNSKey("", configtypes.Secret(string(keyPEM)))
+	key, err := LoadAPNSKey("", configtypes.NewSecret(string(keyPEM)))
 
 	require.NoError(t, err)
 	require.Equal(t, elliptic.P256(), key.Curve)
@@ -59,7 +59,7 @@ func TestLoadAPNSKeyFromPEM(t *testing.T) {
 func TestLoadAPNSKeyRefusesLargeFile(t *testing.T) {
 	path := writeTestFile(t, []byte(strings.Repeat("A", maxKeyFileBytes+1)))
 
-	_, err := LoadAPNSKey(path, "")
+	_, err := LoadAPNSKey(path, configtypes.NewSecret(""))
 
 	require.ErrorContains(t, err, apnsKeyFileKey)
 	require.ErrorContains(t, err, "larger than")
@@ -72,7 +72,7 @@ func TestCredentialErrorsNameKeyNotContent(t *testing.T) {
 	t.Run("file not PEM", func(t *testing.T) {
 		path := writeTestFile(t, []byte(secretLine))
 
-		_, err := LoadAPNSKey(path, "")
+		_, err := LoadAPNSKey(path, configtypes.NewSecret(""))
 
 		require.ErrorContains(t, err, apnsKeyFileKey)
 		require.ErrorContains(t, err, path)
@@ -82,7 +82,7 @@ func TestCredentialErrorsNameKeyNotContent(t *testing.T) {
 	t.Run("inline PEM not a key", func(t *testing.T) {
 		keyPEM := "-----BEGIN PRIVATE KEY-----\n" + secretLine + "\n-----END PRIVATE KEY-----\n"
 
-		_, err := LoadAPNSKey("", configtypes.Secret(keyPEM))
+		_, err := LoadAPNSKey("", configtypes.NewSecret(keyPEM))
 
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), secretLine)
@@ -91,14 +91,14 @@ func TestCredentialErrorsNameKeyNotContent(t *testing.T) {
 	t.Run("wrong curve", func(t *testing.T) {
 		path := writeTestFile(t, newTestPKCS8PEM(t, elliptic.P384()))
 
-		_, err := LoadAPNSKey(path, "")
+		_, err := LoadAPNSKey(path, configtypes.NewSecret(""))
 
 		require.ErrorContains(t, err, apnsKeyFileKey)
 		require.ErrorContains(t, err, "P-256")
 	})
 
 	t.Run("missing file", func(t *testing.T) {
-		_, err := LoadAPNSKey(filepath.Join(t.TempDir(), "absent.p8"), "")
+		_, err := LoadAPNSKey(filepath.Join(t.TempDir(), "absent.p8"), configtypes.NewSecret(""))
 
 		require.ErrorContains(t, err, apnsKeyFileKey)
 	})
@@ -127,4 +127,26 @@ func TestLoadFCMServiceAccountRefusesMissingProjectID(t *testing.T) {
 	_, err := LoadFCMServiceAccount([]byte(`{"type":"service_account"}`))
 
 	require.ErrorContains(t, err, fcmCredsKey)
+}
+
+// A project id is a part of the endpoint path, so a value that could change the path is refused before any load.
+func TestLoadFCMServiceAccountRefusesBadProjectID(t *testing.T) {
+	for _, projectID := range []string{"a/b", "a?b", "..", "a b"} {
+		account, err := json.Marshal(map[string]string{"project_id": projectID})
+		require.NoError(t, err)
+
+		_, err = LoadFCMServiceAccount(account)
+
+		require.ErrorContains(t, err, fcmCredsKey, projectID)
+	}
+}
+
+func TestReadFCMServiceAccountRefusesLargeFile(t *testing.T) {
+	path := writeTestFile(t, []byte(strings.Repeat("A", maxKeyFileBytes+1)))
+
+	_, err := ReadFCMServiceAccount(path)
+
+	require.ErrorContains(t, err, fcmCredsKey)
+	require.ErrorContains(t, err, "larger than")
+	require.NotContains(t, err.Error(), "AAAA")
 }

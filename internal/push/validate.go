@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
+	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/apns"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/fcm"
@@ -39,12 +40,23 @@ func NotEnabledError() *apiproto.Error {
 	}
 }
 
-// tooManyCallsError returns the answer of a call over max_concurrent_requests. There is no queue, so the caller retries.
+// retryAfterKey is the metadata key of the seconds to wait before a retry. It is the key of a rate limited registry error.
+const retryAfterKey = configtypes.RPCRegistryReservedHeaderPrefix + "retry-after"
+
+// retryAfterSeconds is the wait a refused call is told to take before its retry. There is no queue, so the caller
+// retries after it.
+const retryAfterSeconds = "1"
+
+// tooManyCallsError returns the answer of a call over max_concurrent_requests. It is temporary, and its metadata tells
+// the caller to wait retryAfterSeconds before a retry. A new error is built on each call, so no caller shares its map.
 func tooManyCallsError() *apiproto.Error {
 	return &apiproto.Error{
 		Code:      apiproto.ErrorTooManyRequests.Code,
 		Message:   apiproto.ErrorTooManyRequests.Message,
 		Temporary: true,
+		Metadata: map[string]string{
+			retryAfterKey: retryAfterSeconds,
+		},
 	}
 }
 

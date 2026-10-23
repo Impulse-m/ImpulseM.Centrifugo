@@ -173,6 +173,13 @@ message Error {
     // error. Retry a publication with the same idempotency_key, so that it
     // is not published twice.
     bool temporary = 3;
+
+    // ---- fork extensions ----
+
+    // metadata holds details of the error. A refusal of the direct send
+    // mode sets x-centrifugo-retry-after to the seconds to wait before a
+    // retry, the same key as a rate limited registry error.
+    map<string, string> metadata = 100;
 }
 
 // Reply is the reply to a single Command of a BatchRequest. It carries

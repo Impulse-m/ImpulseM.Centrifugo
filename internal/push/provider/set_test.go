@@ -174,17 +174,31 @@ func TestDryRunResult(t *testing.T) {
 func TestDryRunMakesNoRequest(t *testing.T) {
 	initPushMetricsForTest(t)
 
-	// The dry run result is built without a provider: the sender of the set fails the test if it is ever called.
-	set := NewSet()
+	// The dry run goes through Dispatch, the send path of the set. The sender fails the test if it is ever called.
+	set := NewDryRunSet()
 	set.Add(ProviderAPNs, failingSender{t: t}, 1)
 
-	result := DryRun(newTestJob(0, ProviderAPNs))
+	result := set.Dispatch(context.Background(), time.Minute, newTestJob(0, ProviderAPNs))
 
 	require.Equal(t, StatusDryRun, result.GetStatus())
+	require.Equal(t, uint32(0), result.GetIndex())
 	require.Zero(t, result.GetHttpStatus())
 	require.Empty(t, result.GetProviderMessageId())
 	require.Zero(t, testutil.ToFloat64(metrics.PushDirectInflight.WithLabelValues(ProviderAPNs)))
 	require.Zero(t, testutil.CollectAndCount(metrics.PushNotificationCount))
+}
+
+func TestDryRunStillRefusesExpiredBeforeAnswer(t *testing.T) {
+	// Server checks still run in dry run: an expired target is refused and no provider is called.
+	set := NewDryRunSet()
+	set.Add(ProviderAPNs, failingSender{t: t}, 1)
+	job := newTestJob(1, ProviderAPNs)
+	job.Notification = &apiproto.PushNotification{ExpireAt: time.Now().Unix() - 1}
+
+	result := set.Dispatch(context.Background(), time.Minute, job)
+
+	require.Equal(t, StatusRejected, result.GetStatus())
+	require.Equal(t, CodeExpired, result.GetCode())
 }
 
 func TestDispatchInflightGaugeReturnsToZero(t *testing.T) {

@@ -20,12 +20,22 @@ type limitedSender struct {
 // providers are never pooled.
 type Set struct {
 	limited map[string]*limitedSender
+	dryRun  bool
 }
 
 // NewSet returns an empty Set.
 func NewSet() *Set {
 	return &Set{
 		limited: make(map[string]*limitedSender),
+	}
+}
+
+// NewDryRunSet returns an empty Set in dry run mode: Dispatch checks each target and answers dry_run for a valid one,
+// and no provider is called.
+func NewDryRunSet() *Set {
+	return &Set{
+		limited: make(map[string]*limitedSender),
+		dryRun:  true,
 	}
 }
 
@@ -51,6 +61,11 @@ func (s *Set) Dispatch(syncCtx context.Context, requestTimeout time.Duration, jo
 	// An expired target is refused before it takes a slot, so no provider call can follow it.
 	if Expired(job, time.Now()) {
 		return NewCodeResult(job, CodeExpired)
+	}
+
+	// A dry run target is valid here, and no slot is taken and no provider is called for it.
+	if s.dryRun {
+		return DryRun(job)
 	}
 
 	err := limited.slots.Acquire(syncCtx, 1)

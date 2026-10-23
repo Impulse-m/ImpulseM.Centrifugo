@@ -46,6 +46,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validatePushNotifications(c); err != nil {
+		return err
+	}
+
 	if err := validateRebind(c); err != nil {
 		return err
 	}

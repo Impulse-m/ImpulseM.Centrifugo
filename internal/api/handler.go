@@ -65,6 +65,17 @@ func (s *Handler) Routes() map[string]http.HandlerFunc {
 		"/unblock_user":           s.handleUnblockUser,
 		"/revoke_token":           s.handleRevokeToken,
 		"/invalidate_user_tokens": s.handleInvalidateUserTokens,
+		"/device_register":        s.handleDeviceRegister,
+		"/device_update":          s.handleDeviceUpdate,
+		"/device_remove":          s.handleDeviceRemove,
+		"/device_list":            s.handleDeviceList,
+		"/device_topic_update":    s.handleDeviceTopicUpdate,
+		"/device_topic_list":      s.handleDeviceTopicList,
+		"/user_topic_update":      s.handleUserTopicUpdate,
+		"/user_topic_list":        s.handleUserTopicList,
+		"/send_push_notification": s.handlePushSendRoute,
+		"/update_push_status":     s.handleUpdatePushStatus,
+		"/cancel_push":            s.handleCancelPush,
 	}
 }
 

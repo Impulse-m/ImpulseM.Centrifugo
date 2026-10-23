@@ -263,3 +263,113 @@ func (d *JSONRequestDecoder) DecodeInvalidateUserTokens(data []byte) (*Invalidat
 	}
 	return &p, nil
 }
+
+// DecodeDeviceRegister ...
+func (d *JSONRequestDecoder) DecodeDeviceRegister(data []byte) (*DeviceRegisterRequest, error) {
+	var p DeviceRegisterRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeDeviceUpdate ...
+func (d *JSONRequestDecoder) DecodeDeviceUpdate(data []byte) (*DeviceUpdateRequest, error) {
+	var p DeviceUpdateRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeDeviceRemove ...
+func (d *JSONRequestDecoder) DecodeDeviceRemove(data []byte) (*DeviceRemoveRequest, error) {
+	var p DeviceRemoveRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeDeviceList ...
+func (d *JSONRequestDecoder) DecodeDeviceList(data []byte) (*DeviceListRequest, error) {
+	var p DeviceListRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeDeviceTopicUpdate ...
+func (d *JSONRequestDecoder) DecodeDeviceTopicUpdate(data []byte) (*DeviceTopicUpdateRequest, error) {
+	var p DeviceTopicUpdateRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeDeviceTopicList ...
+func (d *JSONRequestDecoder) DecodeDeviceTopicList(data []byte) (*DeviceTopicListRequest, error) {
+	var p DeviceTopicListRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeUserTopicUpdate ...
+func (d *JSONRequestDecoder) DecodeUserTopicUpdate(data []byte) (*UserTopicUpdateRequest, error) {
+	var p UserTopicUpdateRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeUserTopicList ...
+func (d *JSONRequestDecoder) DecodeUserTopicList(data []byte) (*UserTopicListRequest, error) {
+	var p UserTopicListRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeSendPushNotification ...
+func (d *JSONRequestDecoder) DecodeSendPushNotification(data []byte) (*SendPushNotificationRequest, error) {
+	var p SendPushNotificationRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeUpdatePushStatus ...
+func (d *JSONRequestDecoder) DecodeUpdatePushStatus(data []byte) (*UpdatePushStatusRequest, error) {
+	var p UpdatePushStatusRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DecodeCancelPush ...
+func (d *JSONRequestDecoder) DecodeCancelPush(data []byte) (*CancelPushRequest, error) {
+	var p CancelPushRequest
+	err := json.Unmarshal(data, &p)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}

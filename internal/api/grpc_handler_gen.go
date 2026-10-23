@@ -474,3 +474,212 @@ func (s *grpcAPIService) InvalidateUserTokens(ctx context.Context, req *Invalida
 	}
 	return resp, nil
 }
+
+// DeviceRegister ...
+func (s *grpcAPIService) DeviceRegister(ctx context.Context, req *DeviceRegisterRequest) (*DeviceRegisterResponse, error) {
+	resp := s.api.DeviceRegister(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_register", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_register", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// DeviceUpdate ...
+func (s *grpcAPIService) DeviceUpdate(ctx context.Context, req *DeviceUpdateRequest) (*DeviceUpdateResponse, error) {
+	resp := s.api.DeviceUpdate(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_update", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_update", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// DeviceRemove ...
+func (s *grpcAPIService) DeviceRemove(ctx context.Context, req *DeviceRemoveRequest) (*DeviceRemoveResponse, error) {
+	resp := s.api.DeviceRemove(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_remove", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_remove", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// DeviceList ...
+func (s *grpcAPIService) DeviceList(ctx context.Context, req *DeviceListRequest) (*DeviceListResponse, error) {
+	resp := s.api.DeviceList(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_list", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_list", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// DeviceTopicUpdate ...
+func (s *grpcAPIService) DeviceTopicUpdate(ctx context.Context, req *DeviceTopicUpdateRequest) (*DeviceTopicUpdateResponse, error) {
+	resp := s.api.DeviceTopicUpdate(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_update", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_update", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// DeviceTopicList ...
+func (s *grpcAPIService) DeviceTopicList(ctx context.Context, req *DeviceTopicListRequest) (*DeviceTopicListResponse, error) {
+	resp := s.api.DeviceTopicList(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_list", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "device_topic_list", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// UserTopicUpdate ...
+func (s *grpcAPIService) UserTopicUpdate(ctx context.Context, req *UserTopicUpdateRequest) (*UserTopicUpdateResponse, error) {
+	resp := s.api.UserTopicUpdate(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_update", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_update", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// UserTopicList ...
+func (s *grpcAPIService) UserTopicList(ctx context.Context, req *UserTopicListRequest) (*UserTopicListResponse, error) {
+	resp := s.api.UserTopicList(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_list", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "user_topic_list", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// SendPushNotification ...
+func (s *grpcAPIService) SendPushNotification(ctx context.Context, req *SendPushNotificationRequest) (*SendPushNotificationResponse, error) {
+	resp := s.api.SendPushNotification(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "send_push_notification", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "send_push_notification", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// UpdatePushStatus ...
+func (s *grpcAPIService) UpdatePushStatus(ctx context.Context, req *UpdatePushStatusRequest) (*UpdatePushStatusResponse, error) {
+	resp := s.api.UpdatePushStatus(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "update_push_status", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "update_push_status", resp.Error.Code)
+	}
+	return resp, nil
+}
+
+// CancelPush ...
+func (s *grpcAPIService) CancelPush(ctx context.Context, req *CancelPushRequest) (*CancelPushResponse, error) {
+	resp := s.api.CancelPush(ctx, req)
+	if s.config.UseOpenTelemetry && resp.Error != nil {
+		span := trace.SpanFromContext(ctx)
+		span.SetStatus(codes.Error, resp.Error.Error())
+	}
+	if resp.Error != nil && s.useTransportErrorMode(ctx) {
+		metrics.IncAPIError(s.api.config.Protocol, "cancel_push", resp.Error.Code)
+		statusCode := MapErrorToGRPCCode(resp.Error)
+		transportError, _ := status.New(statusCode, resp.Error.Message).WithDetails(resp.Error)
+		return nil, transportError.Err()
+	}
+	if resp.Error != nil {
+		metrics.IncAPIError(s.api.config.Protocol, "cancel_push", resp.Error.Code)
+	}
+	return resp, nil
+}

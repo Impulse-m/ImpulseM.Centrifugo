@@ -72,7 +72,7 @@ type forkRegistry struct {
 
 // initForkMetrics creates the fork metrics in namespace with constLabels and returns their collectors for
 // registration.
-func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels) []prometheus.Collector {
+func (m *Registry) initForkMetrics(metricsNamespace string, constLabels prometheus.Labels, pushEnabled bool) []prometheus.Collector {
 	m.notifyEventsDroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   metricsNamespace,
 		Subsystem:   "notify",
@@ -462,7 +462,7 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		ConstLabels: constLabels,
 	})
 
-	return []prometheus.Collector{
+	collectors := []prometheus.Collector{
 		m.notifyEventsDroppedTotal,
 		m.accessRevokeRejectsTotal,
 		m.accessRevokeDisconnectsTotal,
@@ -509,6 +509,12 @@ func (m *Registry) initForkMetrics(metricsNamespace string, constLabels promethe
 		m.rpcRegistryInflightBytes,
 		m.rpcRegistryAdmissionRefusals,
 	}
+
+	// The push metrics are registered only when push notifications are on: the one gate of their registration.
+	if pushEnabled {
+		collectors = append(collectors, initPushMetrics(metricsNamespace, constLabels)...)
+	}
+	return collectors
 }
 
 // newAccessRevokeStoreSize creates the store_size gauge of one kind of the access revocation store, labelled with kind,

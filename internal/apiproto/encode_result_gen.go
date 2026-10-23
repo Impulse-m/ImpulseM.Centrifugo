@@ -133,3 +133,58 @@ func (e *JSONResultEncoder) EncodeRevokeToken(res *RevokeTokenResult) ([]byte, e
 func (e *JSONResultEncoder) EncodeInvalidateUserTokens(res *InvalidateUserTokensResult) ([]byte, error) {
 	return json.Marshal(res)
 }
+
+// EncodeDeviceRegister ...
+func (e *JSONResultEncoder) EncodeDeviceRegister(res *DeviceRegisterResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeDeviceUpdate ...
+func (e *JSONResultEncoder) EncodeDeviceUpdate(res *DeviceUpdateResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeDeviceRemove ...
+func (e *JSONResultEncoder) EncodeDeviceRemove(res *DeviceRemoveResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeDeviceList ...
+func (e *JSONResultEncoder) EncodeDeviceList(res *DeviceListResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeDeviceTopicUpdate ...
+func (e *JSONResultEncoder) EncodeDeviceTopicUpdate(res *DeviceTopicUpdateResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeDeviceTopicList ...
+func (e *JSONResultEncoder) EncodeDeviceTopicList(res *DeviceTopicListResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeUserTopicUpdate ...
+func (e *JSONResultEncoder) EncodeUserTopicUpdate(res *UserTopicUpdateResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeUserTopicList ...
+func (e *JSONResultEncoder) EncodeUserTopicList(res *UserTopicListResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeSendPushNotification ...
+func (e *JSONResultEncoder) EncodeSendPushNotification(res *SendPushNotificationResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeUpdatePushStatus ...
+func (e *JSONResultEncoder) EncodeUpdatePushStatus(res *UpdatePushStatusResult) ([]byte, error) {
+	return json.Marshal(res)
+}
+
+// EncodeCancelPush ...
+func (e *JSONResultEncoder) EncodeCancelPush(res *CancelPushResult) ([]byte, error) {
+	return json.Marshal(res)
+}

@@ -135,3 +135,58 @@ func (e *JSONResponseEncoder) EncodeRevokeToken(response *RevokeTokenResponse) (
 func (e *JSONResponseEncoder) EncodeInvalidateUserTokens(response *InvalidateUserTokensResponse) ([]byte, error) {
 	return json.Marshal(response)
 }
+
+// EncodeDeviceRegister ...
+func (e *JSONResponseEncoder) EncodeDeviceRegister(response *DeviceRegisterResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeDeviceUpdate ...
+func (e *JSONResponseEncoder) EncodeDeviceUpdate(response *DeviceUpdateResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeDeviceRemove ...
+func (e *JSONResponseEncoder) EncodeDeviceRemove(response *DeviceRemoveResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeDeviceList ...
+func (e *JSONResponseEncoder) EncodeDeviceList(response *DeviceListResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeDeviceTopicUpdate ...
+func (e *JSONResponseEncoder) EncodeDeviceTopicUpdate(response *DeviceTopicUpdateResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeDeviceTopicList ...
+func (e *JSONResponseEncoder) EncodeDeviceTopicList(response *DeviceTopicListResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeUserTopicUpdate ...
+func (e *JSONResponseEncoder) EncodeUserTopicUpdate(response *UserTopicUpdateResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeUserTopicList ...
+func (e *JSONResponseEncoder) EncodeUserTopicList(response *UserTopicListResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeSendPushNotification ...
+func (e *JSONResponseEncoder) EncodeSendPushNotification(response *SendPushNotificationResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeUpdatePushStatus ...
+func (e *JSONResponseEncoder) EncodeUpdatePushStatus(response *UpdatePushStatusResponse) ([]byte, error) {
+	return json.Marshal(response)
+}
+
+// EncodeCancelPush ...
+func (e *JSONResponseEncoder) EncodeCancelPush(response *CancelPushResponse) ([]byte, error) {
+	return json.Marshal(response)
+}

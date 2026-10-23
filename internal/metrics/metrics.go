@@ -23,6 +23,8 @@ type Config struct {
 	// for OpenTelemetry export via the client_golang Prometheus bridge.
 	// Text-format scrapes lose _bucket series; use protobuf scrape format.
 	NativeHistograms bool
+	// PushEnabled registers the push notification metrics. They are not registered when it is false.
+	PushEnabled bool
 }
 
 // nativeHistogramOpts returns opts unchanged when native is false. When true,
@@ -321,7 +323,7 @@ func newRegistry(cfg Config) (*Registry, error) {
 		[]string{"path", "method", "status"},
 	)
 
-	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels)
+	forkCollectors := m.initForkMetrics(metricsNamespace, constLabels, cfg.PushEnabled)
 
 	// Postgres-specific broker metrics carry a postgres_ name prefix. Cleanup is
 	// Postgres-specific here: only the PG stream broker prunes rows (the "pass"

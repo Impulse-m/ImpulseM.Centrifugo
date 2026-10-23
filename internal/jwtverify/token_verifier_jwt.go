@@ -49,6 +49,12 @@ type VerifierConfig struct {
 	// tokens generated using ECDSA. Zero value means that ECDSA tokens won't be allowed.
 	ECDSAPublicKey *ecdsa.PublicKey
 
+	// Ed25519PublicKey is a public key used to validate connection and subscription
+	// tokens generated using EdDSA. Zero value means that EdDSA tokens won't be allowed.
+	// It is not bound to a kid, so any EdDSA token is checked with it. Can not be used
+	// together with Ed25519PublicKeys.
+	Ed25519PublicKey ed25519.PublicKey
+
 	// Ed25519PublicKeys are public keys used to validate connection and subscription
 	// tokens generated using EdDSA. Keys are selected by token "kid" header. A token without
 	// "kid" is accepted only when exactly one key is configured. Zero value means that EdDSA
@@ -106,8 +112,11 @@ func (c VerifierConfig) Validate() error {
 	if c.Issuer != "" && c.IssuerRegex != "" {
 		return errors.New("can not use both token_issuer and token_issuer_regex, configure only one of them")
 	}
-	if c.JWKSPublicEndpoint != "" && len(c.Ed25519PublicKeys) > 0 {
+	if c.JWKSPublicEndpoint != "" && (c.Ed25519PublicKey != nil || len(c.Ed25519PublicKeys) > 0) {
 		return errors.New("can not use ed25519 public keys together with JWKS public endpoint, configure only one of them")
+	}
+	if c.Ed25519PublicKey != nil && len(c.Ed25519PublicKeys) > 0 {
+		return errors.New("can not use ed25519_public_key together with ed25519_public_keys, configure only one of them")
 	}
 	if c.JWKSPublicEndpoint != "" {
 		if err := validateJWKSEndpointSafety(c.JWKSPublicEndpoint, c.IssuerRegex, c.AudienceRegex); err != nil {
@@ -162,7 +171,7 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 		log.Info().Str("endpoint", strings.Join(tools.RedactedLogURLs(config.JWKSPublicEndpoint), ",")).
 			Msg("JWKS manager created")
 	} else {
-		alg, err := newAlgorithms(config.HMACSecretKey, config.RSAPublicKey, config.ECDSAPublicKey)
+		alg, err := newAlgorithms(config.HMACSecretKey, config.RSAPublicKey, config.ECDSAPublicKey, config.Ed25519PublicKey)
 		if err != nil {
 			return nil, fmt.Errorf("error initializing token algorithms: %w", err)
 		}
@@ -171,7 +180,7 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 		}
 		verifier.algorithms = alg
 		if config.HMACPreviousSecretKey != "" {
-			prevAlg, err := newAlgorithms(config.HMACPreviousSecretKey, nil, nil)
+			prevAlg, err := newAlgorithms(config.HMACPreviousSecretKey, nil, nil, nil)
 			if err != nil {
 				return nil, fmt.Errorf("error initializing previous HMAC token algorithms: %w", err)
 			}
@@ -362,11 +371,11 @@ type algorithms struct {
 	ES256 jwt.Verifier
 	ES384 jwt.Verifier
 	ES512 jwt.Verifier
-	// Ed25519 verifiers keyed by kid.
+	// Ed25519 verifiers keyed by kid. The static Ed25519PublicKey is registered under the empty kid.
 	Ed25519 map[string]jwt.Verifier
 }
 
-func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPubKey *ecdsa.PublicKey) (*algorithms, error) {
+func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPubKey *ecdsa.PublicKey, ed25519PubKey ed25519.PublicKey) (*algorithms, error) {
 	alg := &algorithms{}
 
 	var algorithms []string
@@ -447,6 +456,16 @@ func newAlgorithms(tokenHMACSecretKey string, rsaPubKey *rsa.PublicKey, ecdsaPub
 		}
 	}
 
+	// EdDSA with a static key, not bound to a kid, so it is registered under the empty kid.
+	if ed25519PubKey != nil {
+		verifierEdDSA, err := jwt.NewVerifierEdDSA(ed25519PubKey)
+		if err != nil {
+			return nil, err
+		}
+		alg.Ed25519 = map[string]jwt.Verifier{"": verifierEdDSA}
+		algorithms = append(algorithms, "EdDSA")
+	}
+
 	if len(algorithms) > 0 {
 		log.Info().Str("algorithms", strings.Join(algorithms, ", ")).Msg("enabled JWT verifiers")
 	}
@@ -499,6 +518,21 @@ func (verifier *VerifierJWT) verifySignature(token *jwt.Token) error {
 		}
 	}
 	return err
+}
+
+// signatureError classifies an error verifying a token's signature. A key the
+// JWKS endpoint does not have - a rotation in progress, or a key retired - makes
+// the token expired: clients answer with a new token, signed by a key the
+// endpoint has. An endpoint which can't be used is a temporary failure, and is
+// returned as is: clients retry. Anything else makes the token invalid.
+func signatureError(err error) error {
+	switch {
+	case errors.Is(err, jwks.ErrPublicKeyNotFound):
+		return fmt.Errorf("%w: %v", ErrTokenExpired, err)
+	case errors.Is(err, jwks.ErrUnavailable):
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrInvalidToken, err)
 }
 
 // verifySignatureByJWK verifies a token against the JWKS manager. The caller
@@ -596,7 +630,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 			err = verifier.verifySignature(token)
 		}
 		if err != nil {
-			return ConnectToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+			return ConnectToken{}, signatureError(err)
 		}
 	}
 
@@ -786,7 +820,7 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 			err = verifier.verifySignature(token)
 		}
 		if err != nil {
-			return SubscribeToken{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+			return SubscribeToken{}, signatureError(err)
 		}
 	}
 

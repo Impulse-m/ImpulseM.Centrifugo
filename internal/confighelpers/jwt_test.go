@@ -90,3 +90,18 @@ func TestMakeVerifierConfig_Ed25519PublicKeys(t *testing.T) {
 		require.ErrorContains(t, err, `duplicate Ed25519 public key kid "k1" at index 1`)
 	})
 }
+
+func TestMakeVerifierConfigEd25519(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err)
+	cfg, err := MakeVerifierConfig(configtypes.Token{
+		Ed25519PublicKey: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
+	})
+	require.NoError(t, err)
+	require.True(t, pub.Equal(cfg.Ed25519PublicKey))
+
+	_, err = MakeVerifierConfig(configtypes.Token{Ed25519PublicKey: "not a key"})
+	require.ErrorContains(t, err, "Ed25519")
+}

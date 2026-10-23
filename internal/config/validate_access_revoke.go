@@ -9,6 +9,12 @@ import (
 )
 
 func validateEd25519PublicKeys(name string, token configtypes.Token) error {
+	if token.Ed25519PublicKey != "" && len(token.Ed25519PublicKeys) > 0 {
+		return fmt.Errorf("in %s: ed25519_public_key can not be used together with ed25519_public_keys", name)
+	}
+	if token.Ed25519PublicKey != "" && token.JWKSPublicEndpoint != "" {
+		return fmt.Errorf("in %s: ed25519_public_key can not be used together with jwks_public_endpoint", name)
+	}
 	if len(token.Ed25519PublicKeys) == 0 {
 		return nil
 	}

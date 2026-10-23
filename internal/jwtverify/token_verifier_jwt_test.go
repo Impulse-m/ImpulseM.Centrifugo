@@ -2,6 +2,7 @@ package jwtverify
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -317,7 +318,9 @@ func getJWKServer(pubKey *rsa.PublicKey, kty, use, kid string) *httptest.Server 
 func Test_tokenVerifierJWT_Signer(t *testing.T) {
 	_, rsaPubKey := testRSAKey(t, 0)
 	_, ecdsaPubKey := generateTestECDSAKeys(t)
-	signer, err := newAlgorithms("secret", rsaPubKey, ecdsaPubKey)
+	edPubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer, err := newAlgorithms("secret", rsaPubKey, ecdsaPubKey, edPubKey)
 	require.NoError(t, err)
 	require.NotNil(t, signer)
 }
@@ -921,9 +924,11 @@ func TestJWKS(t *testing.T) {
 	require.NotNil(t, ct.Info)
 	require.Equal(t, `{"first_name":"Alexander","last_name":"Emelin"}`, string(ct.Info))
 
-	// Make sure a token with an unknown KID fails to verify
+	// A token with a KID the endpoint does not have fails to verify, as
+	// expired: the client gets a new token, signed by a key the endpoint has.
 	_, err = verifier.VerifyConnectToken(jwtECWithKIDMiss, false)
-	require.ErrorContains(t, err, "invalid token: jwks: public key not found")
+	require.ErrorIs(t, err, ErrTokenExpired)
+	require.ErrorContains(t, err, "jwks: public key not found")
 
 	// Make sure a token with an unknown KID fails to verify
 	_, err = verifier.VerifyConnectToken(jwtECWithKIDWrongAlg, false)
@@ -963,9 +968,11 @@ func TestJWKS_NoAlg(t *testing.T) {
 	require.NotNil(t, ct.Info)
 	require.Equal(t, `{"first_name":"Alexander","last_name":"Emelin"}`, string(ct.Info))
 
-	// Make sure a token with an unknown KID fails to verify
+	// A token with a KID the endpoint does not have fails to verify, as
+	// expired: the client gets a new token, signed by a key the endpoint has.
 	_, err = verifier.VerifyConnectToken(jwtECWithKIDMiss, false)
-	require.ErrorContains(t, err, "invalid token: jwks: public key not found")
+	require.ErrorIs(t, err, ErrTokenExpired)
+	require.ErrorContains(t, err, "jwks: public key not found")
 
 	// Make sure a token with an unknown KID fails to verify
 	_, err = verifier.VerifyConnectToken(jwtECWithKIDWrongAlg, false)

@@ -72,27 +72,21 @@ func ParseECDSAPublicKeyFromPEM(key []byte) (*ecdsa.PublicKey, error) {
 
 // ParseEd25519PublicKeyFromPEM parses PEM encoded PKIX Ed25519 public key.
 func ParseEd25519PublicKeyFromPEM(key []byte) (ed25519.PublicKey, error) {
-	var err error
-
-	var block *pem.Block
-	if block, _ = pem.Decode(key); block == nil {
+	block, _ := pem.Decode(key)
+	if block == nil {
 		return nil, errKeyMustBePEMEncoded
 	}
-
-	var parsedKey any
-	if parsedKey, err = x509.ParsePKIXPublicKey(block.Bytes); err != nil {
-		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-			parsedKey = cert.PublicKey
-		} else {
+	parsedKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		cert, certErr := x509.ParseCertificate(block.Bytes)
+		if certErr != nil {
 			return nil, err
 		}
+		parsedKey = cert.PublicKey
 	}
-
-	var pkey ed25519.PublicKey
-	var ok bool
-	if pkey, ok = parsedKey.(ed25519.PublicKey); !ok {
+	pkey, ok := parsedKey.(ed25519.PublicKey)
+	if !ok {
 		return nil, errNotEd25519PublicKey
 	}
-
 	return pkey, nil
 }

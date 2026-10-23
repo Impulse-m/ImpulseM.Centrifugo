@@ -140,16 +140,13 @@ func (s *Set) dispatch(
 
 	err := limited.slots.Acquire(slot, 1)
 	if err != nil {
-		if s.shutdownEnded() {
-			return NewNotSentResult(job, CodeShutdown)
-		}
-		return NewNotSentResult(job, CodeNoSlot)
+		return NewNotSentResult(job, s.waitEndCode(slot, call))
 	}
 	defer limited.slots.Release(1)
 
 	// Acquire takes a free slot even when slot has ended, so the end is checked again: no call starts after it.
 	if slot.Err() != nil {
-		return NewNotSentResult(job, s.endCode())
+		return NewNotSentResult(job, s.waitEndCode(slot, call))
 	}
 
 	// The gauge is nil while push metrics are not registered.
@@ -190,6 +187,25 @@ func (s *Set) shutdownEnded() bool {
 func (s *Set) endCode() string {
 	if s.shutdownEnded() {
 		return CodeShutdown
+	}
+	return CodeDeadline
+}
+
+// waitEndCode returns the code of a target that got no slot because its slot wait ended. The shutdown takes precedence.
+// Otherwise the code is deadline when the call deadline ended first, and no_slot when the sync timeout (the slot wait)
+// ended first. The slot wait ends at the earlier of the sync timeout and the call deadline, so the call deadline ended
+// first when it is not after the slot deadline.
+func (s *Set) waitEndCode(slot context.Context, call context.Context) string {
+	if s.shutdownEnded() {
+		return CodeShutdown
+	}
+	if call.Err() == nil {
+		return CodeNoSlot
+	}
+	callDeadline, hasCallDeadline := call.Deadline()
+	slotDeadline, hasSlotDeadline := slot.Deadline()
+	if hasCallDeadline && hasSlotDeadline && slotDeadline.Before(callDeadline) {
+		return CodeNoSlot
 	}
 	return CodeDeadline
 }
@@ -242,7 +258,7 @@ func countNotification(job *Job, result *apiproto.PushItemResult) {
 	counter.WithLabelValues(name, recipientToken, platform, success, errCodeOf(result)).Inc()
 }
 
-// errCodeOf returns the err_code label of result: a status class, a refusal code or a pending wait. A provider reason is
+// errCodeOf returns the err_code label of result: a status class, a refusal code or a not_sent target. A provider reason is
 // never a label. A rejected result with no status line and no code is counted as http_other.
 func errCodeOf(result *apiproto.PushItemResult) string {
 	status := result.GetStatus()
@@ -252,7 +268,7 @@ func errCodeOf(result *apiproto.PushItemResult) string {
 	switch {
 	case status == StatusSent:
 		return errCodeOK
-	case status == StatusNotSent, status == StatusPending:
+	case status == StatusNotSent:
 		return errCodeNotSent
 	case status == StatusUnanswered:
 		return errCodeUnanswered

@@ -101,6 +101,34 @@ func TestNotSentNoSlotWhenSlotIsHeld(t *testing.T) {
 	require.Equal(t, StatusUnanswered, (<-done).GetStatus())
 }
 
+// TestNotSentDeadlineEndsSlotWait checks that a call deadline shorter than the sync timeout, with the only slot held, ends
+// the slot wait first: the target is not_sent with deadline, not no_slot, and makes no call.
+func TestNotSentDeadlineEndsSlotWait(t *testing.T) {
+	sender := &outcomeSender{hold: true, written: true, entered: make(chan struct{}, 2)}
+	set := NewSet()
+	set.Add(ProviderAPNs, sender, 1)
+
+	holdCtx, release := context.WithCancel(context.Background())
+	done := make(chan *apiproto.PushItemResult, 1)
+	go func() {
+		done <- set.DispatchWindow(context.Background(), holdCtx, time.Minute, newTestJob(0, ProviderAPNs))
+	}()
+	<-sender.entered
+
+	slot, cancelSlot := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelSlot()
+	call, cancelCall := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelCall()
+	result := set.DispatchWindow(slot, call, time.Minute, newTestJob(1, ProviderAPNs))
+
+	require.Equal(t, StatusNotSent, result.GetStatus())
+	require.Equal(t, CodeDeadline, result.GetCode())
+	require.Len(t, sender.entered, 0, "a target without a slot makes no call")
+
+	release()
+	require.Equal(t, StatusUnanswered, (<-done).GetStatus())
+}
+
 // TestNotSentShutdownEndsWait checks that the end of the node's shutdown context ends a call that has not been written,
 // and that the target is then not_sent with shutdown, not deadline.
 func TestNotSentShutdownEndsWait(t *testing.T) {

@@ -198,6 +198,43 @@ func TestNotSentAfterSyncTimeout(t *testing.T) {
 	require.Equal(t, int32(answered), fake.calls.Load(), "a not_sent target makes no call")
 }
 
+func TestNotSentDeadlineBeforeSyncTimeout(t *testing.T) {
+	// One slot, held by a call until the call deadline. The sync timeout is far away, so the timeout_ms deadline ends the
+	// slot wait first: the waiting targets are not_sent with deadline, not no_slot, and make no call.
+	fake := &countingSender{hold: true}
+	s := newTestSender(t, fake, func(cfg *configtypes.PushNotifications) {
+		cfg.APNs.MaxInflight = 1
+		cfg.SyncTimeout = configtypes.Duration(time.Minute)
+		cfg.Providers.RequestTimeout = configtypes.Duration(time.Minute)
+	})
+	s.set = provider.NewSet()
+	s.set.Add(provider.ProviderAPNs, fake, 1)
+
+	req := validRequest()
+	req.TimeoutMs = 150
+	req.Recipient.Targets = []*apiproto.PushTarget{
+		{Provider: provider.ProviderAPNs, Token: "a", Environment: "production"},
+		{Provider: provider.ProviderAPNs, Token: "b", Environment: "production"},
+		{Provider: provider.ProviderAPNs, Token: "c", Environment: "production"},
+	}
+
+	resp := s.Send(context.Background(), req)
+
+	require.Nil(t, resp.GetError())
+	var notSent int
+	var answered int
+	for _, result := range resp.GetResult().GetResults() {
+		if result.GetStatus() == provider.StatusNotSent {
+			require.Equal(t, provider.CodeDeadline, result.GetCode())
+			notSent++
+			continue
+		}
+		answered++
+	}
+	require.GreaterOrEqual(t, notSent, 1)
+	require.Equal(t, int32(answered), fake.calls.Load(), "a not_sent target makes no call")
+}
+
 func TestExpiredItemRejectedWithoutCall(t *testing.T) {
 	fake := &countingSender{}
 	s := newTestSender(t, fake, nil)

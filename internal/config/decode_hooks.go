@@ -13,6 +13,7 @@ func decodeHooks() mapstructure.DecodeHookFunc {
 		mapstructure.StringToTimeDurationHookFunc(),
 		configtypes.StringToDurationHookFunc(),
 		configtypes.StringToPEMDataHookFunc(),
+		configtypes.StringToSecretHookFunc(),
 		configtypes.StringToMapStringStringHookFunc(),
 		configtypes.StringToStringKeyValuesHookFunc(),
 	)

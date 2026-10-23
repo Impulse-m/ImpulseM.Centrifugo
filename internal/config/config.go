@@ -309,10 +309,10 @@ func GetConfig(cmd *cobra.Command, configFile string) (Config, Meta, error) {
 	}
 
 	meta.UnknownKeys = findUnknownKeys(v.AllSettings(), conf, "")
-	if err := checkPushUnknownKeys(*conf, meta.UnknownKeys, knownEnvVars); err != nil {
+	meta.UnknownEnvs = checkEnvironmentVars(knownEnvVars)
+	if err := checkPushUnknownKeys(*conf, meta.UnknownKeys, meta.UnknownEnvs); err != nil {
 		return Config{}, Meta{}, err
 	}
-	meta.UnknownEnvs = checkEnvironmentVars(knownEnvVars)
 	meta.KnownEnvVars = knownEnvVars
 
 	wakeupWarnings := fallbackRPCDedupWakeupCap(v, conf)

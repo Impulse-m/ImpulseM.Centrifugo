@@ -2,8 +2,8 @@ package config
 
 import (
 	"testing"
+	"time"
 
-	"github.com/centrifugal/centrifugo/v6/internal/config/envconfig"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
 	"github.com/stretchr/testify/require"
@@ -248,6 +248,75 @@ func TestValidatePushNotificationsRules(t *testing.T) {
 				conf.PushNotifications.MaxRecipientItems = 1000
 			},
 		},
+		{
+			name: "request bytes above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.MaxRequestBytes = maxPushRequestBytes + 1
+			},
+			wantErr: "push_notifications.max_request_bytes must be at most 16777216, got 16777217",
+		},
+		{
+			name: "request bytes at the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.MaxRequestBytes = maxPushRequestBytes
+			},
+		},
+		{
+			name: "concurrent requests above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.MaxConcurrentRequests = maxPushConcurrentRequests + 1
+			},
+			wantErr: "push_notifications.max_concurrent_requests must be at most 256, got 257",
+		},
+		{
+			name: "apns max inflight above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.APNs.MaxInflight = 100000
+			},
+			wantErr: "push_notifications.apns.max_inflight must be at most 10000, got 100000",
+		},
+		{
+			name: "apns tokens batch size above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.APNs.TokensBatchSize = 100000
+			},
+			wantErr: "push_notifications.apns.tokens_batch_size must be at most 1000, got 100000",
+		},
+		{
+			name: "fcm tokens batch size above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.FCM.TokensBatchSize = 1001
+			},
+			wantErr: "push_notifications.fcm.tokens_batch_size must be at most 1000, got 1001",
+		},
+		{
+			name: "fcm max inflight above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.FCM.MaxInflight = 10001
+			},
+			wantErr: "push_notifications.fcm.max_inflight must be at most 10000, got 10001",
+		},
+		{
+			name: "sync timeout above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.SyncTimeout = configtypes.Duration(24 * time.Hour)
+			},
+			wantErr: "push_notifications.sync_timeout must be at most 1m0s, got 24h0m0s",
+		},
+		{
+			name: "provider request timeout above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.Providers.RequestTimeout = configtypes.Duration(2 * time.Minute)
+			},
+			wantErr: "push_notifications.providers.request_timeout must be at most 1m0s, got 2m0s",
+		},
+		{
+			name: "timeouts at the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.SyncTimeout = configtypes.Duration(time.Minute)
+				conf.PushNotifications.Providers.RequestTimeout = configtypes.Duration(time.Minute)
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -294,17 +363,16 @@ func TestCheckPushUnknownKeys(t *testing.T) {
 	require.EqualError(t, err, "push_notifications.apns.cert_p12_file is not available in this build")
 }
 
-// With push notifications enabled, a push environment variable that matches no known key refuses the
-// startup, and a known one does not.
+// With push notifications enabled, an unknown push environment variable refuses the startup. Only the
+// push variables of the unknown environment list are refused; other variables keep their warning.
 func TestCheckPushUnknownEnvRefused(t *testing.T) {
-	clearPushEnv(t)
 	conf := pushTestConfig()
 	conf.PushNotifications.Enabled = true
 
-	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE", "/nonexistent/cert.p12")
-	err := checkPushUnknownKeys(conf, nil, map[string]envconfig.VarInfo{})
+	err := checkPushUnknownKeys(conf, nil, []string{"CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE"})
 	require.EqualError(t, err, "CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE is not available in this build")
 
-	known := map[string]envconfig.VarInfo{"CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE": {}}
-	require.NoError(t, checkPushUnknownKeys(conf, nil, known))
+	require.NoError(t, checkPushUnknownKeys(conf, nil, []string{"CENTRIFUGO_UNRELATED_VARIABLE"}))
+	conf.PushNotifications.Enabled = false
+	require.NoError(t, checkPushUnknownKeys(conf, nil, []string{"CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE"}))
 }

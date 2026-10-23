@@ -3,11 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
+	"time"
 
-	"github.com/centrifugal/centrifugo/v6/internal/config/envconfig"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 )
 
@@ -26,6 +25,22 @@ const pushProviderFCM string = "fcm"
 // maxPushRecipientItems is the largest number of recipients one send call may carry.
 const maxPushRecipientItems int = 1000
 
+// maxPushRequestBytes is the largest value of max_request_bytes: 16 MiB.
+const maxPushRequestBytes int = 16 << 20
+
+// maxPushConcurrentRequests is the largest value of max_concurrent_requests. Each running call holds
+// its request in memory, so the worst case is this value times max_request_bytes.
+const maxPushConcurrentRequests int = 256
+
+// maxPushTokensBatchSize is the largest value of tokens_batch_size of a provider.
+const maxPushTokensBatchSize int = 1000
+
+// maxPushMaxInflight is the largest value of max_inflight of a provider.
+const maxPushMaxInflight int = 10000
+
+// maxPushTimeout is the largest value of sync_timeout and of providers.request_timeout.
+const maxPushTimeout time.Duration = time.Minute
+
 // knownPushProviders are the providers this build sends to.
 var knownPushProviders []string = []string{pushProviderAPNs, pushProviderFCM}
 
@@ -37,10 +52,12 @@ var refusedPushProviders []string = []string{"hms", "webpush"}
 var knownAPNsEndpoints []string = []string{"production", "development"}
 
 // checkPushUnknownKeys refuses a push notification key that this build does not have, when push
-// notifications are enabled. A key is refused both in the configuration file and in the environment
-// (CENTRIFUGO_PUSH_NOTIFICATIONS_*, which knownEnvVars does not list). Unknown keys of the rest of
-// the configuration keep their warning. The first refused key in sorted order is named.
-func checkPushUnknownKeys(conf Config, unknownKeys []string, knownEnvVars map[string]envconfig.VarInfo) error {
+// notifications are enabled. A key is refused both in the configuration file and in the environment.
+// unknownEnvs is the list of unknown CENTRIFUGO_* variables from checkEnvironmentVars, which already
+// skips the variables that Kubernetes injects; only the push variables of that list are refused here.
+// Unknown keys of the rest of the configuration keep their warning. The first refused key in sorted
+// order is named.
+func checkPushUnknownKeys(conf Config, unknownKeys []string, unknownEnvs []string) error {
 	if !conf.PushNotifications.Enabled {
 		return nil
 	}
@@ -55,12 +72,8 @@ func checkPushUnknownKeys(conf Config, unknownKeys []string, knownEnvVars map[st
 		return fmt.Errorf("%s is not available in this build", refused[0])
 	}
 	var refusedEnvs []string
-	for _, entry := range os.Environ() {
-		name, _, found := strings.Cut(entry, "=")
-		if !found || !strings.HasPrefix(name, pushEnvPrefix) {
-			continue
-		}
-		if _, ok := knownEnvVars[name]; !ok {
+	for _, name := range unknownEnvs {
+		if strings.HasPrefix(name, pushEnvPrefix) {
 			refusedEnvs = append(refusedEnvs, name)
 		}
 	}
@@ -79,19 +92,19 @@ func validatePushNotifications(conf Config) error {
 	if !push.Enabled {
 		return nil
 	}
-	if err := checkPositiveDuration("push_notifications.sync_timeout", push.SyncTimeout); err != nil {
+	if err := checkPushDuration("push_notifications.sync_timeout", push.SyncTimeout, maxPushTimeout); err != nil {
 		return err
 	}
-	if err := checkPositiveDuration("push_notifications.providers.request_timeout", push.Providers.RequestTimeout); err != nil {
+	if err := checkPushDuration("push_notifications.providers.request_timeout", push.Providers.RequestTimeout, maxPushTimeout); err != nil {
 		return err
 	}
 	if push.MaxRecipientItems < 1 || push.MaxRecipientItems > maxPushRecipientItems {
 		return fmt.Errorf("push_notifications.max_recipient_items must be between 1 and %d, got %d", maxPushRecipientItems, push.MaxRecipientItems)
 	}
-	if err := checkPositiveInt("push_notifications.max_request_bytes", push.MaxRequestBytes); err != nil {
+	if err := checkPushIntRange("push_notifications.max_request_bytes", push.MaxRequestBytes, maxPushRequestBytes); err != nil {
 		return err
 	}
-	if err := checkPositiveInt("push_notifications.max_concurrent_requests", push.MaxConcurrentRequests); err != nil {
+	if err := checkPushIntRange("push_notifications.max_concurrent_requests", push.MaxConcurrentRequests, maxPushConcurrentRequests); err != nil {
 		return err
 	}
 	if err := validatePushProviderList(push.EnabledProviders); err != nil {
@@ -135,10 +148,10 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 	if apns.AuthType != "token" {
 		return fmt.Errorf("push_notifications.apns.auth_type \"%s\" is not available in this build: only token is supported", apns.AuthType)
 	}
-	if err := checkPositiveInt("push_notifications.apns.tokens_batch_size", apns.TokensBatchSize); err != nil {
+	if err := checkPushIntRange("push_notifications.apns.tokens_batch_size", apns.TokensBatchSize, maxPushTokensBatchSize); err != nil {
 		return err
 	}
-	if err := checkPositiveInt("push_notifications.apns.max_inflight", apns.MaxInflight); err != nil {
+	if err := checkPushIntRange("push_notifications.apns.max_inflight", apns.MaxInflight, maxPushMaxInflight); err != nil {
 		return err
 	}
 	if apns.TokenKeyFile != "" && apns.TokenKeyPEM.Value() != "" {
@@ -165,10 +178,10 @@ func validatePushAPNs(push configtypes.PushNotifications) error {
 // validatePushFCM checks the FCM settings.
 func validatePushFCM(push configtypes.PushNotifications) error {
 	fcm := push.FCM
-	if err := checkPositiveInt("push_notifications.fcm.tokens_batch_size", fcm.TokensBatchSize); err != nil {
+	if err := checkPushIntRange("push_notifications.fcm.tokens_batch_size", fcm.TokensBatchSize, maxPushTokensBatchSize); err != nil {
 		return err
 	}
-	if err := checkPositiveInt("push_notifications.fcm.max_inflight", fcm.MaxInflight); err != nil {
+	if err := checkPushIntRange("push_notifications.fcm.max_inflight", fcm.MaxInflight, maxPushMaxInflight); err != nil {
 		return err
 	}
 	if !slices.Contains(push.EnabledProviders, pushProviderFCM) {
@@ -180,16 +193,24 @@ func validatePushFCM(push configtypes.PushNotifications) error {
 	return nil
 }
 
-func checkPositiveInt(name string, value int) error {
+// checkPushIntRange checks that an integer setting is at least 1 and at most its documented maximum.
+func checkPushIntRange(name string, value int, maximum int) error {
 	if value < 1 {
 		return fmt.Errorf("%s must be greater than zero", name)
+	}
+	if value > maximum {
+		return fmt.Errorf("%s must be at most %d, got %d", name, maximum, value)
 	}
 	return nil
 }
 
-func checkPositiveDuration(name string, value configtypes.Duration) error {
+// checkPushDuration checks that a duration setting is positive and at most its documented maximum.
+func checkPushDuration(name string, value configtypes.Duration, maximum time.Duration) error {
 	if value.ToDuration() <= 0 {
 		return fmt.Errorf("%s must be greater than zero", name)
+	}
+	if value.ToDuration() > maximum {
+		return fmt.Errorf("%s must be at most %s, got %s", name, maximum, value.ToDuration())
 	}
 	return nil
 }

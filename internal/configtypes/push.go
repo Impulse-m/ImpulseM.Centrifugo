@@ -12,13 +12,13 @@ type PushNotifications struct {
 	// DryRun answers valid sends as dry run items without calling any provider.
 	DryRun bool `mapstructure:"dry_run" json:"dry_run" envconfig:"dry_run" yaml:"dry_run" toml:"dry_run" doc:"Answers valid sends as dry run items without any network call. Default <<false>>. Requires restart."`
 	// SyncTimeout bounds the inline run of one send: no provider call starts after it.
-	SyncTimeout Duration `mapstructure:"sync_timeout" default:"10s" json:"sync_timeout" envconfig:"sync_timeout" yaml:"sync_timeout" toml:"sync_timeout" doc:"How long one send waits for provider calls to start before the rest of its items are reported as pending. Default <<10s>>. Requires restart."`
+	SyncTimeout Duration `mapstructure:"sync_timeout" default:"10s" json:"sync_timeout" envconfig:"sync_timeout" yaml:"sync_timeout" toml:"sync_timeout" doc:"How long one send waits for provider calls to start before the rest of its items are reported as pending, at most <<1m>>. Default <<10s>>. Requires restart."`
 	// MaxRecipientItems is the maximum number of recipients in one send.
 	MaxRecipientItems int `mapstructure:"max_recipient_items" default:"1000" json:"max_recipient_items" envconfig:"max_recipient_items" yaml:"max_recipient_items" toml:"max_recipient_items" doc:"Maximum number of recipients in one send, from <<1>> to <<1000>>. Default <<1000>>. Requires restart."`
 	// MaxRequestBytes is the maximum size of one send request in bytes.
-	MaxRequestBytes int `mapstructure:"max_request_bytes" default:"1048576" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Maximum size of one send request in bytes. Default <<1048576>>. Requires restart."`
+	MaxRequestBytes int `mapstructure:"max_request_bytes" default:"1048576" json:"max_request_bytes" envconfig:"max_request_bytes" yaml:"max_request_bytes" toml:"max_request_bytes" doc:"Maximum size of one send request in bytes, at most <<16777216>>. Default <<1048576>>. Requires restart."`
 	// MaxConcurrentRequests bounds the send calls that run at the same time on the node.
-	MaxConcurrentRequests int `mapstructure:"max_concurrent_requests" default:"64" json:"max_concurrent_requests" envconfig:"max_concurrent_requests" yaml:"max_concurrent_requests" toml:"max_concurrent_requests" doc:"Number of send calls that run at the same time on the node. A call over this limit is refused, since calls hold their request data in memory. Default <<64>>. Requires restart."`
+	MaxConcurrentRequests int `mapstructure:"max_concurrent_requests" default:"64" json:"max_concurrent_requests" envconfig:"max_concurrent_requests" yaml:"max_concurrent_requests" toml:"max_concurrent_requests" doc:"Number of send calls that run at the same time on the node. A call over this limit is refused, since calls hold their request data in memory. At most <<256>>. Default <<64>>. Requires restart."`
 	// Providers configures the provider client behavior shared by all providers.
 	Providers PushProviders `mapstructure:"providers" json:"providers" envconfig:"providers" yaml:"providers" toml:"providers" doc:"Provider client behavior shared by all providers."`
 	// APNs configures the APNs provider, used when apns is enabled.
@@ -30,7 +30,7 @@ type PushNotifications struct {
 // PushProviders configures the provider client behavior shared by all providers.
 type PushProviders struct {
 	// RequestTimeout is the deadline of one provider call and of one FCM token wait.
-	RequestTimeout Duration `mapstructure:"request_timeout" default:"10s" json:"request_timeout" envconfig:"request_timeout" yaml:"request_timeout" toml:"request_timeout" doc:"Deadline of one provider call and of one wait for an FCM access token. Default <<10s>>. Requires restart."`
+	RequestTimeout Duration `mapstructure:"request_timeout" default:"10s" json:"request_timeout" envconfig:"request_timeout" yaml:"request_timeout" toml:"request_timeout" doc:"Deadline of one provider call and of one wait for an FCM access token, at most <<1m>>. Default <<10s>>. Requires restart."`
 }
 
 // PushAPNs configures the APNs provider.
@@ -50,9 +50,9 @@ type PushAPNs struct {
 	// TokenTeamID is the team identifier that owns the token signing key.
 	TokenTeamID string `mapstructure:"token_team_id" json:"token_team_id" envconfig:"token_team_id" yaml:"token_team_id" toml:"token_team_id" expose:"full" doc:"Team identifier that owns the token signing key. Required when APNs is enabled. Requires restart."`
 	// TokensBatchSize is the number of targets of one call that are sent in parallel per provider group.
-	TokensBatchSize int `mapstructure:"tokens_batch_size" default:"100" json:"tokens_batch_size" envconfig:"tokens_batch_size" yaml:"tokens_batch_size" toml:"tokens_batch_size" doc:"Number of targets of one send call that are sent in parallel. Default <<100>>. Requires restart."`
+	TokensBatchSize int `mapstructure:"tokens_batch_size" default:"100" json:"tokens_batch_size" envconfig:"tokens_batch_size" yaml:"tokens_batch_size" toml:"tokens_batch_size" doc:"Number of targets of one send call that are sent in parallel, at most <<1000>>. Default <<100>>. Requires restart."`
 	// MaxInflight bounds the APNs requests in flight at the same time on the node.
-	MaxInflight int `mapstructure:"max_inflight" default:"500" json:"max_inflight" envconfig:"max_inflight" yaml:"max_inflight" toml:"max_inflight" doc:"Bound of the APNs requests in flight at the same time on the node. Default <<500>>. Requires restart."`
+	MaxInflight int `mapstructure:"max_inflight" default:"500" json:"max_inflight" envconfig:"max_inflight" yaml:"max_inflight" toml:"max_inflight" doc:"Bound of the APNs requests in flight at the same time on the node, at most <<10000>>. Default <<500>>. Requires restart."`
 }
 
 // PushFCM configures the FCM provider.
@@ -60,7 +60,7 @@ type PushFCM struct {
 	// CredentialsFile is a path to the service account file of the FCM project.
 	CredentialsFile string `mapstructure:"credentials_file" json:"credentials_file" envconfig:"credentials_file" yaml:"credentials_file" toml:"credentials_file" expose:"full" doc:"Path to the service account file of the FCM project. Required when FCM is enabled. Requires restart."`
 	// TokensBatchSize is the number of targets of one call that are sent in parallel.
-	TokensBatchSize int `mapstructure:"tokens_batch_size" default:"500" json:"tokens_batch_size" envconfig:"tokens_batch_size" yaml:"tokens_batch_size" toml:"tokens_batch_size" doc:"Number of targets of one send call that are sent in parallel. Default <<500>>. Requires restart."`
+	TokensBatchSize int `mapstructure:"tokens_batch_size" default:"500" json:"tokens_batch_size" envconfig:"tokens_batch_size" yaml:"tokens_batch_size" toml:"tokens_batch_size" doc:"Number of targets of one send call that are sent in parallel, at most <<1000>>. Default <<500>>. Requires restart."`
 	// MaxInflight bounds the FCM requests in flight at the same time on the node.
-	MaxInflight int `mapstructure:"max_inflight" default:"200" json:"max_inflight" envconfig:"max_inflight" yaml:"max_inflight" toml:"max_inflight" doc:"Bound of the FCM requests in flight at the same time on the node. Default <<200>>. Requires restart."`
+	MaxInflight int `mapstructure:"max_inflight" default:"200" json:"max_inflight" envconfig:"max_inflight" yaml:"max_inflight" toml:"max_inflight" doc:"Bound of the FCM requests in flight at the same time on the node, at most <<10000>>. Default <<200>>. Requires restart."`
 }

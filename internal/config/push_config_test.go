@@ -73,6 +73,18 @@ func TestPushConfigEnabledUnknownEnvRefused(t *testing.T) {
 	require.ErrorContains(t, err, "CENTRIFUGO_PUSH_NOTIFICATIONS_APNS_CERT_P12_FILE is not available in this build")
 }
 
+// With push notifications enabled, the variables that Kubernetes injects for a service whose name
+// starts with the push prefix are not unknown variables, so they do not refuse the startup.
+func TestPushConfigKubernetesServiceEnvAccepted(t *testing.T) {
+	clearPushEnv(t)
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_ENABLED", "true")
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_SERVICE_HOST", "10.0.0.7")
+	t.Setenv("CENTRIFUGO_PUSH_NOTIFICATIONS_SERVICE_PORT", "tcp://10.0.0.7:8000")
+	_, meta, err := GetConfig(nil, "")
+	require.NoError(t, err)
+	require.NotContains(t, meta.UnknownEnvs, "CENTRIFUGO_PUSH_NOTIFICATIONS_SERVICE_HOST")
+}
+
 // With push notifications enabled, a push key that this build does not have refuses the startup.
 func TestPushConfigEnabledUnknownKeyRefused(t *testing.T) {
 	path := writePushConfigFile(t, "config.json", `{"push_notifications": {"enabled": true, "enabled_providers": ["fcm"], "fcm": {"credentials_file": "/nonexistent/sa.json"}, "queue": {"type": "redis"}}}`)

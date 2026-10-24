@@ -181,6 +181,7 @@ func Run(cmd *cobra.Command, configFile string) {
 	}
 	confighelpers.SetRevokeClaims(&verifierConfig, cfg.TokenRevoke, cfg.UserTokensInvalidate)
 	confighelpers.SetAuthClassClaim(&verifierConfig, cfg.RPC.Registry)
+	confighelpers.SetIgnoreSubscriptionClaims(&verifierConfig, cfg.Client)
 
 	tokenVerifier, err := jwtverify.NewTokenVerifierJWT(verifierConfig, cfgContainer)
 	if err != nil {
@@ -392,6 +393,7 @@ func reloadConfig(
 	}
 	confighelpers.SetRevokeClaims(&verifierConfig, newCfg.TokenRevoke, newCfg.UserTokensInvalidate)
 	confighelpers.SetAuthClassClaim(&verifierConfig, newCfg.RPC.Registry)
+	confighelpers.SetIgnoreSubscriptionClaims(&verifierConfig, newCfg.Client)
 	applyTokenVerifier, discardTokenVerifier, err := tokenVerifier.PrepareReload(verifierConfig)
 	if err != nil {
 		return err

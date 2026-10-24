@@ -98,6 +98,10 @@ type VerifierConfig struct {
 	// Empty value means generation is not extracted (always zero).
 	GenerationClaim string
 
+	// IgnoreSubscriptionClaims makes the verifier ignore the channels and subs claims of connection tokens: they give no
+	// server-side subscriptions and are not checked against the namespaces. Zero value keeps the claims.
+	IgnoreSubscriptionClaims bool
+
 	// InsecureSkipJWKSEndpointSafetyCheck disables the config-time safety validation of
 	// JWKS endpoint URL templates. This is INSECURE and exists only as a temporary escape
 	// hatch for users upgrading with existing permissive regex patterns. This option will
@@ -160,6 +164,8 @@ func NewTokenVerifierJWT(config VerifierConfig, cfgContainer *config.Container) 
 		authClassClaim:  config.AuthClassClaim,
 		sessionClaim:    sessionClaimOrDefault(config.SessionClaim),
 		generationClaim: config.GenerationClaim,
+
+		ignoreSubscriptionClaims: config.IgnoreSubscriptionClaims,
 	}
 
 	if config.JWKSPublicEndpoint != "" {
@@ -207,6 +213,7 @@ type VerifierJWT struct {
 	authClassClaim                  string
 	sessionClaim                    string
 	generationClaim                 string
+	ignoreSubscriptionClaims        bool
 }
 
 var (
@@ -651,7 +658,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 
 	subs := map[string]centrifuge.SubscribeOptions{}
 
-	if len(claims.Subs) > 0 {
+	if len(claims.Subs) > 0 && !verifier.ignoreSubscriptionClaims {
 		for ch, v := range claims.Subs {
 			_, _, chOpts, found, err := verifier.cfgContainer.ChannelOptions(ch)
 			if err != nil {
@@ -717,7 +724,7 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 				ServerTagsFilter:  v.ServerTagsFilter,
 			}
 		}
-	} else if len(claims.Channels) > 0 {
+	} else if len(claims.Channels) > 0 && !verifier.ignoreSubscriptionClaims {
 		for _, ch := range claims.Channels {
 			_, _, chOpts, found, err := verifier.cfgContainer.ChannelOptions(ch)
 			if err != nil {
@@ -956,6 +963,7 @@ func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), func(
 		verifier.authClassClaim = next.authClassClaim
 		verifier.sessionClaim = next.sessionClaim
 		verifier.generationClaim = next.generationClaim
+		verifier.ignoreSubscriptionClaims = next.ignoreSubscriptionClaims
 		if previous != nil {
 			_ = previous.Stop()
 		}

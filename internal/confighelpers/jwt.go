@@ -71,6 +71,12 @@ func MakeVerifierConfig(tokenConf configtypes.Token) (jwtverify.VerifierConfig, 
 	return cfg, nil
 }
 
+// SetIgnoreSubscriptionClaims makes a connection token verifier config made by MakeVerifierConfig ignore the channels
+// and subs claims when client.ignore_token_subscription_claims is on. Call it both at startup and on reload.
+func SetIgnoreSubscriptionClaims(verifierConfig *jwtverify.VerifierConfig, client configtypes.Client) {
+	verifierConfig.IgnoreSubscriptionClaims = client.IgnoreTokenSubscriptionClaims
+}
+
 // SetAuthClassClaim sets the claim which carries the auth class on a connection token verifier config
 // made by MakeVerifierConfig. The claim is set only when the RPC registry is enabled. Call it both at
 // startup and on reload.

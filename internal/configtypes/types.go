@@ -435,6 +435,8 @@ type Client struct {
 	// DisallowAnonymousConnectionTokens disallows anonymous connection tokens. When enabled, Centrifugo will not
 	// accept connection tokens with empty user ID.
 	DisallowAnonymousConnectionTokens bool `mapstructure:"disallow_anonymous_connection_tokens" json:"disallow_anonymous_connection_tokens" envconfig:"disallow_anonymous_connection_tokens" yaml:"disallow_anonymous_connection_tokens" toml:"disallow_anonymous_connection_tokens" doc:"Rejects JWT connection tokens with an empty user ID claim. Useful to enforce authenticated connections only when tokens are in use."`
+	// IgnoreTokenSubscriptionClaims makes the node ignore the channels and subs claims of connection tokens.
+	IgnoreTokenSubscriptionClaims bool `mapstructure:"ignore_token_subscription_claims" json:"ignore_token_subscription_claims" envconfig:"ignore_token_subscription_claims" yaml:"ignore_token_subscription_claims" toml:"ignore_token_subscription_claims" doc:"Ignores the channels and subs claims of connection tokens: they give no server-side subscriptions and are not checked against the namespaces, so a token made for nodes with namespaces also connects to a node without them. The rest of the token is verified as usual. Off by default."`
 	// PingPong allows configuring application level ping-pong behavior for client connections.
 	PingPong `mapstructure:",squash" yaml:",inline"`
 	// ExpiredConnectionCloseDelay is a delay before closing connection after it becomes expired.

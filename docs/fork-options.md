@@ -32,3 +32,7 @@ Singleflight for `History`, `Presence` and `PresenceStats` (`singleflight.enable
 ## JWKS response size limit
 
 JWKS responses are read up to 1 MiB per key set. A larger body fails that load with an error, so the node keeps the key set it has. This is a defect fix on by default (unbounded memory from a remote endpoint), and it has no key.
+
+## Ignore token subscription claims
+
+`client.ignore_token_subscription_claims: true` makes the node ignore the `channels` and `subs` claims of connection tokens. They give no server-side subscriptions, and their channels are not checked against the node's namespaces. A token made for nodes that declare namespaces, and that subscribe its channels, then also connects to a node without those namespaces, such as an RPC-only node, instead of failing with `102 unknown channel`. The signature, `exp`, `nbf`, issuer, audience and every other claim are verified as usual. Subscription tokens are not affected. Off by default. A config reload applies it.

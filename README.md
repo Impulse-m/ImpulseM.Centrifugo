@@ -68,6 +68,10 @@ Per-connection, per-user and Redis-backed per-user limits on client operations, 
 
 JWKS responses are read up to 1 MiB per key set, so a larger body cannot exhaust memory. [Details](docs/fork-options.md#jwks-response-size-limit).
 
+### Ignore token subscription claims
+
+`client.ignore_token_subscription_claims` lets a node accept connection tokens whose `channels` or `subs` claims name namespaces it does not declare, without subscribing them. Off by default. [Details](docs/fork-options.md#ignore-token-subscription-claims).
+
 ### Push notifications
 
 Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id`, `timeout_ms` and `results` (field numbers 100 and above).

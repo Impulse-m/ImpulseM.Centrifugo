@@ -3914,7 +3914,7 @@
         },
         "expire_at": {
           "type": "integer",
-          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. Not related to the providers' TTL fields."
+          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. In the direct send it also sets the expiry of\nthe provider where the caller set none: android.ttl and apns-expiration\nof an FCM message, apns-expiration of APNs, and the TTL of Web Push."
         }
       },
       "description": "PushNotification is a push notification in the format of each provider.\nCentrifugo PRO only."
@@ -4969,11 +4969,11 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "headers are Web Push HTTP headers. Recognized keys: TTL (seconds,\ndefault 4 weeks), Urgency (very-low, low, normal, high) and Topic."
+          "description": "headers are Web Push HTTP headers. Recognized keys: TTL (seconds,\ndefault 4 weeks), Urgency (very-low, low, normal, high) and Topic. The\ndirect send refuses any other key."
         },
         "payload": {
           "type": "object",
-          "description": "payload is the JSON payload delivered to the browser service worker.\nRequired."
+          "description": "payload is the JSON payload delivered to the browser service worker.\nRequired, unless every webpush target of a direct send has its own\nwebpush_payload."
         }
       },
       "description": "WebPushPushNotification is a notification for Web Push.\nCentrifugo PRO only."

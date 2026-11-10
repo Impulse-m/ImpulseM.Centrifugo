@@ -8414,7 +8414,9 @@ type PushNotification struct {
 	// webpush is the notification for Web Push.
 	Webpush *WebPushPushNotification `protobuf:"bytes,4,opt,name=webpush,proto3" json:"webpush,omitempty"`
 	// expire_at is the Unix time in seconds when Centrifugo stops trying to
-	// send the notification. Not related to the providers' TTL fields.
+	// send the notification. In the direct send it also sets the expiry of
+	// the provider where the caller set none: android.ttl and apns-expiration
+	// of an FCM message, apns-expiration of APNs, and the TTL of Web Push.
 	ExpireAt      int64 `protobuf:"varint,5,opt,name=expire_at,json=expireAt,proto3" json:"expire_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8637,10 +8639,12 @@ func (x *ApnsPushNotification) GetPayload() []byte {
 type WebPushPushNotification struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// headers are Web Push HTTP headers. Recognized keys: TTL (seconds,
-	// default 4 weeks), Urgency (very-low, low, normal, high) and Topic.
+	// default 4 weeks), Urgency (very-low, low, normal, high) and Topic. The
+	// direct send refuses any other key.
 	Headers map[string]string `protobuf:"bytes,1,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// payload is the JSON payload delivered to the browser service worker.
-	// Required.
+	// Required, unless every webpush target of a direct send has its own
+	// webpush_payload.
 	Payload       Raw `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -168,7 +168,10 @@ type storedRecord struct {
 	byScope  intrusive.Links[storedRecord]
 }
 
-// scopeState is an admitted scope: its records, oldest first, and its running calls.
+// scopeState is an admitted scope: its records, oldest first, and its running calls. It also holds the tombstone budget
+// of its scope: the tombstones charged in the current window, and the time the window ends. The window is one TTL long,
+// from its first tombstone, so the budget is forgotten when that tombstone expires. The state lives while the scope holds
+// a record, and every tombstone which is counted lives at most one TTL, so the state outlives none of them.
 type scopeState struct {
 	scope        string
 	user         string
@@ -178,6 +181,9 @@ type scopeState struct {
 	flights      int
 	surplus      bool
 	surplusLinks intrusive.Links[scopeState]
+	// tombstones is the number of tombstones charged in the current window, and tombstoneWindowEnd the time it ends.
+	tombstones         int
+	tombstoneWindowEnd time.Time
 }
 
 // NewMemory returns an empty node-local store.
@@ -368,6 +374,27 @@ func (m *Memory) CheckAdmit(scope string) error {
 	return s.checkAdmit(scope, s.now())
 }
 
+// CheckTombstone returns a *RefusedError when scope may not leave one more tombstone, and nil when it may. A scope which
+// is not admitted is judged as CheckAdmit judges it. An admitted scope is refused when its window has not ended and the
+// window holds maxScope tombstones already, so a scope leaves at most maxScope tombstones in one TTL. It records nothing:
+// the tombstone is charged when cancelLocked inserts it. The check and the charge are two steps, so cancels of one scope
+// which run at the same time can pass the budget by the number of them. That is accepted: the overshoot is at most the
+// number of cancels of the scope which are in progress at once.
+func (m *Memory) CheckTombstone(scope string) error {
+	s := m.shardOf(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	sc := s.scopes[scope]
+	if sc == nil {
+		return s.checkAdmit(scope, now)
+	}
+	if now.Before(sc.tombstoneWindowEnd) && sc.tombstones >= s.maxScope {
+		return &RefusedError{Refusal: RefusalTombstones}
+	}
+	return nil
+}
+
 // Cancel implements Store. A call which runs on this store is cancelled outside the lock. Otherwise the key is kept as
 // cancelled, which counts toward the budgets like any record, and its scope is admitted like the scope of any call. The
 // flight and the record are looked up under one lock, so a call which begins meanwhile is either found by Cancel, or it
@@ -413,6 +440,7 @@ func (m *Memory) cancelLocked(key Key, failure *centrifuge.Error, errJSON string
 		return nil, err
 	}
 	s.insert(sc, key, Record{Err: failure, tombstone: true}, errJSON, now)
+	s.chargeTombstone(sc, now)
 	return nil, nil
 }
 
@@ -514,6 +542,16 @@ func (s *shard) refusalOf(p *pool, user string) (Refusal, bool) {
 		return RefusalUser, true
 	}
 	return "", false
+}
+
+// chargeTombstone counts a tombstone which is inserted for sc. A window which has ended, or which never started, restarts
+// at zero and ends one TTL from now, so the first tombstone of a window expires with it. Caller holds mu.
+func (s *shard) chargeTombstone(sc *scopeState, now time.Time) {
+	if !now.Before(sc.tombstoneWindowEnd) {
+		sc.tombstones = 0
+		sc.tombstoneWindowEnd = now.Add(s.ttl)
+	}
+	sc.tombstones++
 }
 
 // releaseIfEmpty releases sc when it holds no record and no call: its pool slot and its user slot are freed.

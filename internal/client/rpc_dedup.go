@@ -394,6 +394,10 @@ func (h *Handler) countRefused(refused *rpcdedup.RefusedError) {
 		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupRefusedUser)
 		return
 	}
+	if refused.Refusal == rpcdedup.RefusalTombstones {
+		h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupRefusedTombstones)
+		return
+	}
 	h.rpcDedup.metrics.Inc(metrics.RPCRegistryDedupRefusedPool)
 }
 

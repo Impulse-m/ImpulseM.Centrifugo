@@ -518,6 +518,7 @@ const (
 	RPCRegistryDedupRefusedPool
 	RPCRegistryDedupRefusedUser
 	RPCRegistryDedupHitInFlightRemote
+	RPCRegistryDedupRefusedTombstones
 )
 
 // rpcRegistryDedupOutcomeLabels holds the outcome label of each RPCRegistryDedupOutcome, in the same order.
@@ -534,6 +535,7 @@ var rpcRegistryDedupOutcomeLabels = [...]string{
 	"refused_pool",
 	"refused_user",
 	"hit_inflight_remote",
+	"refused_tombstones",
 }
 
 // rpcRegistryDedupPoolLabels are the pool labels of the dedup gauges, the index of each is the pool index of the store.

@@ -71,6 +71,9 @@ const (
 	RefusalPool Refusal = "pool"
 	// RefusalUser means the user of the scope is at its scope limit.
 	RefusalUser Refusal = "user"
+	// RefusalTombstones means the scope has written its tombstones of the current window, see Memory.CheckTombstone. Only
+	// a cancel is refused for it.
+	RefusalTombstones Refusal = "tombstones"
 )
 
 // RefusedError is returned by Begin and Cancel when the store does not admit the scope of the key. Nothing is

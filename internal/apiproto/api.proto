@@ -2099,17 +2099,19 @@ message Unsubscribe {
 // PushTarget is one raw provider token of a direct send. Used by the direct
 // send mode of SendPushNotification only.
 message PushTarget {
-    // provider is the provider of the token: apns or fcm. Required.
+    // provider is the provider of the token: apns, fcm or webpush. Required.
     string provider = 1;
-    // token is the provider token. Required.
+    // token is the provider token. For webpush it is the PushSubscription of
+    // the browser as a JSON string. Required.
     string token = 2;
     // environment is the APNs environment: production or development.
-    // Required for apns, refused for fcm.
+    // Required for apns, refused for fcm and webpush.
     string environment = 3;
     // ref is a caller reference, echoed in the result. At most 128 bytes.
     string ref = 4;
     // collapse_id is the collapse id of this target. At most 64 bytes.
-    // Overrides the request collapse_id.
+    // Overrides the request collapse_id. For webpush it becomes the Topic
+    // header, so it must be a valid Topic there.
     string collapse_id = 5;
     // apns_payload replaces the APNs payload of the request for this target
     // only. A JSON object.
@@ -2117,6 +2119,9 @@ message PushTarget {
     // fcm_message replaces the FCM message of the request for this target
     // only. A JSON object.
     bytes fcm_message = 7;
+    // webpush_payload replaces the Web Push payload of the request for this
+    // target only. A JSON object.
+    bytes webpush_payload = 8;
 }
 
 // PushItemResult is the result of one recipient of a direct send.
@@ -2131,22 +2136,26 @@ message PushItemResult {
     string status = 3;
     // code names why a target did not reach a provider: payload_too_large or
     // expired when the server refused it before any provider call, and for a
-    // not_sent target no_slot, connect_failed, deadline, token_fetch or
-    // shutdown. deadline also covers the provider request timeout. When the
-    // node's shutdown and a deadline have both ended, the code is shutdown.
+    // webpush target also invalid_subscription, endpoint_not_allowed or
+    // invalid_topic. For a not_sent target it is no_slot, connect_failed,
+    // deadline, token_fetch, shutdown, or address_blocked for a webpush
+    // endpoint whose address the server refuses to connect to. deadline also
+    // covers the provider request timeout. When the node's shutdown and a
+    // deadline have both ended, the code is shutdown.
     string code = 4;
-    // provider_code is the APNs reason, or the FCM error status. Empty when
-    // the provider sent no status or no body.
+    // provider_code is the APNs reason, the FCM error status, or the reason
+    // or error of a Web Push answer. Empty when the provider sent no status
+    // or no body.
     string provider_code = 5;
-    // provider_detail is the APNs 410 timestamp, or the first FCM error
-    // detail, at most 256 bytes.
+    // provider_detail is the APNs 410 timestamp, the first FCM error detail,
+    // or the message of a Web Push answer, at most 256 bytes.
     string provider_detail = 6;
     // http_status is the HTTP status returned by the provider. Zero when no
     // status line was received.
     uint32 http_status = 7;
     // provider_message_id is the APNs apns-id on any status received, rejected
-    // included, or the FCM message name on sent only. Empty when the provider
-    // sent none.
+    // included, the FCM message name on sent only, or the Location of a Web
+    // Push answer on sent only. Empty when the provider sent none.
     string provider_message_id = 8;
     // provider_details is the raw JSON array of the FCM error details, not
     // mapped. An array of at most 4 KiB is returned as the provider sent it.

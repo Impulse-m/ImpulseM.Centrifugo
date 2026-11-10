@@ -1614,7 +1614,9 @@ message PushNotification {
     WebPushPushNotification webpush = 4;
 
     // expire_at is the Unix time in seconds when Centrifugo stops trying to
-    // send the notification. Not related to the providers' TTL fields.
+    // send the notification. In the direct send it also sets the expiry of
+    // the provider where the caller set none: android.ttl and apns-expiration
+    // of an FCM message, apns-expiration of APNs, and the TTL of Web Push.
     int64 expire_at = 5;
 }
 
@@ -1642,10 +1644,12 @@ message ApnsPushNotification {
 // Centrifugo PRO only.
 message WebPushPushNotification {
     // headers are Web Push HTTP headers. Recognized keys: TTL (seconds,
-    // default 4 weeks), Urgency (very-low, low, normal, high) and Topic.
+    // default 4 weeks), Urgency (very-low, low, normal, high) and Topic. The
+    // direct send refuses any other key.
     map<string, string> headers = 1;
     // payload is the JSON payload delivered to the browser service worker.
-    // Required.
+    // Required, unless every webpush target of a direct send has its own
+    // webpush_payload.
     bytes payload = 2;
 }
 

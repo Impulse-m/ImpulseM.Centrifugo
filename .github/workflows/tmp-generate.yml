@@ -52,3 +52,9 @@ jobs:
             internal/apiproto/api_grpc.pb.go
             internal/apiproto/swagger/api.swagger.proto
             internal/apiproto/swagger/api.swagger.json
+      # The figure of the encryption cost that the documentation states.
+      - name: Benchmark the Web Push encryption
+        run: |
+          nproc
+          grep -m1 'model name' /proc/cpuinfo || true
+          go test -run '^$' -bench . -benchmem -count 3 ./internal/push/provider/webpush/

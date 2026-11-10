@@ -1,11 +1,13 @@
 package accessrevoke
 
 import (
+	"time"
+
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
-	"github.com/rs/zerolog/log"
 )
 
 // OptionsFromConfig returns access revocation checks enabled in config.
@@ -82,9 +84,23 @@ func CountReject(result Result, stage string) {
 	}
 }
 
-// LogLoopGuard logs a token which was issued after the revocation it is checked against.
+// loopGuardLogInterval is the shortest time between two logged loop guard rejections of a node. A client which holds
+// such a token sets the rate of its own attempts, so the line is sampled. Every rejection is counted in the rejects
+// metric, sampled or not.
+const loopGuardLogInterval time.Duration = 10 * time.Second
+
+// loopGuardLog samples the loop guard line of the node.
+var loopGuardLog = tools.NewSampledLog(loopGuardLogInterval)
+
+// LogLoopGuard logs a token which was issued after the revocation it is checked against, at most once per
+// loopGuardLogInterval. The line names the connection of that attempt and carries the count of the lines suppressed
+// since the last one.
 func LogLoopGuard(clientID string, userID string, result Result) {
-	log.Error().
+	event := loopGuardLog.ErrorEvent()
+	if event == nil {
+		return
+	}
+	event.
 		Str("client", clientID).
 		Str("user", userID).
 		Str("reason", string(result.Reason)).

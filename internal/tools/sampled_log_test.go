@@ -38,3 +38,23 @@ func TestSampledLogLogsSuppressedCountOnNextWarning(t *testing.T) {
 	require.Equal(t, int64(0), sampled.suppressed.Load())
 	require.Contains(t, logged.String(), `"suppressed":3`)
 }
+
+// TestSampledLogErrorEventLogsAtErrorLevel checks that an error line is written at the error level, is suppressed
+// within the interval as a warning is, and shares the count of suppressed lines with it.
+func TestSampledLogErrorEventLogsAtErrorLevel(t *testing.T) {
+	var logged bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&logged)
+	t.Cleanup(func() { log.Logger = previous })
+	sampled := &SampledLog{limiter: NewIntervalLimiter(time.Hour)}
+
+	event := sampled.ErrorEvent()
+	require.NotNil(t, event)
+	event.Msg("failed")
+
+	require.Nil(t, sampled.ErrorEvent())
+	require.Nil(t, sampled.Event())
+	require.Equal(t, int64(2), sampled.suppressed.Load())
+	require.Contains(t, logged.String(), `"level":"error"`)
+	require.NotContains(t, logged.String(), `"suppressed"`)
+}

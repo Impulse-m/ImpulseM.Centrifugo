@@ -15,6 +15,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/apns"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/fcm"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush"
 )
 
 // Length bounds of the request fields.
@@ -22,14 +23,6 @@ const (
 	maxUIDBytes        = 128
 	maxRefBytes        = 128
 	maxCollapseIDBytes = 64
-)
-
-// Size thresholds above which a payload is not checked for its content. Such a payload is over the size limit of every
-// provider, so the provider refuses its item as payload_too_large, and it is never scanned: a shared request payload
-// would otherwise be scanned once per target. The largest limit is the VoIP ceiling of APNs.
-const (
-	maxScannedAPNsPayloadBytes = provider.MaxAPNsVoIPPayloadBytes
-	maxScannedFCMMessageBytes  = provider.MaxFCMMessageBytes
 )
 
 // NotEnabledError returns the answer of a node with push notifications off.
@@ -133,11 +126,11 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 
 	set := setRecipientFields(req)
 	if len(set) != 1 {
-		return nil, badRequest("recipient must be exactly one of targets, fcm_tokens or apns_tokens")
+		return nil, badRequest("recipient must be exactly one of targets, fcm_tokens, apns_tokens or webpush_tokens")
 	}
 	kind := set[0]
 	switch kind {
-	case "targets", "fcm_tokens", "apns_tokens":
+	case "targets", "fcm_tokens", "apns_tokens", "webpush_tokens":
 	default:
 		return nil, notAvailable(fmt.Sprintf("recipient %s is not available in this build", kind))
 	}
@@ -149,9 +142,9 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 
 	for index, target := range targets {
 		switch target.GetProvider() {
-		case provider.ProviderAPNs, provider.ProviderFCM:
+		case provider.ProviderAPNs, provider.ProviderFCM, provider.ProviderWebPush:
 		default:
-			return nil, badRequest(fmt.Sprintf("targets[%d].provider must be apns or fcm", index))
+			return nil, badRequest(fmt.Sprintf("targets[%d].provider must be apns, fcm or webpush", index))
 		}
 	}
 	for _, target := range targets {
@@ -179,6 +172,15 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 		return nil, badRequest("uid is longer than 128 bytes")
 	}
 
+	// The webpush notification is checked once for the request, before the checks of its targets. The request payload is
+	// checked only when a webpush target uses it, which is a target with no webpush_payload of its own.
+	if hasTargetOf(targets, provider.ProviderWebPush) {
+		err := webpush.CheckNotification(req.GetNotification(), webPushRequestPayloadUsed(targets))
+		if err != nil {
+			return nil, badRequest(err.Error())
+		}
+	}
+
 	jobs := jobsOf(targets, req)
 	// The field checks of every target run before the content checks of any target, in the order of the spec.
 	for _, job := range jobs {
@@ -194,6 +196,27 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 		}
 	}
 	return jobs, nil
+}
+
+// hasTargetOf reports whether one of targets has the provider name.
+func hasTargetOf(targets []*apiproto.PushTarget, name string) bool {
+	for _, target := range targets {
+		if target.GetProvider() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// webPushRequestPayloadUsed reports whether a webpush target of targets uses the request payload, which it does when it
+// has no webpush_payload of its own.
+func webPushRequestPayloadUsed(targets []*apiproto.PushTarget) bool {
+	for _, target := range targets {
+		if target.GetProvider() == provider.ProviderWebPush && len(target.GetWebpushPayload()) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // checkTargetFields runs the field checks of one target: its token, its environment, its ref and its collapse id.
@@ -213,9 +236,9 @@ func checkTargetFields(job *provider.Job) *apiproto.Error {
 
 	environment := target.GetEnvironment()
 	switch target.GetProvider() {
-	case provider.ProviderFCM:
+	case provider.ProviderFCM, provider.ProviderWebPush:
 		if environment != "" {
-			return badRequest(fmt.Sprintf("targets[%d].environment is refused for fcm", index))
+			return badRequest(fmt.Sprintf("targets[%d].environment is refused for %s", index, target.GetProvider()))
 		}
 	default:
 		if environment == "" {
@@ -233,9 +256,21 @@ func checkTargetContent(job *provider.Job, req *apiproto.SendPushNotificationReq
 	switch job.Target.GetProvider() {
 	case provider.ProviderFCM:
 		return checkFCMTarget(job)
+	case provider.ProviderWebPush:
+		return checkWebPushTarget(job)
 	default:
 		return checkAPNsTarget(job, req)
 	}
+}
+
+// checkWebPushTarget runs the request checks of a Web Push target: its subscription shape, its payload and its Topic. The
+// notification of the request is checked once in plan. The error of webpush.CheckRequest names the target index.
+func checkWebPushTarget(job *provider.Job) *apiproto.Error {
+	err := webpush.CheckRequest(job)
+	if err != nil {
+		return badRequest(err.Error())
+	}
+	return nil
 }
 
 // checkAPNsTarget checks the payload and the headers of an APNs target.
@@ -246,7 +281,7 @@ func checkAPNsTarget(job *provider.Job, req *apiproto.SendPushNotificationReques
 	if len(payload) == 0 {
 		return badRequest(fmt.Sprintf("targets[%d] needs an apns payload: notification.apns.payload or apns_payload", index))
 	}
-	if len(payload) <= maxScannedAPNsPayloadBytes && !provider.IsJSONObject(payload) {
+	if len(payload) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(payload) {
 		return badRequest(fmt.Sprintf("targets[%d] apns payload is not a JSON object", index))
 	}
 
@@ -266,7 +301,8 @@ func checkFCMTarget(job *provider.Job) *apiproto.Error {
 	if len(message) == 0 {
 		return badRequest(fmt.Sprintf("targets[%d] needs an fcm message: notification.fcm.message or fcm_message", index))
 	}
-	if len(message) > maxScannedFCMMessageBytes {
+	// A message over the size limit of FCM is refused by its item as payload_too_large, and it is not scanned here.
+	if len(message) > provider.MaxFCMMessageBytes {
 		return nil
 	}
 
@@ -287,10 +323,11 @@ var errMalformedRequest = errors.New("request body is not a valid send request")
 // Keys of the request body that the recipient walk reads. encoding/json matches a field name without regard to case,
 // so the walk does too.
 const (
-	recipientKey  = "recipient"
-	targetsKey    = "targets"
-	fcmTokensKey  = "fcm_tokens"
-	apnsTokensKey = "apns_tokens"
+	recipientKey     = "recipient"
+	targetsKey       = "targets"
+	fcmTokensKey     = "fcm_tokens"
+	apnsTokensKey    = "apns_tokens"
+	webPushTokensKey = "webpush_tokens"
 )
 
 // Indexes of the recipient lists in a recipientWalk.
@@ -298,11 +335,12 @@ const (
 	listTargets = iota
 	listFCMTokens
 	listAPNsTokens
+	listWebPushTokens
 	listCount
 )
 
 // recipientListKeys names the recipient lists by their index.
-var recipientListKeys = [listCount]string{targetsKey, fcmTokensKey, apnsTokensKey}
+var recipientListKeys = [listCount]string{targetsKey, fcmTokensKey, apnsTokensKey, webPushTokensKey}
 
 // walkRole is the role of a JSON value in the recipient walk of a request body.
 type walkRole int

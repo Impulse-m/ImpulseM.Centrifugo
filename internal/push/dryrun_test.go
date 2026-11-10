@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,6 +10,25 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
+
+// TestDryRunLoadsNoWebPushKey checks that a dry run with Web Push enabled starts with a VAPID key file that does not exist:
+// a dry run loads no key and opens no connection, so the missing file is no error, and a valid Web Push target is answered
+// dry_run.
+func TestDryRunLoadsNoWebPushKey(t *testing.T) {
+	cfg := testConfig()
+	cfg.DryRun = true
+	cfg.WebPush.VAPIDPrivateKeyFile = filepath.Join(t.TempDir(), "missing.key")
+
+	s, err := Setup(context.Background(), cfg)
+	require.NoError(t, err)
+
+	resp := s.Send(context.Background(), webPushOnly())
+
+	require.Nil(t, resp.GetError())
+	results := resp.GetResult().GetResults()
+	require.Len(t, results, 1)
+	require.Equal(t, provider.StatusDryRun, results[0].GetStatus())
+}
 
 // TestDryRunAnswersPayloadTooLarge checks that an oversized payload of each provider is answered payload_too_large in a
 // dry run, as a live send answers it, and that no provider call is made in either mode.

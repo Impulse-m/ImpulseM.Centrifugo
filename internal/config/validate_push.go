@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/origin"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // pushKeyPrefix is the path prefix of every push notification key.
@@ -21,6 +23,9 @@ const pushProviderAPNs string = "apns"
 
 // pushProviderFCM is the provider name of FCM.
 const pushProviderFCM string = "fcm"
+
+// pushProviderWebPush is the provider name of Web Push.
+const pushProviderWebPush string = "webpush"
 
 // maxPushRecipientItems is the largest number of recipients one send call may carry.
 const maxPushRecipientItems int = 1000
@@ -42,11 +47,11 @@ const maxPushMaxInflight int = 10000
 const maxPushTimeout time.Duration = time.Minute
 
 // knownPushProviders are the providers this build sends to.
-var knownPushProviders []string = []string{pushProviderAPNs, pushProviderFCM}
+var knownPushProviders []string = []string{pushProviderAPNs, pushProviderFCM, pushProviderWebPush}
 
 // refusedPushProviders are provider names that the configuration model knows of but this build
 // does not send to. They are refused at startup rather than accepted and never used.
-var refusedPushProviders []string = []string{"hms", "webpush"}
+var refusedPushProviders []string = []string{"hms"}
 
 // knownAPNsEndpoints are the APNs hosts.
 var knownAPNsEndpoints []string = []string{"production", "development"}
@@ -114,7 +119,10 @@ func validatePushNotifications(conf Config) error {
 	if err := validatePushAPNs(push); err != nil {
 		return err
 	}
-	return validatePushFCM(push)
+	if err := validatePushFCM(push); err != nil {
+		return err
+	}
+	return validatePushWebPush(push)
 }
 
 // validatePushProviderList checks that at least one provider is enabled, that every entry is a known
@@ -190,6 +198,62 @@ func validatePushFCM(push configtypes.PushNotifications) error {
 	}
 	if fcm.CredentialsFile == "" {
 		return errors.New("push_notifications.fcm.credentials_file is required when fcm is enabled")
+	}
+	return nil
+}
+
+// validatePushWebPush checks the Web Push settings. The ranges, the key forms and the origin patterns
+// are checked always, as the APNs key forms are. The other settings are checked only when webpush is
+// enabled. A private key given as a file is not read here: it is read at the start of a sender node.
+func validatePushWebPush(push configtypes.PushNotifications) error {
+	webPush := push.WebPush
+	if err := checkPushIntRange("push_notifications.webpush.tokens_batch_size", webPush.TokensBatchSize, maxPushTokensBatchSize); err != nil {
+		return err
+	}
+	if err := checkPushIntRange("push_notifications.webpush.max_inflight", webPush.MaxInflight, maxPushMaxInflight); err != nil {
+		return err
+	}
+	if webPush.VAPIDPrivateKeyFile != "" && webPush.VAPIDPrivateKey.Value() != "" {
+		return errors.New("push_notifications.webpush.vapid_private_key and push_notifications.webpush.vapid_private_key_file are mutually exclusive")
+	}
+	if err := checkPushOriginPatterns("push_notifications.webpush.allowed_endpoint_origins", webPush.AllowedEndpointOrigins); err != nil {
+		return err
+	}
+	if err := checkPushOriginPatterns("push_notifications.webpush.extra_allowed_endpoint_origins", webPush.ExtraAllowedEndpointOrigins); err != nil {
+		return err
+	}
+	if !slices.Contains(push.EnabledProviders, pushProviderWebPush) {
+		return nil
+	}
+	if webPush.VAPIDPublicKey == "" {
+		return errors.New("push_notifications.webpush.vapid_public_key is required when webpush is enabled")
+	}
+	if webPush.Subject == "" {
+		return errors.New("push_notifications.webpush.subject is required when webpush is enabled")
+	}
+	if webPush.VAPIDPrivateKeyFile == "" && webPush.VAPIDPrivateKey.Value() == "" {
+		return errors.New("push_notifications.webpush.vapid_private_key or push_notifications.webpush.vapid_private_key_file is required when webpush is enabled")
+	}
+	if !strings.HasPrefix(webPush.Subject, "mailto:") && !strings.HasPrefix(webPush.Subject, "https://") {
+		return errors.New("push_notifications.webpush.subject must start with mailto: or https://")
+	}
+	if err := vapidkey.CheckPublic(webPush.VAPIDPublicKey); err != nil {
+		return fmt.Errorf("push_notifications.webpush.vapid_public_key: %w", err)
+	}
+	if webPush.VAPIDPrivateKey.Value() == "" {
+		return nil
+	}
+	if _, err := vapidkey.Parse(webPush.VAPIDPublicKey, webPush.VAPIDPrivateKey.Value()); err != nil {
+		return fmt.Errorf("push_notifications.webpush.vapid_private_key: %w", err)
+	}
+	return nil
+}
+
+// checkPushOriginPatterns checks that every origin pattern of a list compiles. The name is the
+// configuration key of the list, and it is named in the error.
+func checkPushOriginPatterns(name string, patterns []string) error {
+	if _, err := origin.NewPatternChecker(patterns); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

@@ -8,9 +8,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"regexp"
+	"strings"
 
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
@@ -35,6 +37,7 @@ const (
 	apnsKeyFileKey = "push_notifications.apns.token_key_file"
 	apnsKeyPEMKey  = "push_notifications.apns.token_key_pem"
 	fcmCredsKey    = "push_notifications.fcm.credentials_file"
+	webPushKeyFile = "push_notifications.webpush.vapid_private_key_file"
 )
 
 // LoadAPNSKey loads the APNs signing key of a credential, from keyFile or, when keyFile is empty, from keyPEM. The
@@ -143,19 +146,49 @@ func LoadFCMServiceAccount(data []byte) (*FCMServiceAccount, error) {
 	}, nil
 }
 
+// ReadWebPushPrivateKey reads the VAPID private key file named by vapid_private_key_file. The file holds the base64url
+// value of the key, and surrounding white space is trimmed. A file above maxKeyFileBytes is refused before it is read.
+// The error names the key and the path, never the content.
+func ReadWebPushPrivateKey(path string) (string, error) {
+	data, err := readKeyFile(webPushKeyFile, path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 // ReadFCMServiceAccount reads the service account file named by credentials_file, refused above maxKeyFileBytes before
 // it is read, and parses it with LoadFCMServiceAccount. The error names the key and the path, never the content.
 func ReadFCMServiceAccount(path string) (*FCMServiceAccount, error) {
-	info, err := os.Stat(path)
+	data, err := readKeyFile(fcmCredsKey, path)
 	if err != nil {
-		return nil, fmt.Errorf("%s (%s): the file cannot be read", fcmCredsKey, path)
-	}
-	if info.Size() > maxKeyFileBytes {
-		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", fcmCredsKey, path, maxKeyFileBytes)
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // The file is named by the operator's configuration.
-	if err != nil {
-		return nil, fmt.Errorf("%s (%s): the file cannot be read", fcmCredsKey, path)
+		return nil, err
 	}
 	return LoadFCMServiceAccount(data)
+}
+
+// readKeyFile reads the file at path, which the configuration key names. A file above maxKeyFileBytes is refused by its
+// size before it is read. The error names the key and the path, never the content.
+func readKeyFile(key string, path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
+	}
+	if info.Size() > maxKeyFileBytes {
+		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", key, path, maxKeyFileBytes)
+	}
+	file, err := os.Open(path) //nolint:gosec // The file is named by the operator's configuration.
+	if err != nil {
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
+	}
+	// The read is bounded, so a file that grows after the stat is not read in full.
+	data, err := io.ReadAll(io.LimitReader(file, maxKeyFileBytes+1))
+	_ = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
+	}
+	if len(data) > maxKeyFileBytes {
+		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", key, path, maxKeyFileBytes)
+	}
+	return data, nil
 }

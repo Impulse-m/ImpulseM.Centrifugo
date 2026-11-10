@@ -6,8 +6,9 @@ import (
 )
 
 // recipientTargets returns the targets of a request. The targets list is used as it is. A shorthand list becomes one
-// target per token: fcm_tokens are fcm targets, and apns_tokens are apns targets in the APNs environment of the default
-// credential, the endpoint of the configuration. A request has one kind, so only one of these is returned.
+// target per token: fcm_tokens are fcm targets, apns_tokens are apns targets in the APNs environment of the default
+// credential, the endpoint of the configuration, and webpush_tokens are webpush targets, each token being one subscription.
+// A request has one kind, so only one of these is returned.
 func (s *Sender) recipientTargets(req *apiproto.SendPushNotificationRequest) []*apiproto.PushTarget {
 	recipient := req.GetRecipient()
 	if len(recipient.GetTargets()) > 0 {
@@ -26,6 +27,12 @@ func (s *Sender) recipientTargets(req *apiproto.SendPushNotificationRequest) []*
 			Provider:    provider.ProviderAPNs,
 			Token:       token,
 			Environment: s.apnsEndpoint,
+		})
+	}
+	for _, token := range recipient.GetWebpushTokens() {
+		targets = append(targets, &apiproto.PushTarget{
+			Provider: provider.ProviderWebPush,
+			Token:    token,
 		})
 	}
 	return targets

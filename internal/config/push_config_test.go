@@ -37,6 +37,32 @@ func clearPushEnv(t *testing.T) {
 	}
 }
 
+// A Web Push block of a configuration file is a known key of this build, and its private key held
+// inline is masked in the dumps of the configuration, as the APNs key is.
+func TestPushWebPushKeyMaskedInDumps(t *testing.T) {
+	clearPushEnv(t)
+	path := writePushConfigFile(t, "config.json", `{"push_notifications": {"enabled": false, "webpush": {"vapid_private_key": "`+pushTestKeyText+`", "subject": "mailto:push@example.com"}}}`)
+	conf, meta, err := GetConfig(nil, path)
+	require.NoError(t, err)
+	for _, key := range meta.UnknownKeys {
+		require.NotContains(t, key, "push_notifications.webpush")
+	}
+	require.Equal(t, pushTestKeyText, conf.PushNotifications.WebPush.VAPIDPrivateKey.Value())
+	require.Equal(t, "mailto:push@example.com", conf.PushNotifications.WebPush.Subject)
+
+	jsonBytes, err := json.MarshalIndent(conf, "", "  ")
+	require.NoError(t, err)
+	require.NotContains(t, string(jsonBytes), "SECRETKEYBYTES")
+
+	yamlBytes, err := yaml.Marshal(conf)
+	require.NoError(t, err)
+	require.NotContains(t, string(yamlBytes), "SECRETKEYBYTES")
+
+	tomlBytes, err := toml.Marshal(conf)
+	require.NoError(t, err)
+	require.NotContains(t, string(tomlBytes), "SECRETKEYBYTES")
+}
+
 // A configuration file without push notification keys loads with the subsystem off and no push key
 // reported as unknown.
 func TestPushConfigAbsentLoadsAsBefore(t *testing.T) {

@@ -85,6 +85,7 @@ func TestPushTargetFields(t *testing.T) {
 		{name: "collapse_id", number: 5, kind: protoreflect.StringKind},
 		{name: "apns_payload", number: 6, kind: protoreflect.BytesKind},
 		{name: "fcm_message", number: 7, kind: protoreflect.BytesKind},
+		{name: "webpush_payload", number: 8, kind: protoreflect.BytesKind},
 	}, collectFields((&PushTarget{}).ProtoReflect().Descriptor()))
 }
 

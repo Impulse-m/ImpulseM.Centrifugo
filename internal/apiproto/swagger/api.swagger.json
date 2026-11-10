@@ -3836,15 +3836,15 @@
         },
         "code": {
           "type": "string",
-          "description": "code names why a target did not reach a provider: payload_too_large or\nexpired when the server refused it before any provider call, and for a\nnot_sent target no_slot, connect_failed, deadline, token_fetch or\nshutdown. deadline also covers the provider request timeout. When the\nnode's shutdown and a deadline have both ended, the code is shutdown."
+          "description": "code names why a target did not reach a provider: payload_too_large or\nexpired when the server refused it before any provider call, and for a\nwebpush target also invalid_subscription, endpoint_not_allowed or\ninvalid_topic. For a not_sent target it is no_slot, connect_failed,\ndeadline, token_fetch, shutdown, or address_blocked for a webpush\nendpoint whose address the server refuses to connect to. deadline also\ncovers the provider request timeout. When the node's shutdown and a\ndeadline have both ended, the code is shutdown."
         },
         "provider_code": {
           "type": "string",
-          "description": "provider_code is the APNs reason, or the FCM error status. Empty when\nthe provider sent no status or no body."
+          "description": "provider_code is the APNs reason, the FCM error status, or the reason\nor error of a Web Push answer. Empty when the provider sent no status\nor no body."
         },
         "provider_detail": {
           "type": "string",
-          "description": "provider_detail is the APNs 410 timestamp, or the first FCM error\ndetail, at most 256 bytes."
+          "description": "provider_detail is the APNs 410 timestamp, the first FCM error detail,\nor the message of a Web Push answer, at most 256 bytes."
         },
         "http_status": {
           "type": "integer",
@@ -3853,7 +3853,7 @@
         },
         "provider_message_id": {
           "type": "string",
-          "description": "provider_message_id is the APNs apns-id on any status received, rejected\nincluded, or the FCM message name on sent only. Empty when the provider\nsent none."
+          "description": "provider_message_id is the APNs apns-id on any status received, rejected\nincluded, the FCM message name on sent only, or the Location of a Web\nPush answer on sent only. Empty when the provider sent none."
         },
         "provider_details": {
           "type": "object",
@@ -3914,7 +3914,7 @@
         },
         "expire_at": {
           "type": "integer",
-          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. Not related to the providers' TTL fields."
+          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. In the direct send it also sets the expiry of\nthe provider where the caller set none: android.ttl and apns-expiration\nof an FCM message, apns-expiration of APNs, and the TTL of Web Push."
         }
       },
       "description": "PushNotification is a push notification in the format of each provider.\nCentrifugo PRO only."
@@ -4008,15 +4008,15 @@
       "properties": {
         "provider": {
           "type": "string",
-          "description": "provider is the provider of the token: apns or fcm. Required."
+          "description": "provider is the provider of the token: apns, fcm or webpush. Required."
         },
         "token": {
           "type": "string",
-          "description": "token is the provider token. Required."
+          "description": "token is the provider token. For webpush it is the PushSubscription of\nthe browser as a JSON string. Required."
         },
         "environment": {
           "type": "string",
-          "description": "environment is the APNs environment: production or development.\nRequired for apns, refused for fcm."
+          "description": "environment is the APNs environment: production or development.\nRequired for apns, refused for fcm and webpush."
         },
         "ref": {
           "type": "string",
@@ -4024,7 +4024,7 @@
         },
         "collapse_id": {
           "type": "string",
-          "description": "collapse_id is the collapse id of this target. At most 64 bytes.\nOverrides the request collapse_id."
+          "description": "collapse_id is the collapse id of this target. At most 64 bytes.\nOverrides the request collapse_id. For webpush it becomes the Topic\nheader, so it must be a valid Topic there."
         },
         "apns_payload": {
           "type": "object",
@@ -4033,6 +4033,10 @@
         "fcm_message": {
           "type": "object",
           "description": "fcm_message replaces the FCM message of the request for this target\nonly. A JSON object."
+        },
+        "webpush_payload": {
+          "type": "object",
+          "description": "webpush_payload replaces the Web Push payload of the request for this\ntarget only. A JSON object."
         }
       },
       "description": "PushTarget is one raw provider token of a direct send. Used by the direct\nsend mode of SendPushNotification only."
@@ -4965,11 +4969,11 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "headers are Web Push HTTP headers. Recognized keys: TTL (seconds,\ndefault 4 weeks), Urgency (very-low, low, normal, high) and Topic."
+          "description": "headers are Web Push HTTP headers. Recognized keys: TTL (seconds,\ndefault 4 weeks), Urgency (very-low, low, normal, high) and Topic. The\ndirect send refuses any other key."
         },
         "payload": {
           "type": "object",
-          "description": "payload is the JSON payload delivered to the browser service worker.\nRequired."
+          "description": "payload is the JSON payload delivered to the browser service worker.\nRequired, unless every webpush target of a direct send has its own\nwebpush_payload."
         }
       },
       "description": "WebPushPushNotification is a notification for Web Push.\nCentrifugo PRO only."

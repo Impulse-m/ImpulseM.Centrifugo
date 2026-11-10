@@ -38,7 +38,7 @@ func TestValidateRecipientKindExactlyOne(t *testing.T) {
 func TestValidateNotBuiltAnswers108(t *testing.T) {
 	s := newTestSender(t, &countingSender{}, nil)
 
-	for _, field := range []string{"filter", "fcm_topic", "webpush_tokens"} {
+	for _, field := range []string{"filter", "fcm_topic"} {
 		req := &apiproto.SendPushNotificationRequest{
 			Recipient: &apiproto.PushRecipient{},
 			Notification: &apiproto.PushNotification{
@@ -50,11 +50,91 @@ func TestValidateNotBuiltAnswers108(t *testing.T) {
 			req.Recipient.Filter = &apiproto.DeviceFilter{}
 		case "fcm_topic":
 			req.Recipient.FcmTopic = "topic"
-		case "webpush_tokens":
-			req.Recipient.WebpushTokens = []string{"sub"}
 		}
 		requireRefusal(t, s, req, 108, field)
 	}
+}
+
+func TestValidateWebPushTokensNeedTheProvider(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, func(cfg *configtypes.PushNotifications) {
+		cfg.EnabledProviders = []string{provider.ProviderFCM}
+	})
+
+	req := &apiproto.SendPushNotificationRequest{
+		Recipient: &apiproto.PushRecipient{
+			WebpushTokens: []string{webPushSubscription("https://fcm.googleapis.com/send/web")},
+		},
+		Notification: &apiproto.PushNotification{
+			Webpush: &apiproto.WebPushPushNotification{Payload: testWebPushPayload()},
+		},
+	}
+	requireRefusal(t, s, req, 108, "provider webpush is not enabled")
+}
+
+func TestValidateWebPushTokensOneTargetPerItem(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	req := &apiproto.SendPushNotificationRequest{
+		Recipient: &apiproto.PushRecipient{
+			WebpushTokens: []string{
+				webPushSubscription("https://fcm.googleapis.com/send/a"),
+				webPushSubscription("https://fcm.googleapis.com/send/b"),
+			},
+		},
+		Notification: &apiproto.PushNotification{
+			Webpush: &apiproto.WebPushPushNotification{Payload: testWebPushPayload()},
+		},
+	}
+
+	jobs, refusal := s.plan(req)
+
+	require.Nil(t, refusal)
+	require.Len(t, jobs, 2)
+	require.Equal(t, provider.ProviderWebPush, jobs[1].Target.GetProvider())
+	require.Equal(t, webPushSubscription("https://fcm.googleapis.com/send/b"), jobs[1].Target.GetToken())
+}
+
+func TestValidateWebPushTargetRequestChecks(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	malformed := webPushOnly()
+	malformed.Recipient.Targets[0].Token = `{"endpoint":"https://fcm.googleapis.com/send/a"}`
+	requireRefusal(t, s, malformed, 107, "webpush target 0 token")
+
+	onEnvironment := webPushOnly()
+	onEnvironment.Recipient.Targets[0].Environment = "production"
+	requireRefusal(t, s, onEnvironment, 107, "targets[0].environment is refused for webpush")
+
+	noPayload := webPushOnly()
+	noPayload.Notification.Webpush.Payload = nil
+	requireRefusal(t, s, noPayload, 107, "webpush target 0 needs a payload")
+
+	notObject := webPushOnly()
+	notObject.Notification.Webpush.Payload = []byte(`[1]`)
+	requireRefusal(t, s, notObject, 107, "webpush payload is not a JSON object")
+}
+
+// TestValidateRequestPayloadCheckedOnlyWhenATargetUsesIt checks that a request payload that is not a JSON object is accepted
+// when the only webpush target has its own payload, and refused when a second webpush target has none of its own.
+func TestValidateRequestPayloadCheckedOnlyWhenATargetUsesIt(t *testing.T) {
+	s := newTestSender(t, &countingSender{}, nil)
+
+	ownOnly := webPushOnly()
+	ownOnly.Notification.Webpush.Payload = []byte(`[1]`)
+	ownOnly.Recipient.Targets[0].WebpushPayload = testWebPushPayload()
+	jobs, refusal := s.plan(ownOnly)
+	require.Nil(t, refusal, "the request payload is not used when the only webpush target has its own payload")
+	require.Len(t, jobs, 1)
+
+	withoutOwn := webPushOnly()
+	withoutOwn.Notification.Webpush.Payload = []byte(`[1]`)
+	withoutOwn.Recipient.Targets[0].WebpushPayload = testWebPushPayload()
+	withoutOwn.Recipient.Targets = append(withoutOwn.Recipient.Targets, &apiproto.PushTarget{
+		Provider: provider.ProviderWebPush,
+		Token:    webPushSubscription("https://fcm.googleapis.com/send/b"),
+		Ref:      "b",
+	})
+	requireRefusal(t, s, withoutOwn, 107, "webpush payload is not a JSON object")
 }
 
 func TestValidateProviderValueFirst(t *testing.T) {
@@ -64,7 +144,7 @@ func TestValidateProviderValueFirst(t *testing.T) {
 
 	req := validRequest()
 	req.Recipient.Targets[0].Provider = "apn"
-	requireRefusal(t, s, req, 107, "must be apns or fcm")
+	requireRefusal(t, s, req, 107, "must be apns, fcm or webpush")
 }
 
 func TestValidateProviderNotEnabledAnswers108(t *testing.T) {
@@ -292,7 +372,7 @@ func TestFCMMessageOverScanThresholdLeftToItem(t *testing.T) {
 	s := newTestSender(t, &countingSender{}, nil)
 
 	// A message over the scan threshold is not scanned here: its item answers payload_too_large.
-	big := []byte(`{"data":"` + strings.Repeat("a", maxScannedFCMMessageBytes) + `"}`)
+	big := []byte(`{"data":"` + strings.Repeat("a", provider.MaxFCMMessageBytes) + `"}`)
 	req := validRequest()
 	req.Notification.Fcm.Message = big
 

@@ -10,7 +10,9 @@ import (
 
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
+	"github.com/centrifugal/centrifugo/v6/internal/origin"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush"
 )
 
 // countingSender is a provider.Sender that counts its calls. It answers sent at once, or unanswered when hold is set, and
@@ -35,7 +37,7 @@ func testConfig() configtypes.PushNotifications {
 	return configtypes.PushNotifications{
 		Enabled:               true,
 		Sender:                true,
-		EnabledProviders:      []string{provider.ProviderAPNs, provider.ProviderFCM},
+		EnabledProviders:      []string{provider.ProviderAPNs, provider.ProviderFCM, provider.ProviderWebPush},
 		MaxRecipientItems:     1000,
 		MaxRequestBytes:       1 << 20,
 		MaxConcurrentRequests: 64,
@@ -50,13 +52,18 @@ func testConfig() configtypes.PushNotifications {
 			TokensBatchSize: 500,
 			MaxInflight:     200,
 		},
+		WebPush: configtypes.PushWebPush{
+			TokensBatchSize: 100,
+			MaxInflight:     500,
+		},
 		Providers: configtypes.PushProviders{
 			RequestTimeout: configtypes.Duration(10 * time.Second),
 		},
 	}
 }
 
-// newTestSender returns a sender with sender as the provider of both APNs and FCM, without loading any credential.
+// newTestSender returns a sender with sender as the provider of APNs, FCM and Web Push, without loading any credential.
+// The Web Push origins are the built-in list, as a configuration with no origin keys gives.
 func newTestSender(t *testing.T, fake provider.Sender, edit func(*configtypes.PushNotifications)) *Sender {
 	t.Helper()
 
@@ -64,11 +71,32 @@ func newTestSender(t *testing.T, fake provider.Sender, edit func(*configtypes.Pu
 	if edit != nil {
 		edit(&cfg)
 	}
+	origins, err := origin.NewPatternChecker(webpush.EndpointOrigins(nil, nil))
+	require.NoError(t, err)
+
 	s := newSender(cfg)
-	s.set = provider.NewSet().WithOversizeCheck(oversized)
+	s.set = provider.NewSet().WithOversizeCheck(oversized).WithRefusalCheck(refusalOf(origins))
 	s.set.Add(provider.ProviderAPNs, fake, int64(cfg.APNs.MaxInflight))
 	s.set.Add(provider.ProviderFCM, fake, int64(cfg.FCM.MaxInflight))
+	s.set.Add(provider.ProviderWebPush, fake, int64(cfg.WebPush.MaxInflight))
 	return s
+}
+
+// The receiver of a Web Push subscription in the tests: the keys of RFC 8291 appendix A, which are a valid P-256 point
+// and a valid authentication secret.
+const (
+	testReceiverPublic = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcx" + "aOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+	testAuthSecret     = "BTBZMqHH6r4Tts7J_aSIgg"
+)
+
+// webPushSubscription returns the PushSubscription JSON of a Web Push target for endpoint, with the test receiver keys.
+func webPushSubscription(endpoint string) string {
+	return `{"endpoint":"` + endpoint + `","keys":{"p256dh":"` + testReceiverPublic + `","auth":"` + testAuthSecret + `"}}`
+}
+
+// testWebPushPayload returns a valid Web Push payload.
+func testWebPushPayload() []byte {
+	return []byte(`{"title":"hello"}`)
 }
 
 // testPayload returns a valid APNs payload.

@@ -14,7 +14,7 @@ Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](htt
 
 ## What the fork adds
 
-* [Push notifications](#push-notifications): direct send to APNs and FCM tokens, and the push API routes over HTTP and gRPC.
+* [Push notifications](#push-notifications): direct send to APNs, FCM and Web Push tokens, and the push API routes over HTTP and gRPC.
 * [Server-side publication tags filter](#server-side-publication-tags-filter), [server tags filter template](#server-tags-filter-template) and [require server tags filter](#require-server-tags-filter): subscription filters set by the backend that clients cannot widen.
 * [User blocking and token revocation](#user-blocking-and-token-revocation), with an optional [access revocation event source](#access-revocation-event-source).
 * [Client address behind trusted proxies](#client-address-behind-trusted-proxies).
@@ -76,9 +76,9 @@ JWKS responses are read up to 1 MiB per key set, so a larger body cannot exhaust
 
 Push notification API methods (device, topic, `SendPushNotification`, `UpdatePushStatus`, `CancelPush`) are routed over HTTP and gRPC. While push notifications are off they answer error 108 "push notifications are not enabled"; before, gRPC answered `Unimplemented` and HTTP had no route. The push messages gain the direct send fields `targets`, `collapse_id`, `timeout_ms` and `results` (field numbers 100 and above).
 
-* Direct push send (`SendPushNotification` with raw APNs and FCM tokens, the `timeout_ms` deadline, the per-target results and the routing to sender nodes) is documented in [docs/push-direct-send.md](docs/push-direct-send.md).
+* Direct push send (`SendPushNotification` with raw APNs, FCM and Web Push tokens, the `timeout_ms` deadline, the per-target results and the routing to sender nodes) is documented in [docs/push-direct-send.md](docs/push-direct-send.md).
 * Push notification settings are read at startup. A change of a key, of `sender` or of `enabled_providers` needs a restart. A SIGHUP reload validates the push section like every other section, and a failing push section rejects the reload. A valid changed push section is ignored until the restart.
-* Generated configs mask key material. `push_notifications.apns.token_key_pem` is shown as `[REDACTED]` in JSON, YAML, TOML and formatted output, and an unset key shows no mask. A key must be given by file (`token_key_file`) or by environment variable; a generated config never carries its value.
+* Generated configs mask key material. `push_notifications.apns.token_key_pem` and `push_notifications.webpush.vapid_private_key` are shown as `[REDACTED]` in JSON, YAML, TOML and formatted output, and an unset key shows no mask. A key must be given by file (`token_key_file`, `vapid_private_key_file`) or by environment variable; a generated config never carries its value.
 
 ### Access revocation event source
 

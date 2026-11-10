@@ -204,6 +204,50 @@ func TestDryRunWithoutProvidersAnswersDryRun(t *testing.T) {
 	require.Zero(t, testutil.CollectAndCount(metrics.PushNotificationCount))
 }
 
+// refuseToken returns a refusal check that refuses a job whose token is token with code, and passes every other job.
+func refuseToken(token string, code string) func(*Job) string {
+	return func(job *Job) string {
+		if job.Target.GetToken() == token {
+			return code
+		}
+		return ""
+	}
+}
+
+func TestRefusalCheckAnswersBeforeSlot(t *testing.T) {
+	sender := &recordingSender{}
+	set := NewSet().WithRefusalCheck(refuseToken("refused", CodeInvalidSubscription))
+	set.Add(ProviderWebPush, sender, 1)
+
+	refused := newTestJob(0, ProviderWebPush)
+	refused.Target.Token = "refused"
+	result := set.Dispatch(context.Background(), time.Minute, refused)
+
+	require.Equal(t, StatusRejected, result.GetStatus())
+	require.Equal(t, CodeInvalidSubscription, result.GetCode())
+	require.Zero(t, sender.callCount())
+
+	// The refused item took no slot: the only slot of the provider is free for the next item.
+	result = set.Dispatch(context.Background(), time.Minute, newTestJob(1, ProviderWebPush))
+
+	require.Equal(t, StatusSent, result.GetStatus())
+	require.Equal(t, 1, sender.callCount())
+}
+
+func TestRefusalCheckRunsInDryRun(t *testing.T) {
+	set := NewDryRunSet().WithRefusalCheck(refuseToken("refused", CodeEndpointNotAllowed))
+
+	refused := newTestJob(0, ProviderWebPush)
+	refused.Target.Token = "refused"
+	result := set.Dispatch(context.Background(), time.Minute, refused)
+	require.Equal(t, StatusRejected, result.GetStatus())
+	require.Equal(t, CodeEndpointNotAllowed, result.GetCode())
+
+	result = set.Dispatch(context.Background(), time.Minute, newTestJob(1, ProviderWebPush))
+	require.Equal(t, StatusDryRun, result.GetStatus())
+	require.Empty(t, result.GetCode())
+}
+
 func TestDryRunStillRefusesExpiredBeforeAnswer(t *testing.T) {
 	// Server checks still run in dry run: an expired target is refused and no provider is called.
 	set := NewDryRunSet()

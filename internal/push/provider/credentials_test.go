@@ -150,3 +150,31 @@ func TestReadFCMServiceAccountRefusesLargeFile(t *testing.T) {
 	require.ErrorContains(t, err, "larger than")
 	require.NotContains(t, err.Error(), "AAAA")
 }
+
+func TestReadWebPushPrivateKeyTrimsWhiteSpace(t *testing.T) {
+	path := writeTestFile(t, []byte("  abc-DEF_123\n"))
+
+	value, err := ReadWebPushPrivateKey(path)
+
+	require.NoError(t, err)
+	require.Equal(t, "abc-DEF_123", value)
+}
+
+func TestReadWebPushPrivateKeyRefusesLargeFile(t *testing.T) {
+	path := writeTestFile(t, []byte(strings.Repeat("A", maxKeyFileBytes+1)))
+
+	_, err := ReadWebPushPrivateKey(path)
+
+	require.ErrorContains(t, err, webPushKeyFile)
+	require.ErrorContains(t, err, "larger than")
+	require.NotContains(t, err.Error(), "AAAA")
+}
+
+func TestReadWebPushPrivateKeyMissingFileNamesKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.key")
+
+	_, err := ReadWebPushPrivateKey(path)
+
+	require.ErrorContains(t, err, webPushKeyFile)
+	require.ErrorContains(t, err, path)
+}

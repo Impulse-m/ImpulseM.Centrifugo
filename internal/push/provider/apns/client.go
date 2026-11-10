@@ -142,9 +142,9 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NoAnswerResult(ctx, job, written)
 	}
 	if answer.status >= 200 && answer.status < 300 {
-		return answeredResult(job, provider.StatusSent, answer)
+		return provider.NewAnsweredResult(job, provider.StatusSent, answer.status, answer.reason, answer.detail, answer.messageID)
 	}
-	return answeredResult(job, provider.StatusRejected, answer)
+	return provider.NewAnsweredResult(job, provider.StatusRejected, answer.status, answer.reason, answer.detail, answer.messageID)
 }
 
 // errRequestBuild is the error of a request that could not be built locally. No request was made.
@@ -183,7 +183,7 @@ func (c *Client) post(
 
 	answer := response{
 		status:    httpResponse.StatusCode,
-		messageID: httpResponse.Header.Get(headerID),
+		messageID: provider.PrintableHeader(httpResponse.Header.Get(headerID)),
 	}
 
 	// A body read error keeps the status: the reason is set only from a body that was read whole.
@@ -209,15 +209,4 @@ func (c *Client) post(
 // providerTokenRefused reports whether a 403 reason means that the provider token is refused.
 func providerTokenRefused(reason string) bool {
 	return reason == reasonExpiredProviderToken || reason == reasonInvalidProviderToken
-}
-
-// answeredResult returns the result of job for a provider answer with status. The status line is always kept. Every
-// provider string is cut to the field limit, so one answer cannot put its full size into a result.
-func answeredResult(job *provider.Job, status string, answer response) *apiproto.PushItemResult {
-	result := provider.NewResult(job, status)
-	result.HttpStatus = uint32(answer.status)
-	result.ProviderCode = provider.Truncate(answer.reason)
-	result.ProviderDetail = provider.Truncate(answer.detail)
-	result.ProviderMessageId = provider.Truncate(answer.messageID)
-	return result
 }

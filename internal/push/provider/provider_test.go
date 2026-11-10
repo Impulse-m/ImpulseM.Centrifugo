@@ -45,6 +45,50 @@ func TestTruncateKeepsWholeRuneAtTheLimit(t *testing.T) {
 	require.Equal(t, strings.Repeat("a", MaxFieldBytes-3)+"€", result)
 }
 
+func TestPrintableHeaderKeepsPrintableValues(t *testing.T) {
+	require.Equal(t, "https://push.example/3/abc", PrintableHeader("https://push.example/3/abc"))
+	require.Equal(t, "é€", PrintableHeader("é€"))
+	// The length is not this function's to bound: the caller cuts or drops a long value.
+	require.Equal(t, strings.Repeat("a", MaxFieldBytes+1), PrintableHeader(strings.Repeat("a", MaxFieldBytes+1)))
+}
+
+func TestPrintableHeaderRefusesControlCharacters(t *testing.T) {
+	testCases := map[string]string{
+		"line feed":            "a\nb",
+		"carriage return":      "a\rb",
+		"tab":                  "a\tb",
+		"nul":                  "a\x00b",
+		"delete":               "a\x7fb",
+		"c1 control":           "a\u0085b",
+		"invalid utf-8":        "a\xffb",
+		"empty value is empty": "",
+	}
+	for name, value := range testCases {
+		t.Run(name, func(t *testing.T) {
+			require.Empty(t, PrintableHeader(value))
+		})
+	}
+}
+
+func TestWebPushPayloadOfPrefersTheTarget(t *testing.T) {
+	job := &Job{
+		Target: &apiproto.PushTarget{
+			Provider:       ProviderWebPush,
+			WebpushPayload: []byte(`{"target":true}`),
+		},
+		Notification: &apiproto.PushNotification{
+			Webpush: &apiproto.WebPushPushNotification{Payload: []byte(`{"request":true}`)},
+		},
+	}
+	require.Equal(t, `{"target":true}`, string(WebPushPayloadOf(job)))
+
+	job.Target.WebpushPayload = nil
+	require.Equal(t, `{"request":true}`, string(WebPushPayloadOf(job)))
+
+	job.Notification.Webpush = nil
+	require.Empty(t, WebPushPayloadOf(job))
+}
+
 func TestExpiredBoundary(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 

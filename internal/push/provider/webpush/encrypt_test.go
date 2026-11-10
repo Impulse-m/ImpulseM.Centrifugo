@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
 
 // Values of the example of RFC 8291 (rfc8291.txt). Each value is copied from the line numbers named in its comment. A value
@@ -149,7 +151,7 @@ func TestEncryptRoundTripsThroughAReceiver(t *testing.T) {
 	payloads := []string{
 		`{"title":"hello"}`,
 		"",
-		strings.Repeat("p", MaxWebPushPayloadBytes),
+		strings.Repeat("p", provider.MaxWebPushPayloadBytes),
 	}
 	for _, payload := range payloads {
 		ephemeral, salt, err := systemRandom()
@@ -184,7 +186,7 @@ func BenchmarkEncryptPayload(b *testing.B) {
 	if _, err := io.ReadFull(rand.Reader, auth); err != nil {
 		b.Fatal(err)
 	}
-	payload := bytes.Repeat([]byte("p"), MaxWebPushPayloadBytes)
+	payload := bytes.Repeat([]byte("p"), provider.MaxWebPushPayloadBytes)
 
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()

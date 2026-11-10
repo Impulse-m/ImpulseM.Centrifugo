@@ -48,10 +48,11 @@ func TestTruncateKeepsWholeRuneAtTheLimit(t *testing.T) {
 func TestPrintableHeaderKeepsPrintableValues(t *testing.T) {
 	require.Equal(t, "https://push.example/3/abc", PrintableHeader("https://push.example/3/abc"))
 	require.Equal(t, "é€", PrintableHeader("é€"))
-	require.Equal(t, strings.Repeat("a", MaxFieldBytes), PrintableHeader(strings.Repeat("a", MaxFieldBytes)))
+	// The length is not this function's to bound: the caller cuts or drops a long value.
+	require.Equal(t, strings.Repeat("a", MaxFieldBytes+1), PrintableHeader(strings.Repeat("a", MaxFieldBytes+1)))
 }
 
-func TestPrintableHeaderRefusesControlCharactersAndLength(t *testing.T) {
+func TestPrintableHeaderRefusesControlCharacters(t *testing.T) {
 	testCases := map[string]string{
 		"line feed":            "a\nb",
 		"carriage return":      "a\rb",
@@ -60,7 +61,6 @@ func TestPrintableHeaderRefusesControlCharactersAndLength(t *testing.T) {
 		"delete":               "a\x7fb",
 		"c1 control":           "a\u0085b",
 		"invalid utf-8":        "a\xffb",
-		"one byte over limit":  strings.Repeat("a", MaxFieldBytes+1),
 		"empty value is empty": "",
 	}
 	for name, value := range testCases {

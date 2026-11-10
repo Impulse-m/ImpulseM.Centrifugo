@@ -103,11 +103,12 @@ func ReadAnswer(response *http.Response) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(response.Body, MaxResponseBodyBytes))
 }
 
-// PrintableHeader returns value when it is valid UTF-8 without control characters and at most MaxFieldBytes long, so it can
-// be stored in a result field. Any other value gives the empty string. A provider header such as Location is printed this
-// way, because a control character in it would reach the caller's logs and clients.
+// PrintableHeader returns value when it is valid UTF-8 without control characters, and the empty string otherwise. A
+// provider header that goes into a result field, such as Location or apns-id, passes through it first, because the field
+// is a string of the API and a control character in it would reach the caller's logs and clients. The length is the
+// caller's to bound: a message id is cut with Truncate, and a URL that does not fit is dropped.
 func PrintableHeader(value string) string {
-	if len(value) > MaxFieldBytes || !utf8.ValidString(value) {
+	if !utf8.ValidString(value) {
 		return ""
 	}
 	for _, character := range value {

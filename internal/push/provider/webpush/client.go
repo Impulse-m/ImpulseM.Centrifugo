@@ -222,8 +222,11 @@ func (c *Client) post(
 
 	answer := response{status: httpResponse.StatusCode}
 	if answer.status >= 200 && answer.status < 300 {
-		// The Location of a 2xx is the message id. It is kept only when it is printable, so the body is not read.
-		answer.messageID = provider.PrintableHeader(httpResponse.Header.Get("Location"))
+		// The Location of a 2xx is the message id. It is kept only when it is printable and fits the field: a URL that is
+		// cut is of no use. The body is not read.
+		if location := provider.PrintableHeader(httpResponse.Header.Get("Location")); len(location) <= provider.MaxFieldBytes {
+			answer.messageID = location
+		}
 		return attempt{answer: answer, answered: true, written: true}, nil
 	}
 

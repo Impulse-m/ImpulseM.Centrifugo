@@ -216,7 +216,7 @@ The answer has one item result per target, in request order:
 
 * Delete the subscription when the item is `rejected` with `http_status` 404 or 410, or with `code` `invalid_subscription`.
 * `sent` means that the push service answered with a 2xx status. It does not mean that the browser showed the notification. An endpoint under an allowed origin is trusted to answer honestly.
-* `provider_message_id` is the `Location` header of the answer, when it is valid and printable.
+* `provider_message_id` is the `Location` header of the answer when it is valid UTF-8 without control characters and at most 256 bytes long, and empty otherwise.
 * Any other `rejected` status, such as 429 or 5xx, is not a delete answer. `Retry-After` is not read, so the caller resends at its own pace.
 * A 3xx answer is not followed. It is `rejected` with its status.
 * `unanswered` and `not_sent` follow the rules of direct push send above. `address_blocked` means that nothing left the node, so a resend cannot help.
@@ -230,7 +230,7 @@ The answer has one item result per target, in request order:
 * `Topic` is 1 to 32 characters of the URL-safe base64 alphabet (RFC 8030).
 * When the caller sets no `Topic`, the collapse id of the target becomes the `Topic`. A caller `Topic` that differs from a set collapse id is refused with 107.
 * A collapse id that is not a valid `Topic` is the item result `invalid_topic` for that target only, so one request-level `collapse_id` that suits APNs does not fail a mixed batch. Set a per-target `collapse_id` to give a Web Push target its own value.
-* The payload is one JSON object. A payload that is not a JSON object, or a webpush target with no payload at all, is refused with 107.
+* The payload is one JSON object. A payload of up to 5120 bytes that is not a JSON object, or a webpush target with no payload at all, is refused with 107. A larger payload is not scanned: it is the item result `payload_too_large`, as any payload over 3993 bytes is. The request payload is checked only when a webpush target uses it, that is, when a target has no `webpush_payload` of its own.
 
 ### Origins and the address guard
 

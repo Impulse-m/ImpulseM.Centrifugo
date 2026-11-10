@@ -528,7 +528,6 @@ func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 			close(release)
 		})
 	}
-	t.Cleanup(releaseHeld)
 	entered := make(chan struct{}, 2)
 	fake := newFakePush(t, func(writer http.ResponseWriter, request *http.Request) {
 		entered <- struct{}{}
@@ -539,6 +538,8 @@ func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 		}
 		writer.WriteHeader(http.StatusCreated)
 	})
+	// Registered after the fake server, so the release runs before the server's Close waits for the held handler.
+	t.Cleanup(releaseHeld)
 	var randoms atomic.Int64
 	client := newTestClient(t, fake, withRandom(countingRandom(&randoms)))
 	set := provider.NewSet()
@@ -676,6 +677,8 @@ func TestSendUsesWhatRefusalPrepared(t *testing.T) {
 
 	require.Empty(t, Refusal(job, testOrigins(t)))
 	require.NotNil(t, job.Prepared)
+	// The token is no longer a subscription, so Send can only send the target that Refusal prepared.
+	job.Target.Token = "not a subscription"
 
 	result := client.Send(context.Background(), job)
 

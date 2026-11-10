@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -234,9 +235,9 @@ func (c *Client) post(
 		if location := provider.PrintableHeader(httpResponse.Header.Get("Location")); len(location) <= provider.MaxFieldBytes {
 			answer.messageID = location
 		}
-		// The body of a 2xx is read under the bound and dropped, so an HTTP/1.1 connection can be reused. The result does
-		// not use it.
-		_, _ = provider.ReadAnswer(httpResponse)
+		// The body of a 2xx is drained under the bound and dropped, so an HTTP/1.1 connection can be reused. The result
+		// does not use it.
+		_, _ = io.CopyN(io.Discard, httpResponse.Body, provider.MaxResponseBodyBytes)
 		return attempt{answer: answer, answered: true, written: true}, nil
 	}
 

@@ -262,18 +262,30 @@ func TestCheckRequestRefusesTheTargetPayload(t *testing.T) {
 }
 
 // TestCheckNotificationRefusesAPayloadThatIsNotAnObject checks that the request payload is refused once for the request when
-// it is not a JSON object, and that a payload over the scan bound is not scanned.
+// it is not a JSON object and a target uses it, and that a payload over the scan bound is not scanned.
 func TestCheckNotificationRefusesAPayloadThatIsNotAnObject(t *testing.T) {
 	notification := &apiproto.PushNotification{
 		Webpush: &apiproto.WebPushPushNotification{Payload: []byte("not json")},
 	}
-	require.Error(t, CheckNotification(notification))
+	require.Error(t, CheckNotification(notification, true))
 
 	notification.Webpush.Payload = []byte(`{"a":1}`)
-	require.NoError(t, CheckNotification(notification))
+	require.NoError(t, CheckNotification(notification, true))
 
 	notification.Webpush.Payload = []byte(strings.Repeat("x", provider.MaxScannedPayloadBytes+1))
-	require.NoError(t, CheckNotification(notification), "a payload over the scan bound is not scanned")
+	require.NoError(t, CheckNotification(notification, true), "a payload over the scan bound is not scanned")
+}
+
+// TestCheckNotificationSkipsAPayloadNoTargetUses checks that the request payload is not checked when no target uses it, so
+// a payload that is not a JSON object is accepted, while the caller headers are still checked.
+func TestCheckNotificationSkipsAPayloadNoTargetUses(t *testing.T) {
+	notification := &apiproto.PushNotification{
+		Webpush: &apiproto.WebPushPushNotification{Payload: []byte("not json")},
+	}
+	require.NoError(t, CheckNotification(notification, false), "a payload no target uses is not checked")
+
+	notification.Webpush.Headers = map[string]string{"Ttl": "60"}
+	require.Error(t, CheckNotification(notification, false), "the caller headers are checked even when no target uses the payload")
 }
 
 // TestCheckNotificationRefusesAnUnknownHeader checks that a caller header outside the three names is refused by
@@ -286,7 +298,7 @@ func TestCheckNotificationRefusesAnUnknownHeader(t *testing.T) {
 		},
 	}
 
-	err := CheckNotification(notification)
+	err := CheckNotification(notification, true)
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Ttl")

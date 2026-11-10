@@ -27,7 +27,8 @@ type vapidEntry struct {
 }
 
 // vapidTable holds one VAPID token per origin for the signing key and the subject of the client. It runs no timer and no
-// goroutine: the age of a token is read when the token is asked for.
+// goroutine: the age of a token is read when the token is asked for. It holds at most maxVAPIDOrigins entries. When the
+// table is full and every entry is locked, nothing can be evicted, so a token is signed for the new origin and not kept.
 type vapidTable struct {
 	mu      sync.Mutex
 	signer  jwt.Signer
@@ -53,8 +54,10 @@ func newVAPIDTable(key *ecdsa.PrivateKey, subject string, now func() time.Time) 
 // token returns the VAPID token of origin. The token is the one cached when it is less than an hour old, else a new one
 // is signed and cached. The token carries the origin as its audience, so it cannot be replayed at another push service.
 func (t *vapidTable) token(origin string) (string, error) {
-	entry := t.entryOf(origin)
-	entry.mu.Lock()
+	entry, held := t.entryOf(origin)
+	if !held {
+		entry.mu.Lock()
+	}
 	defer entry.mu.Unlock()
 
 	now := t.now()
@@ -84,27 +87,34 @@ func (t *vapidTable) sign(origin string, now time.Time) (string, error) {
 	return token.String(), nil
 }
 
-// entryOf returns the entry of origin, and creates it when it is missing. When the table is full, a new entry first makes
-// room with evict.
-func (t *vapidTable) entryOf(origin string) *vapidEntry {
+// entryOf returns the entry of origin, and whether the caller already holds its lock. A missing entry is created and locked
+// before the table lock is released, so an eviction of another goroutine skips it until its creator has signed. When the
+// table is full, a new entry first makes room with evict. When nothing can be evicted, the new entry is locked and returned
+// but not stored, so the table never holds more than maxVAPIDOrigins entries. The caller of a held entry unlocks it.
+func (t *vapidTable) entryOf(origin string) (*vapidEntry, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if entry, ok := t.entries[origin]; ok {
-		return entry
+		return entry, false
 	}
 	if len(t.entries) >= maxVAPIDOrigins {
 		t.evict(t.now())
 	}
 	entry := &vapidEntry{}
-	t.entries[origin] = entry
-	return entry
+	// The entry is new and not yet shared, so this lock cannot block.
+	entry.mu.Lock()
+	if len(t.entries) < maxVAPIDOrigins {
+		t.entries[origin] = entry
+	}
+	return entry, true
 }
 
 // evict makes room for one entry in a full table. It is one pass over the table. An entry whose lock is held is being
 // signed right now, so it is kept. Every other entry that holds a token and is older than an hour is dropped. When none is
-// dropped, the entry with the oldest signing time is dropped, and an entry that was never signed counts as the oldest. The
-// caller holds the table lock.
+// dropped, the entry with the oldest signing time is dropped, and an entry that was never signed counts as the oldest. When
+// every entry is held, nothing is dropped, and the caller checks the size of the table after the call. The caller holds the
+// table lock.
 func (t *vapidTable) evict(now time.Time) {
 	dropped := false
 	found := false

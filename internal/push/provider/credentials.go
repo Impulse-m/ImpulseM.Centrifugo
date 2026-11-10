@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"regexp"
@@ -176,9 +177,18 @@ func readKeyFile(key string, path string) ([]byte, error) {
 	if info.Size() > maxKeyFileBytes {
 		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", key, path, maxKeyFileBytes)
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // The file is named by the operator's configuration.
+	file, err := os.Open(path) //nolint:gosec // The file is named by the operator's configuration.
 	if err != nil {
 		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
+	}
+	// The read is bounded, so a file that grows after the stat is not read in full.
+	data, err := io.ReadAll(io.LimitReader(file, maxKeyFileBytes+1))
+	_ = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
+	}
+	if len(data) > maxKeyFileBytes {
+		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", key, path, maxKeyFileBytes)
 	}
 	return data, nil
 }

@@ -74,13 +74,14 @@ func EndpointOrigins(allowed []string, extra []string) []string {
 	return append(patterns, extra...)
 }
 
-// CheckNotification returns the error that refuses the whole request for its webpush notification, or nil: the request
-// payload, when set and under the scan bound, must be one JSON object, and the caller headers must be the three allowed
-// names with valid values. It is checked once for a request, whatever the number of targets. The error names the reason
-// and never a value.
-func CheckNotification(notification *apiproto.PushNotification) error {
+// CheckNotification returns the error that refuses the whole request for its webpush notification, or nil. The request
+// payload is checked only when payloadUsed is true, which the caller sets when a webpush target uses it: it must then be
+// one JSON object when it is set and under the scan bound. The caller headers are always checked: they must be the three
+// allowed names with valid values. It is checked once for a request, whatever the number of targets. The error names the
+// reason and never a value.
+func CheckNotification(notification *apiproto.PushNotification, payloadUsed bool) error {
 	payload := notification.GetWebpush().GetPayload()
-	if len(payload) > 0 && len(payload) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(payload) {
+	if payloadUsed && len(payload) > 0 && len(payload) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(payload) {
 		return errors.New("webpush payload is not a JSON object")
 	}
 	return checkHeaders(notification.GetWebpush().GetHeaders())
@@ -88,7 +89,8 @@ func CheckNotification(notification *apiproto.PushNotification) error {
 
 // CheckRequest returns the error that refuses the webpush target of job, or nil. It checks what is the target's own: the
 // shape of its token, its own payload when it has one, that it has a payload at all, and its caller Topic against its
-// collapse id. The request payload and the caller headers are checked once for the request, by CheckNotification. The
+// collapse id. The request payload and the caller headers are checked once for the request, by CheckNotification, which
+// checks the request payload only when a target uses it. The
 // error names the target index and the reason, and never a value. The subscription values and the origin checks are item
 // results, so they are not checked here.
 func CheckRequest(job *provider.Job) error {

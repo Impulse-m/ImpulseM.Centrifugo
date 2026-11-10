@@ -3,6 +3,8 @@ package clientaddr
 import (
 	"net/http"
 	"net/netip"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
@@ -158,6 +160,31 @@ func TestResolveWalk(t *testing.T) {
 			require.Equal(t, netip.MustParseAddr(tc.want), got)
 		})
 	}
+}
+
+// TestResolveReadsOnlyTheEntriesItWalks checks that a long header costs no memory in proportion to its entries: the
+// walk stops at the client, the rightmost entry which is not a trusted proxy, and the entries left of it are never
+// turned into a list. A list of the entries of this header would take 160 KB per call, 16 MB over the calls measured
+// here, so the bound of 1 MiB fails for it and holds for the few bytes a call needs to parse the peer address.
+func TestResolveReadsOnlyTheEntriesItWalks(t *testing.T) {
+	const (
+		entries int    = 10000
+		calls   int    = 100
+		bound   uint64 = 1 << 20
+	)
+	r := mustResolver(t, enabledConfig("10.0.0.0/8"))
+	header := headerWith(strings.Repeat("junk,", entries) + "1.1.1.1, 10.0.0.2")
+	want := netip.MustParseAddr("1.1.1.1")
+
+	var before runtime.MemStats
+	var after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for call := 0; call < calls; call++ {
+		require.Equal(t, want, r.Resolve("10.0.0.9:1", header))
+	}
+	runtime.ReadMemStats(&after)
+
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, bound)
 }
 
 func TestResolveHeaderName(t *testing.T) {

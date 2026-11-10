@@ -11137,26 +11137,31 @@ func (x *Unsubscribe) GetReason() string {
 // send mode of SendPushNotification only.
 type PushTarget struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// provider is the provider of the token: apns or fcm. Required.
+	// provider is the provider of the token: apns, fcm or webpush. Required.
 	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
-	// token is the provider token. Required.
+	// token is the provider token. For webpush it is the PushSubscription of
+	// the browser as a JSON string. Required.
 	Token string `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
 	// environment is the APNs environment: production or development.
-	// Required for apns, refused for fcm.
+	// Required for apns, refused for fcm and webpush.
 	Environment string `protobuf:"bytes,3,opt,name=environment,proto3" json:"environment,omitempty"`
 	// ref is a caller reference, echoed in the result. At most 128 bytes.
 	Ref string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
 	// collapse_id is the collapse id of this target. At most 64 bytes.
-	// Overrides the request collapse_id.
+	// Overrides the request collapse_id. For webpush it becomes the Topic
+	// header, so it must be a valid Topic there.
 	CollapseId string `protobuf:"bytes,5,opt,name=collapse_id,json=collapseId,proto3" json:"collapse_id,omitempty"`
 	// apns_payload replaces the APNs payload of the request for this target
 	// only. A JSON object.
 	ApnsPayload Raw `protobuf:"bytes,6,opt,name=apns_payload,json=apnsPayload,proto3" json:"apns_payload,omitempty"`
 	// fcm_message replaces the FCM message of the request for this target
 	// only. A JSON object.
-	FcmMessage    Raw `protobuf:"bytes,7,opt,name=fcm_message,json=fcmMessage,proto3" json:"fcm_message,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FcmMessage Raw `protobuf:"bytes,7,opt,name=fcm_message,json=fcmMessage,proto3" json:"fcm_message,omitempty"`
+	// webpush_payload replaces the Web Push payload of the request for this
+	// target only. A JSON object.
+	WebpushPayload Raw `protobuf:"bytes,8,opt,name=webpush_payload,json=webpushPayload,proto3" json:"webpush_payload,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PushTarget) Reset() {
@@ -11238,6 +11243,13 @@ func (x *PushTarget) GetFcmMessage() []byte {
 	return nil
 }
 
+func (x *PushTarget) GetWebpushPayload() []byte {
+	if x != nil {
+		return x.WebpushPayload
+	}
+	return nil
+}
+
 // PushItemResult is the result of one recipient of a direct send.
 type PushItemResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -11251,22 +11263,26 @@ type PushItemResult struct {
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	// code names why a target did not reach a provider: payload_too_large or
 	// expired when the server refused it before any provider call, and for a
-	// not_sent target no_slot, connect_failed, deadline, token_fetch or
-	// shutdown. deadline also covers the provider request timeout. When the
-	// node's shutdown and a deadline have both ended, the code is shutdown.
+	// webpush target also invalid_subscription, endpoint_not_allowed or
+	// invalid_topic. For a not_sent target it is no_slot, connect_failed,
+	// deadline, token_fetch, shutdown, or address_blocked for a webpush
+	// endpoint whose address the server refuses to connect to. deadline also
+	// covers the provider request timeout. When the node's shutdown and a
+	// deadline have both ended, the code is shutdown.
 	Code string `protobuf:"bytes,4,opt,name=code,proto3" json:"code,omitempty"`
-	// provider_code is the APNs reason, or the FCM error status. Empty when
-	// the provider sent no status or no body.
+	// provider_code is the APNs reason, the FCM error status, or the reason
+	// or error of a Web Push answer. Empty when the provider sent no status
+	// or no body.
 	ProviderCode string `protobuf:"bytes,5,opt,name=provider_code,json=providerCode,proto3" json:"provider_code,omitempty"`
-	// provider_detail is the APNs 410 timestamp, or the first FCM error
-	// detail, at most 256 bytes.
+	// provider_detail is the APNs 410 timestamp, the first FCM error detail,
+	// or the message of a Web Push answer, at most 256 bytes.
 	ProviderDetail string `protobuf:"bytes,6,opt,name=provider_detail,json=providerDetail,proto3" json:"provider_detail,omitempty"`
 	// http_status is the HTTP status returned by the provider. Zero when no
 	// status line was received.
 	HttpStatus uint32 `protobuf:"varint,7,opt,name=http_status,json=httpStatus,proto3" json:"http_status"`
 	// provider_message_id is the APNs apns-id on any status received, rejected
-	// included, or the FCM message name on sent only. Empty when the provider
-	// sent none.
+	// included, the FCM message name on sent only, or the Location of a Web
+	// Push answer on sent only. Empty when the provider sent none.
 	ProviderMessageId string `protobuf:"bytes,8,opt,name=provider_message_id,json=providerMessageId,proto3" json:"provider_message_id,omitempty"`
 	// provider_details is the raw JSON array of the FCM error details, not
 	// mapped. An array of at most 4 KiB is returned as the provider sent it.
@@ -12208,7 +12224,7 @@ const file_api_proto_rawDesc = "" +
 	"\x17SharedPollPublishResult\"9\n" +
 	"\vUnsubscribe\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xd7\x01\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x80\x02\n" +
 	"\n" +
 	"PushTarget\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
@@ -12219,7 +12235,8 @@ const file_api_proto_rawDesc = "" +
 	"collapseId\x12!\n" +
 	"\fapns_payload\x18\x06 \x01(\fR\vapnsPayload\x12\x1f\n" +
 	"\vfcm_message\x18\a \x01(\fR\n" +
-	"fcmMessage\"\xec\x02\n" +
+	"fcmMessage\x12'\n" +
+	"\x0fwebpush_payload\x18\b \x01(\fR\x0ewebpushPayload\"\xec\x02\n" +
 	"\x0ePushItemResult\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x16\n" +

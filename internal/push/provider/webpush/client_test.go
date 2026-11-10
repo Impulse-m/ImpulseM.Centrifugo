@@ -437,17 +437,20 @@ func TestSendWrittenThenHeldIsUnanswered(t *testing.T) {
 		results <- client.Send(ctx, newTestJob(0, token, nil, `{"a":1}`))
 	}()
 
+	// The waits of the test end at a deadline of their own, so a broken send fails the test and cannot hang the run.
+	wait, stopWait := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopWait()
 	select {
 	case <-held:
-	case <-time.After(5 * time.Second):
+	case <-wait.Done():
 		t.Fatal("the server did not read the request within 5 seconds")
 	}
 	cancel()
 	var result *apiproto.PushItemResult
 	select {
 	case result = <-results:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the send did not return within 5 seconds of the cancel")
+	case <-wait.Done():
+		t.Fatal("the send did not return within 5 seconds")
 	}
 
 	require.Len(t, fake.recorded(), 1, "the server must have read the request before it held the answer")
@@ -527,12 +530,12 @@ func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 	}
 	t.Cleanup(releaseHeld)
 	entered := make(chan struct{}, 2)
-	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, request *http.Request) {
 		entered <- struct{}{}
+		// The handler ends when the test releases it, or when its request ends, so it cannot outlive the test.
 		select {
 		case <-release:
-		case <-time.After(5 * time.Second):
-			t.Errorf("the handler was not released within 5 seconds")
+		case <-request.Context().Done():
 		}
 		writer.WriteHeader(http.StatusCreated)
 	})
@@ -548,7 +551,14 @@ func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 		defer wg.Done()
 		set.Dispatch(context.Background(), time.Minute, newTestJob(0, token, nil, `{"a":1}`))
 	}()
-	<-entered
+	// The wait ends at a deadline, so a first target that never reaches the server fails the test and cannot hang the run.
+	wait, stopWait := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopWait()
+	select {
+	case <-entered:
+	case <-wait.Done():
+		t.Fatal("the first target did not reach the server within 5 seconds")
+	}
 
 	slot, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

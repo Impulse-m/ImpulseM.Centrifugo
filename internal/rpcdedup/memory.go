@@ -170,8 +170,11 @@ type storedRecord struct {
 
 // scopeState is an admitted scope: its records, oldest first, and its running calls. It also holds the tombstone budget
 // of its scope: the tombstones charged in the current window, and the time the window ends. The window is one TTL long,
-// from its first tombstone, so the budget is forgotten when that tombstone expires. The state lives while the scope holds
-// a record, and every tombstone which is counted lives at most one TTL, so the state outlives none of them.
+// from its first tombstone, so it ends when that tombstone expires, which is no later than any tombstone it counts.
+// The state is dropped only when the scope holds no record and no call. A scope loses a tombstone before its expiry only
+// to make room for a newer record of its own, so while it writes nothing but tombstones the state lasts for the window.
+// A scope which pushes its tombstones out with the records of calls, and acks those records, is released earlier and
+// starts a new count, but each such record costs it a call, which the rate limit of its method bounds.
 type scopeState struct {
 	scope        string
 	user         string

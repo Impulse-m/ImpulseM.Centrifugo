@@ -38,8 +38,8 @@ const (
 type RateLimit struct {
 	// ClientCommand is a per-connection rate limit of client commands.
 	ClientCommand RateLimitClientCommand `mapstructure:"client_command" json:"client_command" envconfig:"client_command" yaml:"client_command" toml:"client_command" doc:"A per-connection rate limit of client commands."`
-	// UserCommand is a per-user in-memory rate limit of client commands.
-	UserCommand RateLimitUserCommand `mapstructure:"user_command" json:"user_command" envconfig:"user_command" yaml:"user_command" toml:"user_command" doc:"A per-user in-memory rate limit of client commands."`
+	// UserCommand is a per-user in-memory rate limit of client commands. It is counted on each node separately.
+	UserCommand RateLimitUserCommand `mapstructure:"user_command" json:"user_command" envconfig:"user_command" yaml:"user_command" toml:"user_command" doc:"A per-user in-memory rate limit of client commands. It is counted on each node separately, so a user whose connections are on several nodes has the limit on each of them. Use redis_user_command for a limit which holds for the whole cluster."`
 	// RedisUserCommand is a per-user rate limit of client commands with Redis as a state storage.
 	RedisUserCommand RateLimitRedisUserCommand `mapstructure:"redis_user_command" json:"redis_user_command" envconfig:"redis_user_command" yaml:"redis_user_command" toml:"redis_user_command" doc:"A per-user rate limit of client commands with Redis as a state storage."`
 	// ClientError is a per-connection limit of protocol errors. Connection is disconnected when exceeded.

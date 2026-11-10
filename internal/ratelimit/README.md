@@ -15,6 +15,12 @@ command of its users up to that long on the connection reader, so for a shared R
 sooner, and a timed out check is handled as any Redis error is: allowed, or refused for one second with
 `on_error: deny`.
 
+The commands in flight when Redis stalls still wait up to that timeout once. After a Redis call of a shard fails, the
+node makes no Redis call for that shard for one second: the checks of its users are answered at once, as a Redis error
+answers them, and a timed out call counts too. Then exactly one check asks the shard again, while the others are still
+answered at once. A call which succeeds closes the breaker of its shard, and a call which fails opens it for another
+second. Other shards are not affected.
+
 On Redis errors commands are allowed (fail-open), or refused for one second with
 `client.rate_limit.redis_user_command.on_error: deny`. Connects are then refused too, including while Redis is
 unreachable at startup. With `on_error: allow` (the default) the node starts when Redis is unreachable: it allows commands and reconnects in the background. With `on_error: deny` it starts too, and refuses commands (one second each) and connects until Redis connects.
@@ -48,6 +54,10 @@ A user with `user_command` limits holds the same per user while its state is kep
 buckets, or once when all of them are token buckets, and at least 60s. The states are kept in memory on each node, one
 per distinct user seen in that time, and Go maps do not shrink. The same formula gives the bytes of a user with
 `user_command` limits, method overrides included.
+
+A `user_command` limit is counted on each node separately: a user whose connections are on several nodes has its budget
+on each of them, so the limit of the cluster is the configured one times the number of nodes which hold the user's
+connections, and it grows when nodes are added. `redis_user_command` is the limit which holds for the whole cluster.
 
 The worst case of one connection is 4096 `method_overrides` entries of 16 buckets each: 4096 x 16 x 8 bytes = 512 KiB
 with token buckets, and 4096 x 16 x 3 x 8 bytes = 1.5 MiB with sliding windows. Namespace overrides are not capped by

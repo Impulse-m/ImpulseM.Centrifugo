@@ -1,6 +1,7 @@
 package webpush
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,30 +35,38 @@ var urgencyValues = map[string]bool{
 	"high":     true,
 }
 
-// checkHeaders validates the caller headers of the webpush target at index. The names must be exactly TTL, Urgency and
-// Topic. TTL is a non-negative decimal integer of seconds, Urgency one of its values and Topic a valid Topic. A caller Topic
-// must equal a set collapse id, and passes unchanged when the collapse id is empty.
-func checkHeaders(caller map[string]string, collapseID string, index int) error {
+// checkHeaders returns the error that refuses the caller headers of a Web Push request. The names must be exactly TTL,
+// Urgency and Topic. TTL is a non-negative decimal integer of seconds, Urgency one of its values and Topic a valid Topic.
+// The request has one set of caller headers, so the check is made once for the request and names no target.
+func checkHeaders(caller map[string]string) error {
 	for name, value := range caller {
 		switch name {
 		case headerTTL:
 			if _, err := strconv.ParseUint(value, 10, 63); err != nil {
-				return fmt.Errorf("webpush target %d header TTL is not a non-negative decimal integer", index)
+				return errors.New("webpush header TTL is not a non-negative decimal integer")
 			}
 		case headerUrgency:
 			if !urgencyValues[value] {
-				return fmt.Errorf("webpush target %d header Urgency must be very-low, low, normal or high", index)
+				return errors.New("webpush header Urgency must be very-low, low, normal or high")
 			}
 		case headerTopic:
 			if !validTopic(value) {
-				return fmt.Errorf("webpush target %d header Topic must be 1 to 32 characters of A-Z a-z 0-9 - _", index)
-			}
-			if collapseID != "" && value != collapseID {
-				return fmt.Errorf("webpush target %d header Topic differs from the collapse id of the target", index)
+				return errors.New("webpush header Topic must be 1 to 32 characters of A-Z a-z 0-9 - _")
 			}
 		default:
-			return fmt.Errorf("webpush target %d header %s is not allowed", index, name)
+			return fmt.Errorf("webpush header %s is not allowed", name)
 		}
+	}
+	return nil
+}
+
+// checkTopicOfTarget returns the error of a caller Topic that differs from the collapse id of the target at index. The
+// check is per target, because the collapse id of a target may be its own. A Topic passes unchanged when the collapse id is
+// empty.
+func checkTopicOfTarget(caller map[string]string, collapseID string, index int) error {
+	topic, ok := caller[headerTopic]
+	if ok && collapseID != "" && topic != collapseID {
+		return fmt.Errorf("webpush target %d header Topic differs from the collapse id of the target", index)
 	}
 	return nil
 }

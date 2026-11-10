@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/origin"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // Option sets a field of a Client. The options are test seams: production code uses none of them.
@@ -30,13 +32,6 @@ func withTLSConfig(config *tls.Config) Option {
 func withRoundTripper(roundTripper http.RoundTripper) Option {
 	return func(client *Client) {
 		client.httpClient.Transport = roundTripper
-	}
-}
-
-// withClock replaces the clock of the client: the expiry check, the TTL and the VAPID token age.
-func withClock(now func() time.Time) Option {
-	return func(client *Client) {
-		client.now = now
 	}
 }
 
@@ -88,7 +83,8 @@ var errRequestBuild = errors.New("webpush request could not be built")
 
 // NewClient returns the sender of the Web Push targets. The key is the VAPID private key and publicKey its base64url form,
 // which the frontend uses as its application server key. subject is the sub claim of the token, and origins decides which
-// push service origins are allowed.
+// push service origins are allowed. The k value of the Authorization header is the public key in unpadded base64url, so a
+// configured key with "=" padding is decoded and encoded again once here.
 func NewClient(
 	key *ecdsa.PrivateKey,
 	publicKey string,
@@ -100,8 +96,13 @@ func NewClient(
 		return nil, errors.New("webpush origin patterns are required")
 	}
 
+	raw, err := vapidkey.DecodeBase64URL(publicKey)
+	if err != nil {
+		return nil, errors.New("webpush VAPID public key is not base64url")
+	}
+
 	client := &Client{
-		publicKey: publicKey,
+		publicKey: base64.RawURLEncoding.EncodeToString(raw),
 		origins:   origins,
 		now:       time.Now,
 		random:    systemRandom,
@@ -137,7 +138,8 @@ func noRedirect(_ *http.Request, _ []*http.Request) error {
 }
 
 // Send sends the job to its endpoint and returns its raw result. It implements provider.Sender. The item checks run first,
-// and the payload is encrypted after the caller holds the in-flight slot, so a target that waits holds no encrypted body.
+// unless Refusal has run for the job, which keeps the checked target in job.Prepared. The payload is encrypted after the
+// caller holds the in-flight slot, so a target that waits holds no encrypted body.
 func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItemResult {
 	now := c.now()
 	// An expired target is refused before any call, as the dispatcher refuses it too.
@@ -145,9 +147,13 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		return provider.NewCodeResult(job, provider.CodeExpired)
 	}
 
-	target, code := prepare(job, c.origins)
-	if code != "" {
-		return provider.NewCodeResult(job, code)
+	target, ok := job.Prepared.(*delivery)
+	if !ok {
+		prepared, code := prepare(job, c.origins)
+		if code != "" {
+			return provider.NewCodeResult(job, code)
+		}
+		target = prepared
 	}
 
 	token, err := c.vapid.token(target.origin)
@@ -177,10 +183,11 @@ func (c *Client) Send(ctx context.Context, job *provider.Job) *apiproto.PushItem
 		}
 		return provider.NoAnswerResult(ctx, job, result.written)
 	}
-	if result.answer.status >= 200 && result.answer.status < 300 {
-		return answeredResult(job, provider.StatusSent, result.answer)
+	answer := result.answer
+	if answer.status >= 200 && answer.status < 300 {
+		return provider.NewAnsweredResult(job, provider.StatusSent, answer.status, answer.reason, answer.detail, answer.messageID)
 	}
-	return answeredResult(job, provider.StatusRejected, result.answer)
+	return provider.NewAnsweredResult(job, provider.StatusRejected, answer.status, answer.reason, answer.detail, answer.messageID)
 }
 
 // post sends the request of one attempt to the endpoint of target, with the encrypted body and the headers, and reads the
@@ -223,10 +230,13 @@ func (c *Client) post(
 	answer := response{status: httpResponse.StatusCode}
 	if answer.status >= 200 && answer.status < 300 {
 		// The Location of a 2xx is the message id. It is kept only when it is printable and fits the field: a URL that is
-		// cut is of no use. The body is not read.
+		// cut is of no use.
 		if location := provider.PrintableHeader(httpResponse.Header.Get("Location")); len(location) <= provider.MaxFieldBytes {
 			answer.messageID = location
 		}
+		// The body of a 2xx is read under the bound and dropped, so an HTTP/1.1 connection can be reused. The result does
+		// not use it.
+		_, _ = provider.ReadAnswer(httpResponse)
 		return attempt{answer: answer, answered: true, written: true}, nil
 	}
 
@@ -239,38 +249,34 @@ func (c *Client) post(
 }
 
 // providerFields returns the reason and the detail of a provider error body. The reason is the string reason of the body
-// when present, else the string error. The detail is the string message. A body that is not a JSON object gives none.
+// when it is a string, else the string error. The detail is the string message. Each field is decoded on its own, so a
+// field of another JSON type does not drop the others. A body that is not a JSON object gives none.
 func providerFields(body []byte) (string, string) {
 	var fields struct {
-		Reason  *string `json:"reason"`
-		Error   *string `json:"error"`
-		Message *string `json:"message"`
+		Reason  json.RawMessage `json:"reason"`
+		Error   json.RawMessage `json:"error"`
+		Message json.RawMessage `json:"message"`
 	}
 	if json.Unmarshal(body, &fields) != nil {
 		return "", ""
 	}
 
 	var reason string
-	switch {
-	case fields.Reason != nil:
-		reason = *fields.Reason
-	case fields.Error != nil:
-		reason = *fields.Error
+	if value, ok := stringField(fields.Reason); ok {
+		reason = value
+	} else if value, ok := stringField(fields.Error); ok {
+		reason = value
 	}
-	var detail string
-	if fields.Message != nil {
-		detail = *fields.Message
-	}
+	detail, _ := stringField(fields.Message)
 	return reason, detail
 }
 
-// answeredResult returns the result of job for a provider answer with status. The status line is always kept. Every
-// provider string is cut to the field limit, so one answer cannot put its full size into a result.
-func answeredResult(job *provider.Job, status string, answer response) *apiproto.PushItemResult {
-	result := provider.NewResult(job, status)
-	result.HttpStatus = uint32(answer.status)
-	result.ProviderCode = provider.Truncate(answer.reason)
-	result.ProviderDetail = provider.Truncate(answer.detail)
-	result.ProviderMessageId = provider.Truncate(answer.messageID)
-	return result
+// stringField returns the value of one raw field of a provider body, and whether the field is a JSON string. An absent field,
+// a null and a value of another type are not a string.
+func stringField(raw json.RawMessage) (string, bool) {
+	var value *string
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return "", false
+	}
+	return *value, true
 }

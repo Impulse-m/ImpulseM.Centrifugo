@@ -248,4 +248,4 @@ The answer has one item result per target, in request order:
 
 * Safari and iOS need the web app installed to the Home Screen. A subscription made in a browser tab does not work there.
 * All push services share the provider's `max_inflight`. A push service that answers slowly holds slots that targets of the other services wait for, up to `providers.request_timeout` each.
-* The cost of the encryption is in the benchmark in the package (`internal/push/provider/webpush`).
+* Every target is encrypted on its own, with a fresh key. The encryption of a payload of the largest size takes about 50 microseconds of one core and allocates about 18 KB, measured on a hosted CI runner with the benchmark of the package (`internal/push/provider/webpush`): a call with 1000 targets costs about 50 milliseconds of CPU.

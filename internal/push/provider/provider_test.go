@@ -70,15 +70,6 @@ func TestPrintableHeaderRefusesControlCharacters(t *testing.T) {
 	}
 }
 
-func TestWebPushPayloadBoundFollowsFromTheHeaderSizes(t *testing.T) {
-	// The body is salt 16, record size 4, key id length 1 and key id 65, the plaintext, the padding delimiter and the tag.
-	const headerBytes = 16 + 4 + 1 + 65
-	const paddingDelimiterBytes = 1
-	const tagBytes = 16
-
-	require.Equal(t, 4096-headerBytes-paddingDelimiterBytes-tagBytes, MaxWebPushPayloadBytes)
-}
-
 func TestWebPushPayloadOfPrefersTheTarget(t *testing.T) {
 	job := &Job{
 		Target: &apiproto.PushTarget{

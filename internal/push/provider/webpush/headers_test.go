@@ -16,16 +16,17 @@ func TestCheckHeadersAcceptsTheThreeNames(t *testing.T) {
 		"TTL":     "60",
 		"Urgency": "high",
 		"Topic":   "chat-1",
-	}, "", 0))
-	require.NoError(t, checkHeaders(nil, "", 0))
+	}))
+	require.NoError(t, checkHeaders(nil))
 }
 
 func TestCheckHeadersRefusesOtherNames(t *testing.T) {
 	for _, name := range []string{"ttl", "Ttl", "urgency", "topic", "Authorization", "Content-Length"} {
-		err := checkHeaders(map[string]string{name: "1"}, "", 2)
+		err := checkHeaders(map[string]string{name: "1"})
 
 		require.Error(t, err, name)
-		require.Contains(t, err.Error(), "webpush target 2")
+		require.Contains(t, err.Error(), name)
+		require.NotContains(t, err.Error(), "target", "a request-level error names no target")
 	}
 }
 
@@ -56,7 +57,7 @@ func TestCheckHeadersValueRules(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			err := checkHeaders(testCase.header, "", 0)
+			err := checkHeaders(testCase.header)
 
 			if testCase.valid {
 				require.NoError(t, err)
@@ -67,10 +68,11 @@ func TestCheckHeadersValueRules(t *testing.T) {
 	}
 }
 
-func TestCheckHeadersTopicMustMatchTheCollapseID(t *testing.T) {
-	require.Error(t, checkHeaders(map[string]string{"Topic": "first"}, "second", 0))
-	require.NoError(t, checkHeaders(map[string]string{"Topic": "first"}, "first", 0))
-	require.NoError(t, checkHeaders(map[string]string{"Topic": "first"}, "", 0))
+func TestCheckTopicOfTargetMustMatchTheCollapseID(t *testing.T) {
+	require.Error(t, checkTopicOfTarget(map[string]string{"Topic": "first"}, "second", 0))
+	require.NoError(t, checkTopicOfTarget(map[string]string{"Topic": "first"}, "first", 0))
+	require.NoError(t, checkTopicOfTarget(map[string]string{"Topic": "first"}, "", 0))
+	require.NoError(t, checkTopicOfTarget(nil, "second", 0))
 }
 
 func TestTopicComesFromTheCallerOrTheCollapseID(t *testing.T) {

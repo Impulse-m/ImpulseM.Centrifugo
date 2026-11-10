@@ -111,7 +111,7 @@ func TestValidateWebPushTargetRequestChecks(t *testing.T) {
 
 	notObject := webPushOnly()
 	notObject.Notification.Webpush.Payload = []byte(`[1]`)
-	requireRefusal(t, s, notObject, 107, "webpush target 0 payload is not a JSON object")
+	requireRefusal(t, s, notObject, 107, "webpush payload is not a JSON object")
 }
 
 func TestValidateProviderValueFirst(t *testing.T) {

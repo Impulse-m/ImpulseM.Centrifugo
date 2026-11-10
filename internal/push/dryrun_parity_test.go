@@ -124,6 +124,43 @@ func parityCases() []parityCase {
 			refusal: 107,
 		},
 		{
+			name: "webpush target without a payload",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Notification.Webpush.Payload = nil
+				return req
+			},
+			refusal: 107,
+		},
+		{
+			name: "webpush TTL that is not a number",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Notification.Webpush.Headers = map[string]string{"TTL": "-1"}
+				return req
+			},
+			refusal: 107,
+		},
+		{
+			name: "webpush urgency outside the list",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Notification.Webpush.Headers = map[string]string{"Urgency": "urgent"}
+				return req
+			},
+			refusal: 107,
+		},
+		{
+			name: "webpush caller topic differs from the collapse id",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.CollapseId = "a"
+				req.Notification.Webpush.Headers = map[string]string{"Topic": "b"}
+				return req
+			},
+			refusal: 107,
+		},
+		{
 			name:  "valid apns target",
 			build: apnsOnly,
 		},
@@ -212,6 +249,46 @@ func parityCases() []parityCase {
 			refusal: 107,
 		},
 	}
+}
+
+// mixedOrderRequest returns a request with one valid APNs target and one valid Web Push target, under the request collapse
+// id order.123. That id is a valid APNs collapse id, and it is not a valid Topic, because of its dot.
+func mixedOrderRequest() *apiproto.SendPushNotificationRequest {
+	req := apnsOnly()
+	web := webPushOnly()
+	req.Recipient.Targets = append(req.Recipient.Targets, web.Recipient.Targets[0])
+	req.Notification.Webpush = web.Notification.Webpush
+	req.CollapseId = "order.123"
+	return req
+}
+
+// TestDryRunAnswersMixedRequestLikeLive checks that a request with an APNs target and a Web Push target under one request
+// collapse id is answered per item as a live send answers it: the APNs target is sent, or dry_run in dry run, and the Web Push
+// target is rejected with invalid_topic, so one collapse id that suits APNs does not fail the other target.
+func TestDryRunAnswersMixedRequestLikeLive(t *testing.T) {
+	live := newTestSender(t, &countingSender{}, nil)
+
+	dryCfg := testConfig()
+	dryCfg.DryRun = true
+	dry, err := Setup(context.Background(), dryCfg)
+	require.NoError(t, err)
+
+	liveResp := live.Send(context.Background(), mixedOrderRequest())
+	dryResp := dry.Send(context.Background(), mixedOrderRequest())
+
+	require.Nil(t, liveResp.GetError())
+	require.Nil(t, dryResp.GetError())
+	liveResults := liveResp.GetResult().GetResults()
+	dryResults := dryResp.GetResult().GetResults()
+	require.Len(t, liveResults, 2)
+	require.Len(t, dryResults, 2)
+
+	require.Equal(t, provider.StatusSent, liveResults[0].GetStatus())
+	require.Equal(t, provider.StatusDryRun, dryResults[0].GetStatus())
+	require.Equal(t, provider.StatusRejected, liveResults[1].GetStatus())
+	require.Equal(t, provider.CodeInvalidTopic, liveResults[1].GetCode())
+	require.Equal(t, provider.StatusRejected, dryResults[1].GetStatus())
+	require.Equal(t, provider.CodeInvalidTopic, dryResults[1].GetCode())
 }
 
 // TestDryRunAnswersLikeLive checks that a dry run runs the same checks as the live send, before any provider call: the

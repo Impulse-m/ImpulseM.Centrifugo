@@ -64,6 +64,35 @@ func TestRefusedAddressRanges(t *testing.T) {
 	}
 }
 
+// TestRefusedAddressRangeBoundaries checks the first and the last address of the private and carrier-grade NAT ranges, and
+// the addresses just outside them.
+func TestRefusedAddressRangeBoundaries(t *testing.T) {
+	testCases := []struct {
+		address string
+		refused bool
+	}{
+		{address: "172.15.255.255", refused: false},
+		{address: "172.16.0.0", refused: true},
+		{address: "172.31.255.255", refused: true},
+		{address: "172.32.0.1", refused: false},
+		{address: "100.63.255.255", refused: false},
+		{address: "100.64.0.0", refused: true},
+		{address: "100.127.255.255", refused: true},
+		{address: "100.128.0.0", refused: false},
+		{address: "fc00::1", refused: true},
+		{address: "fdff::1", refused: true},
+		{address: "fe00::1", refused: false},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.address, func(t *testing.T) {
+			address, err := netip.ParseAddr(testCase.address)
+			require.NoError(t, err)
+
+			require.Equal(t, testCase.refused, refusedAddress(address))
+		})
+	}
+}
+
 func TestInvalidAddressIsRefused(t *testing.T) {
 	require.True(t, refusedAddress(netip.Addr{}))
 }

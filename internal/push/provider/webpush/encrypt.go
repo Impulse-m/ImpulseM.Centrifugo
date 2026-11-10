@@ -10,10 +10,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // Sizes of the aes128gcm body of RFC 8188 and of the keys of RFC 8291. The record size is the one the body states: one
-// record holds the whole payload, so the padding delimiter is the last byte of the record.
+// record holds the whole payload, so the padding delimiter is the last byte of the record. The key id of the body is the
+// ephemeral public key, which has the length of vapidkey.PublicKeyLength.
 const (
 	saltLength              = 16
 	recordSize       uint32 = 4096
@@ -21,7 +24,6 @@ const (
 	ikmLength               = 32
 	cekLength               = 16
 	nonceLength             = 12
-	keyIDLength             = 65
 )
 
 // keyInfoPrefix starts the info of the key combining step of RFC 8291.
@@ -86,7 +88,7 @@ func encrypt(payload []byte, receiver *ecdh.PublicKey, auth []byte, ephemeral *e
 	plaintext = append(plaintext, paddingDelimiter)
 	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 
-	body := make([]byte, 0, saltLength+4+1+keyIDLength+len(ciphertext))
+	body := make([]byte, 0, saltLength+4+1+vapidkey.PublicKeyLength+len(ciphertext))
 	body = append(body, salt...)
 	body = binary.BigEndian.AppendUint32(body, recordSize)
 	body = append(body, byte(len(ephemeralPublic)))

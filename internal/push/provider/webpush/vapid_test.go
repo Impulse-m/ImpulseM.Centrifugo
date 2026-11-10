@@ -135,6 +135,30 @@ func TestVAPIDTableIsBounded(t *testing.T) {
 	require.Contains(t, table.entries, fmt.Sprintf("https://push%d.example.com", origins-1))
 }
 
+// TestEvictKeepsAnEntryThatIsBeingSigned checks that an entry whose lock is held, as it is while its token is signed, survives
+// an eviction of a full table, even when it is older than an hour.
+func TestEvictKeepsAnEntryThatIsBeingSigned(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	current := base
+	table, _ := newTestTable(t, func() time.Time { return current })
+
+	for index := 0; index < maxVAPIDOrigins; index++ {
+		_, err := table.token(fmt.Sprintf("https://push%d.example.com", index))
+		require.NoError(t, err)
+	}
+	held := table.entries["https://push0.example.com"]
+	held.mu.Lock()
+	defer held.mu.Unlock()
+
+	current = base.Add(2 * time.Hour)
+	_, err := table.token("https://late.example.com")
+	require.NoError(t, err)
+
+	require.Contains(t, table.entries, "https://push0.example.com", "an entry that is being signed is kept")
+	require.Contains(t, table.entries, "https://late.example.com")
+	require.Len(t, table.entries, 2, "every other entry older than an hour is dropped")
+}
+
 func TestVAPIDTableDropsEntriesOlderThanAnHourBeforeTheOldest(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	current := base

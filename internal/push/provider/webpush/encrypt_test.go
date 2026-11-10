@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // Values of the example of RFC 8291 (rfc8291.txt). Each value is copied from the line numbers named in its comment. A value
@@ -98,8 +99,38 @@ func TestEncryptMatchesRFC8291Example(t *testing.T) {
 
 	body, err := encrypt([]byte(rfcPlaintext), receiver, auth, ephemeral, salt)
 	require.NoError(t, err)
-	require.Equal(t, decodeRFC(t, rfcHeader), body[:saltLength+4+1+keyIDLength])
+	require.Equal(t, decodeRFC(t, rfcHeader), body[:saltLength+4+1+vapidkey.PublicKeyLength])
 	require.Equal(t, decodeRFC(t, rfcBody), body)
+}
+
+// TestDecryptRFC8291ExampleWithTheReceiverKey checks that a receiver that holds the private key of the example opens the body
+// of the example to its plaintext. The keys are derived on the receiver side from the header of the body: the salt and the
+// sender public key.
+func TestDecryptRFC8291ExampleWithTheReceiverKey(t *testing.T) {
+	receiver, err := ecdh.P256().NewPrivateKey(decodeRFC(t, rfcReceiverPrivate))
+	require.NoError(t, err)
+	require.Equal(t, decodeRFC(t, rfcReceiverPublic), receiver.PublicKey().Bytes())
+
+	plaintext := decryptForTest(t, decodeRFC(t, rfcBody), receiver, decodeRFC(t, rfcAuthSecret))
+
+	require.Equal(t, rfcPlaintext, string(plaintext))
+}
+
+// TestEncryptBodyOfTheLargestPayloadIsOneRecord checks that the body of a payload of 3993 bytes, the largest one the
+// subscription check accepts, is exactly 4096 bytes: the 86-byte header, the payload, the padding delimiter and the tag.
+func TestEncryptBodyOfTheLargestPayloadIsOneRecord(t *testing.T) {
+	receiver, err := ecdh.P256().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	auth := make([]byte, authLength)
+	_, err = io.ReadFull(rand.Reader, auth)
+	require.NoError(t, err)
+	ephemeral, salt, err := systemRandom()
+	require.NoError(t, err)
+
+	body, err := encrypt(bytes.Repeat([]byte("p"), 3993), receiver.PublicKey(), auth, ephemeral, salt)
+
+	require.NoError(t, err)
+	require.Len(t, body, 4096)
 }
 
 // decryptForTest is a receiver written in the test: it reads the header of an aes128gcm body, derives the keys with its

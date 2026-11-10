@@ -18,7 +18,8 @@ const (
 )
 
 // vapidEntry is the cached VAPID token of one origin. Its lock serialises the signing, so concurrent calls for one origin
-// sign once and the others wait for that signature. signedAt is atomic, so the eviction reads it under the table lock only.
+// sign once and the others wait for that signature. The eviction takes the lock with TryLock and skips an entry that is
+// held. signedAt is atomic, so a read that does not hold the entry lock is still free of a data race.
 type vapidEntry struct {
 	mu       sync.Mutex
 	token    string
@@ -100,9 +101,10 @@ func (t *vapidTable) entryOf(origin string) *vapidEntry {
 	return entry
 }
 
-// evict makes room for one entry in a full table. It is one pass over the table: it drops every entry older than an hour,
-// and when there is none, it drops the oldest entry. An entry that is not signed yet counts as the oldest. The caller holds
-// the table lock.
+// evict makes room for one entry in a full table. It is one pass over the table. An entry whose lock is held is being
+// signed right now, so it is kept. Every other entry that holds a token and is older than an hour is dropped. When none is
+// dropped, the entry with the oldest signing time is dropped, and an entry that was never signed counts as the oldest. The
+// caller holds the table lock.
 func (t *vapidTable) evict(now time.Time) {
 	dropped := false
 	found := false
@@ -110,8 +112,14 @@ func (t *vapidTable) evict(now time.Time) {
 	var oldestAt int64
 
 	for origin, entry := range t.entries {
+		if !entry.mu.TryLock() {
+			continue
+		}
 		signedAt := entry.signedAt.Load()
-		if now.Sub(time.Unix(0, signedAt)) > vapidResign {
+		stale := entry.token != "" && now.Sub(time.Unix(0, signedAt)) > vapidResign
+		entry.mu.Unlock()
+
+		if stale {
 			delete(t.entries, origin)
 			dropped = true
 			continue

@@ -6,7 +6,6 @@ package webpush
 
 import (
 	"crypto/ecdh"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +14,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/origin"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // DefaultEndpointOrigins is the built-in list of allowed push service origins, as the documentation of Centrifugo PRO
@@ -31,12 +32,9 @@ var DefaultEndpointOrigins []string = []string{
 // defaultPort is the port of an https URL that the origin of an endpoint leaves out.
 const defaultPort uint64 = 443
 
-// keyLengths are the decoded lengths of the subscription keys: the p256dh is an uncompressed P-256 point, and the auth
-// secret is 16 bytes.
-const (
-	p256dhLength = 65
-	authLength   = 16
-)
+// authLength is the decoded length of the auth secret of a subscription, which is 16 bytes. The p256dh is checked against
+// vapidkey.PublicKeyLength, the length of an uncompressed P-256 point.
+const authLength = 16
 
 // errSubscriptionShape is the error of a token that is not the PushSubscription JSON of a Web Push target. The message
 // names the shape and never a value.
@@ -76,40 +74,55 @@ func EndpointOrigins(allowed []string, extra []string) []string {
 	return append(patterns, extra...)
 }
 
-// CheckRequest returns the error that refuses the whole request for the webpush target of job, or nil. It checks the shape
-// of the target: the token, the environment, the payload and the headers. The error names the field and the reason, and
-// never a value. The subscription values and the origin checks are item results, so they are not checked here.
+// CheckNotification returns the error that refuses the whole request for its webpush notification, or nil: the request
+// payload, when set and under the scan bound, must be one JSON object, and the caller headers must be the three allowed
+// names with valid values. It is checked once for a request, whatever the number of targets. The error names the reason
+// and never a value.
+func CheckNotification(notification *apiproto.PushNotification) error {
+	payload := notification.GetWebpush().GetPayload()
+	if len(payload) > 0 && len(payload) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(payload) {
+		return errors.New("webpush payload is not a JSON object")
+	}
+	return checkHeaders(notification.GetWebpush().GetHeaders())
+}
+
+// CheckRequest returns the error that refuses the webpush target of job, or nil. It checks what is the target's own: the
+// shape of its token, its own payload when it has one, that it has a payload at all, and its caller Topic against its
+// collapse id. The request payload and the caller headers are checked once for the request, by CheckNotification. The
+// error names the target index and the reason, and never a value. The subscription values and the origin checks are item
+// results, so they are not checked here.
 func CheckRequest(job *provider.Job) error {
 	if _, err := parseSubscription(job.Target.GetToken()); err != nil {
 		return fmt.Errorf("webpush target %d token %w", job.Index, err)
 	}
-	if job.Target.GetEnvironment() != "" {
-		return fmt.Errorf("webpush target %d environment must be empty", job.Index)
-	}
 
-	payload := provider.WebPushPayloadOf(job)
-	if len(payload) == 0 {
+	if len(provider.WebPushPayloadOf(job)) == 0 {
 		return fmt.Errorf("webpush target %d needs a payload: notification.webpush.payload or webpush_payload", job.Index)
 	}
-	// A payload over the scan threshold is not scanned: it is an item answered payload_too_large. The threshold is the
-	// APNs one, the largest ceiling of the server.
-	if len(payload) <= provider.MaxAPNsVoIPPayloadBytes && !provider.IsJSONObject(payload) {
+	own := job.Target.GetWebpushPayload()
+	if len(own) > 0 && len(own) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(own) {
 		return fmt.Errorf("webpush target %d payload is not a JSON object", job.Index)
 	}
 
-	return checkHeaders(job.Notification.GetWebpush().GetHeaders(), job.CollapseID, job.Index)
+	return checkTopicOfTarget(job.Notification.GetWebpush().GetHeaders(), job.CollapseID, job.Index)
 }
 
 // Refusal returns the item code that refuses job with no provider call, or the empty string for a job to send. The checks
 // are the ones of the specification: the subscription, the endpoint origin, the Topic and the payload ceiling. The result
-// is the same in a live send and in dry run. It loads no key and opens no connection.
+// is the same in a live send and in dry run. It loads no key and opens no connection. For a job that passes, it sets
+// job.Prepared to the delivery, so Send does not parse the target again.
 func Refusal(job *provider.Job, origins *origin.PatternChecker) string {
-	_, code := prepare(job, origins)
-	return code
+	target, code := prepare(job, origins)
+	if code != "" {
+		return code
+	}
+	job.Prepared = target
+	return ""
 }
 
 // prepare runs the item checks of a webpush target in the order of the specification. It returns the delivery of a valid
-// target, or the item code that refuses it. It opens no connection and encrypts nothing.
+// target, or the item code that refuses it. It opens no connection and encrypts nothing. The payload is the one of the
+// target, its own or the request payload, and its ceiling is the one of the specification.
 func prepare(job *provider.Job, origins *origin.PatternChecker) (*delivery, string) {
 	subscription, err := parseSubscription(job.Target.GetToken())
 	if err != nil {
@@ -149,10 +162,8 @@ func prepare(job *provider.Job, origins *origin.PatternChecker) (*delivery, stri
 // parseSubscription reads the PushSubscription JSON of a token. It checks the shape only: one JSON object with a string
 // endpoint and an object keys with strings p256dh and auth. The values are checked by prepare.
 func parseSubscription(token string) (*subscriptionToken, error) {
-	if !provider.IsJSONObject([]byte(token)) {
-		return nil, errSubscriptionShape
-	}
-
+	// A token that is not one JSON object is refused by Unmarshal: an array, a number or a string does not fit the struct, and
+	// a null leaves the fields nil, which the shape check below refuses.
 	var subscription subscriptionToken
 	if err := json.Unmarshal([]byte(token), &subscription); err != nil {
 		return nil, errSubscriptionShape
@@ -228,8 +239,8 @@ func isDomainByte(character byte) bool {
 // decodeKeys decodes the keys of a subscription. The p256dh must be an uncompressed point of P-256, and the auth secret must
 // be 16 bytes. Both are base64url, with or without "=" padding. ok is false when a key is refused.
 func decodeKeys(keys *subscriptionKeys) (*ecdh.PublicKey, []byte, bool) {
-	point, ok := decodeBase64URL(*keys.P256dh)
-	if !ok || len(point) != p256dhLength {
+	point, err := vapidkey.DecodeBase64URL(*keys.P256dh)
+	if err != nil || len(point) != vapidkey.PublicKeyLength {
 		return nil, nil, false
 	}
 	receiver, err := ecdh.P256().NewPublicKey(point)
@@ -237,18 +248,9 @@ func decodeKeys(keys *subscriptionKeys) (*ecdh.PublicKey, []byte, bool) {
 		return nil, nil, false
 	}
 
-	auth, ok := decodeBase64URL(*keys.Auth)
-	if !ok || len(auth) != authLength {
+	auth, err := vapidkey.DecodeBase64URL(*keys.Auth)
+	if err != nil || len(auth) != authLength {
 		return nil, nil, false
 	}
 	return receiver, auth, true
-}
-
-// decodeBase64URL decodes base64url with or without "=" padding. ok is false for a value that is not base64url.
-func decodeBase64URL(value string) ([]byte, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(value, "="))
-	if err != nil {
-		return nil, false
-	}
-	return raw, true
 }

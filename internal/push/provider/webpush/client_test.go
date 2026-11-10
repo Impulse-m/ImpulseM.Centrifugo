@@ -52,7 +52,7 @@ func newTestSigningKey(t *testing.T) *ecdsa.PrivateKey {
 func publicKeyOf(t *testing.T, key *ecdsa.PrivateKey) string {
 	t.Helper()
 
-	private, err := ecdh.P256().NewPrivateKey(key.D.FillBytes(make([]byte, 32)))
+	private, err := key.ECDH()
 	require.NoError(t, err)
 	return base64.RawURLEncoding.EncodeToString(private.PublicKey().Bytes())
 }
@@ -209,9 +209,17 @@ func (f *fakePush) recorded() []recordedRequest {
 func newTestClient(t *testing.T, fake *fakePush, options ...Option) *Client {
 	t.Helper()
 
+	return newTestClientWithOrigins(t, fake, testOrigins(t), options...)
+}
+
+// newTestClientWithOrigins returns a client that reaches the fake and allows the origins of origins, with the address guard
+// off for the loopback test server.
+func newTestClientWithOrigins(t *testing.T, fake *fakePush, origins *origin.PatternChecker, options ...Option) *Client {
+	t.Helper()
+
 	key := newTestSigningKey(t)
 	all := append([]Option{withTLSConfig(fake.tlsConfig()), withoutAddressGuard()}, options...)
-	client, err := NewClient(key, publicKeyOf(t, key), "mailto:push@example.com", testOrigins(t), all...)
+	client, err := NewClient(key, publicKeyOf(t, key), "mailto:push@example.com", origins, all...)
 	require.NoError(t, err)
 	return client
 }
@@ -414,14 +422,33 @@ func TestSendRefusedAddressIsNotSentWithAddressBlocked(t *testing.T) {
 
 // TestSendWrittenThenHeldIsUnanswered checks that a request the server read, and then held, is unanswered.
 func TestSendWrittenThenHeldIsUnanswered(t *testing.T) {
+	held := make(chan struct{}, 1)
 	fake := newFakePush(t, func(writer http.ResponseWriter, request *http.Request) {
+		held <- struct{}{}
 		<-request.Context().Done()
 	})
 	client := newTestClient(t, fake)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	result := client.Send(ctx, newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`))
+	token := newTokenFor(t, fake.endpoint("/x"))
+	results := make(chan *apiproto.PushItemResult, 1)
+	go func() {
+		results <- client.Send(ctx, newTestJob(0, token, nil, `{"a":1}`))
+	}()
+
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server did not read the request within 5 seconds")
+	}
+	cancel()
+	var result *apiproto.PushItemResult
+	select {
+	case result = <-results:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the send did not return within 5 seconds of the cancel")
+	}
 
 	require.Len(t, fake.recorded(), 1, "the server must have read the request before it held the answer")
 	require.Equal(t, provider.StatusUnanswered, result.GetStatus())
@@ -429,34 +456,33 @@ func TestSendWrittenThenHeldIsUnanswered(t *testing.T) {
 	require.Zero(t, result.GetHttpStatus())
 }
 
-// TestSendRefusalsMakeNoRequest checks that each item refusal is answered with its code and no request is made.
+// TestSendRefusalsMakeNoRequest checks that each item refusal is answered with its code and no request is made. Each endpoint
+// is built from the fake, so a request sent by mistake would be recorded. The origin case allows other origins only, so the
+// origin of the fake is not allowed there.
 func TestSendRefusalsMakeNoRequest(t *testing.T) {
 	testCases := []struct {
-		name     string
-		endpoint string
-		mutate   func(job *provider.Job)
-		code     string
+		name    string
+		origins []string
+		mutate  func(job *provider.Job)
+		code    string
 	}{
-		{name: "origin not allowed", endpoint: "https://evil.example/x", code: provider.CodeEndpointNotAllowed},
+		{name: "origin not allowed", origins: []string{"https://push.example.com"}, code: provider.CodeEndpointNotAllowed},
 		{
-			name:     "invalid resolved topic",
-			endpoint: "https://localhost:1/x",
+			name: "invalid resolved topic",
 			mutate: func(job *provider.Job) {
 				job.CollapseID = "not a topic"
 			},
 			code: provider.CodeInvalidTopic,
 		},
 		{
-			name:     "expired",
-			endpoint: "https://localhost:1/x",
+			name: "expired",
 			mutate: func(job *provider.Job) {
 				job.Notification.ExpireAt = time.Now().Unix() - 1
 			},
 			code: provider.CodeExpired,
 		},
 		{
-			name:     "payload too large",
-			endpoint: "https://localhost:1/x",
+			name: "payload too large",
 			mutate: func(job *provider.Job) {
 				job.Notification.Webpush.Payload = []byte(jsonPayload(provider.MaxWebPushPayloadBytes + 1))
 			},
@@ -468,8 +494,14 @@ func TestSendRefusalsMakeNoRequest(t *testing.T) {
 			fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
 				writer.WriteHeader(http.StatusCreated)
 			})
-			client := newTestClient(t, fake)
-			job := newTestJob(0, newTokenFor(t, testCase.endpoint), nil, `{"a":1}`)
+			origins := testOrigins(t)
+			if testCase.origins != nil {
+				checker, err := origin.NewPatternChecker(testCase.origins)
+				require.NoError(t, err)
+				origins = checker
+			}
+			client := newTestClientWithOrigins(t, fake, origins)
+			job := newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`)
 			if testCase.mutate != nil {
 				testCase.mutate(job)
 			}
@@ -487,10 +519,21 @@ func TestSendRefusalsMakeNoRequest(t *testing.T) {
 // body: the key and the salt are drawn once, for the target that holds the slot.
 func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHeld := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	t.Cleanup(releaseHeld)
 	entered := make(chan struct{}, 2)
 	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
 		entered <- struct{}{}
-		<-release
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			t.Errorf("the handler was not released within 5 seconds")
+		}
 		writer.WriteHeader(http.StatusCreated)
 	})
 	var randoms atomic.Int64
@@ -515,23 +558,8 @@ func TestSendEncryptsOnlyAfterTheSlotIsHeld(t *testing.T) {
 	require.Equal(t, provider.CodeNoSlot, result.GetCode())
 	require.Equal(t, int64(1), randoms.Load(), "the waiting target draws no key and encrypts nothing")
 
-	close(release)
+	releaseHeld()
 	wg.Wait()
-}
-
-// TestDryRunSendsAndEncryptsNothing checks that dry run answers a valid target with dry_run and makes no call.
-func TestDryRunSendsAndEncryptsNothing(t *testing.T) {
-	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
-		writer.WriteHeader(http.StatusCreated)
-	})
-	set := provider.NewDryRunSet().WithRefusalCheck(func(job *provider.Job) string {
-		return Refusal(job, testOrigins(t))
-	})
-
-	result := set.Dispatch(context.Background(), time.Minute, newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`))
-
-	require.Equal(t, provider.StatusDryRun, result.GetStatus())
-	require.Empty(t, fake.recorded())
 }
 
 // TestSendIgnoresProxyEnvironment checks that a proxy named in the environment has no effect: the request reaches the
@@ -557,4 +585,90 @@ func TestNewClientRequiresOriginPatterns(t *testing.T) {
 	_, err := NewClient(key, publicKeyOf(t, key), "mailto:push@example.com", nil)
 
 	require.Error(t, err)
+}
+
+// TestPaddedPublicKeyGivesAnUnpaddedKValue checks that a configured public key with "=" padding gives the k value of the
+// Authorization header in unpadded base64url.
+func TestPaddedPublicKeyGivesAnUnpaddedKValue(t *testing.T) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	})
+	key := newTestSigningKey(t)
+	private, err := key.ECDH()
+	require.NoError(t, err)
+	padded := base64.URLEncoding.EncodeToString(private.PublicKey().Bytes())
+	require.True(t, strings.HasSuffix(padded, "="))
+	client, err := NewClient(key, padded, "mailto:push@example.com", testOrigins(t), withTLSConfig(fake.tlsConfig()), withoutAddressGuard())
+	require.NoError(t, err)
+
+	result := client.Send(context.Background(), newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`))
+
+	require.Equal(t, provider.StatusSent, result.GetStatus())
+	authorization := fake.recorded()[0].headers.Get("Authorization")
+	require.True(t, strings.HasSuffix(authorization, ", k="+publicKeyOf(t, key)))
+}
+
+// TestRejectedBodyFieldsAreReadOneByOne checks that a field of another JSON type does not drop the other fields of the body:
+// the reason is the error string, and the detail is the message.
+func TestRejectedBodyFieldsAreReadOneByOne(t *testing.T) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"reason": 1, "error": "BadRequest", "message": "x"}`))
+	})
+	client := newTestClient(t, fake)
+
+	result := client.Send(context.Background(), newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`))
+
+	require.Equal(t, provider.StatusRejected, result.GetStatus())
+	require.Equal(t, uint32(http.StatusBadRequest), result.GetHttpStatus())
+	require.Equal(t, "BadRequest", result.GetProviderCode())
+	require.Equal(t, "x", result.GetProviderDetail())
+}
+
+// TestSuccessWithBodyIsSent checks that a 2xx answer is sent, and that its body does not change the result.
+func TestSuccessWithBodyIsSent(t *testing.T) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte(`{"some":"body"}`))
+	})
+	client := newTestClient(t, fake)
+
+	result := client.Send(context.Background(), newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`))
+
+	require.Equal(t, provider.StatusSent, result.GetStatus())
+	require.Equal(t, uint32(http.StatusCreated), result.GetHttpStatus())
+	require.Empty(t, result.GetProviderCode())
+	require.Empty(t, result.GetProviderDetail())
+}
+
+// TestSendWithoutAPriorRefusal checks that Send checks and sends a job that Refusal never saw.
+func TestSendWithoutAPriorRefusal(t *testing.T) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	})
+	client := newTestClient(t, fake)
+	job := newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`)
+	require.Nil(t, job.Prepared)
+
+	result := client.Send(context.Background(), job)
+
+	require.Equal(t, provider.StatusSent, result.GetStatus())
+	require.Len(t, fake.recorded(), 1)
+}
+
+// TestSendUsesWhatRefusalPrepared checks that Refusal keeps the checked target of a job that passes, and that Send sends it.
+func TestSendUsesWhatRefusalPrepared(t *testing.T) {
+	fake := newFakePush(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	})
+	client := newTestClient(t, fake)
+	job := newTestJob(0, newTokenFor(t, fake.endpoint("/x")), nil, `{"a":1}`)
+
+	require.Empty(t, Refusal(job, testOrigins(t)))
+	require.NotNil(t, job.Prepared)
+
+	result := client.Send(context.Background(), job)
+
+	require.Equal(t, provider.StatusSent, result.GetStatus())
+	require.Len(t, fake.recorded(), 1)
 }

@@ -149,16 +149,9 @@ func LoadFCMServiceAccount(data []byte) (*FCMServiceAccount, error) {
 // value of the key, and surrounding white space is trimmed. A file above maxKeyFileBytes is refused before it is read.
 // The error names the key and the path, never the content.
 func ReadWebPushPrivateKey(path string) (string, error) {
-	info, err := os.Stat(path)
+	data, err := readKeyFile(webPushKeyFile, path)
 	if err != nil {
-		return "", fmt.Errorf("%s (%s): the file cannot be read", webPushKeyFile, path)
-	}
-	if info.Size() > maxKeyFileBytes {
-		return "", fmt.Errorf("%s (%s): the file is larger than %d bytes", webPushKeyFile, path, maxKeyFileBytes)
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // The file is named by the operator's configuration.
-	if err != nil {
-		return "", fmt.Errorf("%s (%s): the file cannot be read", webPushKeyFile, path)
+		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
 }
@@ -166,16 +159,26 @@ func ReadWebPushPrivateKey(path string) (string, error) {
 // ReadFCMServiceAccount reads the service account file named by credentials_file, refused above maxKeyFileBytes before
 // it is read, and parses it with LoadFCMServiceAccount. The error names the key and the path, never the content.
 func ReadFCMServiceAccount(path string) (*FCMServiceAccount, error) {
+	data, err := readKeyFile(fcmCredsKey, path)
+	if err != nil {
+		return nil, err
+	}
+	return LoadFCMServiceAccount(data)
+}
+
+// readKeyFile reads the file at path, which the configuration key names. A file above maxKeyFileBytes is refused by its
+// size before it is read. The error names the key and the path, never the content.
+func readKeyFile(key string, path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s (%s): the file cannot be read", fcmCredsKey, path)
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
 	}
 	if info.Size() > maxKeyFileBytes {
-		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", fcmCredsKey, path, maxKeyFileBytes)
+		return nil, fmt.Errorf("%s (%s): the file is larger than %d bytes", key, path, maxKeyFileBytes)
 	}
 	data, err := os.ReadFile(path) //nolint:gosec // The file is named by the operator's configuration.
 	if err != nil {
-		return nil, fmt.Errorf("%s (%s): the file cannot be read", fcmCredsKey, path)
+		return nil, fmt.Errorf("%s (%s): the file cannot be read", key, path)
 	}
-	return LoadFCMServiceAccount(data)
+	return data, nil
 }

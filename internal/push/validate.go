@@ -25,13 +25,9 @@ const (
 	maxCollapseIDBytes = 64
 )
 
-// Size thresholds above which a payload is not checked for its content. Such a payload is over the size limit of every
-// provider, so the provider refuses its item as payload_too_large, and it is never scanned: a shared request payload
-// would otherwise be scanned once per target. The largest limit is the VoIP ceiling of APNs.
-const (
-	maxScannedAPNsPayloadBytes = provider.MaxAPNsVoIPPayloadBytes
-	maxScannedFCMMessageBytes  = provider.MaxFCMMessageBytes
-)
+// maxScannedFCMMessageBytes is the size above which an FCM message is not checked for its content. Such a message is over
+// the size limit of FCM, so the provider refuses its item as payload_too_large, and it is never scanned.
+const maxScannedFCMMessageBytes = provider.MaxFCMMessageBytes
 
 // NotEnabledError returns the answer of a node with push notifications off.
 func NotEnabledError() *apiproto.Error {
@@ -180,6 +176,14 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 		return nil, badRequest("uid is longer than 128 bytes")
 	}
 
+	// The webpush notification is checked once for the request, before the checks of its targets.
+	if hasTargetOf(targets, provider.ProviderWebPush) {
+		err := webpush.CheckNotification(req.GetNotification())
+		if err != nil {
+			return nil, badRequest(err.Error())
+		}
+	}
+
 	jobs := jobsOf(targets, req)
 	// The field checks of every target run before the content checks of any target, in the order of the spec.
 	for _, job := range jobs {
@@ -195,6 +199,16 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 		}
 	}
 	return jobs, nil
+}
+
+// hasTargetOf reports whether one of targets has the provider name.
+func hasTargetOf(targets []*apiproto.PushTarget, name string) bool {
+	for _, target := range targets {
+		if target.GetProvider() == name {
+			return true
+		}
+	}
+	return false
 }
 
 // checkTargetFields runs the field checks of one target: its token, its environment, its ref and its collapse id.
@@ -241,8 +255,8 @@ func checkTargetContent(job *provider.Job, req *apiproto.SendPushNotificationReq
 	}
 }
 
-// checkWebPushTarget runs the request checks of a Web Push target: its subscription shape, its payload and its headers.
-// The error of webpush.CheckRequest names the target index.
+// checkWebPushTarget runs the request checks of a Web Push target: its subscription shape, its payload and its Topic. The
+// notification of the request is checked once in plan. The error of webpush.CheckRequest names the target index.
 func checkWebPushTarget(job *provider.Job) *apiproto.Error {
 	err := webpush.CheckRequest(job)
 	if err != nil {
@@ -259,7 +273,7 @@ func checkAPNsTarget(job *provider.Job, req *apiproto.SendPushNotificationReques
 	if len(payload) == 0 {
 		return badRequest(fmt.Sprintf("targets[%d] needs an apns payload: notification.apns.payload or apns_payload", index))
 	}
-	if len(payload) <= maxScannedAPNsPayloadBytes && !provider.IsJSONObject(payload) {
+	if len(payload) <= provider.MaxScannedPayloadBytes && !provider.IsJSONObject(payload) {
 		return badRequest(fmt.Sprintf("targets[%d] apns payload is not a JSON object", index))
 	}
 

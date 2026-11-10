@@ -78,6 +78,11 @@ const (
 	MaxWebPushPayloadBytes = 3993
 )
 
+// MaxScannedPayloadBytes is the largest payload the request checks scan as JSON: the largest payload ceiling of the
+// providers. A larger payload is over the ceiling of every provider, so it is an item answered payload_too_large, and it
+// is never scanned.
+const MaxScannedPayloadBytes = MaxAPNsVoIPPayloadBytes
+
 // MaxResponseBodyBytes bounds the body of a provider response. The body is never returned.
 const MaxResponseBodyBytes = 64 << 10
 
@@ -151,6 +156,9 @@ type Job struct {
 	// Body is the provider body of the job when the oversize check of the set has built it, so the provider sends it
 	// without a second copy. It is nil until then.
 	Body []byte
+	// Prepared is what the item check of the provider kept for its Send, so a target is parsed and its keys are checked
+	// once. It is nil when the provider keeps nothing.
+	Prepared any
 }
 
 // Sender sends one job to one provider. The context carries the deadline of the provider call.
@@ -194,6 +202,17 @@ func NoAnswerResult(call context.Context, job *Job, written bool) *apiproto.Push
 		return NewNotSentResult(job, "")
 	}
 	return NewNotSentResult(job, CodeConnectFailed)
+}
+
+// NewAnsweredResult returns the result of job for a provider answer: the HTTP status, and the code, the detail and the
+// message id of the provider, each cut to the field limit.
+func NewAnsweredResult(job *Job, status string, httpStatus int, code string, detail string, messageID string) *apiproto.PushItemResult {
+	result := NewResult(job, status)
+	result.HttpStatus = uint32(httpStatus)
+	result.ProviderCode = Truncate(code)
+	result.ProviderDetail = Truncate(detail)
+	result.ProviderMessageId = Truncate(messageID)
+	return result
 }
 
 // ApnsPayloadOf returns the APNs payload of job: the target's own payload when set, else the request payload.

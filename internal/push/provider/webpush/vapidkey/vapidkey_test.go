@@ -28,7 +28,7 @@ func TestParseGeneratedPair(t *testing.T) {
 	require.NoError(t, CheckPublic(public))
 }
 
-// Padded base64url is accepted for both keys: 65 bytes need one "=" and 32 bytes need two.
+// Padded base64url is accepted for both keys: 65 bytes and 32 bytes each leave a remainder of two bytes, so each needs one "=".
 func TestParsePaddingAccepted(t *testing.T) {
 	private, err := ecdh.P256().GenerateKey(rand.Reader)
 	require.NoError(t, err)

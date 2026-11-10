@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/origin"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 )
@@ -160,9 +161,38 @@ func TestEndpointOriginIsCheckedAgainstThePatterns(t *testing.T) {
 	}
 }
 
+// TestDefaultEndpointOriginsArePRODefaults checks the built-in origin patterns against the four patterns of the specification.
+func TestDefaultEndpointOriginsArePRODefaults(t *testing.T) {
+	expected := []string{
+		"https://*.googleapis.com",
+		"https://*.push.apple.com",
+		"https://*.notify.windows.com",
+		"https://*.push.services.mozilla.com",
+	}
+	require.Equal(t, expected, EndpointOrigins(nil, nil))
+	require.Equal(t, expected, EndpointOrigins([]string{}, nil))
+}
+
+// TestDefaultCheckerAcceptsEachPushServiceDomain checks that a host of each push service domain of the built-in list is
+// accepted by the default checker, and that an explicit :443 matches a pattern without a port.
+func TestDefaultCheckerAcceptsEachPushServiceDomain(t *testing.T) {
+	endpoints := []string{
+		"https://fcm.googleapis.com/x",
+		"https://web.push.apple.com/x",
+		"https://wns.notify.windows.com/x",
+		"https://updates.push.services.mozilla.com/x",
+		"https://fcm.googleapis.com:443/x",
+	}
+	for _, endpoint := range endpoints {
+		t.Run(endpoint, func(t *testing.T) {
+			job := newTestJob(0, newTokenFor(t, endpoint), nil, `{"a":1}`)
+
+			require.Empty(t, Refusal(job, defaultChecker(t)))
+		})
+	}
+}
+
 func TestEndpointOriginsEffectiveList(t *testing.T) {
-	require.Equal(t, DefaultEndpointOrigins, EndpointOrigins(nil, nil))
-	require.Equal(t, DefaultEndpointOrigins, EndpointOrigins([]string{}, nil))
 	require.Equal(t, append(append([]string{}, DefaultEndpointOrigins...), "https://push.example.com"),
 		EndpointOrigins(nil, []string{"https://push.example.com"}))
 	require.Equal(t, []string{"https://a.example"}, EndpointOrigins([]string{"https://a.example"}, nil))
@@ -196,6 +226,7 @@ func TestCheckRequestRefusesMalformedSubscriptions(t *testing.T) {
 		"[]",
 		"null",
 		`"https://fcm.googleapis.com/x"`,
+		"42",
 		`{"endpoint":"` + endpoint + `"}`,
 		`{"endpoint":1,"keys":{"p256dh":"a","auth":"b"}}`,
 		`{"endpoint":"` + endpoint + `","keys":"abc"}`,
@@ -212,19 +243,54 @@ func TestCheckRequestRefusesMalformedSubscriptions(t *testing.T) {
 	}
 }
 
-func TestCheckRequestRefusesTheShapeOfThePayloadAndEnvironment(t *testing.T) {
+// TestCheckRequestRefusesTheTargetPayload checks the payload of one target: a target needs a payload, its own or the
+// request's, and its own payload must be a JSON object. The request payload is checked once, by CheckNotification.
+func TestCheckRequestRefusesTheTargetPayload(t *testing.T) {
 	token := newTokenFor(t, "https://fcm.googleapis.com/x")
 
 	require.Error(t, CheckRequest(newTestJob(0, token, nil, "")), "a target needs a payload")
-	require.Error(t, CheckRequest(newTestJob(0, token, nil, "not json")), "a payload that is not a JSON object")
-
-	environment := newTestJob(0, token, nil, `{"a":1}`)
-	environment.Target.Environment = "production"
-	require.Error(t, CheckRequest(environment), "environment must be empty")
 
 	override := newTestJob(0, token, nil, "")
 	override.Target.WebpushPayload = []byte(`{"a":1}`)
 	require.NoError(t, CheckRequest(override), "the target payload replaces the request payload")
+
+	notObject := newTestJob(0, token, nil, `{"a":1}`)
+	notObject.Target.WebpushPayload = []byte(`[1]`)
+	err := CheckRequest(notObject)
+	require.Error(t, err, "a target payload that is not a JSON object")
+	require.Contains(t, err.Error(), "webpush target 0 payload is not a JSON object")
+}
+
+// TestCheckNotificationRefusesAPayloadThatIsNotAnObject checks that the request payload is refused once for the request when
+// it is not a JSON object, and that a payload over the scan bound is not scanned.
+func TestCheckNotificationRefusesAPayloadThatIsNotAnObject(t *testing.T) {
+	notification := &apiproto.PushNotification{
+		Webpush: &apiproto.WebPushPushNotification{Payload: []byte("not json")},
+	}
+	require.Error(t, CheckNotification(notification))
+
+	notification.Webpush.Payload = []byte(`{"a":1}`)
+	require.NoError(t, CheckNotification(notification))
+
+	notification.Webpush.Payload = []byte(strings.Repeat("x", provider.MaxScannedPayloadBytes+1))
+	require.NoError(t, CheckNotification(notification), "a payload over the scan bound is not scanned")
+}
+
+// TestCheckNotificationRefusesAnUnknownHeader checks that a caller header outside the three names is refused by
+// CheckNotification, and that the error names no target.
+func TestCheckNotificationRefusesAnUnknownHeader(t *testing.T) {
+	notification := &apiproto.PushNotification{
+		Webpush: &apiproto.WebPushPushNotification{
+			Headers: map[string]string{"Ttl": "60"},
+			Payload: []byte(`{"a":1}`),
+		},
+	}
+
+	err := CheckNotification(notification)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Ttl")
+	require.NotContains(t, err.Error(), "target")
 }
 
 func TestCheckRequestLeavesAnOversizePayloadToTheItem(t *testing.T) {

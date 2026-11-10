@@ -1,31 +1,114 @@
 package origin
 
 import (
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestMatchOriginIsCaseInsensitive(t *testing.T) {
-	checker, err := NewPatternChecker([]string{"https://*.Example.com"})
-	require.NoError(t, err)
+func TestPatternCheck(t *testing.T) {
+	t.Parallel()
 
-	require.True(t, checker.MatchOrigin("https://push.example.com"))
-	require.True(t, checker.MatchOrigin("HTTPS://PUSH.EXAMPLE.COM"))
-	require.False(t, checker.MatchOrigin("http://push.example.com"))
-	require.False(t, checker.MatchOrigin("https://push.example.org"))
-}
+	testCases := []struct {
+		name           string
+		origin         string
+		originPatterns []string
+		success        bool
+	}{
+		{
+			name:   "empty_origin",
+			origin: "",
+			originPatterns: []string{
+				"*.example.com",
+			},
+			success: true,
+		},
+		{
+			name:   "origin_patterns_match",
+			origin: "https://two.Example.com",
+			originPatterns: []string{
+				"*.example.com",
+				"foo.com",
+			},
+			success: true,
+		},
+		{
+			name:   "origin_patterns_no_match",
+			origin: "https://two.Example.com",
+			originPatterns: []string{
+				"foo.com",
+				"bar.com",
+			},
+			success: false,
+		},
+		{
+			name:   "origin_patterns_uppercase_in_pattern",
+			origin: "https://two.example.com",
+			originPatterns: []string{
+				"https://*.Example.com",
+			},
+			success: true,
+		},
+		{
+			name:   "origin_patterns_uppercase_in_pattern_and_origin",
+			origin: "HTTPS://App.Example.com",
+			originPatterns: []string{
+				"https://APP.example.COM",
+			},
+			success: true,
+		},
+		{
+			name:   "origin_patterns_uppercase_in_pattern_no_match",
+			origin: "https://two.example.org",
+			originPatterns: []string{
+				"https://*.Example.com",
+			},
+			success: false,
+		},
+		{
+			name:   "origin_patterns_cyrillic_e_in_origin",
+			origin: "https://two.еxample.com",
+			originPatterns: []string{
+				"*.example.com",
+				"foo.com",
+			},
+			success: false,
+		},
+		{
+			name:   "file_origin",
+			origin: "file://",
+			originPatterns: []string{
+				"file://*",
+			},
+			success: true,
+		},
+		{
+			name:   "null_origin",
+			origin: "null",
+			originPatterns: []string{
+				"null",
+			},
+			success: true,
+		},
+	}
 
-func TestMatchOriginStarAllowsAnyOrigin(t *testing.T) {
-	checker, err := NewPatternChecker([]string{"*"})
-	require.NoError(t, err)
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.True(t, checker.MatchOrigin("https://anything.example:8443"))
-}
+			r := httptest.NewRequest("GET", "https://example.com/websocket/connection", nil)
+			r.Header.Set("Origin", tc.origin)
 
-func TestMatchOriginEmptyListMatchesNothing(t *testing.T) {
-	checker, err := NewPatternChecker(nil)
-	require.NoError(t, err)
-
-	require.False(t, checker.MatchOrigin("https://push.example.com"))
+			a, err := NewPatternChecker(tc.originPatterns)
+			require.NoError(t, err)
+			ok := a.Check(r)
+			if tc.success {
+				require.True(t, ok)
+			} else {
+				require.False(t, ok)
+			}
+		})
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
@@ -41,12 +42,22 @@ const (
 	// CodeShutdown is a target that the node's shutdown ended before the request was written. When the shutdown and a
 	// deadline have both ended, the code is shutdown.
 	CodeShutdown = "shutdown"
+	// CodeInvalidSubscription is a webpush target whose subscription is not usable: its endpoint is not an absolute https
+	// URL that may be dialed, or its keys are not the keys of a Web Push subscription.
+	CodeInvalidSubscription = "invalid_subscription"
+	// CodeEndpointNotAllowed is a webpush target whose endpoint origin matches no allowed origin pattern.
+	CodeEndpointNotAllowed = "endpoint_not_allowed"
+	// CodeInvalidTopic is a webpush target whose resolved collapse id is not a valid Topic header value.
+	CodeInvalidTopic = "invalid_topic"
+	// CodeAddressBlocked is a webpush target whose connection the address guard refused: nothing left the node.
+	CodeAddressBlocked = "address_blocked"
 )
 
 // Provider names of a target.
 const (
-	ProviderAPNs = "apns"
-	ProviderFCM  = "fcm"
+	ProviderAPNs    = "apns"
+	ProviderFCM     = "fcm"
+	ProviderWebPush = "webpush"
 )
 
 // Environments of an APNs target. The environment chooses the APNs host, and the same names are the values of the
@@ -61,6 +72,10 @@ const (
 	MaxAPNsPayloadBytes     = 4096
 	MaxAPNsVoIPPayloadBytes = 5120
 	MaxFCMMessageBytes      = 4096
+	// MaxWebPushPayloadBytes is the plaintext ceiling of a Web Push payload. A push service accepts a body of 4096 bytes
+	// (RFC 8030), and the aes128gcm body is 86 bytes of header (salt 16, record size 4, key id length 1, key id 65), the
+	// plaintext, 1 byte of padding delimiter and 16 bytes of tag: 4096 - 86 - 1 - 16 = 3993.
+	MaxWebPushPayloadBytes = 3993
 )
 
 // MaxResponseBodyBytes bounds the body of a provider response. The body is never returned.
@@ -86,6 +101,21 @@ func Truncate(value string) string {
 // called after the status line is taken, so a read error keeps the status.
 func ReadAnswer(response *http.Response) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(response.Body, MaxResponseBodyBytes))
+}
+
+// PrintableHeader returns value when it is valid UTF-8 without control characters and at most MaxFieldBytes long, so it can
+// be stored in a result field. Any other value gives the empty string. A provider header such as Location is printed this
+// way, because a control character in it would reach the caller's logs and clients.
+func PrintableHeader(value string) string {
+	if len(value) > MaxFieldBytes || !utf8.ValidString(value) {
+		return ""
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return ""
+		}
+	}
+	return value
 }
 
 // Expired reports whether the notification of job has an expire_at at or before now. Such a target is refused with
@@ -179,4 +209,12 @@ func FCMMessageOf(job *Job) []byte {
 		return job.Target.GetFcmMessage()
 	}
 	return job.Notification.GetFcm().GetMessage()
+}
+
+// WebPushPayloadOf returns the Web Push payload of job: the target's own payload when set, else the request payload.
+func WebPushPayloadOf(job *Job) []byte {
+	if len(job.Target.GetWebpushPayload()) > 0 {
+		return job.Target.GetWebpushPayload()
+	}
+	return job.Notification.GetWebpush().GetPayload()
 }

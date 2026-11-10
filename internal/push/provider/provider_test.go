@@ -45,6 +45,59 @@ func TestTruncateKeepsWholeRuneAtTheLimit(t *testing.T) {
 	require.Equal(t, strings.Repeat("a", MaxFieldBytes-3)+"€", result)
 }
 
+func TestPrintableHeaderKeepsPrintableValues(t *testing.T) {
+	require.Equal(t, "https://push.example/3/abc", PrintableHeader("https://push.example/3/abc"))
+	require.Equal(t, "é€", PrintableHeader("é€"))
+	require.Equal(t, strings.Repeat("a", MaxFieldBytes), PrintableHeader(strings.Repeat("a", MaxFieldBytes)))
+}
+
+func TestPrintableHeaderRefusesControlCharactersAndLength(t *testing.T) {
+	testCases := map[string]string{
+		"line feed":            "a\nb",
+		"carriage return":      "a\rb",
+		"tab":                  "a\tb",
+		"nul":                  "a\x00b",
+		"delete":               "a\x7fb",
+		"c1 control":           "a\u0085b",
+		"invalid utf-8":        "a\xffb",
+		"one byte over limit":  strings.Repeat("a", MaxFieldBytes+1),
+		"empty value is empty": "",
+	}
+	for name, value := range testCases {
+		t.Run(name, func(t *testing.T) {
+			require.Empty(t, PrintableHeader(value))
+		})
+	}
+}
+
+func TestWebPushPayloadBoundFollowsFromTheHeaderSizes(t *testing.T) {
+	// The body is salt 16, record size 4, key id length 1 and key id 65, the plaintext, the padding delimiter and the tag.
+	const headerBytes = 16 + 4 + 1 + 65
+	const paddingDelimiterBytes = 1
+	const tagBytes = 16
+
+	require.Equal(t, 4096-headerBytes-paddingDelimiterBytes-tagBytes, MaxWebPushPayloadBytes)
+}
+
+func TestWebPushPayloadOfPrefersTheTarget(t *testing.T) {
+	job := &Job{
+		Target: &apiproto.PushTarget{
+			Provider:       ProviderWebPush,
+			WebpushPayload: []byte(`{"target":true}`),
+		},
+		Notification: &apiproto.PushNotification{
+			Webpush: &apiproto.WebPushPushNotification{Payload: []byte(`{"request":true}`)},
+		},
+	}
+	require.Equal(t, `{"target":true}`, string(WebPushPayloadOf(job)))
+
+	job.Target.WebpushPayload = nil
+	require.Equal(t, `{"request":true}`, string(WebPushPayloadOf(job)))
+
+	job.Notification.Webpush = nil
+	require.Empty(t, WebPushPayloadOf(job))
+}
+
 func TestExpiredBoundary(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 

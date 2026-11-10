@@ -35,6 +35,12 @@ func (a *PatternChecker) Check(r *http.Request) bool {
 		return true
 	}
 
+	return a.MatchOrigin(origin)
+}
+
+// MatchOrigin reports whether origin matches one of the patterns. The origin is matched in lower case, as the patterns are
+// compiled in lower case.
+func (a *PatternChecker) MatchOrigin(origin string) bool {
 	origin = strings.ToLower(origin)
 	for _, pattern := range a.allowedOrigins {
 		if pattern.Match(origin) {

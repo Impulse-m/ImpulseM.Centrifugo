@@ -15,11 +15,9 @@ command of its users up to that long on the connection reader, so for a shared R
 sooner, and a timed out check is handled as any Redis error is: allowed, or refused for one second with
 `on_error: deny`.
 
-The commands in flight when Redis stalls still wait up to that timeout once. After a Redis call of a shard fails, the
-node makes no Redis call for that shard for one second: the checks of its users are answered at once, as a Redis error
-answers them, and a timed out call counts too. Then exactly one check asks the shard again, while the others are still
-answered at once. A call which succeeds closes the breaker of its shard, and a call which fails opens it for another
-second. Other shards are not affected.
+There is no breaker which stops asking a failing shard: every check asks Redis, and only its own call decides it. A
+breaker would answer the checks of a whole shard without Redis after one failed call, so one slow call would switch the
+limit off for every user of that shard, or refuse them all with `on_error: deny`.
 
 On Redis errors commands are allowed (fail-open), or refused for one second with
 `client.rate_limit.redis_user_command.on_error: deny`. Connects are then refused too, including while Redis is

@@ -41,12 +41,6 @@ type RedisUserLimiter struct {
 	errorLog *tools.IntervalLimiter
 	// refusals holds the refusals of this node, so that refused commands need no Redis call, see refusalCache.
 	refusals *refusalCache
-	// clock returns the time in nanoseconds of refusals and breakers. NewRedisUserLimiter sets refusalClock.
-	// Tests step it.
-	clock func() int64
-	// breakers holds the breaker of each shard by shard index, see redisShardBreaker. It is allocated once, so a check
-	// needs no lock.
-	breakers []redisShardBreaker
 	// denyOnError refuses commands and connects when Redis fails, instead of allowing them, see on_error.
 	denyOnError bool
 }
@@ -78,8 +72,6 @@ func NewRedisUserLimiter(
 		run:         runRedisScript,
 		errorLog:    tools.NewIntervalLimiter(redisshard.ErrorLogInterval),
 		refusals:    newRefusalCache(),
-		clock:       refusalClock,
-		breakers:    make([]redisShardBreaker, len(shardConfigs)),
 		denyOnError: cfg.OnError == configtypes.RateLimitOnErrorDeny,
 	}
 	limiter.connector = redisshard.NewConnector(shardConfigs, redisshard.LogConnect(
@@ -144,8 +136,7 @@ func (l *RedisUserLimiter) connected() bool {
 }
 
 // check runs the script of scope s for userID and returns its wait. A refusal which this node has cached is returned
-// without a Redis call. While the breaker of the user's shard is open, the operation is answered without a Redis call,
-// see redisShardBreaker. Redis errors are counted and logged, and allow the operation unless on_error denies it. While
+// without a Redis call. Redis errors are counted and logged, and allow the operation unless on_error denies it. While
 // not connected, the operation is counted as an error and is allowed unless on_error denies it.
 func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 	list := l.connector.Shards()
@@ -155,24 +146,17 @@ func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 		return l.errorWait()
 	}
 	key := redisKey(l.prefix, userID, s.redisName)
-	now := l.clock()
+	now := refusalClock()
 	if wait, ok := l.refusals.refused(key, now); ok {
 		return wait
 	}
-	index := redisshard.ShardIndex(userID, len(list))
-	breaker := &l.breakers[index]
-	call, probe := breaker.enter(now)
-	if !call {
-		metrics.RateLimitRedisErrorsTotal.Inc()
-		return l.errorWait()
-	}
+	shard := list[redisshard.ShardIndex(userID, len(list))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	runStart := time.Now()
-	wait, err := l.run(ctx, list[index], s.script, key, s.argv)
+	wait, err := l.run(ctx, shard, s.script, key, s.argv)
 	metrics.RateLimitRedisDuration.Observe(time.Since(runStart).Seconds())
 	cancel()
-	breaker.settle(l.clock(), probe, err != nil)
 
 	if err != nil {
 		metrics.RateLimitRedisErrorsTotal.Inc()
@@ -187,7 +171,7 @@ func (l *RedisUserLimiter) check(userID string, s *scope) time.Duration {
 var refusalClockStart = time.Now()
 
 // refusalClock returns the nanoseconds since the process started. It reads the monotonic clock, so a step of the wall
-// clock does not change how long a cached refusal or a breaker lasts.
+// clock does not change how long a cached refusal lasts.
 func refusalClock() int64 {
 	return int64(time.Since(refusalClockStart))
 }

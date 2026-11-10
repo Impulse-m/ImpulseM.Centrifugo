@@ -5,6 +5,8 @@ package push
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,9 +16,12 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/apiproto"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 	"github.com/centrifugal/centrifugo/v6/internal/metrics"
+	"github.com/centrifugal/centrifugo/v6/internal/origin"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/apns"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/fcm"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush/vapidkey"
 )
 
 // writeMargin is the time the send route adds to its write deadline after the longest inline run.
@@ -70,13 +75,25 @@ func Setup(processCtx context.Context, cfg configtypes.PushNotifications) (*Send
 	if !cfg.Sender {
 		return s, nil
 	}
+
+	// The origin patterns of Web Push need no credential, so they are compiled here for a dry run too.
+	var origins *origin.PatternChecker
+	if s.providers[provider.ProviderWebPush] {
+		patterns := webpush.EndpointOrigins(cfg.WebPush.AllowedEndpointOrigins, cfg.WebPush.ExtraAllowedEndpointOrigins)
+		checker, err := origin.NewPatternChecker(patterns)
+		if err != nil {
+			return nil, err
+		}
+		origins = checker
+	}
+
 	if cfg.DryRun {
-		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
+		s.set = provider.NewDryRunSet().WithOversizeCheck(oversized).WithRefusalCheck(refusalOf(origins)).WithShutdown(processCtx)
 		return s, nil
 	}
 
-	s.set = provider.NewSet().WithOversizeCheck(oversized).WithShutdown(processCtx)
-	err := s.load(processCtx, cfg)
+	s.set = provider.NewSet().WithOversizeCheck(oversized).WithRefusalCheck(refusalOf(origins)).WithShutdown(processCtx)
+	err := s.load(processCtx, cfg, origins)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +122,15 @@ func newSender(cfg configtypes.PushNotifications) *Sender {
 	if s.providers[provider.ProviderFCM] {
 		s.poolSizes[provider.ProviderFCM] = poolSize(cfg.FCM.TokensBatchSize, cfg.FCM.MaxInflight)
 	}
+	if s.providers[provider.ProviderWebPush] {
+		s.poolSizes[provider.ProviderWebPush] = poolSize(cfg.WebPush.TokensBatchSize, cfg.WebPush.MaxInflight)
+	}
 	return s
 }
 
-// load loads the credentials of the enabled providers into the set. It returns the first load error, which names the
-// configuration key and never the key content.
-func (s *Sender) load(processCtx context.Context, cfg configtypes.PushNotifications) error {
+// load loads the credentials of the enabled providers into the set. origins are the Web Push origin patterns, built by
+// Setup. It returns the first load error, which names the configuration key and never the key content.
+func (s *Sender) load(processCtx context.Context, cfg configtypes.PushNotifications, origins *origin.PatternChecker) error {
 	if s.providers[provider.ProviderAPNs] {
 		key, err := provider.LoadAPNSKey(cfg.APNs.TokenKeyFile, cfg.APNs.TokenKeyPEM)
 		if err != nil {
@@ -145,7 +165,48 @@ func (s *Sender) load(processCtx context.Context, cfg configtypes.PushNotificati
 		}
 		s.set.Add(provider.ProviderFCM, client, int64(cfg.FCM.MaxInflight))
 	}
+
+	if s.providers[provider.ProviderWebPush] {
+		key, err := webPushKey(cfg.WebPush)
+		if err != nil {
+			return err
+		}
+		client, err := webpush.NewClient(key, cfg.WebPush.VAPIDPublicKey, cfg.WebPush.Subject, origins)
+		if err != nil {
+			return err
+		}
+		s.set.Add(provider.ProviderWebPush, client, int64(cfg.WebPush.MaxInflight))
+	}
 	return nil
+}
+
+// webPushKey returns the VAPID private key of the Web Push configuration, checked against its public key: the inline
+// secret, or the content of the key file when one is set. Exactly one of the two is set, which the configuration checks.
+func webPushKey(cfg configtypes.PushWebPush) (*ecdsa.PrivateKey, error) {
+	privateKey := cfg.VAPIDPrivateKey.Value()
+	if cfg.VAPIDPrivateKeyFile != "" {
+		value, err := provider.ReadWebPushPrivateKey(cfg.VAPIDPrivateKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		privateKey = value
+	}
+	key, err := vapidkey.Parse(cfg.VAPIDPublicKey, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("push_notifications.webpush VAPID key pair: %w", err)
+	}
+	return key, nil
+}
+
+// refusalOf returns the item check of the set for the Web Push items. The check answers the refusal code of a webpush
+// item, which is the empty string for an item to send. The other providers have no item check here, so their items pass.
+func refusalOf(origins *origin.PatternChecker) func(job *provider.Job) string {
+	return func(job *provider.Job) string {
+		if job.Target.GetProvider() != provider.ProviderWebPush {
+			return ""
+		}
+		return webpush.Refusal(job, origins)
+	}
 }
 
 // poolSize returns the worker count of one provider group of a call: min(tokens_batch_size, max_inflight).

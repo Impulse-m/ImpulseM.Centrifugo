@@ -15,19 +15,24 @@ import (
 const (
 	platformIOS     = "ios"
 	platformUnknown = "unknown"
+	platformWeb     = "web"
 	recipientToken  = "token"
 )
 
 // Values of the err_code label. They are an enumeration: a provider reason never becomes a label.
 const (
-	errCodeOK              = "ok"
-	errCodeHTTP4xx         = "http_4xx"
-	errCodeHTTP5xx         = "http_5xx"
-	errCodeHTTPOther       = "http_other"
-	errCodeUnanswered      = "unanswered"
-	errCodePayloadTooLarge = "payload_too_large"
-	errCodeExpired         = "expired"
-	errCodeNotSent         = "not_sent"
+	errCodeOK                  = "ok"
+	errCodeHTTP4xx             = "http_4xx"
+	errCodeHTTP5xx             = "http_5xx"
+	errCodeHTTPOther           = "http_other"
+	errCodeUnanswered          = "unanswered"
+	errCodePayloadTooLarge     = "payload_too_large"
+	errCodeExpired             = "expired"
+	errCodeInvalidSubscription = "invalid_subscription"
+	errCodeEndpointNotAllowed  = "endpoint_not_allowed"
+	errCodeInvalidTopic        = "invalid_topic"
+	errCodeAddressBlocked      = "address_blocked"
+	errCodeNotSent             = "not_sent"
 )
 
 // limitedSender is a Sender with the in-flight limit of its provider on this node.
@@ -42,6 +47,7 @@ type Set struct {
 	limited  map[string]*limitedSender
 	dryRun   bool
 	oversize func(*Job) bool
+	refuse   func(*Job) string
 	shutdown context.Context
 }
 
@@ -66,6 +72,15 @@ func NewDryRunSet() *Set {
 // provider body of the item, once, so that the send does not copy it again.
 func (s *Set) WithOversizeCheck(check func(*Job) bool) *Set {
 	s.oversize = check
+	return s
+}
+
+// WithRefusalCheck sets the item check of the set and returns the set. The check returns a refusal code for an item the
+// server refuses before any provider call, or an empty string for an item to send. It runs after the expired check and
+// the payload ceiling check, and before the dry run answer, so a dry run answers what a live send answers. A refused item
+// takes no slot.
+func (s *Set) WithRefusalCheck(check func(*Job) string) *Set {
+	s.refuse = check
 	return s
 }
 
@@ -124,6 +139,14 @@ func (s *Set) dispatch(
 	// The payload ceiling is checked before the dry run answer, so a dry run answers what a live send answers.
 	if s.oversize != nil && s.oversize(job) {
 		return NewCodeResult(job, CodePayloadTooLarge)
+	}
+
+	// The item check of the provider is run in the same place, so a dry run refuses what a live send refuses.
+	if s.refuse != nil {
+		code := s.refuse(job)
+		if code != "" {
+			return NewCodeResult(job, code)
+		}
 	}
 
 	// A dry run target is valid here. The dry run check comes before the provider lookup, because a dry run set holds
@@ -246,8 +269,8 @@ func earlierOf(first time.Time, second time.Time) time.Time {
 	return second
 }
 
-// countNotification counts one result in the notification count, with the bounded labels of the result. Only the APNs
-// and FCM providers are counted, so a provider name from a request never becomes a label value.
+// countNotification counts one result in the notification count, with the bounded labels of the result. Only the APNs,
+// FCM and Web Push providers are counted, so a provider name from a request never becomes a label value.
 func countNotification(job *Job, result *apiproto.PushItemResult) {
 	counter := metrics.PushNotificationCount
 	if counter == nil {
@@ -261,6 +284,8 @@ func countNotification(job *Job, result *apiproto.PushItemResult) {
 		platform = platformIOS
 	case ProviderFCM:
 		platform = platformUnknown
+	case ProviderWebPush:
+		platform = platformWeb
 	default:
 		return
 	}
@@ -276,17 +301,26 @@ func errCodeOf(result *apiproto.PushItemResult) string {
 	code := result.GetCode()
 	httpStatus := result.GetHttpStatus()
 
+	// The server refusal codes and address_blocked come before the status classes: address_blocked is a not_sent result.
 	switch {
 	case status == StatusSent:
 		return errCodeOK
-	case status == StatusNotSent:
-		return errCodeNotSent
-	case status == StatusUnanswered:
-		return errCodeUnanswered
 	case code == CodePayloadTooLarge:
 		return errCodePayloadTooLarge
 	case code == CodeExpired:
 		return errCodeExpired
+	case code == CodeInvalidSubscription:
+		return errCodeInvalidSubscription
+	case code == CodeEndpointNotAllowed:
+		return errCodeEndpointNotAllowed
+	case code == CodeInvalidTopic:
+		return errCodeInvalidTopic
+	case code == CodeAddressBlocked:
+		return errCodeAddressBlocked
+	case status == StatusNotSent:
+		return errCodeNotSent
+	case status == StatusUnanswered:
+		return errCodeUnanswered
 	case httpStatus >= 400 && httpStatus < 500:
 		return errCodeHTTP4xx
 	case httpStatus >= 500 && httpStatus < 600:

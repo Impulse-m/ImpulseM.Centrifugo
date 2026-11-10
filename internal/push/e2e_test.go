@@ -50,8 +50,11 @@ func (r *routingSender) Send(_ context.Context, job *provider.Job) *apiproto.Pus
 	return result
 }
 
-// directRequest returns a request with two APNs targets in different environments and one FCM target. Its payload and
-// message carry marker text, which the logging check looks for.
+// webPushEndpointMarker is the path of the Web Push endpoint of directRequest. The logging check looks for it.
+const webPushEndpointMarker = "https://fcm.googleapis.com/send/e2e-endpoint-marker"
+
+// directRequest returns a request with two APNs targets in different environments, one FCM target and one Web Push target.
+// Its payload, message and payload of Web Push carry marker text, which the logging check looks for.
 func directRequest(expireAt int64) *apiproto.SendPushNotificationRequest {
 	return &apiproto.SendPushNotificationRequest{
 		Uid: "e2e-uid",
@@ -60,12 +63,14 @@ func directRequest(expireAt int64) *apiproto.SendPushNotificationRequest {
 				{Provider: provider.ProviderAPNs, Token: "prod-token", Environment: provider.EnvironmentProduction, Ref: "ref-prod"},
 				{Provider: provider.ProviderAPNs, Token: "gone", Environment: provider.EnvironmentDevelopment, Ref: "ref-gone"},
 				{Provider: provider.ProviderFCM, Token: "fcm-token", Ref: "ref-fcm"},
+				{Provider: provider.ProviderWebPush, Token: webPushSubscription(webPushEndpointMarker), Ref: "ref-web"},
 			},
 		},
 		Notification: &apiproto.PushNotification{
 			ExpireAt: expireAt,
 			Apns:     &apiproto.ApnsPushNotification{Payload: []byte(`{"aps":{"alert":"payload-marker"}}`)},
 			Fcm:      &apiproto.FcmPushNotification{Message: []byte(`{"notification":{"title":"message-marker"}}`)},
+			Webpush:  &apiproto.WebPushPushNotification{Payload: []byte(`{"title":"webpush-marker"}`)},
 		},
 	}
 }
@@ -81,7 +86,7 @@ func TestDirectSendEndToEnd(t *testing.T) {
 	require.Nil(t, resp.GetError())
 	require.Equal(t, "e2e-uid", resp.GetResult().GetUid())
 	results := resp.GetResult().GetResults()
-	require.Len(t, results, 3)
+	require.Len(t, results, 4)
 	for index, result := range results {
 		require.Equal(t, uint32(index), result.GetIndex())
 	}
@@ -95,12 +100,18 @@ func TestDirectSendEndToEnd(t *testing.T) {
 	require.Equal(t, "Unregistered", results[1].GetProviderCode())
 	require.Equal(t, provider.StatusSent, results[2].GetStatus())
 	require.Equal(t, "ref-fcm", results[2].GetRef())
+	require.Equal(t, provider.StatusSent, results[3].GetStatus())
+	require.Equal(t, "ref-web", results[3].GetRef())
+	require.Equal(t, uint32(200), results[3].GetHttpStatus())
 
 	// Each target reached its provider once, with its own environment.
-	require.Equal(t, 3, fake.calls)
+	require.Equal(t, 4, fake.calls)
 	require.Equal(t, provider.EnvironmentProduction, fake.jobs["prod-token"].Target.GetEnvironment())
 	require.Equal(t, provider.EnvironmentDevelopment, fake.jobs["gone"].Target.GetEnvironment())
 	require.Equal(t, provider.ProviderFCM, fake.jobs["fcm-token"].Target.GetProvider())
+	webPushToken := webPushSubscription(webPushEndpointMarker)
+	require.Equal(t, provider.ProviderWebPush, fake.jobs[webPushToken].Target.GetProvider())
+	require.Equal(t, `{"title":"webpush-marker"}`, string(provider.WebPushPayloadOf(fake.jobs[webPushToken])))
 
 	// An expired notification is refused for each target before any provider call.
 	expired := s.Send(context.Background(), directRequest(1))
@@ -109,7 +120,7 @@ func TestDirectSendEndToEnd(t *testing.T) {
 		require.Equal(t, provider.StatusRejected, result.GetStatus())
 		require.Equal(t, provider.CodeExpired, result.GetCode())
 	}
-	require.Equal(t, 3, fake.calls, "an expired request makes no provider call")
+	require.Equal(t, 4, fake.calls, "an expired request makes no provider call")
 }
 
 // TestNoBodyInLogs checks that the log of a send holds no token, ref, payload or message: the log of a send holds counts
@@ -130,6 +141,9 @@ func TestNoBodyInLogs(t *testing.T) {
 	require.NotEmpty(t, output, "a send writes its count line, so the check reads a log")
 	for _, marker := range []string{
 		"prod-token", "gone", "fcm-token", "ref-prod", "ref-gone", "ref-fcm", "payload-marker", "message-marker", "e2e-uid",
+		// The Web Push endpoint, its keys, its token and its payload.
+		webPushEndpointMarker, testReceiverPublic, testAuthSecret, webPushSubscription(webPushEndpointMarker), "webpush-marker",
+		"ref-web",
 	} {
 		require.NotContains(t, output, marker)
 	}

@@ -2,7 +2,11 @@ package push
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -255,6 +259,82 @@ func TestExpiredItemRejectedWithoutCall(t *testing.T) {
 func TestWorkerPoolSize(t *testing.T) {
 	require.Equal(t, 100, poolSize(100, 500), "APNs: min(100, 500)")
 	require.Equal(t, 200, poolSize(500, 200), "FCM: min(500, 200)")
+
+	s := newTestSender(t, &countingSender{}, nil)
+	require.Equal(t, 100, s.poolSizes[provider.ProviderWebPush], "Web Push: min(100, 500)")
+}
+
+// newTestWebPushKey returns the base64url public key and private key of a new VAPID key pair.
+func newTestWebPushKey(t *testing.T) (string, string) {
+	t.Helper()
+
+	private, err := ecdh.P256().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	publicKey := base64.RawURLEncoding.EncodeToString(private.PublicKey().Bytes())
+	privateKey := base64.RawURLEncoding.EncodeToString(private.Bytes())
+	return publicKey, privateKey
+}
+
+func TestSetupLoadsWebPushKeyInline(t *testing.T) {
+	publicKey, privateKey := newTestWebPushKey(t)
+	cfg := testConfig()
+	cfg.EnabledProviders = []string{provider.ProviderWebPush}
+	cfg.WebPush.VAPIDPublicKey = publicKey
+	cfg.WebPush.VAPIDPrivateKey = configtypes.NewSecret(privateKey)
+	cfg.WebPush.Subject = "mailto:push@example.com"
+
+	s, err := Setup(context.Background(), cfg)
+
+	require.NoError(t, err)
+	require.True(t, s.IsSender())
+}
+
+func TestSetupLoadsWebPushKeyFromFile(t *testing.T) {
+	publicKey, privateKey := newTestWebPushKey(t)
+	cfg := testConfig()
+	cfg.EnabledProviders = []string{provider.ProviderWebPush}
+	cfg.WebPush.VAPIDPublicKey = publicKey
+	path := filepath.Join(t.TempDir(), "vapid.key")
+	require.NoError(t, os.WriteFile(path, []byte(privateKey+"\n"), 0o600))
+	cfg.WebPush.VAPIDPrivateKeyFile = path
+	cfg.WebPush.Subject = "mailto:push@example.com"
+
+	s, err := Setup(context.Background(), cfg)
+
+	require.NoError(t, err)
+	require.True(t, s.IsSender())
+}
+
+func TestSetupRejectsWebPushKeyOfAnotherPair(t *testing.T) {
+	publicKey, _ := newTestWebPushKey(t)
+	_, otherPrivateKey := newTestWebPushKey(t)
+	cfg := testConfig()
+	cfg.EnabledProviders = []string{provider.ProviderWebPush}
+	cfg.WebPush.VAPIDPublicKey = publicKey
+	cfg.WebPush.VAPIDPrivateKey = configtypes.NewSecret(otherPrivateKey)
+	cfg.WebPush.Subject = "mailto:push@example.com"
+
+	s, err := Setup(context.Background(), cfg)
+
+	require.Error(t, err)
+	require.Nil(t, s)
+	require.NotContains(t, err.Error(), otherPrivateKey)
+}
+
+func TestSetupRejectsMissingWebPushKeyFileAtStartup(t *testing.T) {
+	publicKey, _ := newTestWebPushKey(t)
+	cfg := testConfig()
+	cfg.EnabledProviders = []string{provider.ProviderWebPush}
+	cfg.WebPush.VAPIDPublicKey = publicKey
+	cfg.WebPush.VAPIDPrivateKeyFile = filepath.Join(t.TempDir(), "missing.key")
+	cfg.WebPush.Subject = "mailto:push@example.com"
+
+	s, err := Setup(context.Background(), cfg)
+
+	require.Error(t, err)
+	require.Nil(t, s)
+	require.Contains(t, err.Error(), "push_notifications.webpush.vapid_private_key_file")
 }
 
 func TestDefaultCallTimeoutIsSyncPlusRequestPlusMargin(t *testing.T) {

@@ -40,10 +40,25 @@ func fcmOnly() *apiproto.SendPushNotificationRequest {
 	}
 }
 
+// webPushOnly returns a request with one valid Web Push target, whose endpoint is at a push service of the built-in list.
+func webPushOnly() *apiproto.SendPushNotificationRequest {
+	return &apiproto.SendPushNotificationRequest{
+		Recipient: &apiproto.PushRecipient{
+			Targets: []*apiproto.PushTarget{
+				{Provider: provider.ProviderWebPush, Token: webPushSubscription("https://fcm.googleapis.com/send/web"), Ref: "w"},
+			},
+		},
+		Notification: &apiproto.PushNotification{
+			Webpush: &apiproto.WebPushPushNotification{Payload: testWebPushPayload()},
+		},
+	}
+}
+
 // parityCase is one request of the dry run parity table. A refused request sets refusal, and its refusal must be the same
 // in the live send and in the dry run. An accepted request has one target, and its item must have the same status and
 // code in both, except that a valid target is sent live and answers dry_run in dry run. status is empty for a valid
-// target.
+// target. A live send can also answer not_sent with address_blocked, which dry run cannot: the address guard acts at connect
+// time, so that answer is not in this table.
 type parityCase struct {
 	name    string
 	build   func() *apiproto.SendPushNotificationRequest
@@ -55,6 +70,59 @@ type parityCase struct {
 // parityCases returns the requests of the parity table: valid targets, per-item refusals and request refusals.
 func parityCases() []parityCase {
 	return []parityCase{
+		{
+			name:  "valid webpush target",
+			build: webPushOnly,
+		},
+		{
+			name: "webpush endpoint over plain http",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Recipient.Targets[0].Token = webPushSubscription("http://fcm.googleapis.com/send/web")
+				return req
+			},
+			status: provider.StatusRejected,
+			code:   provider.CodeInvalidSubscription,
+		},
+		{
+			name: "webpush endpoint origin not in the allow-list",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Recipient.Targets[0].Token = webPushSubscription("https://push.example.com/send/web")
+				return req
+			},
+			status: provider.StatusRejected,
+			code:   provider.CodeEndpointNotAllowed,
+		},
+		{
+			name: "webpush collapse id that is not a Topic",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.CollapseId = "not a topic"
+				return req
+			},
+			status: provider.StatusRejected,
+			code:   provider.CodeInvalidTopic,
+		},
+		{
+			name: "webpush payload over the ceiling",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Notification.Webpush.Payload = []byte(`{"a":"` + strings.Repeat("x", 3990) + `"}`)
+				return req
+			},
+			status: provider.StatusRejected,
+			code:   provider.CodePayloadTooLarge,
+		},
+		{
+			name: "webpush header outside the allow-list",
+			build: func() *apiproto.SendPushNotificationRequest {
+				req := webPushOnly()
+				req.Notification.Webpush.Headers = map[string]string{"Ttl": "60"}
+				return req
+			},
+			refusal: 107,
+		},
 		{
 			name:  "valid apns target",
 			build: apnsOnly,
@@ -148,7 +216,8 @@ func parityCases() []parityCase {
 
 // TestDryRunAnswersLikeLive checks that a dry run runs the same checks as the live send, before any provider call: the
 // refusals and the item statuses and codes of the live send and of the dry run are the same, for valid and invalid
-// targets alike. The live send uses a fake provider, and the dry run uses a set without any provider.
+// targets alike. The live send uses a fake provider, and the dry run uses a set without any provider. The one difference
+// is the connect-time answer address_blocked, which only a live send can give, so the table has no case for it.
 func TestDryRunAnswersLikeLive(t *testing.T) {
 	live := newTestSender(t, &countingSender{}, nil)
 

@@ -183,7 +183,7 @@ func (c *Client) post(
 
 	answer := response{
 		status:    httpResponse.StatusCode,
-		messageID: httpResponse.Header.Get(headerID),
+		messageID: provider.PrintableHeader(httpResponse.Header.Get(headerID)),
 	}
 
 	// A body read error keeps the status: the reason is set only from a body that was read whole.

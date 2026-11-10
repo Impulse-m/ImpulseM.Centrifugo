@@ -15,6 +15,7 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/apns"
 	"github.com/centrifugal/centrifugo/v6/internal/push/provider/fcm"
+	"github.com/centrifugal/centrifugo/v6/internal/push/provider/webpush"
 )
 
 // Length bounds of the request fields.
@@ -133,11 +134,11 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 
 	set := setRecipientFields(req)
 	if len(set) != 1 {
-		return nil, badRequest("recipient must be exactly one of targets, fcm_tokens or apns_tokens")
+		return nil, badRequest("recipient must be exactly one of targets, fcm_tokens, apns_tokens or webpush_tokens")
 	}
 	kind := set[0]
 	switch kind {
-	case "targets", "fcm_tokens", "apns_tokens":
+	case "targets", "fcm_tokens", "apns_tokens", "webpush_tokens":
 	default:
 		return nil, notAvailable(fmt.Sprintf("recipient %s is not available in this build", kind))
 	}
@@ -149,9 +150,9 @@ func (s *Sender) plan(req *apiproto.SendPushNotificationRequest) ([]*provider.Jo
 
 	for index, target := range targets {
 		switch target.GetProvider() {
-		case provider.ProviderAPNs, provider.ProviderFCM:
+		case provider.ProviderAPNs, provider.ProviderFCM, provider.ProviderWebPush:
 		default:
-			return nil, badRequest(fmt.Sprintf("targets[%d].provider must be apns or fcm", index))
+			return nil, badRequest(fmt.Sprintf("targets[%d].provider must be apns, fcm or webpush", index))
 		}
 	}
 	for _, target := range targets {
@@ -213,9 +214,9 @@ func checkTargetFields(job *provider.Job) *apiproto.Error {
 
 	environment := target.GetEnvironment()
 	switch target.GetProvider() {
-	case provider.ProviderFCM:
+	case provider.ProviderFCM, provider.ProviderWebPush:
 		if environment != "" {
-			return badRequest(fmt.Sprintf("targets[%d].environment is refused for fcm", index))
+			return badRequest(fmt.Sprintf("targets[%d].environment is refused for %s", index, target.GetProvider()))
 		}
 	default:
 		if environment == "" {
@@ -233,9 +234,21 @@ func checkTargetContent(job *provider.Job, req *apiproto.SendPushNotificationReq
 	switch job.Target.GetProvider() {
 	case provider.ProviderFCM:
 		return checkFCMTarget(job)
+	case provider.ProviderWebPush:
+		return checkWebPushTarget(job)
 	default:
 		return checkAPNsTarget(job, req)
 	}
+}
+
+// checkWebPushTarget runs the request checks of a Web Push target: its subscription shape, its payload and its headers.
+// The error of webpush.CheckRequest names the target index.
+func checkWebPushTarget(job *provider.Job) *apiproto.Error {
+	err := webpush.CheckRequest(job)
+	if err != nil {
+		return badRequest(err.Error())
+	}
+	return nil
 }
 
 // checkAPNsTarget checks the payload and the headers of an APNs target.
@@ -287,10 +300,11 @@ var errMalformedRequest = errors.New("request body is not a valid send request")
 // Keys of the request body that the recipient walk reads. encoding/json matches a field name without regard to case,
 // so the walk does too.
 const (
-	recipientKey  = "recipient"
-	targetsKey    = "targets"
-	fcmTokensKey  = "fcm_tokens"
-	apnsTokensKey = "apns_tokens"
+	recipientKey     = "recipient"
+	targetsKey       = "targets"
+	fcmTokensKey     = "fcm_tokens"
+	apnsTokensKey    = "apns_tokens"
+	webPushTokensKey = "webpush_tokens"
 )
 
 // Indexes of the recipient lists in a recipientWalk.
@@ -298,11 +312,12 @@ const (
 	listTargets = iota
 	listFCMTokens
 	listAPNsTokens
+	listWebPushTokens
 	listCount
 )
 
 // recipientListKeys names the recipient lists by their index.
-var recipientListKeys = [listCount]string{targetsKey, fcmTokensKey, apnsTokensKey}
+var recipientListKeys = [listCount]string{targetsKey, fcmTokensKey, apnsTokensKey, webPushTokensKey}
 
 // walkRole is the role of a JSON value in the recipient walk of a request body.
 type walkRole int

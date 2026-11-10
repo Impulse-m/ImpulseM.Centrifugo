@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"strings"
 
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/jwt"
@@ -35,6 +36,7 @@ const (
 	apnsKeyFileKey = "push_notifications.apns.token_key_file"
 	apnsKeyPEMKey  = "push_notifications.apns.token_key_pem"
 	fcmCredsKey    = "push_notifications.fcm.credentials_file"
+	webPushKeyFile = "push_notifications.webpush.vapid_private_key_file"
 )
 
 // LoadAPNSKey loads the APNs signing key of a credential, from keyFile or, when keyFile is empty, from keyPEM. The
@@ -141,6 +143,24 @@ func LoadFCMServiceAccount(data []byte) (*FCMServiceAccount, error) {
 		ProjectID: fields.ProjectID,
 		JWT:       conf,
 	}, nil
+}
+
+// ReadWebPushPrivateKey reads the VAPID private key file named by vapid_private_key_file. The file holds the base64url
+// value of the key, and surrounding white space is trimmed. A file above maxKeyFileBytes is refused before it is read.
+// The error names the key and the path, never the content.
+func ReadWebPushPrivateKey(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("%s (%s): the file cannot be read", webPushKeyFile, path)
+	}
+	if info.Size() > maxKeyFileBytes {
+		return "", fmt.Errorf("%s (%s): the file is larger than %d bytes", webPushKeyFile, path, maxKeyFileBytes)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // The file is named by the operator's configuration.
+	if err != nil {
+		return "", fmt.Errorf("%s (%s): the file cannot be read", webPushKeyFile, path)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // ReadFCMServiceAccount reads the service account file named by credentials_file, refused above maxKeyFileBytes before

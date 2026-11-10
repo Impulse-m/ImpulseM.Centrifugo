@@ -260,9 +260,12 @@ func TestRedisLimiterFailOpen(t *testing.T) {
 
 	var calls []string
 	l := newFakeRedisLimiter(redisTestConfig(), fakeRedisRunner(false, errors.New("redis is down"), &calls))
+	// The clock stands still, so the connect check of the same user is inside the breaker window of the command.
+	l.clock = func() int64 { return 0 }
 	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.True(t, l.ConnectAllowed("42"))
-	require.Len(t, calls, 2)
+	// The connect check is answered by the breaker of the shard, which the command failed on, so it does not reach Redis.
+	require.Len(t, calls, 1)
 
 	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
 	require.Equal(t, float64(2), after-before)
@@ -320,7 +323,8 @@ func TestRedisUserLimiterCommandTimeoutBounded(t *testing.T) {
 	start := time.Now()
 	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.True(t, l.ConnectAllowed("42"))
-	// Two timed out calls cost about 100ms. The bound is well below the 2s stall, and wide enough for a loaded runner.
+	// One timed out call costs about 50ms, and the connect check after it is answered by the breaker. The bound is well
+	// below the 2s stall, and wide enough for a loaded runner.
 	require.Less(t, time.Since(start), time.Second)
 }
 
@@ -457,4 +461,187 @@ func TestRedisLimiterNotConnectedAllowsAndCountsThenEnforces(t *testing.T) {
 	require.True(t, l.connected())
 	require.NotZero(t, l.CommandAllowed("42", OperationPublish, "chat"))
 	require.Equal(t, []string{"p.rl.{42}.publish.ns.chat"}, calls)
+}
+
+// breakerTestLimiter returns a connected limiter of two fake shards with run as its runner. Its clock reads now, so a
+// test steps the time of the breakers.
+func breakerTestLimiter(cfg configtypes.RateLimitRedisUserCommand, run redisScriptRunner, now *atomic.Int64) *RedisUserLimiter {
+	l := newFakeRedisLimiter(cfg, run)
+	l.clock = now.Load
+	return l
+}
+
+// failingRunner returns a runner which counts its calls and fails them while failing is set, else it allows them.
+func failingRunner(failing *atomic.Bool, calls *atomic.Int32) redisScriptRunner {
+	return func(_ context.Context, _ *redisshard.RedisShard, _ *rueidis.Lua, _ string, _ []string) (time.Duration, error) {
+		calls.Add(1)
+		if failing.Load() {
+			return 0, errors.New("redis is down")
+		}
+		return 0, nil
+	}
+}
+
+func TestRedisBreakerSkipsRedisInWindowAfterError(t *testing.T) {
+	var now atomic.Int64
+	var failing atomic.Bool
+	var calls atomic.Int32
+	failing.Store(true)
+	l := breakerTestLimiter(redisTestConfig(), failingRunner(&failing, &calls), &now)
+
+	before := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(1), calls.Load())
+
+	// Inside the second after the error, the checks of the shard are allowed at once and do not reach Redis.
+	now.Store(int64(999 * time.Millisecond))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.True(t, l.ConnectAllowed("42"))
+	require.Equal(t, int32(1), calls.Load())
+
+	// Each check in the window is counted as a Redis error, as a check made while not connected is.
+	after := testutil.ToFloat64(metrics.RateLimitRedisErrorsTotal)
+	require.Equal(t, float64(3), after-before)
+}
+
+func TestRedisBreakerRefusesInWindowOnErrorDeny(t *testing.T) {
+	var now atomic.Int64
+	var failing atomic.Bool
+	var calls atomic.Int32
+	failing.Store(true)
+	cfg := redisTestConfig()
+	cfg.OnError = configtypes.RateLimitOnErrorDeny
+	l := breakerTestLimiter(cfg, failingRunner(&failing, &calls), &now)
+
+	require.Equal(t, denyWaitOnError, l.CommandAllowed("42", OperationPublish, "chat"))
+	now.Store(int64(500 * time.Millisecond))
+	require.Equal(t, denyWaitOnError, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.False(t, l.ConnectAllowed("42"))
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestRedisBreakerLetsOneProbeThroughAfterPause(t *testing.T) {
+	var now atomic.Int64
+	var calls atomic.Int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	run := func(ctx context.Context, _ *redisshard.RedisShard, _ *rueidis.Lua, _ string, _ []string) (time.Duration, error) {
+		if calls.Add(1) == 1 {
+			return 0, errors.New("redis is down")
+		}
+		// The probe blocks until the test releases it, or until its context is done.
+		entered <- struct{}{}
+		select {
+		case <-release:
+			return 0, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	l := breakerTestLimiter(redisTestConfig(), run, &now)
+
+	// The bound of the waits of this test. The probe does not return before release is closed, so a probe which never
+	// starts fails the test here instead of hanging it.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	now.Store(int64(time.Second))
+	probeDone := make(chan time.Duration, 1)
+	go func() { probeDone <- l.CommandAllowed("42", OperationPublish, "chat") }()
+	select {
+	case <-entered:
+	case <-waitCtx.Done():
+		t.Fatal("the probe did not reach Redis")
+	}
+
+	// While the probe runs, the checks of the shard are allowed at once and none of them reaches Redis.
+	for i := 0; i < 3; i++ {
+		require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	}
+	require.True(t, l.ConnectAllowed("42"))
+	require.Equal(t, int32(2), calls.Load())
+
+	close(release)
+	select {
+	case wait := <-probeDone:
+		require.Zero(t, wait)
+	case <-waitCtx.Done():
+		t.Fatal("the probe did not return")
+	}
+}
+
+func TestRedisBreakerSuccessfulProbeCloses(t *testing.T) {
+	var now atomic.Int64
+	var failing atomic.Bool
+	var calls atomic.Int32
+	failing.Store(true)
+	l := breakerTestLimiter(redisTestConfig(), failingRunner(&failing, &calls), &now)
+
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	now.Store(int64(time.Second))
+	failing.Store(false)
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(2), calls.Load())
+
+	// The breaker is closed: a check at the same time reaches Redis again.
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(3), calls.Load())
+}
+
+func TestRedisBreakerFailedProbeKeepsOpen(t *testing.T) {
+	var now atomic.Int64
+	var failing atomic.Bool
+	var calls atomic.Int32
+	failing.Store(true)
+	l := breakerTestLimiter(redisTestConfig(), failingRunner(&failing, &calls), &now)
+
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	now.Store(int64(time.Second))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(2), calls.Load())
+
+	// The failed probe opened the breaker again, for a second from its own time.
+	now.Store(int64(1500 * time.Millisecond))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(2), calls.Load())
+
+	now.Store(int64(2 * time.Second))
+	require.Zero(t, l.CommandAllowed("42", OperationPublish, "chat"))
+	require.Equal(t, int32(3), calls.Load())
+}
+
+func TestRedisBreakerShardsAreIndependent(t *testing.T) {
+	failedUser := "user-0"
+	otherUser := ""
+	for i := 1; i < 100; i++ {
+		id := fmt.Sprintf("user-%d", i)
+		if redisshard.ShardIndex(id, 2) != redisshard.ShardIndex(failedUser, 2) {
+			otherUser = id
+			break
+		}
+	}
+	require.NotEmpty(t, otherUser)
+
+	failedKey := redisKey("p", failedUser, "publish.ns.chat")
+	otherKey := redisKey("p", otherUser, "publish.ns.chat")
+	var calls []string
+	run := func(_ context.Context, _ *redisshard.RedisShard, _ *rueidis.Lua, key string, _ []string) (time.Duration, error) {
+		calls = append(calls, key)
+		if key == failedKey {
+			return 0, errors.New("redis is down")
+		}
+		return 0, nil
+	}
+	var now atomic.Int64
+	l := breakerTestLimiter(redisTestConfig(), run, &now)
+
+	require.Zero(t, l.CommandAllowed(failedUser, OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed(otherUser, OperationPublish, "chat"))
+	require.Equal(t, []string{failedKey, otherKey}, calls)
+
+	// The failed shard is skipped, and the user of the other shard still reaches Redis.
+	require.Zero(t, l.CommandAllowed(failedUser, OperationPublish, "chat"))
+	require.Zero(t, l.CommandAllowed(otherUser, OperationPublish, "chat"))
+	require.Equal(t, []string{failedKey, otherKey, otherKey}, calls)
 }

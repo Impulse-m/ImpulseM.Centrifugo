@@ -122,7 +122,7 @@ type Config struct {
 	// ClientAddress is a configuration for the client address behind trusted proxies.
 	ClientAddress configtypes.ClientAddress `mapstructure:"client_address" json:"client_address" envconfig:"client_address" toml:"client_address" yaml:"client_address" doc:"Configures the client address behind trusted proxies: forwarded header and PROXY protocol. Disabled by default."`
 	// PushNotifications configures the push notification subsystem. Disabled by default.
-	PushNotifications configtypes.PushNotifications `mapstructure:"push_notifications" json:"push_notifications" envconfig:"push_notifications" toml:"push_notifications" yaml:"push_notifications" doc:"Configures the push notification subsystem: direct sends of raw provider tokens to APNs and FCM from sender nodes. Disabled by default."`
+	PushNotifications configtypes.PushNotifications `mapstructure:"push_notifications" json:"push_notifications" envconfig:"push_notifications" toml:"push_notifications" yaml:"push_notifications" doc:"Configures the push notification subsystem: direct sends of raw provider tokens to APNs, FCM and Web Push from sender nodes. Disabled by default."`
 
 	// OpenTelemetry is a configuration for OpenTelemetry tracing.
 	OpenTelemetry configtypes.OpenTelemetry `mapstructure:"opentelemetry" json:"opentelemetry" envconfig:"opentelemetry" toml:"opentelemetry" yaml:"opentelemetry" doc:"Configures OpenTelemetry tracing export."`

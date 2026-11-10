@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -11,6 +14,8 @@ import (
 
 // pushTestConfig returns the default configuration with push notifications enabled for APNs and FCM,
 // with every required setting present. The files it names do not exist: validation must not read them.
+// The Web Push settings hold a generated VAPID key pair inline, so they are valid while webpush is not
+// enabled.
 func pushTestConfig() Config {
 	conf := DefaultConfig()
 	conf.PushNotifications.Enabled = true
@@ -20,7 +25,22 @@ func pushTestConfig() Config {
 	conf.PushNotifications.APNs.TokenTeamID = "TEAMID1234"
 	conf.PushNotifications.APNs.TokenKeyFile = "/nonexistent/AuthKey.p8"
 	conf.PushNotifications.FCM.CredentialsFile = "/nonexistent/service-account.json"
+	publicKey, privateKey := newWebPushTestKeys()
+	conf.PushNotifications.WebPush.VAPIDPublicKey = publicKey
+	conf.PushNotifications.WebPush.VAPIDPrivateKey = configtypes.NewSecret(privateKey)
+	conf.PushNotifications.WebPush.Subject = "mailto:push@example.com"
 	return conf
+}
+
+// newWebPushTestKeys generates a VAPID key pair and returns the public key and the private scalar in
+// the unpadded base64url form of the configuration. It panics when the generation fails.
+func newWebPushTestKeys() (string, string) {
+	private, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(private.PublicKey().Bytes()),
+		base64.RawURLEncoding.EncodeToString(private.Bytes())
 }
 
 func TestValidatePushNotificationsValid(t *testing.T) {
@@ -65,9 +85,12 @@ func TestPushNotificationsDefaults(t *testing.T) {
 	require.Equal(t, 500, push.APNs.MaxInflight)
 	require.Equal(t, 500, push.FCM.TokensBatchSize)
 	require.Equal(t, 200, push.FCM.MaxInflight)
+	require.Equal(t, 100, push.WebPush.TokensBatchSize)
+	require.Equal(t, 500, push.WebPush.MaxInflight)
 }
 
 func TestValidatePushNotificationsRules(t *testing.T) {
+	otherPublicKey, _ := newWebPushTestKeys()
 	tests := []struct {
 		name    string
 		mutate  func(conf *Config)
@@ -88,11 +111,139 @@ func TestValidatePushNotificationsRules(t *testing.T) {
 			wantErr: `entry "hms" is not available in this build`,
 		},
 		{
-			name: "webpush provider is refused",
+			name: "webpush provider is accepted",
 			mutate: func(conf *Config) {
 				conf.PushNotifications.EnabledProviders = []string{"fcm", "webpush"}
 			},
-			wantErr: `entry "webpush" is not available in this build`,
+		},
+		{
+			name: "webpush with the private key as a file only",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPrivateKey = configtypes.NewSecret("")
+				conf.PushNotifications.WebPush.VAPIDPrivateKeyFile = "/nonexistent/vapid.key"
+			},
+		},
+		{
+			name: "webpush https subject",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.Subject = "https://example.com"
+			},
+		},
+		{
+			name: "webpush without a public key",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPublicKey = ""
+			},
+			wantErr: "push_notifications.webpush.vapid_public_key is required when webpush is enabled",
+		},
+		{
+			name: "webpush without a subject",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.Subject = ""
+			},
+			wantErr: "push_notifications.webpush.subject is required when webpush is enabled",
+		},
+		{
+			name: "webpush without a private key",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPrivateKey = configtypes.NewSecret("")
+			},
+			wantErr: "push_notifications.webpush.vapid_private_key or push_notifications.webpush.vapid_private_key_file is required when webpush is enabled",
+		},
+		{
+			name: "webpush subject without a scheme",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.Subject = "push@example.com"
+			},
+			wantErr: "push_notifications.webpush.subject must start with mailto: or https://",
+		},
+		{
+			name: "webpush subject over plain http",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.Subject = "http://example.com"
+			},
+			wantErr: "push_notifications.webpush.subject must start with mailto: or https://",
+		},
+		{
+			name: "webpush public key is not a point",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPublicKey = "AAAA"
+			},
+			wantErr: "push_notifications.webpush.vapid_public_key: public key is not a P-256 point",
+		},
+		{
+			name: "webpush private key is not base64url",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPrivateKey = configtypes.NewSecret("!!!")
+			},
+			wantErr: "push_notifications.webpush.vapid_private_key: private key is not base64url",
+		},
+		{
+			name: "webpush public key of another pair",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPublicKey = otherPublicKey
+			},
+			wantErr: "push_notifications.webpush.vapid_private_key: private key does not match the public key",
+		},
+		{
+			name: "webpush key file and inline key are both set",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.EnabledProviders = []string{"webpush"}
+				conf.PushNotifications.WebPush.VAPIDPrivateKeyFile = "/nonexistent/vapid.key"
+			},
+			wantErr: "push_notifications.webpush.vapid_private_key and push_notifications.webpush.vapid_private_key_file are mutually exclusive",
+		},
+		{
+			name: "webpush tokens batch size above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.TokensBatchSize = 1001
+			},
+			wantErr: "push_notifications.webpush.tokens_batch_size must be at most 1000, got 1001",
+		},
+		{
+			name: "webpush max inflight of zero",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.MaxInflight = 0
+			},
+			wantErr: "push_notifications.webpush.max_inflight must be greater than zero",
+		},
+		{
+			name: "webpush max inflight above the maximum",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.MaxInflight = 10001
+			},
+			wantErr: "push_notifications.webpush.max_inflight must be at most 10000, got 10001",
+		},
+		{
+			name: "webpush allowed origin pattern does not compile",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.AllowedEndpointOrigins = []string{"https://[abc"}
+			},
+			wantErr: "push_notifications.webpush.allowed_endpoint_origins: malformed origin pattern",
+		},
+		{
+			name: "webpush extra origin pattern does not compile",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.ExtraAllowedEndpointOrigins = []string{"https://[abc"}
+			},
+			wantErr: "push_notifications.webpush.extra_allowed_endpoint_origins: malformed origin pattern",
+		},
+		{
+			name: "webpush origin patterns compile",
+			mutate: func(conf *Config) {
+				conf.PushNotifications.WebPush.AllowedEndpointOrigins = []string{"https://*.googleapis.com", "*"}
+				conf.PushNotifications.WebPush.ExtraAllowedEndpointOrigins = []string{"https://push.example.org"}
+			},
 		},
 		{
 			name: "unknown provider",
@@ -335,8 +486,38 @@ func TestValidatePushNotificationsRules(t *testing.T) {
 // The settings are validated with the rest of the configuration, through Config.Validate.
 func TestConfigValidateRefusesPushSettings(t *testing.T) {
 	conf := pushTestConfig()
-	conf.PushNotifications.EnabledProviders = []string{"webpush"}
+	conf.PushNotifications.EnabledProviders = []string{"hms"}
 	require.ErrorContains(t, conf.Validate(), "is not available in this build")
+}
+
+// While webpush is not enabled, its key forms, its ranges and its origin patterns are still checked,
+// but its public key, subject and private key are not required and not checked.
+func TestValidatePushWebPushWhenNotEnabled(t *testing.T) {
+	conf := pushTestConfig()
+	conf.PushNotifications.WebPush.VAPIDPublicKey = "AAAA"
+	conf.PushNotifications.WebPush.Subject = "push@example.com"
+	require.NoError(t, validatePushNotifications(conf))
+
+	conf.PushNotifications.WebPush.VAPIDPrivateKeyFile = "/nonexistent/vapid.key"
+	require.ErrorContains(t, validatePushNotifications(conf), "mutually exclusive")
+
+	conf = pushTestConfig()
+	conf.PushNotifications.WebPush.AllowedEndpointOrigins = []string{"https://[abc"}
+	require.ErrorContains(t, validatePushNotifications(conf), "malformed origin pattern")
+
+	conf = pushTestConfig()
+	conf.PushNotifications.WebPush.TokensBatchSize = 0
+	require.ErrorContains(t, validatePushNotifications(conf), "push_notifications.webpush.tokens_batch_size must be greater than zero")
+}
+
+// The private key given as a file is not read by validation: the file does not exist and validation
+// still accepts it, with webpush enabled.
+func TestValidatePushWebPushFileKeyNotRead(t *testing.T) {
+	conf := pushTestConfig()
+	conf.PushNotifications.EnabledProviders = []string{"webpush"}
+	conf.PushNotifications.WebPush.VAPIDPrivateKey = configtypes.NewSecret("")
+	conf.PushNotifications.WebPush.VAPIDPrivateKeyFile = "/nonexistent/vapid.key"
+	require.NoError(t, conf.Validate())
 }
 
 // Validation accepts the files named by pushTestConfig as missing, with sender false and with sender

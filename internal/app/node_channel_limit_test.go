@@ -17,6 +17,6 @@ func TestCentrifugeNodeConfigClientChannelLimit(t *testing.T) {
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.Equal(t, 7, nodeCfg.ClientChannelLimit)
 }

@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 
 	"github.com/centrifugal/centrifuge"
@@ -17,6 +19,19 @@ type rebindClientMock struct {
 	SubscribeFunc   func(channel string, opts ...centrifuge.SubscribeOption) error
 	ChannelsFunc    func() map[string]centrifuge.ChannelContext
 	UnsubscribeFunc func(ch string, unsubscribe ...centrifuge.Unsubscribe)
+}
+
+// benchRebindClient is the connection of the handler benchmarks, as benchClient builds it, with the methods of the
+// rebind path, which the refresh of the handler needs.
+func benchRebindClient() *rebindClientMock {
+	return &rebindClientMock{
+		TestClientMock: tools.TestClientMock{
+			IDFunc:           func() string { return "client" },
+			UserIDFunc:       func() string { return "12" },
+			IsSubscribedFunc: func(string) bool { return false },
+			ContextFunc:      func() context.Context { return context.Background() },
+		},
+	}
 }
 
 func (m *rebindClientMock) ExtState() any {

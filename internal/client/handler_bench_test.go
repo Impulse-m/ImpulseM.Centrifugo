@@ -90,7 +90,7 @@ func BenchmarkHandlerConnectProxy(b *testing.B) {
 
 func BenchmarkHandlerRefresh(b *testing.B) {
 	h := benchHandler(b)
-	c := benchClient()
+	c := benchRebindClient()
 	e := centrifuge.RefreshEvent{Token: getConnTokenHS("12", time.Now().Unix()+3600)}
 	b.ReportAllocs()
 	b.ResetTimer()

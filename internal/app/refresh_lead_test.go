@@ -15,9 +15,9 @@ func TestCentrifugeNodeConfigRefreshLead(t *testing.T) {
 	cfg.Client.RefreshLead = configtypes.Duration(60 * time.Second)
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	require.Equal(t, 60*time.Second, centrifugeNodeConfig("test", "oss", cfgContainer, nil).ClientRefreshLead)
+	require.Equal(t, 60*time.Second, testNodeConfig(cfgContainer).ClientRefreshLead)
 
 	cfgContainer, err = config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
-	require.Zero(t, centrifugeNodeConfig("test", "oss", cfgContainer, nil).ClientRefreshLead)
+	require.Zero(t, testNodeConfig(cfgContainer).ClientRefreshLead)
 }

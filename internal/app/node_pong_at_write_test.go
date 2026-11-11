@@ -25,7 +25,7 @@ func TestCentrifugeNodeConfigPongAtWrite(t *testing.T) {
 			cfgContainer, err := config.NewContainer(cfg)
 			require.NoError(t, err)
 
-			nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+			nodeCfg := testNodeConfig(cfgContainer)
 			require.Equal(t, tt.on, nodeCfg.ClientPongAtWrite)
 		})
 	}

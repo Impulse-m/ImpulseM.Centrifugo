@@ -6,8 +6,16 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/configtypes"
 
+	"github.com/centrifugal/centrifuge"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
+
+// testNodeConfig builds the node config of cfgContainer, as an App builds it for its node.
+func testNodeConfig(cfgContainer *config.Container) centrifuge.Config {
+	a := &App{container: cfgContainer, metricsRegistry: prometheus.NewRegistry()}
+	return a.centrifugeNodeConfig()
+}
 
 func TestCentrifugeNodeConfigChannelMediumOptions(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -33,7 +41,7 @@ func TestCentrifugeNodeConfigChannelMediumOptions(t *testing.T) {
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.NotNil(t, nodeCfg.GetChannelMediumOptions)
 
 	require.True(t, nodeCfg.GetChannelMediumOptions("shared:test").SharedPositionSync)
@@ -48,7 +56,7 @@ func TestCentrifugeNodeConfigReplyIncludeServerTime(t *testing.T) {
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.True(t, nodeCfg.ReplyIncludeServerTime)
 }
 
@@ -56,7 +64,7 @@ func TestCentrifugeNodeConfigReplyIncludeServerTimeDisabledByDefault(t *testing.
 	cfgContainer, err := config.NewContainer(config.DefaultConfig())
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.False(t, nodeCfg.ReplyIncludeServerTime)
 }
 
@@ -73,7 +81,7 @@ func TestCentrifugeNodeConfigChannelMediumOptionsUnsetWithoutMedium(t *testing.T
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	// No channel options use the medium, so Core must not look it up on every publication.
 	require.Nil(t, nodeCfg.GetChannelMediumOptions)
 }

@@ -30,7 +30,7 @@ func TestCentrifugeNodeConfigChannelMediumOptionsKeepLatestPublication(t *testin
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.NotNil(t, nodeCfg.GetChannelMediumOptions)
 
 	latestOpts := nodeCfg.GetChannelMediumOptions("latest:test")
@@ -50,7 +50,7 @@ func TestCentrifugeNodeConfigChannelMediumOptionsOnlyKeepLatestPublication(t *te
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 
-	nodeCfg := centrifugeNodeConfig("test", "oss", cfgContainer, nil)
+	nodeCfg := testNodeConfig(cfgContainer)
 	require.NotNil(t, nodeCfg.GetChannelMediumOptions)
 	require.True(t, nodeCfg.GetChannelMediumOptions("top").KeepLatestPublication)
 }

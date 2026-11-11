@@ -1515,13 +1515,13 @@ func (x *BroadcastResult) GetResponses() []*PublishResponse {
 // Centrifugo OSS parses it but ignores it.
 type FilterNode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// op is the logical operation of a non-leaf node: "and", "or" or "not".
-	// Empty for a leaf node.
+	// op is the logical operation of a non-leaf node. Empty for a leaf node.
+	// One of: and, or, not.
 	Op string `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
 	// key is the label key a leaf node compares.
 	Key string `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	// cmp is the comparison of a leaf node: "eq", "neq", "in", "nin", "ex",
-	// "nex", "sw", "ew", "ct", "gt", "gte", "lt" or "lte".
+	// cmp is the comparison of a leaf node. One of: eq, neq, in, nin, ex, nex,
+	// sw, ew, ct, gt, gte, lt, lte.
 	Cmp string `protobuf:"bytes,3,opt,name=cmp,proto3" json:"cmp,omitempty"`
 	// val is the value to compare with, for single-value comparisons.
 	Val string `protobuf:"bytes,4,opt,name=val,proto3" json:"val,omitempty"`
@@ -5796,7 +5796,8 @@ type InvalidateUserTokensRequest struct {
 	// expire_at is the Unix time in seconds when the invalidation expires.
 	// Optional, but a value matching the token expiration is recommended.
 	ExpireAt int64 `protobuf:"varint,1,opt,name=expire_at,json=expireAt,proto3" json:"expire_at,omitempty"`
-	// user is the ID of the user whose tokens to invalidate. Required.
+	// user is the ID of the user whose tokens to invalidate. Required. ""
+	// invalidates the tokens of anonymous users.
 	User string `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
 	// issued_before is the Unix time in seconds: tokens issued before it are
 	// considered revoked. If not set, the current time is used.
@@ -5984,13 +5985,13 @@ type DeviceRegisterRequest struct {
 	// generates one and returns it. Pass the stored value to update the
 	// device.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// provider is the provider of the device token: fcm, hms, apns or
-	// webpush. Required.
+	// provider is the provider of the device token. Required. One of: fcm,
+	// hms, apns, webpush.
 	Provider string `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
 	// token is the push token of the device. For webpush, it is the browser
 	// PushSubscription serialized as a JSON string. Required.
 	Token string `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
-	// platform is the device platform: ios, android or web. Required.
+	// platform is the device platform. Required. One of: ios, android, web.
 	Platform string `protobuf:"bytes,4,opt,name=platform,proto3" json:"platform,omitempty"`
 	// user is the user associated with the device.
 	User string `protobuf:"bytes,5,opt,name=user,proto3" json:"user,omitempty"`
@@ -6264,7 +6265,8 @@ func (x *DeviceRemoveRequest) GetUsers() []string {
 // DeviceUserUpdate sets the user of devices. Centrifugo PRO only.
 type DeviceUserUpdate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// user is the user ID to set. Required.
+	// user is the user ID to set. Required. "" detaches the devices from their
+	// user.
 	User          string `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6310,7 +6312,7 @@ func (x *DeviceUserUpdate) GetUser() string {
 // DeviceTimezoneUpdate sets the timezone of devices. Centrifugo PRO only.
 type DeviceTimezoneUpdate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// timezone is the IANA time zone to set. Required.
+	// timezone is the IANA time zone to set. Required. "" clears it.
 	Timezone      string `protobuf:"bytes,1,opt,name=timezone,proto3" json:"timezone,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6356,7 +6358,7 @@ func (x *DeviceTimezoneUpdate) GetTimezone() string {
 // DeviceLocaleUpdate sets the locale of devices. Centrifugo PRO only.
 type DeviceLocaleUpdate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// locale is the locale to set. Required.
+	// locale is the locale to set. Required. "" clears it.
 	Locale        string `protobuf:"bytes,1,opt,name=locale,proto3" json:"locale,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6402,7 +6404,7 @@ func (x *DeviceLocaleUpdate) GetLocale() string {
 // DeviceMetaUpdate sets the meta of devices. Centrifugo PRO only.
 type DeviceMetaUpdate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// meta is the meta to set. Required.
+	// meta is the meta to set. Required. An empty map clears it.
 	Meta          map[string]string `protobuf:"bytes,1,rep,name=meta,proto3" json:"meta,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6448,7 +6450,7 @@ func (x *DeviceMetaUpdate) GetMeta() map[string]string {
 // DeviceTopicsUpdate changes the topics of devices. Centrifugo PRO only.
 type DeviceTopicsUpdate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// op is the operation: add, remove or set. Required.
+	// op is the operation. Required. One of: add, remove, set.
 	Op string `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
 	// topics are the topics for the operation.
 	Topics        []string `protobuf:"bytes,2,rep,name=topics,proto3" json:"topics,omitempty"`
@@ -6586,7 +6588,7 @@ func (x *DeviceFilter) GetPlatforms() []string {
 // Centrifugo PRO only.
 type DeviceListRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// filter selects the devices to list. Required.
+	// filter selects the devices to list: all of them when unset.
 	Filter *DeviceFilter `protobuf:"bytes,1,opt,name=filter,proto3" json:"filter,omitempty"`
 	// include_total_count includes the total count for the filter in the
 	// result.
@@ -7009,7 +7011,7 @@ type DeviceTopicUpdateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// device_id is the ID of the device. Required.
 	DeviceId string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	// op is the operation: add, remove or set. Required.
+	// op is the operation. Required. One of: add, remove, set.
 	Op string `protobuf:"bytes,2,opt,name=op,proto3" json:"op,omitempty"`
 	// topics are the topics for the operation.
 	Topics []string `protobuf:"bytes,3,rep,name=topics,proto3" json:"topics,omitempty"`
@@ -7083,9 +7085,10 @@ func (x *DeviceTopicUpdateRequest) GetUser() string {
 // applied to the user's registered devices. Centrifugo PRO only.
 type UserTopicUpdateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// user is the user ID. Required.
+	// user is the user ID. Required. "" updates the global binding, which every
+	// device - anonymous ones included - gets on its next device_register.
 	User string `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
-	// op is the operation: add, remove or set. Required.
+	// op is the operation. Required. One of: add, remove, set.
 	Op string `protobuf:"bytes,2,opt,name=op,proto3" json:"op,omitempty"`
 	// topics are the topics for the operation.
 	Topics        []string `protobuf:"bytes,3,rep,name=topics,proto3" json:"topics,omitempty"`
@@ -8417,6 +8420,7 @@ type PushNotification struct {
 	// send the notification. In the direct send it also sets the expiry of
 	// the provider where the caller set none: android.ttl and apns-expiration
 	// of an FCM message, apns-expiration of APNs, and the TTL of Web Push.
+	// Required when the request sets limit_strategy.
 	ExpireAt      int64 `protobuf:"varint,5,opt,name=expire_at,json=expireAt,proto3" json:"expire_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8716,7 +8720,8 @@ type SendPushNotificationRequest struct {
 	OptimizeForReliability bool `protobuf:"varint,5,opt,name=optimize_for_reliability,json=optimizeForReliability,proto3" json:"optimize_for_reliability,omitempty"`
 	// limit_strategy sets time constraints and rate limits. Only applies
 	// with a filter recipient; devices are then processed one by one
-	// instead of in batches.
+	// instead of in batches. Needs notification.expire_at: a push the limits
+	// hold back is not tried forever.
 	LimitStrategy *PushLimitStrategy `protobuf:"bytes,6,opt,name=limit_strategy,json=limitStrategy,proto3" json:"limit_strategy,omitempty"`
 	// analytics_uid is the identifier for push notification analytics. If
 	// not set, uid is used.
@@ -9271,8 +9276,8 @@ type UpdatePushStatusRequest struct {
 	// analytics_uid is the analytics_uid of the push notification (as in
 	// SendPushNotificationRequest). Required.
 	AnalyticsUid string `protobuf:"bytes,1,opt,name=analytics_uid,json=analyticsUid,proto3" json:"analytics_uid,omitempty"`
-	// status is the status of the push notification: delivered or
-	// interacted. Required.
+	// status is the status of the push notification. Required. One of:
+	// delivered, interacted.
 	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	// device_id is the Centrifugo device ID. Required.
 	DeviceId string `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
@@ -9611,9 +9616,9 @@ type MapPublishRequest struct {
 	VersionEpoch string `protobuf:"bytes,11,opt,name=version_epoch,json=versionEpoch,proto3" json:"version_epoch,omitempty"`
 	// score is currently not used by the server API.
 	Score int64 `protobuf:"varint,12,opt,name=score,proto3" json:"score,omitempty"`
-	// key_mode makes the publish conditional: "if_new" writes only if the
-	// key does not exist, "if_exists" only if it exists. Empty always
-	// writes.
+	// key_mode makes the publish conditional: if_new writes only if the key
+	// does not exist, if_exists only if it exists. Empty always writes.
+	// One of: if_new, if_exists.
 	KeyMode       string `protobuf:"bytes,13,opt,name=key_mode,json=keyMode,proto3" json:"key_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

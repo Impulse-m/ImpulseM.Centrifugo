@@ -73,7 +73,11 @@ func (h *SubscribeHandler) Handle() SubscribeHandlerFunc {
 			log.Info().Str("channel", e.Channel).Msg("subscribe proxy not enabled for a channel")
 			return centrifuge.SubscribeReply{}, SubscribeExtra{}, centrifuge.ErrorNotAvailable
 		}
-		p = h.config.Proxies[proxyName]
+		p, ok := h.config.Proxies[proxyName]
+		if !ok {
+			log.Error().Str("proxy_name", proxyName).Str("channel", e.Channel).Msg("subscribe proxy not found")
+			return centrifuge.SubscribeReply{}, SubscribeExtra{}, centrifuge.ErrorNotAvailable
+		}
 		summary = h.summary[proxyName]
 		histogram = h.histogram[proxyName]
 		errors = h.errors[proxyName]
@@ -182,21 +186,22 @@ func (h *SubscribeHandler) Handle() SubscribeHandlerFunc {
 
 		return centrifuge.SubscribeReply{
 			Options: centrifuge.SubscribeOptions{
-				ExpireAt:          expireAt,
-				ChannelInfo:       info,
-				EmitPresence:      presence,
-				EmitJoinLeave:     joinLeave,
-				PushJoinLeave:     pushJoinLeave,
-				EnableRecovery:    recovery,
-				EnablePositioning: positioning,
-				RecoveryMode:      recoveryMode,
-				AutoCacheRecover:  recovery && chOpts.AutoCacheRecover && recoveryMode == centrifuge.RecoveryModeCache,
-				AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-				AllowTagsFilter:   chOpts.AllowTagsFilter,
-				Data:              data,
-				ServerTagsFilter:  serverTagsFilter,
-				Source:            subsource.SubscribeProxy,
-				HistoryMetaTTL:    time.Duration(chOpts.HistoryMetaTTL),
+				ExpireAt:                    expireAt,
+				ChannelInfo:                 info,
+				EmitPresence:                presence,
+				EmitJoinLeave:               joinLeave,
+				PushJoinLeave:               pushJoinLeave,
+				EnableRecovery:              recovery,
+				EnablePositioning:           positioning,
+				RecoveryMode:                recoveryMode,
+				AutoCacheRecover:            recovery && chOpts.AutoCacheRecover && recoveryMode == centrifuge.RecoveryModeCache,
+				AllowedDeltaTypes:           chOpts.AllowedDeltaTypes,
+				AllowTagsFilter:             chOpts.AllowTagsFilter,
+				Data:                        data,
+				ServerTagsFilter:            serverTagsFilter,
+				Source:                      subsource.SubscribeProxy,
+				HistoryMetaTTL:              time.Duration(chOpts.HistoryMetaTTL),
+				RecoveryMaxPublicationLimit: chOpts.RecoveryMaxPublicationLimit,
 			},
 			ClientSideRefresh: true,
 		}, extra, nil

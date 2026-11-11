@@ -20,16 +20,17 @@ func (h *Handler) personalChannelSubscription(userID string) (string, centrifuge
 		return "", centrifuge.SubscribeOptions{}, centrifuge.ErrorUnknownChannel
 	}
 	return personalChannel, centrifuge.SubscribeOptions{
-		EmitPresence:      chOpts.Presence,
-		EmitJoinLeave:     chOpts.JoinLeave,
-		PushJoinLeave:     chOpts.ForcePushJoinLeave,
-		EnableRecovery:    chOpts.ForceRecovery,
-		EnablePositioning: chOpts.ForcePositioning,
-		RecoveryMode:      chOpts.GetRecoveryMode(),
-		Source:            subsource.UserPersonal,
-		HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
-		AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-		AllowTagsFilter:   chOpts.AllowTagsFilter,
+		EmitPresence:                chOpts.Presence,
+		EmitJoinLeave:               chOpts.JoinLeave,
+		PushJoinLeave:               chOpts.ForcePushJoinLeave,
+		EnableRecovery:              chOpts.ForceRecovery,
+		EnablePositioning:           chOpts.ForcePositioning,
+		RecoveryMode:                chOpts.GetRecoveryMode(),
+		Source:                      subsource.UserPersonal,
+		HistoryMetaTTL:              chOpts.HistoryMetaTTL.ToDuration(),
+		RecoveryMaxPublicationLimit: chOpts.RecoveryMaxPublicationLimit,
+		AllowedDeltaTypes:           chOpts.AllowedDeltaTypes,
+		AllowTagsFilter:             chOpts.AllowTagsFilter,
 	}, nil
 }
 

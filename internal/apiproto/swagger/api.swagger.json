@@ -2362,7 +2362,7 @@
       "properties": {
         "filter": {
           "$ref": "#/definitions/DeviceFilter",
-          "description": "filter selects the devices to list. Required."
+          "description": "filter selects the devices to list: all of them when unset."
         },
         "include_total_count": {
           "type": "boolean",
@@ -2433,7 +2433,7 @@
       "properties": {
         "locale": {
           "type": "string",
-          "description": "locale is the locale to set. Required."
+          "description": "locale is the locale to set. Required. \"\" clears it."
         }
       },
       "description": "DeviceLocaleUpdate sets the locale of devices. Centrifugo PRO only."
@@ -2446,7 +2446,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "meta is the meta to set. Required."
+          "description": "meta is the meta to set. Required. An empty map clears it."
         }
       },
       "description": "DeviceMetaUpdate sets the meta of devices. Centrifugo PRO only."
@@ -2460,7 +2460,7 @@
         },
         "provider": {
           "type": "string",
-          "description": "provider is the provider of the device token: fcm, hms, apns or\nwebpush. Required."
+          "description": "provider is the provider of the device token. Required. One of: fcm,\nhms, apns, webpush."
         },
         "token": {
           "type": "string",
@@ -2468,7 +2468,7 @@
         },
         "platform": {
           "type": "string",
-          "description": "platform is the device platform: ios, android or web. Required."
+          "description": "platform is the device platform. Required. One of: ios, android, web."
         },
         "user": {
           "type": "string",
@@ -2566,7 +2566,7 @@
       "properties": {
         "timezone": {
           "type": "string",
-          "description": "timezone is the IANA time zone to set. Required."
+          "description": "timezone is the IANA time zone to set. Required. \"\" clears it."
         }
       },
       "description": "DeviceTimezoneUpdate sets the timezone of devices. Centrifugo PRO only."
@@ -2706,7 +2706,7 @@
         },
         "op": {
           "type": "string",
-          "description": "op is the operation: add, remove or set. Required."
+          "description": "op is the operation. Required. One of: add, remove, set."
         },
         "topics": {
           "type": "array",
@@ -2745,7 +2745,7 @@
       "properties": {
         "op": {
           "type": "string",
-          "description": "op is the operation: add, remove or set. Required."
+          "description": "op is the operation. Required. One of: add, remove, set."
         },
         "topics": {
           "type": "array",
@@ -2820,7 +2820,7 @@
       "properties": {
         "user": {
           "type": "string",
-          "description": "user is the user ID to set. Required."
+          "description": "user is the user ID to set. Required. \"\" detaches the devices from their\nuser."
         }
       },
       "description": "DeviceUserUpdate sets the user of devices. Centrifugo PRO only."
@@ -2921,7 +2921,7 @@
       "properties": {
         "op": {
           "type": "string",
-          "description": "op is the logical operation of a non-leaf node: \"and\", \"or\" or \"not\".\nEmpty for a leaf node."
+          "description": "op is the logical operation of a non-leaf node. Empty for a leaf node.\nOne of: and, or, not."
         },
         "key": {
           "type": "string",
@@ -2929,7 +2929,7 @@
         },
         "cmp": {
           "type": "string",
-          "description": "cmp is the comparison of a leaf node: \"eq\", \"neq\", \"in\", \"nin\", \"ex\",\n\"nex\", \"sw\", \"ew\", \"ct\", \"gt\", \"gte\", \"lt\" or \"lte\"."
+          "description": "cmp is the comparison of a leaf node. One of: eq, neq, in, nin, ex, nex,\nsw, ew, ct, gt, gte, lt, lte."
         },
         "val": {
           "type": "string",
@@ -3132,7 +3132,7 @@
         },
         "user": {
           "type": "string",
-          "description": "user is the ID of the user whose tokens to invalidate. Required."
+          "description": "user is the ID of the user whose tokens to invalidate. Required. \"\"\ninvalidates the tokens of anonymous users."
         },
         "issued_before": {
           "type": "integer",
@@ -3290,7 +3290,7 @@
         },
         "key_mode": {
           "type": "string",
-          "description": "key_mode makes the publish conditional: \"if_new\" writes only if the\nkey does not exist, \"if_exists\" only if it exists. Empty always\nwrites."
+          "description": "key_mode makes the publish conditional: if_new writes only if the key\ndoes not exist, if_exists only if it exists. Empty always writes.\nOne of: if_new, if_exists."
         }
       },
       "description": "MapPublishRequest publishes or updates a key in a map channel."
@@ -3914,7 +3914,7 @@
         },
         "expire_at": {
           "type": "integer",
-          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. In the direct send it also sets the expiry of\nthe provider where the caller set none: android.ttl and apns-expiration\nof an FCM message, apns-expiration of APNs, and the TTL of Web Push."
+          "description": "expire_at is the Unix time in seconds when Centrifugo stops trying to\nsend the notification. In the direct send it also sets the expiry of\nthe provider where the caller set none: android.ttl and apns-expiration\nof an FCM message, apns-expiration of APNs, and the TTL of Web Push.\nRequired when the request sets limit_strategy."
         }
       },
       "description": "PushNotification is a push notification in the format of each provider.\nCentrifugo PRO only."
@@ -4401,7 +4401,7 @@
         },
         "limit_strategy": {
           "$ref": "#/definitions/PushLimitStrategy",
-          "description": "limit_strategy sets time constraints and rate limits. Only applies\nwith a filter recipient; devices are then processed one by one\ninstead of in batches."
+          "description": "limit_strategy sets time constraints and rate limits. Only applies\nwith a filter recipient; devices are then processed one by one\ninstead of in batches. Needs notification.expire_at: a push the limits\nhold back is not tried forever."
         },
         "analytics_uid": {
           "type": "string",
@@ -4733,7 +4733,7 @@
         },
         "status": {
           "type": "string",
-          "description": "status is the status of the push notification: delivered or\ninteracted. Required."
+          "description": "status is the status of the push notification. Required. One of:\ndelivered, interacted."
         },
         "device_id": {
           "type": "string",
@@ -4927,11 +4927,11 @@
       "properties": {
         "user": {
           "type": "string",
-          "description": "user is the user ID. Required."
+          "description": "user is the user ID. Required. \"\" updates the global binding, which every\ndevice - anonymous ones included - gets on its next device_register."
         },
         "op": {
           "type": "string",
-          "description": "op is the operation: add, remove or set. Required."
+          "description": "op is the operation. Required. One of: add, remove, set."
         },
         "topics": {
           "type": "array",

@@ -68,14 +68,15 @@ func waitClientContext(t *testing.T, connected <-chan context.Context) context.C
 }
 
 // clientAddressMux serves the WebSocket and SSE handlers through Mux, with the client address
-// middlewares built from cfg the way runHTTPServers builds them.
+// middlewares which Mux resolves from cfg.
 func clientAddressMux(t *testing.T, cfg config.Config, node *centrifuge.Node) *httptest.Server {
 	t.Helper()
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
-	clientMiddlewares, err := clientaddr.Middlewares(cfg.ClientAddress)
+	a := &App{node: node, container: cfgContainer}
 	require.NoError(t, err)
-	mux := Mux(node, cfgContainer, nil, HandlerWebsocket|HandlerSSE, false, nil, func() bool { return true }, clientMiddlewares)
+	mux, _, err := a.Mux(HandlerWebsocket|HandlerSSE, nil, nil)
+	require.NoError(t, err)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -175,10 +176,12 @@ func TestUniGRPCConnectSeesProxyClientAddress(t *testing.T) {
 	cfg.UniGRPC.Port = freeLoopbackPort(t)
 
 	node, connected := capturingNode(t)
-	// runGRPCUniServer listens through clientaddr.Listen and registers the stream interceptor.
-	srv, err := runGRPCUniServer(cfg, node)
+	// buildGRPCUniServer listens through clientaddr.Listen and registers the stream interceptor.
+	a := &App{cfg: cfg, node: node, lifecycle: newLifecycle()}
+	srv, err := a.buildGRPCUniServer()
 	require.NoError(t, err)
-	t.Cleanup(srv.Stop)
+	t.Cleanup(srv.server.Stop)
+	go func() { _ = srv.server.Serve(srv.ln) }()
 
 	// The client writes the PROXY header itself, before gRPC's first bytes.
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {

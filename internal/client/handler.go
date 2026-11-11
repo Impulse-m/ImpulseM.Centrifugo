@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"sync"
 	"time"
 
@@ -51,6 +53,48 @@ type ProxyMap struct {
 	// EmulatedHeaderNames is the lower-case union of the emulated_headers names of all
 	// configured proxies. Only these client headers are kept in the connection context.
 	EmulatedHeaderNames map[string]struct{}
+}
+
+// Close closes every proxy of the map that holds connections (implements
+// io.Closer), each once, and returns their errors joined.
+func (m *ProxyMap) Close() error {
+	if m == nil {
+		return nil
+	}
+	closed := map[io.Closer]struct{}{}
+	var errs []error
+	closeProxy := func(p any) {
+		c, ok := p.(io.Closer)
+		if !ok || c == nil {
+			return
+		}
+		if reflect.TypeOf(c).Comparable() {
+			if _, ok := closed[c]; ok {
+				return
+			}
+			closed[c] = struct{}{}
+		}
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	closeProxy(m.ConnectProxy)
+	closeProxy(m.RefreshProxy)
+	closeProxies(m.RpcProxies, closeProxy)
+	closeProxies(m.PublishProxies, closeProxy)
+	closeProxies(m.SubscribeProxies, closeProxy)
+	closeProxies(m.SubRefreshProxies, closeProxy)
+	closeProxies(m.SubscribeStreamProxies, closeProxy)
+	closeProxies(m.MapPublishProxies, closeProxy)
+	closeProxies(m.MapRemoveProxies, closeProxy)
+	closeProxies(m.SharedPollRefreshProxies, closeProxy)
+	return errors.Join(errs...)
+}
+
+func closeProxies[T any](proxies map[string]T, closeProxy func(p any)) {
+	for _, p := range proxies {
+		closeProxy(p)
+	}
 }
 
 // Handler for client connections.
@@ -585,16 +629,17 @@ func (h *Handler) OnClientConnecting(
 			if channelOk {
 				if _, ok := subscriptions[ch]; !ok {
 					subscriptions[ch] = centrifuge.SubscribeOptions{
-						EmitPresence:      chOpts.Presence,
-						EmitJoinLeave:     chOpts.JoinLeave,
-						PushJoinLeave:     chOpts.ForcePushJoinLeave,
-						EnableRecovery:    chOpts.ForceRecovery,
-						EnablePositioning: chOpts.ForcePositioning,
-						RecoveryMode:      chOpts.GetRecoveryMode(),
-						Source:            subsource.UniConnect,
-						HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
-						AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-						AllowTagsFilter:   chOpts.AllowTagsFilter,
+						EmitPresence:                chOpts.Presence,
+						EmitJoinLeave:               chOpts.JoinLeave,
+						PushJoinLeave:               chOpts.ForcePushJoinLeave,
+						EnableRecovery:              chOpts.ForceRecovery,
+						EnablePositioning:           chOpts.ForcePositioning,
+						RecoveryMode:                chOpts.GetRecoveryMode(),
+						Source:                      subsource.UniConnect,
+						HistoryMetaTTL:              chOpts.HistoryMetaTTL.ToDuration(),
+						RecoveryMaxPublicationLimit: chOpts.RecoveryMaxPublicationLimit,
+						AllowedDeltaTypes:           chOpts.AllowedDeltaTypes,
+						AllowTagsFilter:             chOpts.AllowTagsFilter,
 					}
 				}
 			} else {
@@ -824,6 +869,7 @@ func (h *Handler) OnSubscribe(c Client, e centrifuge.SubscribeEvent, subscribePr
 	options.EnableRecovery = chOpts.ForceRecovery
 	options.RecoveryMode = chOpts.GetRecoveryMode()
 	options.HistoryMetaTTL = chOpts.HistoryMetaTTL.ToDuration()
+	options.RecoveryMaxPublicationLimit = chOpts.RecoveryMaxPublicationLimit
 	options.AllowedDeltaTypes = chOpts.AllowedDeltaTypes
 	options.AllowTagsFilter = chOpts.AllowTagsFilter
 	options.MapRemoveClientOnUnsubscribe = chOpts.Map.RemoveClientOnUnsubscribe
@@ -1393,5 +1439,5 @@ func (h *Handler) OnHistory(c Client, e centrifuge.HistoryEvent) (centrifuge.His
 		return centrifuge.HistoryReply{}, centrifuge.ErrorPermissionDenied
 	}
 
-	return centrifuge.HistoryReply{}, nil
+	return centrifuge.HistoryReply{MaxPublicationLimit: chOpts.HistoryMaxPublicationLimit}, nil
 }

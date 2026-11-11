@@ -17,6 +17,7 @@ func applyNamespaceSubscribeOptions(options *centrifuge.SubscribeOptions, chOpts
 		options.Type = subType
 	}
 	options.HistoryMetaTTL = chOpts.HistoryMetaTTL.ToDuration()
+	options.RecoveryMaxPublicationLimit = chOpts.RecoveryMaxPublicationLimit
 	options.MapRemoveClientOnUnsubscribe = chOpts.Map.RemoveClientOnUnsubscribe
 	options.AllowChannelCompaction = chOpts.AllowChannelCompaction
 	options.ClientPublishDebounceInterval = chOpts.ClientPublishDebounceInterval.ToDuration()

@@ -26,13 +26,13 @@ const (
 // logical node combines its nodes: it sets op and nodes only.
 type FilterNode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// op is the logical operation: "and", "or" or "not". Empty for a leaf node.
+	// op is the logical operation. Empty for a leaf node. One of: and, or, not.
 	Op string `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
 	// key is the tag a leaf node compares.
 	Key string `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	// cmp is the comparison of a leaf node: "eq", "neq", "in", "nin", "ex"
-	// (exists), "nex" (does not exist), "sw" (starts with), "ew" (ends with), "ct"
-	// (contains), "gt", "gte", "lt" or "lte".
+	// cmp is the comparison of a leaf node: ex is exists, nex does not exist,
+	// sw starts with, ew ends with, ct contains. One of: eq, neq, in, nin, ex,
+	// nex, sw, ew, ct, gt, gte, lt, lte.
 	Cmp string `protobuf:"bytes,3,opt,name=cmp,proto3" json:"cmp,omitempty"`
 	// val is the value most comparisons compare the tag with.
 	Val string `protobuf:"bytes,4,opt,name=val,proto3" json:"val,omitempty"`
@@ -253,10 +253,11 @@ type ConnectRequest struct {
 	// transport is the connection's transport: "websocket", "sse", "uni_sse" and
 	// the like.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// data is the custom data the client sent with its connect command, if any.
 	Data Raw `protobuf:"bytes,10,opt,name=data,proto3" json:"data,omitempty"`
@@ -521,7 +522,11 @@ type ConnectResult struct {
 	Caps []*ChannelsCapability `protobuf:"bytes,10,rep,name=caps,proto3" json:"caps,omitempty"`
 	// PRO only — client labels attached to the centrifuge.Client by Centrifugo PRO.
 	// Parsed by OSS but not used (OSS does not populate centrifuge.ConnectReply.Labels).
-	Labels        map[string]string `protobuf:"bytes,11,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Labels map[string]string `protobuf:"bytes,11,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// profile assigns the connection to a dictionary compression profile, as the
+	// profile claim of a connection token does: it overrides the profile the
+	// client declared. Centrifugo PRO only.
+	Profile       string `protobuf:"bytes,12,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -633,6 +638,13 @@ func (x *ConnectResult) GetLabels() map[string]string {
 	return nil
 }
 
+func (x *ConnectResult) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
 // ChannelsCapability grants operations in channels. A connection may do an
 // operation in a channel when any of its capabilities both allows the
 // operation and matches the channel. Centrifugo PRO only.
@@ -640,11 +652,11 @@ type ChannelsCapability struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// channels are the channels, or channel patterns, it applies to.
 	Channels []string `protobuf:"bytes,1,rep,name=channels,proto3" json:"channels,omitempty"`
-	// allow are the operations it grants: "sub" (subscribe), "pub" (publish),
-	// "hst" (history) and "prs" (presence).
+	// allow are the operations it grants: sub is subscribe, pub publish, hst
+	// history, prs presence. One of: sub, pub, hst, prs.
 	Allow []string `protobuf:"bytes,2,rep,name=allow,proto3" json:"allow,omitempty"`
-	// match is how channels are matched: empty for exact names, "wildcard" or
-	// "regex".
+	// match is how channels are matched: empty for exact names. One of:
+	// wildcard, regex.
 	Match         string `protobuf:"bytes,3,opt,name=match,proto3" json:"match,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -770,10 +782,11 @@ type RefreshRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user"`
@@ -1027,10 +1040,11 @@ type SubscribeRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user"`
@@ -1353,8 +1367,8 @@ type SubscribeResult struct {
 	// override overrides channel options of the namespace for this
 	// subscription.
 	Override *SubscribeOptionOverride `protobuf:"bytes,6,opt,name=override,proto3" json:"override,omitempty"`
-	// allow are capabilities granted in the channel for this subscription:
-	// "sub", "pub", "hst" and "prs". Centrifugo PRO only.
+	// allow are capabilities granted in the channel for this subscription.
+	// Centrifugo PRO only. One of: sub, pub, hst, prs.
 	Allow []string `protobuf:"bytes,7,rep,name=allow,proto3" json:"allow,omitempty"`
 	// server_tags_filter makes the subscription receive only publications
 	// whose tags match it. Centrifugo PRO only.
@@ -1519,10 +1533,11 @@ type PublishRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user"`
@@ -1828,10 +1843,11 @@ type MapPublishRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user,omitempty"`
@@ -1975,8 +1991,9 @@ type MapPublishResult struct {
 	Tags map[string]string `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// score is not used by Centrifugo yet.
 	Score int64 `protobuf:"varint,5,opt,name=score,proto3" json:"score,omitempty"`
-	// key_mode makes the publication conditional: "if_new" publishes only a key
-	// which does not exist yet, "if_exists" only one which does.
+	// key_mode makes the publication conditional: if_new publishes only a key
+	// which does not exist yet, if_exists only one which does.
+	// One of: if_new, if_exists.
 	KeyMode string `protobuf:"bytes,6,opt,name=key_mode,json=keyMode,proto3" json:"key_mode,omitempty"`
 	// stream_data is not used by Centrifugo yet.
 	StreamData Raw `protobuf:"bytes,7,opt,name=stream_data,json=streamData,proto3" json:"stream_data,omitempty"`
@@ -2181,10 +2198,11 @@ type MapRemoveRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user,omitempty"`
@@ -2431,10 +2449,11 @@ type RPCRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user"`
@@ -2678,10 +2697,11 @@ type SubRefreshRequest struct {
 	Client string `protobuf:"bytes,1,opt,name=client,proto3" json:"client,omitempty"`
 	// transport is the connection's transport.
 	Transport string `protobuf:"bytes,2,opt,name=transport,proto3" json:"transport,omitempty"`
-	// protocol is the client protocol: "json" or "protobuf".
+	// protocol is the client protocol. One of: json, protobuf.
 	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	// encoding is "binary" when the proxy has binary_encoding enabled, so that
-	// payloads come in the b64 fields, and "json" otherwise.
+	// encoding is binary when the proxy has binary_encoding enabled, so that
+	// payloads come in the b64 fields, and json otherwise.
+	// One of: json, binary.
 	Encoding string `protobuf:"bytes,4,opt,name=encoding,proto3" json:"encoding,omitempty"`
 	// user is the connection's user ID.
 	User string `protobuf:"bytes,10,opt,name=user,proto3" json:"user"`
@@ -3289,9 +3309,9 @@ type ChannelEvent struct {
 	TimeMs int64 `protobuf:"varint,1,opt,name=time_ms,json=timeMs,proto3" json:"time_ms,omitempty"`
 	// channel is the channel it happened in.
 	Channel string `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
-	// type is "occupied" when the channel got its first subscriber, "vacated"
+	// type is occupied when the channel got its first subscriber, vacated
 	// when it lost its last one. More types may come; the field is a string,
-	// not an enum, for JSON interoperability.
+	// not an enum, for JSON interoperability. One of: occupied, vacated.
 	Type          string `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3790,7 +3810,7 @@ const file_proxy_proto_rawDesc = "" +
 	"\ab64data\x18\x05 \x01(\tR\ab64data\x12Q\n" +
 	"\boverride\x18\x06 \x01(\v25.centrifugal.centrifugo.proxy.SubscribeOptionOverrideR\boverride\x12V\n" +
 	"\x12server_tags_filter\x18\a \x01(\v2(.centrifugal.centrifugo.proxy.FilterNodeR\x10serverTagsFilter\x12#\n" +
-	"\rcache_recover\x18\b \x01(\bR\fcacheRecover\"\xd2\x04\n" +
+	"\rcache_recover\x18\b \x01(\bR\fcacheRecover\"\xec\x04\n" +
 	"\rConnectResult\x12\x12\n" +
 	"\x04user\x18\x01 \x01(\tR\x04user\x12\x1b\n" +
 	"\texpire_at\x18\x02 \x01(\x03R\bexpireAt\x12\x12\n" +
@@ -3803,7 +3823,8 @@ const file_proxy_proto_rawDesc = "" +
 	"\x04meta\x18\t \x01(\fR\x04meta\x12D\n" +
 	"\x04caps\x18\n" +
 	" \x03(\v20.centrifugal.centrifugo.proxy.ChannelsCapabilityR\x04caps\x12O\n" +
-	"\x06labels\x18\v \x03(\v27.centrifugal.centrifugo.proxy.ConnectResult.LabelsEntryR\x06labels\x1ag\n" +
+	"\x06labels\x18\v \x03(\v27.centrifugal.centrifugo.proxy.ConnectResult.LabelsEntryR\x06labels\x12\x18\n" +
+	"\aprofile\x18\f \x01(\tR\aprofile\x1ag\n" +
 	"\tSubsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12D\n" +
 	"\x05value\x18\x02 \x01(\v2..centrifugal.centrifugo.proxy.SubscribeOptionsR\x05value:\x028\x01\x1a9\n" +

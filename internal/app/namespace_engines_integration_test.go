@@ -76,7 +76,7 @@ func TestNamespaceEnginesRedisIntegration(t *testing.T) {
 	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	require.NoError(t, err)
-	defaultBroker, defaultPresenceManager, _, err := createRedisEngine(node, cfgContainer)
+	defaultBroker, defaultPresenceManager, _, err := (&App{lifecycle: newLifecycle()}).createRedisEngine(node, cfgContainer)
 	require.NoError(t, err)
 	node.SetBroker(defaultBroker)
 	node.SetPresenceManager(defaultPresenceManager)

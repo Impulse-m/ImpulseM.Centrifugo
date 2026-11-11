@@ -411,13 +411,13 @@ message BroadcastResult {
 // Centrifugo PRO only: defined here for protocol-surface consistency,
 // Centrifugo OSS parses it but ignores it.
 message FilterNode {
-    // op is the logical operation of a non-leaf node: "and", "or" or "not".
-    // Empty for a leaf node.
+    // op is the logical operation of a non-leaf node. Empty for a leaf node.
+    // One of: and, or, not.
     string op = 1;
     // key is the label key a leaf node compares.
     string key = 2;
-    // cmp is the comparison of a leaf node: "eq", "neq", "in", "nin", "ex",
-    // "nex", "sw", "ew", "ct", "gt", "gte", "lt" or "lte".
+    // cmp is the comparison of a leaf node. One of: eq, neq, in, nin, ex, nex,
+    // sw, ew, ct, gt, gte, lt, lte.
     string cmp = 3;
     // val is the value to compare with, for single-value comparisons.
     string val = 4;
@@ -1129,7 +1129,8 @@ message InvalidateUserTokensRequest {
     // expire_at is the Unix time in seconds when the invalidation expires.
     // Optional, but a value matching the token expiration is recommended.
     int64 expire_at = 1;
-    // user is the ID of the user whose tokens to invalidate. Required.
+    // user is the ID of the user whose tokens to invalidate. Required. ""
+    // invalidates the tokens of anonymous users.
     string user = 2;
     // issued_before is the Unix time in seconds: tokens issued before it are
     // considered revoked. If not set, the current time is used.
@@ -1161,13 +1162,13 @@ message DeviceRegisterRequest {
     // generates one and returns it. Pass the stored value to update the
     // device.
     string id = 1;
-    // provider is the provider of the device token: fcm, hms, apns or
-    // webpush. Required.
+    // provider is the provider of the device token. Required. One of: fcm,
+    // hms, apns, webpush.
     string provider = 2;
     // token is the push token of the device. For webpush, it is the browser
     // PushSubscription serialized as a JSON string. Required.
     string token = 3;
-    // platform is the device platform: ios, android or web. Required.
+    // platform is the device platform. Required. One of: ios, android, web.
     string platform = 4;
     // user is the user associated with the device.
     string user = 5;
@@ -1217,31 +1218,32 @@ message DeviceRemoveRequest {
 
 // DeviceUserUpdate sets the user of devices. Centrifugo PRO only.
 message DeviceUserUpdate {
-    // user is the user ID to set. Required.
+    // user is the user ID to set. Required. "" detaches the devices from their
+    // user.
     string user = 1;
 }
 
 // DeviceTimezoneUpdate sets the timezone of devices. Centrifugo PRO only.
 message DeviceTimezoneUpdate {
-    // timezone is the IANA time zone to set. Required.
+    // timezone is the IANA time zone to set. Required. "" clears it.
     string timezone = 1;
 }
 
 // DeviceLocaleUpdate sets the locale of devices. Centrifugo PRO only.
 message DeviceLocaleUpdate {
-    // locale is the locale to set. Required.
+    // locale is the locale to set. Required. "" clears it.
     string locale = 1;
 }
 
 // DeviceMetaUpdate sets the meta of devices. Centrifugo PRO only.
 message DeviceMetaUpdate {
-    // meta is the meta to set. Required.
+    // meta is the meta to set. Required. An empty map clears it.
     map<string, string> meta = 1;
 }
 
 // DeviceTopicsUpdate changes the topics of devices. Centrifugo PRO only.
 message DeviceTopicsUpdate {
-    // op is the operation: add, remove or set. Required.
+    // op is the operation. Required. One of: add, remove, set.
     string op = 1;
     // topics are the topics for the operation.
     repeated string topics = 2;
@@ -1264,7 +1266,7 @@ message DeviceFilter {
 // DeviceListRequest returns a paginated list of registered devices.
 // Centrifugo PRO only.
 message DeviceListRequest {
-    // filter selects the devices to list. Required.
+    // filter selects the devices to list: all of them when unset.
     DeviceFilter filter = 1;
 
     // include_total_count includes the total count for the filter in the
@@ -1353,7 +1355,7 @@ message UserTopicListRequest {
 message DeviceTopicUpdateRequest {
     // device_id is the ID of the device. Required.
     string device_id = 1;
-    // op is the operation: add, remove or set. Required.
+    // op is the operation. Required. One of: add, remove, set.
     string op = 2;
     // topics are the topics for the operation.
     repeated string topics = 3;
@@ -1366,9 +1368,10 @@ message DeviceTopicUpdateRequest {
 // UserTopicUpdateRequest changes the topics of a user. The change is also
 // applied to the user's registered devices. Centrifugo PRO only.
 message UserTopicUpdateRequest {
-    // user is the user ID. Required.
+    // user is the user ID. Required. "" updates the global binding, which every
+    // device - anonymous ones included - gets on its next device_register.
     string user = 1;
-    // op is the operation: add, remove or set. Required.
+    // op is the operation. Required. One of: add, remove, set.
     string op = 2;
     // topics are the topics for the operation.
     repeated string topics = 3;
@@ -1617,6 +1620,7 @@ message PushNotification {
     // send the notification. In the direct send it also sets the expiry of
     // the provider where the caller set none: android.ttl and apns-expiration
     // of an FCM message, apns-expiration of APNs, and the TTL of Web Push.
+    // Required when the request sets limit_strategy.
     int64 expire_at = 5;
 }
 
@@ -1674,7 +1678,8 @@ message SendPushNotificationRequest {
     bool optimize_for_reliability = 5;
     // limit_strategy sets time constraints and rate limits. Only applies
     // with a filter recipient; devices are then processed one by one
-    // instead of in batches.
+    // instead of in batches. Needs notification.expire_at: a push the limits
+    // hold back is not tried forever.
     PushLimitStrategy limit_strategy = 6;
     // analytics_uid is the identifier for push notification analytics. If
     // not set, uid is used.
@@ -1782,8 +1787,8 @@ message UpdatePushStatusRequest {
     // analytics_uid is the analytics_uid of the push notification (as in
     // SendPushNotificationRequest). Required.
     string analytics_uid = 1;
-    // status is the status of the push notification: delivered or
-    // interacted. Required.
+    // status is the status of the push notification. Required. One of:
+    // delivered, interacted.
     string status = 2;
     // device_id is the Centrifugo device ID. Required.
     string device_id = 3;
@@ -1859,9 +1864,9 @@ message MapPublishRequest {
     string version_epoch = 11;
     // score is currently not used by the server API.
     int64 score = 12;
-    // key_mode makes the publish conditional: "if_new" writes only if the
-    // key does not exist, "if_exists" only if it exists. Empty always
-    // writes.
+    // key_mode makes the publish conditional: if_new writes only if the key
+    // does not exist, if_exists only if it exists. Empty always writes.
+    // One of: if_new, if_exists.
     string key_mode = 13;
 }
 

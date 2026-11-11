@@ -214,6 +214,7 @@ type VerifierJWT struct {
 	sessionClaim                    string
 	generationClaim                 string
 	ignoreSubscriptionClaims        bool
+	closeOnce                       sync.Once
 }
 
 var (
@@ -709,19 +710,20 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 			}
 			recoveryMode := chOpts.GetRecoveryMode()
 			subs[ch] = centrifuge.SubscribeOptions{
-				ChannelInfo:       info,
-				EmitPresence:      presence,
-				EmitJoinLeave:     joinLeave,
-				PushJoinLeave:     pushJoinLeave,
-				EnableRecovery:    recovery,
-				EnablePositioning: positioning,
-				RecoveryMode:      recoveryMode,
-				Data:              data,
-				Source:            subsource.ConnectionToken,
-				HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
-				AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-				AllowTagsFilter:   chOpts.AllowTagsFilter,
-				ServerTagsFilter:  v.ServerTagsFilter,
+				ChannelInfo:                 info,
+				EmitPresence:                presence,
+				EmitJoinLeave:               joinLeave,
+				PushJoinLeave:               pushJoinLeave,
+				EnableRecovery:              recovery,
+				EnablePositioning:           positioning,
+				RecoveryMode:                recoveryMode,
+				Data:                        data,
+				Source:                      subsource.ConnectionToken,
+				HistoryMetaTTL:              chOpts.HistoryMetaTTL.ToDuration(),
+				RecoveryMaxPublicationLimit: chOpts.RecoveryMaxPublicationLimit,
+				AllowedDeltaTypes:           chOpts.AllowedDeltaTypes,
+				AllowTagsFilter:             chOpts.AllowTagsFilter,
+				ServerTagsFilter:            v.ServerTagsFilter,
 			}
 		}
 	} else if len(claims.Channels) > 0 && !verifier.ignoreSubscriptionClaims {
@@ -734,16 +736,17 @@ func (verifier *VerifierJWT) VerifyConnectToken(t string, skipVerify bool) (Conn
 				return ConnectToken{}, centrifuge.ErrorUnknownChannel
 			}
 			subs[ch] = centrifuge.SubscribeOptions{
-				EmitPresence:      chOpts.Presence,
-				EmitJoinLeave:     chOpts.JoinLeave,
-				PushJoinLeave:     chOpts.ForcePushJoinLeave,
-				EnableRecovery:    chOpts.ForceRecovery,
-				EnablePositioning: chOpts.ForcePositioning,
-				RecoveryMode:      chOpts.GetRecoveryMode(),
-				Source:            subsource.ConnectionToken,
-				HistoryMetaTTL:    chOpts.HistoryMetaTTL.ToDuration(),
-				AllowedDeltaTypes: chOpts.AllowedDeltaTypes,
-				AllowTagsFilter:   chOpts.AllowTagsFilter,
+				EmitPresence:                chOpts.Presence,
+				EmitJoinLeave:               chOpts.JoinLeave,
+				PushJoinLeave:               chOpts.ForcePushJoinLeave,
+				EnableRecovery:              chOpts.ForceRecovery,
+				EnablePositioning:           chOpts.ForcePositioning,
+				RecoveryMode:                chOpts.GetRecoveryMode(),
+				Source:                      subsource.ConnectionToken,
+				HistoryMetaTTL:              chOpts.HistoryMetaTTL.ToDuration(),
+				RecoveryMaxPublicationLimit: chOpts.RecoveryMaxPublicationLimit,
+				AllowedDeltaTypes:           chOpts.AllowedDeltaTypes,
+				AllowTagsFilter:             chOpts.AllowTagsFilter,
 			}
 		}
 	}
@@ -934,23 +937,20 @@ func (verifier *VerifierJWT) VerifySubscribeToken(t string, skipVerify bool) (Su
 }
 
 // PrepareReload builds everything the verifier needs for config without changing
-// the verifier. Calling apply switches the verifier to the new config and can't
-// fail, so several verifiers may be reloaded all or nothing. Calling discard
-// instead drops the new config, for a reload which fails after this prepare.
-// Call exactly one of them. apply stops the JWKS cache of the config it replaces,
-// and discard stops the JWKS cache of the new config, so no cache outlives its
-// config.
-func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), func(), error) {
+// the verifier. Calling apply swaps the new config in and closes what it
+// replaced; it can't fail, so several verifiers may be reloaded all or nothing.
+// Calling discard instead closes what was built, for a reload which fails after
+// this prepare. Call exactly one of them. Calling discard after apply does nothing.
+func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (apply func(), discard func(), err error) {
 	next, err := NewTokenVerifierJWT(config, verifier.cfgContainer)
 	if err != nil {
 		return nil, nil, err
 	}
 	applied := false
-	apply := func() {
+	apply = func() {
 		verifier.mu.Lock()
-		defer verifier.mu.Unlock()
 		applied = true
-		previous := verifier.jwksManager
+		prevJWKSManager := verifier.jwksManager
 		verifier.jwksManager = next.jwksManager
 		verifier.algorithms = next.algorithms
 		verifier.previousHMACAlgorithms = next.previousHMACAlgorithms
@@ -964,16 +964,35 @@ func (verifier *VerifierJWT) PrepareReload(config VerifierConfig) (func(), func(
 		verifier.sessionClaim = next.sessionClaim
 		verifier.generationClaim = next.generationClaim
 		verifier.ignoreSubscriptionClaims = next.ignoreSubscriptionClaims
-		if previous != nil {
-			_ = previous.Stop()
-		}
+		verifier.mu.Unlock()
+		_ = closeJWKSManager(prevJWKSManager)
 	}
-	discard := func() {
-		if !applied && next.jwksManager != nil {
-			_ = next.jwksManager.Stop()
+	discard = func() {
+		if !applied {
+			_ = closeJWKSManager(next.jwksManager)
 		}
 	}
 	return apply, discard, nil
+}
+
+// Close stops the JWKS manager. Calls after the first do nothing.
+func (verifier *VerifierJWT) Close() error {
+	var err error
+	verifier.closeOnce.Do(func() {
+		verifier.mu.RLock()
+		m := verifier.jwksManager
+		verifier.mu.RUnlock()
+		err = closeJWKSManager(m)
+	})
+	return err
+}
+
+// closeJWKSManager closes the JWKS manager m.
+func closeJWKSManager(m *jwksManager) error {
+	if m == nil {
+		return nil
+	}
+	return m.Close()
 }
 
 func (verifier *VerifierJWT) Reload(config VerifierConfig) error {

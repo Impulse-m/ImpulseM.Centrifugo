@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/centrifugal/centrifugo/v6/internal/build"
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/logging"
@@ -12,7 +13,10 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-func centrifugeNodeConfig(version string, edition string, cfgContainer *config.Container, logHandler centrifuge.LogHandler) centrifuge.Config {
+// centrifugeNodeConfig builds the node config from options.
+func (a *App) centrifugeNodeConfig() centrifuge.Config {
+	version := build.Version
+	cfgContainer := a.container
 	appCfg := cfgContainer.Config()
 	cfg := centrifuge.Config{}
 	cfg.Version = version + " " + strings.ToUpper(edition)
@@ -20,6 +24,7 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 		MetricsNamespace:                     "centrifugo",
 		EnableRecoveredPublicationsHistogram: appCfg.Prometheus.RecoveredPublicationsHistogram,
 		EnableNativeHistograms:               appCfg.Prometheus.NativeHistograms,
+		RegistererGatherer:                   a.metricsRegistry,
 	}
 	cfg.UseSingleFlight = appCfg.Singleflight.Enabled
 	// Set only when some channel options use the channel medium: with a non-nil GetChannelMediumOptions Core
@@ -111,7 +116,7 @@ func centrifugeNodeConfig(version string, edition string, cfgContainer *config.C
 	cfg.ClientConnectIncludeServerTime = appCfg.Client.ConnectIncludeServerTime
 	cfg.ReplyIncludeServerTime = appCfg.Client.ReplyIncludeServerTime
 	cfg.LogLevel = logging.CentrifugeLogLevel(strings.ToLower(appCfg.Log.Level))
-	cfg.LogHandler = logHandler
+	cfg.LogHandler = a.logHandler
 	if appCfg.Client.ConnectCodeToUnidirectionalDisconnect.Enabled {
 		uniCodeTransforms := make(map[uint32]centrifuge.Disconnect)
 		for _, transform := range appCfg.Client.ConnectCodeToUnidirectionalDisconnect.Transforms {

@@ -384,13 +384,15 @@ func (a *App) configureMapBroker() error {
 	node := a.node
 	cfg := a.container.Config()
 	mapBroker, redisShards, mapBrokerMode, err := createMapBroker(node, cfg.MapBroker)
-	// The Redis shards are closed after the map broker, which is registered later.
-	a.lifecycle.OnStop("map broker redis shards", func(context.Context) error {
-		for _, shard := range redisShards {
-			shard.Close()
-		}
-		return nil
-	})
+	if len(redisShards) > 0 {
+		// The Redis shards are closed after the map broker, which is registered later.
+		a.lifecycle.OnStop("map broker redis shards", func(context.Context) error {
+			for _, shard := range redisShards {
+				shard.Close()
+			}
+			return nil
+		})
+	}
 	a.closeOnStop("map broker", mapBroker)
 	if err != nil {
 		return err

@@ -74,7 +74,6 @@ func clientAddressMux(t *testing.T, cfg config.Config, node *centrifuge.Node) *h
 	cfgContainer, err := config.NewContainer(cfg)
 	require.NoError(t, err)
 	a := &App{node: node, container: cfgContainer}
-	require.NoError(t, err)
 	mux, _, err := a.Mux(HandlerWebsocket|HandlerSSE, nil, nil)
 	require.NoError(t, err)
 	server := httptest.NewServer(mux)

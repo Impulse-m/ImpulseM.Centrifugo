@@ -36,7 +36,7 @@ func newNamespaceEnginesForTest(t *testing.T, cfg config.Config) (*namespaceEngi
 	require.NoError(t, err)
 	engines := newNamespaceEngines(cfgContainer)
 
-	nodeCfg := centrifuge.Config{}
+	nodeCfg := centrifuge.Config{Metrics: testNodeMetrics()}
 	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	require.NoError(t, err)
@@ -381,7 +381,7 @@ func BenchmarkNamespaceEnginesBroker(b *testing.B) {
 		b.Fatal(err)
 	}
 	engines := newNamespaceEngines(cfgContainer)
-	nodeCfg := centrifuge.Config{}
+	nodeCfg := centrifuge.Config{Metrics: testNodeMetrics()}
 	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	if err != nil {

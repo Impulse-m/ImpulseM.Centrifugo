@@ -39,7 +39,7 @@ func clientAddressTestConfig() config.Config {
 // capturingNode runs a node which sends the client context of every connect to the channel.
 func capturingNode(t *testing.T) (*centrifuge.Node, <-chan context.Context) {
 	t.Helper()
-	node, err := centrifuge.New(centrifuge.Config{})
+	node, err := centrifuge.New(centrifuge.Config{Metrics: testNodeMetrics()})
 	require.NoError(t, err)
 	require.NoError(t, node.Run())
 	t.Cleanup(func() { _ = node.Shutdown(context.Background()) })

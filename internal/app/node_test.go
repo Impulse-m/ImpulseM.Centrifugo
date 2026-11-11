@@ -17,6 +17,12 @@ func testNodeConfig(cfgContainer *config.Container) centrifuge.Config {
 	return a.centrifugeNodeConfig()
 }
 
+// testNodeMetrics is the metrics config of a node which a test creates without an App: the node gets a registry of
+// its own, as the node of an App does, so it adds nothing to the default registry of the test process.
+func testNodeMetrics() centrifuge.MetricsConfig {
+	return centrifuge.MetricsConfig{RegistererGatherer: prometheus.NewRegistry()}
+}
+
 func TestCentrifugeNodeConfigChannelMediumOptions(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Channel.WithoutNamespace = configtypes.ChannelOptions{

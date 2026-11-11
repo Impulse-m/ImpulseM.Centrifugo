@@ -72,7 +72,7 @@ func TestNamespaceEnginesRedisIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	engines := newNamespaceEngines(cfgContainer)
-	nodeCfg := centrifuge.Config{}
+	nodeCfg := centrifuge.Config{Metrics: testNodeMetrics()}
 	engines.nodeConfig(&nodeCfg)
 	node, err := centrifuge.New(nodeCfg)
 	require.NoError(t, err)
@@ -93,7 +93,7 @@ func TestNamespaceEnginesRedisIntegration(t *testing.T) {
 
 	// A second node with a broker on the iso prefix stands for a subscriber of iso:x: it receives each
 	// publication which goes through the iso prefix, once per subscription.
-	listenerNode, err := centrifuge.New(centrifuge.Config{})
+	listenerNode, err := centrifuge.New(centrifuge.Config{Metrics: testNodeMetrics()})
 	require.NoError(t, err)
 	listenerShards, _, err := confighelpers.CentrifugeRedisShards(listenerNode, redisAddressConfig(redisAddress))
 	require.NoError(t, err)

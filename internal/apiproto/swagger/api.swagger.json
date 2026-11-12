@@ -1790,6 +1790,13 @@
         "version_epoch": {
           "type": "string",
           "description": "version_epoch is the epoch of version. When it changes, Centrifugo\naccepts the publication even if its version is lower than before."
+        },
+        "server_tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "server_tags is a map of arbitrary string keys and values attached to\neach publication for server-side filters only: they are never delivered\nto clients, and a server tags filter matches them together with tags.\nAccepted only in namespaces with allow_server_tags on. Keys must not be\nempty, must not start with __ and must not be in tags."
         }
       },
       "description": "BroadcastRequest publishes the same data into many channels."
@@ -2886,7 +2893,7 @@
         "code": {
           "type": "integer",
           "format": "int64",
-          "description": "code is the Centrifugo error code: 100 (internal error), 102 (unknown\nchannel), 104 (not found), 107 (bad request), 108 (not available),\n111 (too many requests), 112 (unrecoverable position) or 113\n(conflict)."
+          "description": "code is the Centrifugo error code: 100 (internal error), 102 (unknown\nchannel), 104 (not found), 107 (bad request), 108 (not available),\n111 (too many requests), 112 (unrecoverable position), 113 (conflict)\nor 1000 (publish tags limit exceeded)."
         },
         "message": {
           "type": "string",
@@ -3786,6 +3793,13 @@
         "version_epoch": {
           "type": "string",
           "description": "version_epoch is the epoch of version. When it changes, Centrifugo\naccepts the publication even if its version is lower than before."
+        },
+        "server_tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "server_tags is a map of arbitrary string keys and values attached to the\npublication for server-side filters only: they are never delivered to\nclients, and a server tags filter matches them together with tags.\nAccepted only in namespaces with allow_server_tags on. Keys must not be\nempty, must not start with __ and must not be in tags."
         }
       },
       "description": "PublishRequest publishes data into a channel."

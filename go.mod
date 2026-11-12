@@ -140,6 +140,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261104224025-d1e00e9f33ab // indirect
 )
 
-replace github.com/centrifugal/centrifuge => github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261112161747-97fe5bb28320
+replace github.com/centrifugal/centrifuge => github.com/Impulse-m/ImpulseM.Centrifugo.Core v0.0.0-20261112163943-d87b7b50dcd4
 
 replace github.com/centrifugal/protocol => github.com/Impulse-m/ImpulseM.Centrifugo.Protocol v0.23.2-0.20261112155214-bd6d09ab89fd

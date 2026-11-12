@@ -66,6 +66,10 @@ func (c Config) Validate() error {
 		return err
 	}
 
+	if err := validateServerTags(c); err != nil {
+		return err
+	}
+
 	if c.Client.Proxy.Connect.Enabled {
 		if err := validateProxy("default", c.Client.Proxy.Connect.Proxy); err != nil {
 			return fmt.Errorf("in client.proxy.connect: %v", err)

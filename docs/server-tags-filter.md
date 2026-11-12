@@ -8,6 +8,36 @@ Tracking issue: [#7](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/7).
 
 The namespace-level template that renders a filter per connection from its claims is described in [Server tags filter template](#server-tags-filter-template) (tracking issue [#18](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/18)).
 
+## Server-only publication tags
+
+A publish or broadcast request can send `server_tags` beside `tags`. `tags` reach clients as before. `server_tags` are matched by server tags filters only, and never reach a client: not in a publication frame, a subscribe reply, a history or recovery reply, or the server API history, which returns `tags` only. The field is an ordinary map on the HTTP, gRPC and batch API, and a broadcast applies the same map to every channel of the request.
+
+```json
+{"channel": "chat:room1", "data": {"text": "hi"}, "tags": {"kind": "msg"}, "server_tags": {"tenant": "t-17", "member": "u-42"}}
+```
+
+Off by default. A publish which sends no `server_tags` produces the same bytes as before the option.
+
+* Enable it per namespace (or `channel.without_namespace`) with `allow_server_tags: true`. A publish or broadcast which sends `server_tags` to a namespace without it is refused with 108 (not available). On a channel whose subscription type is not `stream`, a broadcast with `server_tags` is refused with 108 too: phase one covers stream publish and broadcast only, so map publish, shared poll and proxy publish carry no server tags. Client publish and proxy publish cannot set them.
+* A key of `server_tags` must not be empty, must not start with `__` (reserved for Centrifugo), and must not be a key of `tags`. Otherwise the request is refused with 107 (bad request). In a broadcast, such a key refuses the whole call, since the keys are the same for every channel.
+* `skip_history` is allowed. The publication is live-filtered as usual, and it is never stored, so it is never recovered.
+* Caps: `publish_tags_max_count` counts the entries of `tags` and `server_tags` together, and `publish_tags_max_bytes` sums the lengths of their keys and values. A publication over a cap is refused with 1000 (`publish tags limit exceeded`), HTTP 400 and gRPC `InvalidArgument`. The caps count `tags` too, so they apply to a publication without `server_tags`. Zero, the default, means no cap. The recommended values for a namespace which enables the option are 256 entries and 16384 bytes.
+* A refused publish stores nothing. In a broadcast, a refusal by the gate or by a cap applies to the response of that channel only; the other channels are published.
+* Error texts are fixed strings. Neither the responses nor the logs or metric labels name a key or a value: they carry counts and channel names.
+* The option is refused at config load with `subscription_type: shared_poll` and `subscribe_stream_proxy_enabled`, whose subscriptions do not apply a server tags filter, and with any broker other than memory or redis, the default broker or the named broker of the namespace. Negative caps are refused too.
+
+Storage, with the memory and redis brokers:
+
+* The memory broker holds `server_tags` with the publication, for the history window.
+* Redis stores `server_tags` in clear in the history entries (`history_size` x `history_ttl`) and sends them over pub/sub, once per node. Anyone who can read Redis can read them. This is an exposure of the storage, not a leak to clients. The cost is the bytes of the server tags per publication and per node, plus the history retention. The same keys in `tags` would reach every subscriber of the channel.
+
+Rolling upgrade and downgrade:
+
+* Upgrade every node first (server, Core and Protocol), then set `allow_server_tags` on a namespace, with the same config on all nodes. A node which does not know the field ignores it: its server filter sees no server tags, so an `eq` on a server key drops the publication there and a `nex` or `ne` on it lets the publication through. A publish which lands on such a node loses its `server_tags` silently. Centrifugo cannot detect old peers, so the order is the operator's job.
+* Downgrade: set `allow_server_tags: false` on all nodes, wait for the history window to expire, then downgrade the nodes.
+
+Consumer publish is not part of phase one. A consumer message of method `publish` or `broadcast` which carries `server_tags` is refused with 108 (not available) and skipped as a non-retryable message, whatever its namespace allows. Consumer messages without `server_tags` are handled as before.
+
 ## Require server tags filter
 
 `require_server_tags_filter` channel option (namespace or `channel.without_namespace`): every subscriber of the namespace must carry a server tags filter, so a subscription which ends up without one is refused whichever route made it, and client history calls on the namespace are refused. A forgotten route fails closed instead of giving an unfiltered subscription.

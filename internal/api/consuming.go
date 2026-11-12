@@ -163,8 +163,28 @@ func (d *Dispatcher) DispatchPublication(
 	return d.Broadcast(ctx, req)
 }
 
+// consumedServerTagsRefused reports whether a consumed publish or broadcast carries server tags. Consumer publish is
+// outside phase 1 of server tags, so such a message is refused, as an unavailable feature, before it is handled.
+// Other methods are not decoded here.
+func consumedServerTagsRefused(method string, payload []byte) bool {
+	switch method {
+	case "publish":
+		req, err := requestDecoder.DecodePublish(payload)
+		return err == nil && len(req.GetServerTags()) > 0
+	case "broadcast":
+		req, err := requestDecoder.DecodeBroadcast(payload)
+		return err == nil && len(req.GetServerTags()) > 0
+	default:
+		return false
+	}
+}
+
 // Dispatch processes commands received from asynchronous consumers.
 func (d *Dispatcher) dispatchMethodPayload(ctx context.Context, method string, payload []byte) error {
+	if consumedServerTagsRefused(method, payload) {
+		logNonRetryableConsumingError(apiproto.ErrorNotAvailable, method)
+		return nil
+	}
 	switch method {
 	case "publish":
 		_, err := d.handler.handlePublish(ctx, payload)

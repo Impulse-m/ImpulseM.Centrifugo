@@ -66,6 +66,13 @@ var (
 		Message:   "conflict",
 		Temporary: false,
 	}
+	// ErrorPublishTagsLimit means that a publication has more tags, or more bytes of tags, than the
+	// publish_tags_max_count or publish_tags_max_bytes option of its namespace allows.
+	ErrorPublishTagsLimit = &Error{
+		Code:      1000,
+		Message:   "publish tags limit exceeded",
+		Temporary: false,
+	}
 )
 
 func MapErrorToHTTPCode(err *Error) int {
@@ -74,7 +81,7 @@ func MapErrorToHTTPCode(err *Error) int {
 		return http.StatusInternalServerError
 	case ErrorUnknownChannel.Code, ErrorNotFound.Code:
 		return http.StatusNotFound
-	case ErrorBadRequest.Code, ErrorNotAvailable.Code:
+	case ErrorBadRequest.Code, ErrorNotAvailable.Code, ErrorPublishTagsLimit.Code:
 		return http.StatusBadRequest
 	case ErrorTooManyRequests.Code:
 		return http.StatusTooManyRequests
@@ -95,7 +102,7 @@ func MapErrorToGRPCCode(err *Error) codes.Code {
 		return codes.Internal
 	case ErrorUnknownChannel.Code, ErrorNotFound.Code:
 		return codes.NotFound
-	case ErrorBadRequest.Code, ErrorNotAvailable.Code:
+	case ErrorBadRequest.Code, ErrorNotAvailable.Code, ErrorPublishTagsLimit.Code:
 		return codes.InvalidArgument
 	case ErrorTooManyRequests.Code:
 		return codes.ResourceExhausted

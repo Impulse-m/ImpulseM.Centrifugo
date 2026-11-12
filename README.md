@@ -16,6 +16,7 @@ Linux archives for `amd64` and `arm64` are attached to each [GitHub Release](htt
 
 * [Push notifications](#push-notifications): direct send to APNs, FCM and Web Push tokens, and the push API routes over HTTP and gRPC.
 * [Server-side publication tags filter](#server-side-publication-tags-filter), [server tags filter template](#server-tags-filter-template) and [require server tags filter](#require-server-tags-filter): subscription filters set by the backend that clients cannot widen.
+* [Server-only publication tags](#server-only-publication-tags): tags a publish attaches for server tags filters only, which never reach clients.
 * [User blocking and token revocation](#user-blocking-and-token-revocation), with an optional [access revocation event source](#access-revocation-event-source).
 * [Client address behind trusted proxies](#client-address-behind-trusted-proxies).
 * [RPC method registry](#rpc-method-registry).
@@ -31,6 +32,10 @@ Each feature has a short summary here. The details are in the page the link poin
 ### Server-side publication tags filter
 
 A per-subscriber filter set by the backend, which the client cannot widen. Tracking issue [#7](https://github.com/Impulse-m/ImpulseM.Centrifugo/issues/7). [Details](docs/server-tags-filter.md#server-side-publication-tags-filter).
+
+### Server-only publication tags
+
+A publish or broadcast can send `server_tags` beside `tags`: they are matched by server tags filters and never reach clients. Off by default per namespace (`allow_server_tags`), with optional caps counted over both maps. Stream channels on the memory and Redis brokers. [Details](docs/server-tags-filter.md#server-only-publication-tags).
 
 ### Require server tags filter
 

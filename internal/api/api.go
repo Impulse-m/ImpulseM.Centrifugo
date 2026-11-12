@@ -270,6 +270,18 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 		return resp
 	}
 
+	// Server tags are checked before anything is published, so a refused publish stores nothing.
+	if respError := checkServerTagsKeys(cmd.GetTags(), cmd.GetServerTags()); respError != nil {
+		log.Error().Str("channel", ch).Msg("bad publish request: server tags keys refused")
+		resp.Error = respError
+		return resp
+	}
+	if respError := checkPublishTags(&chOpts, cmd.GetServerTags(), measureTags(cmd.GetTags(), cmd.GetServerTags())); respError != nil {
+		log.Warn().Str("channel", ch).Msg("publish refused: server tags gate or tags limit")
+		resp.Error = respError
+		return resp
+	}
+
 	historySize := chOpts.HistorySize
 	historyTTL := chOpts.HistoryTTL
 	historyMetaTTL := chOpts.HistoryMetaTTL
@@ -287,6 +299,7 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 		cmd.Channel, data,
 		centrifuge.WithHistory(historySize, historyTTL.ToDuration(), historyMetaTTL.ToDuration()),
 		centrifuge.WithTags(cmd.GetTags()),
+		centrifuge.WithServerTags(cmd.GetServerTags()),
 		centrifuge.WithIdempotencyKey(cmd.GetIdempotencyKey()),
 		centrifuge.WithDelta(delta),
 		centrifuge.WithVersion(cmd.Version, cmd.VersionEpoch),
@@ -336,6 +349,15 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 		data = cmd.Data
 	}
 
+	// The server tags keys and the size of the tags are checked once for the request. A bad key refuses the whole
+	// request, and each channel then checks its own gate and caps.
+	if respError := checkServerTagsKeys(cmd.GetTags(), cmd.GetServerTags()); respError != nil {
+		log.Error().Msg("bad broadcast request: server tags keys refused")
+		resp.Error = respError
+		return resp
+	}
+	size := measureTags(cmd.GetTags(), cmd.GetServerTags())
+
 	sem := make(chan struct{}, broadcastRequestMaxConcurrency)
 
 	responses := make([]*PublishResponse, len(channels))
@@ -380,6 +402,14 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 				return
 			}
 
+			// The gate and the caps of the namespace of this channel refuse this channel only.
+			if respError := checkPublishTags(&chOpts, cmd.GetServerTags(), size); respError != nil {
+				metrics.IncAPIError(h.config.Protocol, "broadcast_publish", respError.Code)
+				log.Warn().Str("channel", ch).Msg("broadcast refused for channel: server tags gate or tags limit")
+				responses[i] = &PublishResponse{Error: respError}
+				return
+			}
+
 			historySize := chOpts.HistorySize
 			historyTTL := chOpts.HistoryTTL
 			historyMetaTTL := chOpts.HistoryMetaTTL
@@ -397,6 +427,7 @@ func (h *Executor) Broadcast(ctx context.Context, cmd *BroadcastRequest) *Broadc
 				ch, data,
 				centrifuge.WithHistory(historySize, historyTTL.ToDuration(), historyMetaTTL.ToDuration()),
 				centrifuge.WithTags(cmd.GetTags()),
+				centrifuge.WithServerTags(cmd.GetServerTags()),
 				centrifuge.WithIdempotencyKey(cmd.GetIdempotencyKey()),
 				centrifuge.WithDelta(delta),
 				centrifuge.WithVersion(cmd.Version, cmd.VersionEpoch),

@@ -21,6 +21,7 @@ var apiErrors = []*Error{
 	ErrorTooManyRequests,
 	ErrorUnrecoverablePosition,
 	ErrorConflict,
+	ErrorPublishTagsLimit,
 }
 
 // TestErrorsTemporary checks which errors say a retry may succeed: the ones

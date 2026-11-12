@@ -150,6 +150,19 @@ type ChannelOptions struct {
 	// filter, whichever route made it, and refuses client history calls on the namespace.
 	RequireServerTagsFilter bool `mapstructure:"require_server_tags_filter" json:"require_server_tags_filter" envconfig:"require_server_tags_filter" yaml:"require_server_tags_filter" toml:"require_server_tags_filter" doc:"Refuses every subscription to channels of this namespace which carries no server tags filter, whichever route made it, and refuses client history calls on the namespace, so a route which forgets the filter fails closed. A client subscribe gets permission denied (103); a connect-time server-side subscription of the connection token or the connect proxy refuses the connection (3507); a channel a client asks for at connect is dropped; the server API subscribe, which cannot carry a filter, gets not available (108). A filter produced by <<server_tags_filter_template>> counts; a template skipped under <<on_missing_value: skip>> leaves a subscription without an explicit filter refused, and a personal channel whose template was skipped refuses the connection (3507). Off by default."`
 
+	// AllowServerTags enables server tags on the publications of the namespace. A publish or broadcast which sends
+	// server_tags is refused in a namespace without it. Server tags are used only by server-side filters and are never
+	// sent to clients.
+	AllowServerTags bool `mapstructure:"allow_server_tags" json:"allow_server_tags" envconfig:"allow_server_tags" yaml:"allow_server_tags" toml:"allow_server_tags" doc:"Allows publish and broadcast requests to attach server tags to publications in this namespace. Server tags are matched by server tags filters only and are never sent to clients. Requires the memory or redis broker, and no subscription_type shared_poll or subscribe_stream_proxy_enabled. Upgrade every node before turning it on, with the same config on all nodes."`
+
+	// PublishTagsMaxCount is the maximum number of tags of a publication in the namespace, counting tags and server tags
+	// together. Zero means no limit.
+	PublishTagsMaxCount int `mapstructure:"publish_tags_max_count" json:"publish_tags_max_count" envconfig:"publish_tags_max_count" yaml:"publish_tags_max_count" toml:"publish_tags_max_count" doc:"Maximum number of tags of a publication in this namespace, counting tags and server tags together. A publish or broadcast over the limit is refused with error 1000. Zero means no limit. Recommended with allow_server_tags: 256."`
+
+	// PublishTagsMaxBytes is the maximum sum of the lengths of the keys and values of the tags of a publication in the
+	// namespace, counting tags and server tags together. Zero means no limit.
+	PublishTagsMaxBytes int `mapstructure:"publish_tags_max_bytes" json:"publish_tags_max_bytes" envconfig:"publish_tags_max_bytes" yaml:"publish_tags_max_bytes" toml:"publish_tags_max_bytes" doc:"Maximum sum of the lengths of the keys and values of the tags of a publication in this namespace, counting tags and server tags together. A publish or broadcast over the limit is refused with error 1000. Zero means no limit. Recommended with allow_server_tags: 16384."`
+
 	// DeltaPublish enables delta publish mechanism for all messages published in namespace channels
 	// without explicit flag usage in publish API request. Setting this option does not guarantee that
 	// publication will be compressed when going towards subscribers – it still depends on subscriber

@@ -98,6 +98,31 @@ func TestValidateServerTagsRefusesSharedPollAndStreamProxy(t *testing.T) {
 		"namespace proxy: allow_server_tags cannot be used with subscribe_stream_proxy_enabled")
 }
 
+// TestValidateServerTagsRefusesNonStreamSubscriptionTypes checks allow_server_tags is refused on every subscription type
+// other than stream, and is allowed with the default and the stream type.
+func TestValidateServerTagsRefusesNonStreamSubscriptionTypes(t *testing.T) {
+	for _, subscriptionType := range []string{"map", "map_clients", "map_users", "shared_poll"} {
+		t.Run(subscriptionType, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+				serverTagsNamespace("other", configtypes.ChannelOptions{SubscriptionType: subscriptionType}),
+			}
+			require.ErrorContains(t, validateServerTags(cfg),
+				"namespace other: allow_server_tags is not supported with subscription_type "+subscriptionType)
+		})
+	}
+
+	for _, subscriptionType := range []string{"", "stream"} {
+		t.Run("allowed "+subscriptionType, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Channel.Namespaces = configtypes.ChannelNamespaces{
+				serverTagsNamespace("ok", configtypes.ChannelOptions{SubscriptionType: subscriptionType}),
+			}
+			require.NoError(t, validateServerTags(cfg))
+		})
+	}
+}
+
 // TestValidateServerTagsNegativeCapsRefused checks a negative cap is refused in a namespace and in channel.without_namespace,
 // whether or not the namespace allows server tags.
 func TestValidateServerTagsNegativeCapsRefused(t *testing.T) {

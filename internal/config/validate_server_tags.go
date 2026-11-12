@@ -7,10 +7,11 @@ import (
 )
 
 // validateServerTags checks the server tags options of channel.without_namespace and of every namespace. The negative
-// caps are refused in every namespace. The rules of allow_server_tags apply only where it is set: the broker of the
-// namespace must be memory or redis, since the other brokers do not carry the server tags of a publication, and the
-// namespace must not use shared poll or a subscribe stream proxy, which do not apply a server tags filter. A config
-// which sets none of the options is not changed by this check.
+// caps are refused in every namespace. The rules of allow_server_tags apply only where it is set: the subscription type
+// must be stream, since only stream channels carry server tags, the namespace must not use a subscribe stream proxy,
+// which does not apply a server tags filter, and the broker of the namespace must be memory or redis, since the other
+// brokers do not carry the server tags of a publication. A config which sets none of the options is not changed by this
+// check.
 func validateServerTags(c Config) error {
 	if err := validateServerTagsOptions(c.Channel.WithoutNamespace, c); err != nil {
 		return fmt.Errorf("in channel.without_namespace: %v", err)
@@ -34,8 +35,8 @@ func validateServerTagsOptions(opts configtypes.ChannelOptions, c Config) error 
 	if !opts.AllowServerTags {
 		return nil
 	}
-	if opts.SubscriptionType == "shared_poll" {
-		return fmt.Errorf("allow_server_tags is not supported with subscription_type shared_poll: shared poll subscriptions do not apply a server tags filter")
+	if opts.SubscriptionType != "" && opts.SubscriptionType != "stream" {
+		return fmt.Errorf("allow_server_tags is not supported with subscription_type %s: only stream channels carry server tags", opts.SubscriptionType)
 	}
 	if opts.SubscribeStreamProxyEnabled {
 		return fmt.Errorf("allow_server_tags cannot be used with subscribe_stream_proxy_enabled: a subscribe stream proxy subscription does not apply a server tags filter")
@@ -51,19 +52,18 @@ func validateServerTagsOptions(opts configtypes.ChannelOptions, c Config) error 
 }
 
 // serverTagsBrokerType returns the type of the broker of a namespace: the named broker which brokerName selects, or else
-// the default broker, which is the standalone broker when it is enabled and the engine otherwise. It reports false when
-// brokerName selects no entry of brokers.
+// the default broker, see defaultBrokerType. The named lookup takes disabled entries too, unlike the enabled-only lookup
+// of validateNamedRedisPrefixes: validateNamespaceEngines runs first in Validate and refuses a namespace whose broker_name
+// is not enabled, so the difference does not reach a valid config. It reports false when brokerName selects no entry of
+// brokers.
 func serverTagsBrokerType(c Config, brokerName string) (string, bool) {
-	if brokerName != "" {
-		for _, b := range c.Brokers {
-			if b.Name == brokerName {
-				return b.Type, true
-			}
+	if brokerName == "" {
+		return defaultBrokerType(c), true
+	}
+	for _, b := range c.Brokers {
+		if b.Name == brokerName {
+			return b.Type, true
 		}
-		return "", false
 	}
-	if c.Broker.Enabled {
-		return c.Broker.Type, true
-	}
-	return c.Engine.Type, true
+	return "", false
 }

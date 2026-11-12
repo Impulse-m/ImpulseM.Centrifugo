@@ -202,6 +202,15 @@ func isMapSubscriptionType(subscriptionType string) bool {
 	return slices.Contains([]string{"map", "map_clients", "map_users"}, subscriptionType)
 }
 
+// defaultBrokerType returns the type of the default broker: the standalone broker when it is enabled, and the engine
+// otherwise.
+func defaultBrokerType(c Config) string {
+	if c.Broker.Enabled {
+		return c.Broker.Type
+	}
+	return c.Engine.Type
+}
+
 // validateNamedRedisPrefixes rejects two Redis brokers, default or named, and named map brokers which use the same Redis
 // and prefixes whose key spaces overlap, see newRedisEngineRef. Presence managers are not compared: their keys are per
 // channel, and a channel has one presence manager. The default broker and the default map broker are not compared with
@@ -215,9 +224,10 @@ func isMapSubscriptionType(subscriptionType string) bool {
 // engine when Core makes it the controller, since a channel of another broker may be one of them.
 func validateNamedRedisPrefixes(c Config) error {
 	var refs []redisEngineRef
-	if !c.Broker.Enabled && c.Engine.Type == "redis" {
+	defaultType := defaultBrokerType(c)
+	if !c.Broker.Enabled && defaultType == "redis" {
 		refs = append(refs, newRedisEngineRef("engine", c.Engine.Redis.Redis, c.Engine.Redis.Prefix, true))
-	} else if c.Broker.Enabled && (c.Broker.Type == "redis" || c.Broker.Type == "redisnats") {
+	} else if c.Broker.Enabled && (defaultType == "redis" || defaultType == "redisnats") {
 		// The redisnats broker keeps its history in the same Redis, with the same prefix.
 		refs = append(refs, newRedisEngineRef("broker", c.Broker.Redis.Redis, c.Broker.Redis.Prefix, true))
 	}
@@ -240,9 +250,9 @@ func validateNamedRedisPrefixes(c Config) error {
 	if !c.Controller.Enabled {
 		// The default broker or engine is the controller, see the NATS rule in validateNamedNatsSubjects. Its control
 		// channels are not compared with its own channels: they are never equal to them.
-		if c.Broker.Enabled && c.Broker.Type == "redis" {
+		if c.Broker.Enabled && defaultType == "redis" {
 			refs = append(refs, newRedisControlRefs("broker control", c.Broker.Redis.Redis, c.Broker.Redis.Prefix, true)...)
-		} else if !c.Broker.Enabled && c.Engine.Type == "redis" {
+		} else if !c.Broker.Enabled && defaultType == "redis" {
 			refs = append(refs, newRedisControlRefs("engine control", c.Engine.Redis.Redis, c.Engine.Redis.Prefix, true)...)
 		}
 	}

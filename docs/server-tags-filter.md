@@ -18,13 +18,13 @@ A publish or broadcast request can send `server_tags` beside `tags`. `tags` reac
 
 Off by default. A publish which sends no `server_tags` produces the same bytes as before the option.
 
-* Enable it per namespace (or `channel.without_namespace`) with `allow_server_tags: true`. A publish or broadcast which sends `server_tags` to a namespace without it is refused with 108 (not available). On a channel whose subscription type is not `stream`, a broadcast with `server_tags` is refused with 108 too: phase one covers stream publish and broadcast only, so map publish, shared poll and proxy publish carry no server tags. Client publish and proxy publish cannot set them.
+* Enable it per namespace (or `channel.without_namespace`) with `allow_server_tags: true`. A publish or broadcast which sends `server_tags` to a namespace without it is refused with 108 (not available). Only stream channels carry server tags: the option is refused at config load on any other `subscription_type`, so map publish and shared poll carry none. Client publish and proxy publish cannot set them.
 * A key of `server_tags` must not be empty, must not start with `__` (reserved for Centrifugo), and must not be a key of `tags`. Otherwise the request is refused with 107 (bad request). In a broadcast, such a key refuses the whole call, since the keys are the same for every channel.
 * `skip_history` is allowed. The publication is live-filtered as usual, and it is never stored, so it is never recovered.
 * Caps: `publish_tags_max_count` counts the entries of `tags` and `server_tags` together, and `publish_tags_max_bytes` sums the lengths of their keys and values. A publication over a cap is refused with 1000 (`publish tags limit exceeded`), HTTP 400 and gRPC `InvalidArgument`. The caps count `tags` too, so they apply to a publication without `server_tags`. Zero, the default, means no cap. The recommended values for a namespace which enables the option are 256 entries and 16384 bytes.
 * A refused publish stores nothing. In a broadcast, a refusal by the gate or by a cap applies to the response of that channel only; the other channels are published.
 * Error texts are fixed strings. Neither the responses nor the logs or metric labels name a key or a value: they carry counts and channel names.
-* The option is refused at config load with `subscription_type: shared_poll` and `subscribe_stream_proxy_enabled`, whose subscriptions do not apply a server tags filter, and with any broker other than memory or redis, the default broker or the named broker of the namespace. Negative caps are refused too.
+* The option is refused at config load with any `subscription_type` other than `stream`, and with `subscribe_stream_proxy_enabled`, whose subscriptions do not apply a server tags filter, and with any broker other than memory or redis, the default broker or the named broker of the namespace. Negative caps are refused too.
 
 Storage, with the memory and redis brokers:
 
@@ -36,7 +36,7 @@ Rolling upgrade and downgrade:
 * Upgrade every node first (server, Core and Protocol), then set `allow_server_tags` on a namespace, with the same config on all nodes. A node which does not know the field ignores it: its server filter sees no server tags, so an `eq` on a server key drops the publication there and a `nex` or `ne` on it lets the publication through. A publish which lands on such a node loses its `server_tags` silently. Centrifugo cannot detect old peers, so the order is the operator's job.
 * Downgrade: set `allow_server_tags: false` on all nodes, wait for the history window to expire, then downgrade the nodes.
 
-Consumer publish is not part of phase one. A consumer message of method `publish` or `broadcast` which carries `server_tags` is refused with 108 (not available) and skipped as a non-retryable message, whatever its namespace allows. Consumer messages without `server_tags` are handled as before.
+Consumer messages of method `publish` or `broadcast` decode into the same requests and go through the same checks, so their `server_tags` follow the gate, key and cap rules above.
 
 ## Require server tags filter
 

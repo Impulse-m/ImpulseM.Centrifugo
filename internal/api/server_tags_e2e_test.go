@@ -27,12 +27,14 @@ func serverTagsHTTPServer(t *testing.T) (*httptest.Server, *Executor) {
 	return server, api
 }
 
-// postServerTagsRequest posts a JSON body to an API path and returns the HTTP status code.
+// postServerTagsRequest posts a JSON body to an API path in transport error mode, so an API error is the HTTP status
+// code (MapErrorToHTTPCode), and returns the status code.
 func postServerTagsRequest(t *testing.T, server *httptest.Server, path string, body string) int {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/api"+path, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("X-Centrifugo-Error-Mode", "transport")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

@@ -312,3 +312,14 @@ func TestMeasureTags(t *testing.T) {
 	require.Equal(t, tagsSize{count: 2, bytes: len("kind") + len("msg") + len("tenant") + len("t-17")}, size)
 	require.Equal(t, tagsSize{}, measureTags(nil, nil))
 }
+
+// TestRequestTagsMeasuredOnlyWhenCapped checks the tags of a request are not measured for a namespace without caps, and
+// are measured once for a namespace with them.
+func TestRequestTagsMeasuredOnlyWhenCapped(t *testing.T) {
+	tags := newRequestTags(map[string]string{"kind": "msg"}, map[string]string{"tenant": "t-17"})
+	require.Nil(t, checkTagsLimits(&configtypes.ChannelOptions{}, tags))
+	require.Equal(t, tagsSize{}, tags.size, "without caps the tags are not measured")
+
+	require.Nil(t, checkTagsLimits(&configtypes.ChannelOptions{PublishTagsMaxCount: 2}, tags))
+	require.Equal(t, tagsSize{count: 2, bytes: len("kind") + len("msg") + len("tenant") + len("t-17")}, tags.size)
+}

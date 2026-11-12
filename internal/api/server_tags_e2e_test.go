@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	. "github.com/centrifugal/centrifugo/v6/internal/apiproto"
 )
 
 // serverTagsHTTPServer serves the API routes over the memory node of serverTagsTestSetup, under the /api prefix as the
